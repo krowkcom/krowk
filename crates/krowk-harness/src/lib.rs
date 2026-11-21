@@ -66,14 +66,12 @@
 //! not open the code.
 
 pub mod agents;
-pub mod anthropic;
 pub mod ask;
 pub mod bridge;
 pub mod budget;
 pub mod builds;
 pub mod catalog;
 pub mod children;
-pub mod chat;
 pub mod claude;
 pub mod codex;
 pub mod compat;
@@ -86,7 +84,6 @@ pub mod evidence;
 pub mod group;
 pub mod handoff;
 pub mod headless;
-pub mod hooks;
 pub mod host;
 pub mod http;
 pub mod images;
@@ -94,15 +91,12 @@ pub mod pasted;
 pub mod upload;
 pub mod usage;
 pub mod instances;
-pub mod jobs;
 pub mod keys;
 pub mod log;
 pub mod mcp;
-pub mod native;
 pub mod mcp_oauth;
 pub mod neutral;
 pub mod oauth;
-pub mod openai;
 pub mod paste_guard;
 pub mod permissions;
 pub mod project;
@@ -115,18 +109,14 @@ pub mod relay;
 pub mod sandbox;
 pub mod schema;
 pub mod slots;
-pub mod subagent;
 #[cfg(unix)]
 pub mod sync;
 pub mod sse;
-pub mod todo;
 pub mod tooling_guard;
-pub mod tools;
 pub mod toolset;
 pub mod trust;
 // The archive compresses with ruzstd, which links on unix only, where
 // `krowk sessions` runs.
 #[cfg(unix)]
 pub mod vintage;
-pub mod wire;
 pub mod worktree;

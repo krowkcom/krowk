@@ -7,8 +7,6 @@
 mod mock;
 #[path = "common/mobbin.rs"]
 mod mobbin;
-#[path = "common/providers.rs"]
-mod providers;
 
 use krowk_harness::mcp_oauth::{self, Ui};
 use mobbin::{fake, form, Fake, Knobs};
@@ -33,7 +31,7 @@ fn login(f: &Fake, path: &std::path::Path, paste: Option<&dyn Fn(&str) -> String
             let mut tell = |u: &str| {
                 *seen.lock().unwrap() = u.to_string();
                 let u = u.to_string();
-                std::thread::spawn(move || providers::browse(&u));
+                std::thread::spawn(move || mock::browse(&u));
             };
             mcp_oauth::sign_in(&path, &name, &url, Ui { tell: &mut tell, paste: None })
         }
@@ -193,7 +191,7 @@ async fn r_mcp_22_a_local_host_completes_a_sign_in_on_its_loopback_without_a_pas
     adopted(&f, &p).await;
     let (page, loopback) = p.sign_in_start("mobbin", true).await.unwrap();
     assert!(loopback);
-    tokio::task::spawn_blocking(move || providers::browse(&page)).await.unwrap();
+    tokio::task::spawn_blocking(move || mock::browse(&page)).await.unwrap();
     for _ in 0..100 {
         if mcp_oauth::load(&path, "mobbin", &url).unwrap().is_some() {
             p.close().await;

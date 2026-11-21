@@ -121,9 +121,6 @@ pub trait Transport {
     /// Lets the transport's backend processes go: the in-process host's.
     /// The daemon's are the daemon's, and stay.
     fn shutdown(&self) -> impl std::future::Future<Output = ()>;
-    /// The background jobs `shutdown` stops, as (session, id): none of the
-    /// daemon's, which run on.
-    fn running_jobs(&self) -> Vec<(String, String)>;
     /// The host's krowk version and protocol when it is another process:
     /// its prompt's images go ahead as `put_image` (`upload`). None for the
     /// in-process host, which saves them by sha256 as they come.
@@ -140,10 +137,6 @@ impl Transport for Host {
     fn shutdown(&self) -> impl std::future::Future<Output = ()> {
         Host::shutdown(self)
     }
-
-    fn running_jobs(&self) -> Vec<(String, String)> {
-        Host::running_jobs(self)
-    }
 }
 
 #[cfg(unix)]
@@ -153,10 +146,6 @@ impl Transport for crate::daemon::client::Client {
     }
 
     async fn shutdown(&self) {}
-
-    fn running_jobs(&self) -> Vec<(String, String)> {
-        Vec::new()
-    }
 
     fn remote(&self) -> Option<(String, u32)> {
         Some((self.krowk_version.clone(), self.protocol_version))
@@ -253,9 +242,6 @@ async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> 
         let names: Vec<String> = agents.iter().map(|a: &crate::protocol::BackendAgent| format!("“{}”", a.description.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>())).collect();
         let (what, verbs) = if agents.len() == 1 { ("background agent", "is still running, and stops") } else { ("background agents", "are still running, and stop") };
         let _ = writeln!(std::io::stderr(), "! Claude Code's {what} {} {verbs} with this run: krowk -p does not wait for background agents", names.join(", "));
-    }
-    if let Some(line) = crate::jobs::stopped_line(&host.running_jobs(), session_id.as_deref(), "with this run: krowk -p does not wait for background jobs") {
-        let _ = writeln!(std::io::stderr(), "! {line}");
     }
     // A backend's process is let go before the answer is reported, so its
     // transcript is whole when krowk exits.

@@ -71,7 +71,7 @@ fn r_perm_1_the_rule_matrix_covers_every_mode_against_allow_ask_and_deny() {
                 None => policy(&d, &[]),
                 Some(k) => policy(&d, &[(k, rule)]),
             };
-            let got: String = MODES.iter().map(|m| letter(&gate(&p, *m).verdict(call, None))).collect();
+            let got: String = MODES.iter().map(|m| letter(&gate(&p, *m).verdict(call))).collect();
             table += &format!("{name:12} {:5} {got}\n", ["none", "allow", "ask", "deny"][col]);
             assert_eq!(got, expected[col], "{name} under {} ({rule}): default, acceptEdits, plan, bypassPermissions", ["no rule", "allow", "ask", "deny"][col]);
         }
@@ -93,13 +93,13 @@ fn r_perm_1_a_repository_that_denies_bash_rm_blocks_it_in_every_mode_bypass_incl
         let p = Policy::load(&cfg, &d).unwrap();
         for m in MODES {
             for cmd in ["rm -rf build", "sudo rm -rf /", "git status && rm x", "bash -c 'rm -rf .'", "find . -delete"] {
-                match gate(&p, m).verdict(&bash(cmd), None) {
+                match gate(&p, m).verdict(&bash(cmd)) {
                     Verdict::Deny(why) => assert!(why.contains("Bash(rm:*)") && why.contains(".claude/settings.json"), "{why}"),
                     v => panic!("{cmd:?} in {m:?} (trusted {trusted}): {v:?}"),
                 }
             }
             if m != PermissionMode::Plan {
-                assert_eq!(letter(&gate(&p, m).verdict(&bash("ls"), None)), 'Y', "{m:?}: the person's own allow rule still allows the rest");
+                assert_eq!(letter(&gate(&p, m).verdict(&bash("ls"))), 'Y', "{m:?}: the person's own allow rule still allows the rest");
             }
         }
     }
@@ -124,12 +124,10 @@ fn r_perm_1_unhinged_runs_everything_and_no_rule_fence_or_hooks_ask_holds_it() {
     ];
     let g = gate(&p, PermissionMode::Unhinged);
     for call in &calls {
-        for hook in [None, Some(hooks::Decision::Ask)] {
-            assert_eq!(g.verdict(call, hook), Verdict::Allow(Opens { outside: true, fences: true }), "{call:?} with the hook saying {hook:?}");
-        }
+        assert_eq!(g.verdict(call), Verdict::Allow(Opens { outside: true, fences: true }), "{call:?}");
     }
     assert!(g.scope(Opens::default()).hidden.0.is_none(), "a search skips nothing a deny rule would have hidden");
-    assert_eq!(letter(&gate(&p, PermissionMode::BypassPermissions).verdict(&bash("ls"), None)), 'N', "the same rules still hold under bypassPermissions");
+    assert_eq!(letter(&gate(&p, PermissionMode::BypassPermissions).verdict(&bash("ls"))), 'N', "the same rules still hold under bypassPermissions");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -163,14 +161,12 @@ fn r_perm_1_only_the_person_puts_a_session_in_unhinged() {
     let asks = policy(&d, &[(Kind::Ask, "Bash(npm test)"), (Kind::Deny, "Bash(rm:*)")]);
     for m in [PermissionMode::Default, PermissionMode::BypassPermissions] {
         for cmd in ["npm test", "$(printf ls)"] {
-            let Verdict::Ask { reason, remember } = gate(&asks, m).verdict(&bash(cmd), None) else { panic!("{cmd} in {m:?} is asked about") };
-            let why = gate(&asks, m).nobody_to_ask(&bash(cmd), None, cmd, &reason, &remember);
+            let Verdict::Ask { reason, remember } = gate(&asks, m).verdict(&bash(cmd)) else { panic!("{cmd} in {m:?} is asked about") };
+            let why = gate(&asks, m).nobody_to_ask(&bash(cmd), cmd, &reason, &remember);
             assert!(why.contains("--permission-mode unhinged") && !why.contains("allow rule"), "{cmd} in {m:?}, where no allow rule helps: {why}");
         }
-        let why = gate(&policy(&d, &[]), m).nobody_to_ask(&bash("ls"), Some(hooks::Decision::Ask), "Bash `ls`", "a hook asks", &[]);
-        assert!(why.contains("--permission-mode unhinged"), "{m:?}, a hook's ask: {why}");
     }
-    let why = gate(&policy(&d, &[]), PermissionMode::Default).nobody_to_ask(&bash("npm test"), None, "Bash `npm test`", "it runs a command", &[]);
+    let why = gate(&policy(&d, &[]), PermissionMode::Default).nobody_to_ask(&bash("npm test"), "Bash `npm test`", "it runs a command", &[]);
     assert!(why.contains("--permission-mode bypassPermissions"), "what bypassPermissions runs, it is still pointed at: {why}");
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -181,14 +177,14 @@ fn r_perm_1_plan_mode_refuses_writes_whatever_the_rules_allow() {
     let p = policy(&d, &[(Kind::Allow, "Edit"), (Kind::Allow, "Bash"), (Kind::Allow, "mcp__gh")]);
     let g = gate(&p, PermissionMode::Plan);
     for call in [edit(d.join("src/a.rs")), bash("touch x"), Call { tool: "mcp__gh__x".into(), access: Access::Mcp { server: "gh".into(), tool: "x".into() }, subject: None }, Call { tool: "NotebookEdit".into(), access: Access::Other, subject: None }] {
-        match g.verdict(&call, Some(hooks::Decision::Allow)) {
+        match g.verdict(&call) {
             Verdict::Deny(why) => assert!(why.contains("plan mode"), "{why}"),
             v => panic!("{call:?}: {v:?}"),
         }
     }
-    assert_eq!(letter(&g.verdict(&read(d.join("src/a.rs")), None)), 'Y', "plan mode reads");
+    assert_eq!(letter(&g.verdict(&read(d.join("src/a.rs")))), 'Y', "plan mode reads");
     let publish = Call { tool: "Publish".into(), access: Access::Publish(vec![d.join("shot.png")]), subject: None };
-    assert!(matches!(g.verdict(&publish, None), Verdict::Deny(why) if why.contains("plan mode")), "publishing is refused in plan");
+    assert!(matches!(g.verdict(&publish), Verdict::Deny(why) if why.contains("plan mode")), "publishing is refused in plan");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -209,17 +205,17 @@ fn r_perm_1_an_untrusted_repository_narrows_but_never_widens() {
     assert!(untrusted.loaded.widens && !untrusted.loaded.trusted);
     assert!(untrusted.loaded.hooks.is_empty() && untrusted.loaded.dirs.is_empty() && untrusted.loaded.default_mode.is_none(), "no hook, directory or mode from a repository nobody trusted");
     let g = gate(&untrusted, PermissionMode::Default);
-    assert_eq!(letter(&g.verdict(&bash("curl https://x"), None)), '?', "its allow rule is not taken");
-    assert_eq!(letter(&g.verdict(&read(d.join("src/.env")), None)), 'N', "its deny rule is");
-    assert_eq!(letter(&g.verdict(&read(d.join("src/secrets/k")), None)), '?', "and its ask rule");
-    let why = g.nobody_to_ask(&bash("curl https://x"), None, "Bash `curl https://x`", "it runs a command", &[]);
+    assert_eq!(letter(&g.verdict(&bash("curl https://x"))), '?', "its allow rule is not taken");
+    assert_eq!(letter(&g.verdict(&read(d.join("src/.env")))), 'N', "its deny rule is");
+    assert_eq!(letter(&g.verdict(&read(d.join("src/secrets/k")))), '?', "and its ask rule");
+    let why = g.nobody_to_ask(&bash("curl https://x"), "Bash `curl https://x`", "it runs a command", &[]);
     assert!(why.contains("apply only once it is trusted") && why.contains("Bash(curl:*)"), "the refusal says why the repository's rule did not count: {why}");
 
     let cfg = Config { trusted: Some(Arc::new(|_: &Path| true)), ..Config::default() };
     let trusted = Policy::load(&cfg, &d.join("src")).unwrap();
     assert!(!trusted.loaded.hooks.is_empty() && trusted.loaded.dirs == [PathBuf::from("/")]);
     assert_eq!(trusted.loaded.default_mode, Some(PermissionMode::AcceptEdits), "the deeper file's mode wins, and a repository's bypassPermissions never counts");
-    assert_eq!(letter(&gate(&trusted, PermissionMode::Default).verdict(&bash("curl https://x"), None)), 'Y');
+    assert_eq!(letter(&gate(&trusted, PermissionMode::Default).verdict(&bash("curl https://x"))), 'Y');
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -229,16 +225,16 @@ fn r_perm_1_the_fenced_directories_are_asked_about_and_no_rule_opens_them() {
     let p = policy(&d, &[(Kind::Allow, "Edit"), (Kind::Allow, "Write(.claude/**)")]);
     for m in [PermissionMode::Default, PermissionMode::AcceptEdits] {
         for f in [".claude/settings.json", ".git/hooks/pre-commit", ".krowk/config.json", "sub/.CODEX/config.toml"] {
-            match gate(&p, m).verdict(&edit(d.join(f)), Some(hooks::Decision::Allow)) {
+            match gate(&p, m).verdict(&edit(d.join(f))) {
                 Verdict::Ask { reason, remember } => assert!(reason.contains("with a person's say") && remember.is_empty(), "{f}: never remembered: {reason}"),
                 v => panic!("{f} in {m:?}: {v:?}"),
             }
         }
     }
-    assert_eq!(letter(&gate(&p, PermissionMode::BypassPermissions).verdict(&edit(d.join(".claude/settings.json")), None)), 'Y');
+    assert_eq!(letter(&gate(&p, PermissionMode::BypassPermissions).verdict(&edit(d.join(".claude/settings.json")))), 'Y');
     let mut protected = policy(&d, &[(Kind::Allow, "Edit")]);
     protected.protected.push(PathBuf::from("/home/someone/.krowk"));
-    assert_eq!(letter(&gate(&protected, PermissionMode::AcceptEdits).verdict(&edit(PathBuf::from("/home/someone/.krowk/config.json")), None)), '?', "krowk's own config directory, wherever it is");
+    assert_eq!(letter(&gate(&protected, PermissionMode::AcceptEdits).verdict(&edit(PathBuf::from("/home/someone/.krowk/config.json")))), '?', "krowk's own config directory, wherever it is");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -362,7 +358,7 @@ async fn r_perm_2_an_asked_call_is_an_approval_request_any_client_answers_and_gr
         }
         seen
     });
-    let opens = g.check(&call, "bash", &json!({"command": "npm test"}), None, &tx, &cancel).await.unwrap();
+    let opens = g.check(&call, "bash", &json!({"command": "npm test"}), &tx, &cancel).await.unwrap();
     assert!(opens.fences, "a person's yes is for exactly this call");
     let seen = client.await.unwrap();
     let EngineEvent::Approval(req) = &seen[0] else { panic!("{seen:?}") };
@@ -370,8 +366,8 @@ async fn r_perm_2_an_asked_call_is_an_approval_request_any_client_answers_and_gr
     assert_eq!(req.remember, ["Bash(npm test)"]);
     assert!(matches!(&seen[1], EngineEvent::ApprovalResolved { decision: ApprovalDecision::AllowSession, .. }));
     // Remembered for the session: asked no more, and only that command.
-    assert_eq!(letter(&g.verdict(&call, None)), 'Y');
-    assert_eq!(letter(&g.verdict(&bash("npm publish"), None)), '?');
+    assert_eq!(letter(&g.verdict(&call)), 'Y');
+    assert_eq!(letter(&g.verdict(&bash("npm publish"))), '?');
     assert!(!file.exists(), "a session grant is not written down");
     assert_eq!(remember(&bash("rm 'a b'")), ["Bash(rm 'a b')"], "a grant reads back as the command it was for");
     let quoted = rules::parse("Bash(rm 'a b')", "t", &d).unwrap();
@@ -390,12 +386,12 @@ async fn r_perm_2_an_asked_call_is_an_approval_request_any_client_answers_and_gr
             }
         }
     });
-    g2.check(&bash("cargo test"), "bash", &json!({}), None, &tx, &cancel).await.unwrap();
+    g2.check(&bash("cargo test"), "bash", &json!({}), &tx, &cancel).await.unwrap();
     let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
     assert_eq!(saved["projects"][d.display().to_string()]["allow"], json!(["Bash(cargo test)"]));
     let cfg = Config { krowk_dir: Some(krowk.clone()), ..Config::default() };
     let next = Policy::load(&cfg, &d).unwrap();
-    assert_eq!(letter(&gate(&next, PermissionMode::Default).verdict(&bash("cargo test"), None)), 'Y', "the next session has it");
+    assert_eq!(letter(&gate(&next, PermissionMode::Default).verdict(&bash("cargo test"))), 'Y', "the next session has it");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -413,11 +409,11 @@ async fn r_perm_2_an_asked_call_is_an_approval_request_any_client_answers_and_gr
             }
         }
     });
-    assert!(g3.check(&bash("rm x"), "bash", &json!({}), None, &tx, &cancel).await.unwrap_err().contains("declined"));
+    assert!(g3.check(&bash("rm x"), "bash", &json!({}), &tx, &cancel).await.unwrap_err().contains("declined"));
     let (stop, cancel) = watch::channel(false);
     let (tx, _rx) = tokio::sync::mpsc::channel(8);
     let (rm, input) = (bash("rm y"), json!({}));
-    let waiting = g3.check(&rm, "bash", &input, None, &tx, &cancel);
+    let waiting = g3.check(&rm, "bash", &input, &tx, &cancel);
     let _ = stop.send(true);
     assert!(waiting.await.unwrap_err().contains("interrupted"));
     let _ = std::fs::remove_dir_all(&d);
@@ -430,10 +426,10 @@ async fn r_perm_2_with_nobody_to_ask_a_call_is_refused_at_once_with_what_would_a
     let (tx, _rx) = tokio::sync::mpsc::channel(1);
     let (_c, cancel) = watch::channel(false);
     let t = std::time::Instant::now();
-    let why = g.check(&bash("npm test"), "bash", &json!({}), None, &tx, &cancel).await.unwrap_err();
+    let why = g.check(&bash("npm test"), "bash", &json!({}), &tx, &cancel).await.unwrap_err();
     assert!(t.elapsed() < std::time::Duration::from_secs(1), "never waits");
     assert!(why.contains("nobody is here to give it") && why.contains("`Bash(npm test)`") && why.contains("--permission-mode bypassPermissions"), "{why}");
-    let why = g.check(&edit(d.join("src/a.rs")), "write", &json!({}), None, &tx, &cancel).await.unwrap_err();
+    let why = g.check(&edit(d.join("src/a.rs")), "write", &json!({}), &tx, &cancel).await.unwrap_err();
     assert!(why.contains("--permission-mode acceptEdits"), "an edit inside the working directory names acceptEdits: {why}");
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -443,15 +439,15 @@ fn r_perm_1_publish_is_held_to_what_an_edit_is_and_a_read_deny_keeps_a_file_from
     // One rule, the evaluator's, for the native tool and the bridged one.
     let d = repo("publish");
     let shot = Call { tool: "Publish".into(), access: Access::Publish(vec![d.join("shot.png")]), subject: None };
-    let got: String = MODES.iter().map(|m| letter(&gate(&policy(&d, &[]), *m).verdict(&shot, None))).collect();
+    let got: String = MODES.iter().map(|m| letter(&gate(&policy(&d, &[]), *m).verdict(&shot))).collect();
     assert_eq!(got, "?YNY", "asked in default, run in acceptEdits, refused in plan, run under bypass");
     let env = Call { tool: "Publish".into(), access: Access::Publish(vec![d.join("src/.env")]), subject: None };
     let p = policy(&d, &[(Kind::Deny, "Read(.env)")]);
     for m in MODES {
-        assert_eq!(letter(&gate(&p, m).verdict(&env, None)), 'N', "{m:?}: a file a deny rule keeps from being read is not uploaded");
+        assert_eq!(letter(&gate(&p, m).verdict(&env)), 'N', "{m:?}: a file a deny rule keeps from being read is not uploaded");
     }
-    assert_eq!(letter(&gate(&policy(&d, &[(Kind::Allow, "Publish(*.png)")]), PermissionMode::Default).verdict(&shot, None)), 'Y');
-    assert_eq!(letter(&gate(&policy(&d, &[(Kind::Allow, "Read")]), PermissionMode::Default).verdict(&shot, None)), '?', "a Read allow rule does not allow uploading");
+    assert_eq!(letter(&gate(&policy(&d, &[(Kind::Allow, "Publish(*.png)")]), PermissionMode::Default).verdict(&shot)), 'Y');
+    assert_eq!(letter(&gate(&policy(&d, &[(Kind::Allow, "Read")]), PermissionMode::Default).verdict(&shot)), '?', "a Read allow rule does not allow uploading");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -461,10 +457,10 @@ fn r_perm_1_a_line_krowk_cannot_read_is_asked_about_where_a_bash_deny_applies_ev
     let p = policy(&d, &[(Kind::Deny, "Bash(rm:*)")]);
     for cmd in ["$(printf rm) -rf x", "r{m,} -rf x", "$'\\cA'; rm x", "echo 'open"] {
         for m in [PermissionMode::Default, PermissionMode::AcceptEdits, PermissionMode::BypassPermissions] {
-            assert_ne!(letter(&gate(&p, m).verdict(&bash(cmd), None)), 'Y', "{cmd:?} in {m:?}");
+            assert_ne!(letter(&gate(&p, m).verdict(&bash(cmd))), 'Y', "{cmd:?} in {m:?}");
         }
     }
-    assert_eq!(letter(&gate(&policy(&d, &[]), PermissionMode::BypassPermissions).verdict(&bash("$(printf ls)"), None)), 'Y', "with no Bash deny rule, bypass is bypass");
+    assert_eq!(letter(&gate(&policy(&d, &[]), PermissionMode::BypassPermissions).verdict(&bash("$(printf ls)"))), 'Y', "with no Bash deny rule, bypass is bypass");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -480,10 +476,10 @@ fn r_perm_2_a_remembered_read_is_the_file_read_and_a_directory_only_when_one_was
     std::fs::create_dir_all(d.join("elsewhere")).unwrap();
     // Run from another directory, so reading src/ is outside and asked.
     let g = gate(&Policy::modes_only(&d.join("elsewhere")), PermissionMode::Default);
-    assert_eq!(letter(&g.verdict(&read(d.join("src/a.rs")), None)), '?');
+    assert_eq!(letter(&g.verdict(&read(d.join("src/a.rs")))), '?');
     g.0.grants.lock().unwrap().push(rules::parse(&file[0], "grant", &d).unwrap());
-    assert_eq!(letter(&g.verdict(&read(d.join("src/a.rs")), None)), 'Y');
-    assert_eq!(letter(&g.verdict(&read(d.join("src/b.rs")), None)), '?', "its sibling is not granted with it");
+    assert_eq!(letter(&g.verdict(&read(d.join("src/a.rs")))), 'Y');
+    assert_eq!(letter(&g.verdict(&read(d.join("src/b.rs")))), '?', "its sibling is not granted with it");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -512,12 +508,12 @@ fn r_compat_1_a_skill_is_judged_by_skill_rules_and_a_read_deny_of_its_file() {
     let skill = |n: &str| Call { tool: "Skill".into(), access: Access::Skill(Some(d.join(format!(".claude/skills/{n}/SKILL.md")))), subject: Some(n.into()) };
     let p = policy(&d, &[(Kind::Deny, "Skill(deploy)"), (Kind::Ask, "Skill(release-*)"), (Kind::Deny, "Read(**/secret/**)")]);
     for m in MODES {
-        assert_eq!(letter(&gate(&p, m).verdict(&skill("deploy"), None)), 'N', "{m:?}");
-        assert_eq!(letter(&gate(&p, m).verdict(&skill("release-notes"), None)), '?', "{m:?}");
-        assert_eq!(letter(&gate(&p, m).verdict(&skill("lint"), None)), 'Y', "{m:?}: a skill reads its own file, which plan allows too");
+        assert_eq!(letter(&gate(&p, m).verdict(&skill("deploy"))), 'N', "{m:?}");
+        assert_eq!(letter(&gate(&p, m).verdict(&skill("release-notes"))), '?', "{m:?}");
+        assert_eq!(letter(&gate(&p, m).verdict(&skill("lint"))), 'Y', "{m:?}: a skill reads its own file, which plan allows too");
     }
     let hidden = Call { tool: "Skill".into(), access: Access::Skill(Some(d.join(".claude/skills/secret/x/SKILL.md"))), subject: Some("x".into()) };
-    assert_eq!(letter(&gate(&p, PermissionMode::Default).verdict(&hidden, None)), 'N', "a Read deny of its file");
+    assert_eq!(letter(&gate(&p, PermissionMode::Default).verdict(&hidden)), 'N', "a Read deny of its file");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -539,7 +535,7 @@ fn r_perm_2_a_path_with_glob_characters_is_allowed_once_never_remembered() {
     assert!(settings::remember(&file, &d, &[bad]).unwrap_err().contains("was not remembered"));
     let cfg = Config { krowk_dir: Some(d.join("krowk")), ..Config::default() };
     let p = Policy::load(&cfg, &d).expect("later prompts still load their settings");
-    assert_eq!(letter(&gate(&p, PermissionMode::Default).verdict(&bash("ok"), None)), 'Y');
+    assert_eq!(letter(&gate(&p, PermissionMode::Default).verdict(&bash("ok"))), 'Y');
     let exact = rules::parse(&format!("Read(/{}/src/a[1].rs)", d.display()), "hand", &d).unwrap();
     let at = rules::Places { cwd: &d, home: None, rules_cwd: &d };
     assert!(rules::matches(&exact, &read(d.join("src/a1.rs")), &at, true), "why it is never offered: as glob text it covers a1.rs too");
@@ -565,32 +561,31 @@ async fn r_perm_2_allowing_a_glob_named_file_for_the_session_does_not_cover_its_
         }
     });
     let (_c, cancel) = watch::channel(false);
-    g.check(&read(d.join("src/a[1].rs")), "read", &json!({}), None, &tx, &cancel).await.unwrap();
-    assert_eq!(letter(&g.verdict(&read(d.join("src/a1.rs")), None)), '?', "the sibling is still asked about");
-    assert_eq!(letter(&g.verdict(&read(d.join("src/a[1].rs")), None)), '?', "and so is the file itself, next time");
+    g.check(&read(d.join("src/a[1].rs")), "read", &json!({}), &tx, &cancel).await.unwrap();
+    assert_eq!(letter(&g.verdict(&read(d.join("src/a1.rs")))), '?', "the sibling is still asked about");
+    assert_eq!(letter(&g.verdict(&read(d.join("src/a[1].rs")))), '?', "and so is the file itself, next time");
     let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
-fn r_sub_1_krowks_session_tools_need_no_mode_but_deny_and_ask_rules_and_a_hooks_ask_hold_them() {
+fn r_sub_1_krowks_session_tools_need_no_mode_but_deny_and_ask_rules_hold_them() {
     let cwd = repo("session-tools");
     let task = |agent: &str| Call { tool: "Task".into(), access: Access::Session, subject: Some(agent.into()) };
     let todo = Call { tool: "TodoWrite".into(), access: Access::Session, subject: None };
     let none = policy(&cwd, &[]);
     for mode in [PermissionMode::Default, PermissionMode::AcceptEdits, PermissionMode::Plan, PermissionMode::BypassPermissions] {
-        assert_eq!(letter(&gate(&none, mode).verdict(&task("reviewer"), None)), 'Y', "{mode:?}: no mode holds it, plan's included");
-        assert_eq!(letter(&gate(&none, mode).verdict(&todo, None)), 'Y', "{mode:?}");
-        assert_eq!(letter(&gate(&none, mode).verdict(&task("reviewer"), Some(crate::permissions::hooks::Decision::Ask))), '?', "{mode:?}: a hook's ask asks");
+        assert_eq!(letter(&gate(&none, mode).verdict(&task("reviewer"))), 'Y', "{mode:?}: no mode holds it, plan's included");
+        assert_eq!(letter(&gate(&none, mode).verdict(&todo)), 'Y', "{mode:?}");
     }
     let ask = policy(&cwd, &[(Kind::Ask, "Task(reviewer)"), (Kind::Deny, "TodoWrite")]);
     let bypass = gate(&ask, PermissionMode::BypassPermissions);
-    assert_eq!(letter(&bypass.verdict(&task("reviewer"), None)), '?', "an ask rule asks, bypass or not");
-    assert_eq!(letter(&bypass.verdict(&task("writer"), None)), 'Y', "another agent is not that rule's");
-    assert_eq!(letter(&bypass.verdict(&task("Reviewer"), None)), '?', "an agent's name is matched regardless of case");
+    assert_eq!(letter(&bypass.verdict(&task("reviewer"))), '?', "an ask rule asks, bypass or not");
+    assert_eq!(letter(&bypass.verdict(&task("writer"))), 'Y', "another agent is not that rule's");
+    assert_eq!(letter(&bypass.verdict(&task("Reviewer"))), '?', "an agent's name is matched regardless of case");
     let deny = gate(&policy(&cwd, &[(Kind::Deny, "Task(REV*)")]), PermissionMode::BypassPermissions);
-    assert_eq!(letter(&deny.verdict(&task("reviewer"), None)), 'N', "the rule's case too, wildcards included");
-    assert_eq!(letter(&bypass.verdict(&todo, None)), 'N');
-    match bypass.verdict(&task("reviewer"), None) {
+    assert_eq!(letter(&deny.verdict(&task("reviewer"))), 'N', "the rule's case too, wildcards included");
+    assert_eq!(letter(&bypass.verdict(&todo)), 'N');
+    match bypass.verdict(&task("reviewer")) {
         Verdict::Ask { remember, .. } => assert_eq!(remember, ["Task(reviewer)"]),
         v => panic!("{v:?}"),
     }
@@ -631,8 +626,8 @@ fn r_perm_1_a_default_mode_krowk_does_not_run_is_read_as_default_with_a_notice()
     assert_eq!(p.loaded.default_mode, Some(PermissionMode::AcceptEdits), "a mode krowk does not run sets nothing");
     assert!(p.loaded.notices.is_empty(), "{:?}", p.loaded.notices);
     let g = gate(&p, PermissionMode::Default);
-    assert_eq!(letter(&g.verdict(&read(d.join("src/.env")), None)), 'N', "the file's deny rule still holds");
-    assert_eq!(letter(&g.verdict(&bash("npm test"), None)), 'Y', "and its allow rule");
+    assert_eq!(letter(&g.verdict(&read(d.join("src/.env")))), 'N', "the file's deny rule still holds");
+    assert_eq!(letter(&g.verdict(&bash("npm test"))), 'Y', "and its allow rule");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -752,7 +747,7 @@ fn wt3_the_repositorys_rules_hold_in_a_worktree_where_they_hold_in_the_checkout(
     p.loaded.rules = ["Edit(/.github/workflows/**)", "Read(/.env)", "Edit(notes/**)"].iter().map(|t| (Kind::Deny, rules::parse(t, "project settings", &d).unwrap())).collect();
     let w = p.in_worktree(&top);
     assert_eq!((w.cwd.as_path(), w.loaded.root.as_path(), w.loaded.trusted), (top.as_path(), d.as_path(), p.loaded.trusted), "trust is the checkout's");
-    let verdict = |p: &Policy, c: Call| letter(&gate(p, PermissionMode::BypassPermissions).verdict(&c, None));
+    let verdict = |p: &Policy, c: Call| letter(&gate(p, PermissionMode::BypassPermissions).verdict(&c));
     for (call, checkout, worktree) in [
         (edit as fn(PathBuf) -> Call, d.join(".github/workflows/ci.yml"), top.join(".github/workflows/ci.yml")),
         (read, d.join(".env"), top.join(".env")),

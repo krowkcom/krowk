@@ -6,18 +6,11 @@
 //! log, forwards live frames and adds up the cost, so every engine's turns
 //! land in the same log in the same shape (R-BACK-5).
 //!
-//! Two families implement it:
-//!
-//! - The native loop (`native::NativeEngine`), where krowk owns the prompt,
-//!   the tools and the loop, and a `ModelClient` speaks one provider's wire
-//!   API. The Anthropic Messages client is the first; OpenAI Responses and
-//!   Chat Completions are more `ModelClient`s under the same loop.
-//! - Backends (a vendor harness such as `claude -p` or `codex app-server`
-//!   driving its own loop), which implement `Engine` directly and translate
-//!   the vendor's stream into these events. `claude::ClaudeEngine` is the
-//!   first: one long-lived `claude` process per session, kept by the host
-//!   between turns; `codex::CodexEngine` drives `codex app-server` the same
-//!   way.
+//! Backends implement it: a vendor harness (`claude -p` or `codex
+//! app-server`) driving its own loop, its stream translated into these
+//! events. `claude::ClaudeEngine` keeps one long-lived `claude` process per
+//! session, kept by the host between turns; `codex::CodexEngine` drives
+//! `codex app-server` the same way.
 //!
 //! The rules every engine keeps:
 //!
@@ -41,11 +34,8 @@
 
 use crate::budget::Budget;
 use crate::evidence::Evidence;
-use crate::toolset::Preset;
 use crate::catalog::ModelInfo;
 use crate::protocol::{ApprovalDecision, ApprovalRequest, BackendAgent, Billing, Delta, Effort, ErrorInfo, HandoffKind, ImageRef, Item, ItemKind, LimitStatus, ModelRef, PermissionMode, Todo, ToolDefinition, Usage, WireApi};
-use crate::agents::AgentRun;
-use crate::subagent::Subagents;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -178,8 +168,6 @@ pub struct TurnContext {
     /// prompts carry are kept (`crate::images`).
     pub session_dir: PathBuf,
     pub permission_mode: PermissionMode,
-    /// The toolset preset the host chose for this turn's model.
-    pub preset: &'static Preset,
     /// The effort asked for, on krowk's ladder; the engine maps it onto the
     /// rungs the model takes.
     pub effort: Option<Effort>,
@@ -191,33 +179,22 @@ pub struct TurnContext {
     pub steers: Steers,
     /// The backend session the branch last ran in, from its
     /// `backend.session` event: what a backend resumes. None for a new
-    /// session, and for one that has only run natively.
+    /// session.
     pub backend_session: Option<String>,
-    /// What the session has spent and may spend: the engine asks it before
-    /// every model call it makes (R-BUDGET-1).
+    /// What the session has spent and may spend (R-BUDGET-1): the host
+    /// checks it before the turn and as each call is metered.
     pub budget: Budget,
     /// Where `publish` sends files; none when this host publishes nothing.
     pub evidence: Option<Evidence>,
-    /// The build slots bash's heavy commands wait for (`crate::builds`).
-    pub builds: crate::builds::Builds,
-    /// The session's background jobs (R-STEER-2), the host's: none where
-    /// nothing keeps them.
-    pub jobs: Option<Arc<crate::jobs::Jobs>>,
     /// The turn's permissions: every call the engine runs or is asked about
     /// is judged here, and asked about through it.
     pub gate: crate::permissions::Gate,
-    /// What the repository and the person's settings bring to a native
-    /// turn: instructions, skills, hooks.
+    /// What the repository and the person's settings bring to the turn:
+    /// its MCP servers, skills and hooks.
     pub compat: std::sync::Arc<crate::compat::Compat>,
-    /// What this turn may start subagents with; none in a subagent, which
-    /// starts none of its own, and for an engine that does not offer them.
-    pub subagents: Option<Subagents>,
-    /// For a subagent: the definition it runs — its instructions and its
-    /// tool allowlist.
-    pub agent: Option<AgentRun>,
     /// For a backend: how to bring its vendor session up to date with
     /// turns it did not run (`crate::handoff`). None when there is nothing
-    /// it has not seen; the native loop reads the whole branch instead.
+    /// it has not seen.
     pub handoff: Option<crate::handoff::Handoff>,
     /// The turn a backend began by itself (`Command::Continue`): nothing is
     /// sent, and the engine reads the turn already under way. Its prompt
@@ -446,13 +423,6 @@ pub trait Engine: Send + Sync {
     /// Runs one turn to its end. Items produced before a failure were
     /// already sent and stay in the log.
     fn run_turn<'a>(&'a self, ctx: TurnContext, events: Events) -> BoxFuture<'a, Result<TurnEnd, EngineError>>;
-    /// Whether the engine asks `TurnContext::budget` before each model call
-    /// itself. The native loop does; a backend's calls are the vendor's to
-    /// make, so the host checks before its turn and interrupts it when a
-    /// metered call has gone over.
-    fn checks_budget(&self) -> bool {
-        false
-    }
     /// Lets go of whatever outlives a turn — a backend's process — cleanly,
     /// before the host goes away. Nothing, for an engine that keeps nothing.
     fn shutdown(&self) -> BoxFuture<'_, ()> {

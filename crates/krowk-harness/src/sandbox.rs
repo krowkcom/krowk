@@ -1294,3 +1294,7 @@ mod tests {
         assert!(e.contains("not built yet") || e.contains("no sandbox"), "{e}");
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "sandbox_tests.rs"]
+mod escape_tests;

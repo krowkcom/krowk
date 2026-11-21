@@ -102,16 +102,14 @@ pub struct Flags {
     /// `sync init`: replace a device list the person already has.
     #[cfg(feature = "harness")]
     pub start_over: bool,
-    /// `providers add`: the instance's name, its key's variable, its base
-    /// URL, and how SuperGrok signs in.
+    /// `providers add`: the instance's name, its key's variable, and its
+    /// base URL.
     #[cfg(feature = "harness")]
     pub name: String,
     #[cfg(feature = "harness")]
     pub api_key_env: String,
     #[cfg(feature = "harness")]
     pub base_url: String,
-    #[cfg(feature = "harness")]
-    pub client_id: String,
     #[cfg(feature = "harness")]
     pub device: bool,
     /// `providers add claude|codex`: the binary, and the config directory
@@ -352,7 +350,6 @@ impl Flags {
             #[cfg(feature = "harness")]
             "base-url" => text(&mut self.base_url),
             #[cfg(feature = "harness")]
-            "client-id" => text(&mut self.client_id),
             #[cfg(feature = "harness")]
             "binary" => text(&mut self.binary),
             #[cfg(feature = "harness")]

@@ -887,8 +887,8 @@ impl Answers {
     async fn permit(&self, tool: &str, input: &Value, asking: Asking<'_>) -> Result<(), String> {
         let call = call_of(tool, input, &self.cwd);
         match asking {
-            Some((events, cancel)) => self.gate.check(&call, tool, input, None, events, cancel).await.map(drop),
-            None => match self.gate.verdict(&call, None) {
+            Some((events, cancel)) => self.gate.check(&call, tool, input, events, cancel).await.map(drop),
+            None => match self.gate.verdict(&call) {
                 Verdict::Allow(_) => Ok(()),
                 Verdict::Deny(m) => Err(m),
                 Verdict::Ask { reason, .. } => Err(format!("{} needs approval — {reason} — and Claude Code asked outside a turn, where nobody can be asked", permissions::summary(&call))),
@@ -904,7 +904,7 @@ impl Answers {
         // The session's own, as the native `ask_user` is: no mode refuses
         // it, plan included.
         let call = Call { tool: "AskUserQuestion".into(), access: Access::Session, subject: None };
-        if let Verdict::Deny(m) = self.gate.verdict(&call, None) {
+        if let Verdict::Deny(m) = self.gate.verdict(&call) {
             return Err(m);
         }
         let Some((events, cancel)) = asking else { return Err(permissions::NOBODY_TO_ASK.into()) };
@@ -940,7 +940,7 @@ impl Answers {
                         // asked and allowed, once.
                         if tool == format!("mcp__{}__{}", bridge::SERVER, crate::mcp::CALL)
                             && let Some(id) = req.get("tool_use_id").and_then(Value::as_str)
-                            && matches!(self.gate.verdict(&call_of(tool, &input, &self.cwd), None), Verdict::Ask { .. })
+                            && matches!(self.gate.verdict(&call_of(tool, &input, &self.cwd)), Verdict::Ask { .. })
                         {
                             self.approved.lock().unwrap_or_else(|e| e.into_inner()).push(id.to_string());
                         }

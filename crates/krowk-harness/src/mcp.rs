@@ -432,7 +432,7 @@ pub type Denied<'a> = &'a (dyn Fn(&str, Option<&str>) -> bool + Sync);
 pub fn denied_by(gate: &crate::permissions::Gate, server: &str, tool: Option<&str>) -> bool {
     let tool = tool.unwrap_or("*");
     let call = crate::permissions::Call { tool: format!("mcp__{server}__{tool}"), access: crate::permissions::Access::Mcp { server: server.into(), tool: tool.into() }, subject: None };
-    matches!(gate.verdict(&call, None), crate::permissions::Verdict::Deny(_))
+    matches!(gate.verdict(&call), crate::permissions::Verdict::Deny(_))
 }
 
 /// The session's MCP servers: configured up front, each started on its

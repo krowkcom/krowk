@@ -1,15 +1,11 @@
 //! Switching a session's model, instance or engine, through the host,
-//! against stand-ins: the Anthropic, OpenAI Responses and Chat Completions
-//! (xAI) APIs as mock servers, and the fake `claude` and `codex` binaries.
-//! No key and no login is real.
+//! against the fake `claude` and `codex` binaries. No key and no login is
+//! real.
 //!
-//! - Every pair of engines round-trips (R-SWITCH-5): a turn on one, a turn
-//!   on the other, back on the first — the second engine reads the first's
-//!   turn, and the first reads the second's on its way back.
-//! - Native to native is lossless for text, tool calls and results, and
-//!   reasoning from another provider arrives as framed plain text
-//!   (R-SWITCH-1); into a backend it is a seeded handoff (R-SWITCH-2);
-//!   back from one the native model reads its turns whole (R-SWITCH-3).
+//! - Claude Code and Codex round-trip (R-SWITCH-5): a turn on one, a turn
+//!   on the other, back on the first — the second reads the first's turn
+//!   as a seeded handoff (R-SWITCH-2), and the first is caught up on the
+//!   second's on its way back.
 //! - A switch that cannot run is refused with its fix, and the session stays
 //!   where it was (R-SWITCH-4).
 //! - Two accounts of one vendor: the transcript is copied and resumed whole,
@@ -20,18 +16,13 @@
 
 #![cfg(unix)]
 
-#[path = "common/mock.rs"]
-mod mock;
-#[path = "common/providers.rs"]
-mod providers;
 
 use krowk_harness::host::{Host, HostConfig};
 use krowk_harness::instances::{Asked, InstanceKind, InstancesConfig, Registry, Rollover};
 use krowk_harness::log;
 use krowk_harness::protocol::{
-    BudgetLimits, Command, ContextRecord, HandoffKind, Item, LimitState, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RunResult, StreamLine, SwitchReason, TurnStatus,
+    BudgetLimits, Command, HandoffKind, Item, LimitState, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RunResult, StreamLine, SwitchReason, TurnStatus,
 };
-use mock::Reply;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -47,104 +38,25 @@ fn fixture(dir: &str, name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(dir).join(name)
 }
 
-/// The last thing the person asked, in whichever wire API's shape.
-fn last_prompt(body: &Value) -> String {
-    let text_of = |c: &Value| -> Option<String> {
-        match c {
-            Value::String(s) => Some(s.clone()),
-            Value::Array(parts) => parts.iter().rev().find_map(|p| p.get("text").and_then(Value::as_str).map(String::from)),
-            _ => None,
-        }
-    };
-    let msgs = body.get("messages").or_else(|| body.get("input")).and_then(Value::as_array).cloned().unwrap_or_default();
-    msgs.iter().rev().filter(|m| m["role"] == "user").find_map(|m| text_of(&m["content"])).unwrap_or_default()
-}
-
-/// Whether the request's last input is a tool's output: the model answers.
-fn after_tool(body: &Value) -> bool {
-    if let Some(input) = body.get("input").and_then(Value::as_array) {
-        return input.last().is_some_and(|i| matches!(i["type"].as_str(), Some("custom_tool_call_output" | "function_call_output")));
-    }
-    let msgs = body["messages"].as_array().cloned().unwrap_or_default();
-    let last = msgs.last().cloned().unwrap_or_default();
-    last["role"] == "tool" || last["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"))
-}
-
-/// What each stand-in model says: a tool call when the prompt asks for one,
-/// else an answer naming the engine and the prompt it answers.
-fn anthropic_script(body: &Value, _n: usize) -> Reply {
-    let p = last_prompt(body);
-    // A subagent's own conversation starts with its task; it answers
-    // slowly, so a switch can land while the fan-out runs.
-    let first = body["messages"][0]["content"].as_array().and_then(|c| c.iter().find_map(|b| b["text"].as_str())).unwrap_or_default().to_string();
-    if first.contains("TASK-S") {
-        return Reply::paced(mock::text_stream(&"child did it ".repeat(12)), std::time::Duration::from_millis(60));
-    }
-    if !after_tool(body) && p.contains("fan out") {
-        return Reply::sse(&mock::tool_use("toolu_sub", "subagent", &json!({"description": "read it", "prompt": "TASK-S read the README"})));
-    }
-    if !after_tool(body) && p.contains("call a tool") {
-        return Reply::sse(&mock::tool_use(&format!("toolu_an_{}", p.len()), "read", &json!({"path": "README.md"})));
-    }
-    Reply::sse(&mock::text_stream(&format!("anthropic answered: {p}")))
-}
-
-fn responses_script(body: &Value, _n: usize) -> Reply {
-    let p = last_prompt(body);
-    if !after_tool(body) && p.contains("call a tool") {
-        return Reply::sse(&providers::fixture("openai/turn1_apply_patch.sse"));
-    }
-    Reply::sse(&providers::fixture("openai/turn1_answer.sse").replace("The README now says: Permalinks for everything agents make.", &format!("openai answered: {p}")))
-}
-
-fn chat_script(body: &Value, _n: usize) -> Reply {
-    let p = last_prompt(body);
-    if !after_tool(body) && p.contains("call a tool") {
-        return Reply::sse(&providers::fixture("chat/xai_tool_call.sse"));
-    }
-    Reply::sse(&providers::fixture("chat/xai_answer.sse").replace("The README now says: Permalinks for everything agents make.", &format!("xai answered: {p}")))
-}
-
 /// The engines a pair is made of.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Eng {
-    Anthropic,
-    Openai,
-    Xai,
     Claude,
     Codex,
 }
 
 impl Eng {
-    const ALL: [Eng; 5] = [Eng::Anthropic, Eng::Openai, Eng::Xai, Eng::Claude, Eng::Codex];
-
     fn model(self) -> ModelRef {
         let (i, m) = match self {
-            Eng::Anthropic => ("anthropic", "claude-sonnet-4-6"),
-            Eng::Openai => ("openai", "gpt-5.4"),
-            Eng::Xai => ("xai", "grok-4.7"),
             Eng::Claude => ("claude:work", "haiku"),
             Eng::Codex => ("codex:team", "gpt-5.5"),
         };
         ModelRef { instance: i.into(), model: m.into() }
     }
-
-    fn native(self) -> bool {
-        !matches!(self, Eng::Claude | Eng::Codex)
-    }
-}
-
-/// The stand-in provider APIs a native-only test's instances answer from.
-struct Natives {
-    anthropic: mock::Mock,
-    openai: mock::Mock,
-    xai: mock::Mock,
 }
 
 struct World {
     root: PathBuf,
-    /// The native instances' mocks: `World::native` only.
-    natives: Option<Natives>,
     instances: Vec<(String, InstanceKind)>,
     rollover: Option<Rollover>,
     order: Vec<String>,
@@ -161,31 +73,6 @@ impl World {
     fn new(name: &str) -> World {
         let guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         World::backends(name, guard)
-    }
-
-    /// Those, and the native `anthropic`, `openai` and `xai` instances on
-    /// mocks: for the native-only tests.
-    fn native(name: &str) -> World {
-        World::with(name, mock::serve(anthropic_script))
-    }
-
-    fn with(name: &str, anthropic: mock::Mock) -> World {
-        let guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let mut w = World::backends(name, guard);
-        let n = Natives { anthropic, openai: mock::serve(responses_script), xai: mock::serve(chat_script) };
-        let key = |v: &str| Some(v.to_string());
-        let natives = vec![
-            ("anthropic".into(), InstanceKind::AnthropicApi { api_key_env: key("TEST_ANTHROPIC_KEY"), base_url: Some(n.anthropic.url.clone()), thinking: None, max_tokens: None, effort: None }),
-            ("openai".into(), InstanceKind::OpenaiApi { api_key_env: key("TEST_OPENAI_KEY"), base_url: Some(format!("{}/v1", n.openai.url)), wire_api: None, effort: None }),
-            ("xai".into(), InstanceKind::XaiApi { api_key_env: key("TEST_XAI_KEY"), base_url: Some(format!("{}/v1", n.xai.url)), effort: None }),
-        ];
-        w.instances.splice(0..0, natives);
-        w.natives = Some(n);
-        w
-    }
-
-    fn natives(&self) -> &Natives {
-        self.natives.as_ref().expect("a native test's World::native")
     }
 
     fn backends(name: &str, guard: std::sync::MutexGuard<'static, ()>) -> World {
@@ -205,7 +92,7 @@ impl World {
             std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let root = root.canonicalize().unwrap();
-        let mut w = World { root, natives: None, instances: Vec::new(), rollover: None, order: Vec::new(), trust: None, trusted: false, _serial: guard };
+        let mut w = World { root, instances: Vec::new(), rollover: None, order: Vec::new(), trust: None, trusted: false, _serial: guard };
         w.claude("claude:work", "claude-work", Some("switch.jsonl"), true);
         w.codex("codex:team", "codex-team", Some("switch.jsonl"));
         w
@@ -258,7 +145,6 @@ impl World {
             // No `claude` or `codex` on PATH: the implicit instances of the
             // real binaries are not candidates to switch to.
             "PATH" => String::new(),
-            "TEST_ANTHROPIC_KEY" | "TEST_OPENAI_KEY" | "TEST_XAI_KEY" => "sk-test".into(),
             _ => String::new(),
         }
     }
@@ -283,11 +169,6 @@ impl World {
 
     fn events(&self, session: &str) -> Vec<LogEvent> {
         log::read_events(&log::sessions_dir(&self.env()).unwrap().join(session).join(log::EVENTS_FILE)).unwrap()
-    }
-
-    fn context(&self, session: &str) -> Vec<ContextRecord> {
-        let raw = std::fs::read_to_string(log::sessions_dir(&self.env()).unwrap().join(session).join(log::CONTEXT_FILE)).unwrap();
-        raw.lines().map(|l| serde_json::from_str(l).unwrap()).collect()
     }
 
     fn fake_log(&self, dir: &str) -> String {
@@ -317,25 +198,11 @@ impl World {
             .collect()
     }
 
-    /// What `e` was sent for its latest turn: a native API's request bodies
-    /// since `from`, or a backend's last prompt.
-    fn seen_by(&self, e: Eng, from: usize) -> String {
-        let bodies = |m: &mock::Mock| m.seen.lock().unwrap()[from..].iter().map(|s| s.body.to_string()).collect::<Vec<_>>().join("\n");
+    /// What `e` was sent for its latest turn: its last prompt.
+    fn seen_by(&self, e: Eng) -> String {
         match e {
-            Eng::Anthropic => bodies(&self.natives().anthropic),
-            Eng::Openai => bodies(&self.natives().openai),
-            Eng::Xai => bodies(&self.natives().xai),
             Eng::Claude => self.claude_prompts("claude-work").last().cloned().unwrap_or_default(),
             Eng::Codex => self.codex_prompts("codex-team").last().cloned().unwrap_or_default(),
-        }
-    }
-
-    fn requests(&self, e: Eng) -> usize {
-        match e {
-            Eng::Anthropic => self.natives().anthropic.seen.lock().unwrap().len(),
-            Eng::Openai => self.natives().openai.seen.lock().unwrap().len(),
-            Eng::Xai => self.natives().xai.seen.lock().unwrap().len(),
-            _ => 0,
         }
     }
 }
@@ -362,12 +229,6 @@ async fn run(host: &Host, cmd: Command) -> (RunResult, Vec<StreamLine>) {
         lines.push(l);
     }
     (r, lines)
-}
-
-/// A text as it appears inside a JSON request body.
-fn escaped(s: &str) -> String {
-    let j = serde_json::to_string(s).unwrap();
-    j[1..j.len() - 1].to_string()
 }
 
 /// The last assistant text of each turn of the session, in order.
@@ -397,175 +258,38 @@ fn handoffs(events: &[LogEvent]) -> Vec<(HandoffKind, Option<String>, Option<Str
         .collect()
 }
 
-/// Whether `seen` — what an engine was sent — holds `text`, the way that
-/// engine is sent it: escaped in a JSON body, or as it is in a backend's
-/// prompt.
-fn holds(e: Eng, seen: &str, text: &str) -> bool {
-    if e.native() { seen.contains(&escaped(text)) } else { seen.contains(text) }
-}
-
 #[test]
 fn r_switch_5_claude_code_and_codex_round_trip() {
     round_trip(Eng::Claude, Eng::Codex);
 }
 
-/// Every pair with a native engine in it: native-only.
-#[test]
-#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
-fn r_switch_5_every_pair_with_a_native_engine_round_trips() {
-    for (i, a) in Eng::ALL.iter().enumerate() {
-        for b in &Eng::ALL[i + 1..] {
-            if a.native() || b.native() {
-                round_trip(*a, *b);
-            }
-        }
-    }
-}
-
 /// A turn on `a`, one on `b`, and back on `a` (R-SWITCH-5): each reads the
 /// turns the other ran.
 fn round_trip(a: Eng, b: Eng) {
-    let w = if a.native() || b.native() { World::native(&format!("pair-{a:?}-{b:?}")) } else { World::new(&format!("pair-{a:?}-{b:?}")) };
+    let w = World::new(&format!("pair-{a:?}-{b:?}"));
     let host = w.host();
     let rt = rt();
     let ask = [format!("call a tool: step one on {a:?}"), format!("call a tool: step two on {b:?}"), format!("step three, back on {a:?}")];
     let (r1, _) = rt.block_on(run(&host, prompt(None, &ask[0], Some(a.model()))));
     assert_eq!(r1.status, TurnStatus::Completed, "{a:?}: {:?}", r1.error);
     let id = r1.session_id.clone();
-    let from = w.requests(b);
     let (r2, _) = rt.block_on(run(&host, prompt(Some(&id), &ask[1], Some(b.model()))));
     assert_eq!(r2.status, TurnStatus::Completed, "{a:?} → {b:?}: {:?}", r2.error);
     let said = answers(&w.events(&id));
-    let seen = w.seen_by(b, from);
-    assert!(holds(b, &seen, &ask[0]) && holds(b, &seen, &said[0]), "{b:?} reads {a:?}'s turn — its prompt and its answer {:?}:\n{seen}", said[0]);
-    if !b.native() {
-        assert!(seen.starts_with("<handoff from krowk>\n") && seen.ends_with(&ask[1]), "into a backend, a handoff then the prompt (R-SWITCH-2): {seen}");
-    }
-    let from = w.requests(a);
+    let seen = w.seen_by(b);
+    assert!(seen.contains(&ask[0]) && seen.contains(&said[0]), "{b:?} reads {a:?}'s turn — its prompt and its answer {:?}:\n{seen}", said[0]);
+    assert!(seen.starts_with("<handoff from krowk>\n") && seen.ends_with(&ask[1]), "into a backend, a handoff then the prompt (R-SWITCH-2): {seen}");
     let (r3, _) = rt.block_on(run(&host, prompt(Some(&id), &ask[2], Some(a.model()))));
     assert_eq!(r3.status, TurnStatus::Completed, "{b:?} → {a:?}: {:?}", r3.error);
     let said = answers(&w.events(&id));
-    let seen = w.seen_by(a, from);
-    assert!(holds(a, &seen, &ask[1]) && holds(a, &seen, &said[1]), "{a:?} reads {b:?}'s turn on the way back — {:?}:\n{seen}", said[1]);
-    if a.native() {
-        assert!(holds(a, &seen, &ask[0]) && holds(a, &seen, &said[0]), "and its own first turn, whole: {seen}");
-        // A backend's reasoning reaches it as framed plain text,
-        // Codex's too, which has no blob at all (R-SWITCH-1).
-        let thought = match b {
-            Eng::Codex => Some("<reasoning from an earlier model>\nCodex plans step 1."),
-            Eng::Claude => Some("<reasoning from an earlier model>\nClaude Code thinks about step 1."),
-            _ => None,
-        };
-        if let Some(t) = thought {
-            assert!(holds(a, &seen, t), "{a:?} gets {b:?}'s reasoning as text: {seen}");
-        }
-    } else {
-        // Its own thread, caught up on the turn it did not run —
-        // not told its own turn again.
-        assert!(seen.starts_with("<handoff from krowk>\nWhile you were not running this conversation") && !seen.contains(&ask[0]), "{seen}");
-        assert!(handoffs(&w.events(&id)).iter().any(|h| h.0 == HandoffKind::CatchUp));
-    }
+    let seen = w.seen_by(a);
+    assert!(seen.contains(&ask[1]) && seen.contains(&said[1]), "{a:?} reads {b:?}'s turn on the way back — {:?}:\n{seen}", said[1]);
+    // Its own thread, caught up on the turn it did not run — not told its
+    // own turn again.
+    assert!(seen.starts_with("<handoff from krowk>\nWhile you were not running this conversation") && !seen.contains(&ask[0]), "{seen}");
+    assert!(handoffs(&w.events(&id)).iter().any(|h| h.0 == HandoffKind::CatchUp));
     assert_eq!(said.len(), 3);
     drop(host);
-}
-
-/// Native-only.
-#[test]
-#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
-fn r_switch_1_native_to_native_carries_calls_and_results_and_downgrades_reasoning() {
-    let w = World::native("native");
-    let host = w.host();
-    let rt = rt();
-    // A GPT turn with OpenAI's encrypted reasoning and an apply_patch call.
-    let (r1, _) = rt.block_on(run(&host, prompt(None, "call a tool: patch the README", Some(Eng::Openai.model()))));
-    assert_eq!(r1.status, TurnStatus::Completed, "{:?}", r1.error);
-    let id = r1.session_id.clone();
-    let (r2, _) = rt.block_on(run(&host, prompt(Some(&id), "now on claude", Some(Eng::Anthropic.model()))));
-    assert_eq!(r2.status, TurnStatus::Completed, "{:?}", r2.error);
-    let body = &w.natives().anthropic.seen.lock().unwrap().last().unwrap().body.clone();
-    let msgs = body["messages"].as_array().unwrap();
-    let blocks: Vec<&Value> = msgs.iter().flat_map(|m| m["content"].as_array().unwrap().iter()).collect();
-    // The call and its result, under the id GPT gave them.
-    assert!(blocks.iter().any(|b| b["type"] == "tool_use" && b["id"] == "call_01ApplyPatch" && b["name"] == "apply_patch"), "{body}");
-    assert!(blocks.iter().any(|b| b["type"] == "tool_result" && b["tool_use_id"] == "call_01ApplyPatch"), "{body}");
-    // GPT's reasoning: its summary as framed text, its encrypted blob never.
-    let text = body.to_string();
-    assert!(text.contains("<reasoning from an earlier model>\\n**Rewording the README**"), "{text}");
-    assert!(!text.contains(providers::ENCRYPTED), "OpenAI's encrypted reasoning never goes to Anthropic");
-    // On to Grok, then back to GPT, which gets its own blob back unmodified.
-    let (r3, _) = rt.block_on(run(&host, prompt(Some(&id), "now on grok", Some(Eng::Xai.model()))));
-    assert_eq!(r3.status, TurnStatus::Completed, "{:?}", r3.error);
-    let xai = w.natives().xai.seen.lock().unwrap().last().unwrap().body.to_string();
-    assert!(xai.contains("call_01ApplyPatch") && xai.contains(&escaped("anthropic answered: now on claude")) && !xai.contains(providers::ENCRYPTED), "{xai}");
-    let (r4, _) = rt.block_on(run(&host, prompt(Some(&id), "back on gpt", Some(Eng::Openai.model()))));
-    assert_eq!(r4.status, TurnStatus::Completed, "{:?}", r4.error);
-    let gpt = w.natives().openai.seen.lock().unwrap().last().unwrap().body.clone();
-    let input = gpt["input"].as_array().unwrap();
-    assert!(input.iter().any(|i| i["type"] == "reasoning" && i["encrypted_content"] == providers::ENCRYPTED), "its own reasoning replays to OpenAI whole: {gpt}");
-    assert!(gpt.to_string().contains(&escaped("xai answered: now on grok")));
-}
-
-/// Native-only.
-#[test]
-#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
-fn r_switch_3_back_from_claude_code_the_native_model_reads_its_turns_whole() {
-    let w = World::native("back");
-    let host = w.host();
-    let rt = rt();
-    let (r1, _) = rt.block_on(run(&host, prompt(None, "read the README with Claude Code", Some(Eng::Claude.model()))));
-    assert_eq!(r1.status, TurnStatus::Completed, "{:?}", r1.error);
-    let (r2, _) = rt.block_on(run(&host, prompt(Some(&r1.session_id), "and now natively", Some(Eng::Anthropic.model()))));
-    assert_eq!(r2.status, TurnStatus::Completed, "{:?}", r2.error);
-    let body = &w.natives().anthropic.seen.lock().unwrap().last().unwrap().body.clone();
-    let text = body.to_string();
-    assert!(text.contains("\"id\":\"toolu_cc_1\"") && text.contains("\"name\":\"Read\"") && text.contains("\"tool_use_id\":\"toolu_cc_1\""), "Claude Code's call and result, as it made them: {text}");
-    assert!(text.contains("# krowk (as Claude Code read it)") && text.contains("claude-code did step 1"));
-    // Its thinking was Claude Code's to replay, not the Messages API's:
-    // downgraded, never sent with its signature.
-    assert!(text.contains("Claude Code thinks about step 1.") && !text.contains("ClaudeCodeSignature1"), "{text}");
-}
-
-/// Native-only.
-#[test]
-#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
-fn r_switch_2_one_session_moves_claude_api_gpt_claude_code_grok_and_back_to_native() {
-    let w = World::native("chain");
-    let host = w.host();
-    let rt = rt();
-    let steps = [
-        (Eng::Anthropic, "call a tool: we are renaming the tagline — read the README first"),
-        (Eng::Openai, "call a tool: patch the tagline to say everything agents make"),
-        (Eng::Claude, "call a tool: check the patch landed"),
-        (Eng::Xai, "call a tool: tidy the wording"),
-        (Eng::Anthropic, "summarize everything that was done"),
-    ];
-    let mut id: Option<String> = None;
-    for (n, (e, text)) in steps.iter().enumerate() {
-        let from = w.requests(*e);
-        let (r, _) = rt.block_on(run(&host, prompt(id.as_deref(), text, Some(e.model()))));
-        assert_eq!(r.status, TurnStatus::Completed, "step {n} on {e:?}: {:?}", r.error);
-        let said = answers(&w.events(&r.session_id));
-        let seen = w.seen_by(*e, from);
-        // Every earlier step reached this one: the task goes on.
-        for (m, (_, earlier)) in steps[..n].iter().enumerate() {
-            assert!(holds(*e, &seen, earlier) && holds(*e, &seen, &said[m]), "step {n} on {e:?} does not know step {m}:\n{seen}");
-        }
-        id = Some(r.session_id);
-    }
-    let id = id.unwrap();
-    let events = w.events(&id);
-    let models: Vec<String> = events.iter().filter_map(|e| match &e.body {
-        LogBody::TurnStarted { model, .. } => Some(model.to_string()),
-        _ => None,
-    }).collect();
-    assert_eq!(models, ["anthropic/claude-sonnet-4-6", "openai/gpt-5.4", "claude:work/haiku", "xai/grok-4.7", "anthropic/claude-sonnet-4-6"]);
-    assert_eq!(handoffs(&events), [(HandoffKind::Summary, None, None)], "Claude Code was seeded once, with the two turns before it");
-    // What Claude Code was sent is on the record, in the context file.
-    let seeded = w.context(&id).into_iter().find_map(|c| c.handoff).unwrap();
-    assert!(seeded.contains("anthropic/claude-sonnet-4-6, openai/gpt-5.4") && seeded.ends_with(steps[2].1), "{seeded}");
-    // The last native request holds Claude Code's own call and result.
-    let last = w.natives().anthropic.seen.lock().unwrap().last().unwrap().body.to_string();
-    assert!(last.contains("toolu_cc_1") && last.contains("call_01ApplyPatch") && last.contains("call_01SearchReplace"), "{last}");
 }
 
 #[test]
@@ -730,35 +454,6 @@ fn r_switch_4_a_switch_does_not_escape_the_budget_or_loosen_the_mode() {
     }
     rt.block_on(run(&host, cmd));
     assert!(w.fake_log("claude-work").contains("permission-mode plan"));
-}
-
-/// Native-only: an API's 429 with `retry-after`.
-#[test]
-#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
-fn r_inst_7_a_limited_api_instance_offers_the_next_one_and_a_yes_continues_there() {
-    let limited = mock::serve(|body, _| {
-        let _ = body;
-        Reply { headers: vec![("retry-after".into(), "0".into())], ..Reply::json(429, &json!({"type": "error", "error": {"type": "rate_limit_error", "message": "Number of request tokens has exceeded your per-minute rate limit"}})) }
-    });
-    let mut w = World::with("offer", limited);
-    let ok = mock::serve(anthropic_script);
-    w.instances.push(("anthropic:personal".into(), InstanceKind::AnthropicApi { api_key_env: Some("TEST_ANTHROPIC_KEY".into()), base_url: Some(ok.url.clone()), thinking: None, max_tokens: None, effort: None }));
-    let host = w.host();
-    let rt = rt();
-    let (r1, _) = rt.block_on(run(&host, prompt(None, "do the thing", Some(Eng::Anthropic.model()))));
-    assert_eq!(r1.status, TurnStatus::Failed);
-    let offer = r1.switch_offer.clone().expect("an offer, not a silent move");
-    assert_eq!((offer.from.instance.as_str(), offer.to.instance.as_str(), offer.to.model.as_str()), ("anthropic", "anthropic:personal", "claude-sonnet-4-6"));
-    assert!(offer.resets_at_ms.is_some(), "retry-after says when");
-    let err = r1.error.unwrap();
-    assert_eq!(err.code, "rate_limited");
-    assert!(err.message.contains(&format!("continue on anthropic:personal/claude-sonnet-4-6 with `krowk -p --resume {} --model anthropic:personal/claude-sonnet-4-6`", r1.session_id)), "{}", err.message);
-    assert!(w.events(&r1.session_id).iter().all(|e| !matches!(e.body, LogBody::ModelSwitched { .. })), "offered, never taken by itself");
-    // The yes: switch, and the prompt again.
-    let (tx, _rx) = mpsc::channel(16);
-    rt.block_on(host.execute(Command::SwitchModel { session_id: Some(r1.session_id.clone()), model: offer.to.clone() }, tx)).unwrap();
-    let (r2, _) = rt.block_on(run(&host, prompt(Some(&r1.session_id), "do the thing", None)));
-    assert_eq!((r2.status, r2.model.instance.as_str()), (TurnStatus::Completed, "anthropic:personal"));
 }
 
 #[test]
@@ -933,20 +628,6 @@ fn r_inst_6_each_instance_reports_how_near_its_limit_it_is() {
     assert_eq!(limits_of(&lines), [("claude:work".to_string(), LimitState::Warning, Some(82.0))]);
     let (_, lines) = rt.block_on(run(&host, prompt(Some(&r.session_id), "on codex", Some(Eng::Codex.model()))));
     assert_eq!(limits_of(&lines), [("codex:team".to_string(), LimitState::Allowed, Some(35.0))]);
-}
-
-/// Native-only: an API's `anthropic-ratelimit-*` headers.
-#[test]
-#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
-fn r_inst_6_an_api_instance_reports_how_near_its_limit_it_is_from_its_headers() {
-    let headers = mock::serve(|body, _| Reply {
-        headers: vec![("anthropic-ratelimit-tokens-limit".into(), "1000".into()), ("anthropic-ratelimit-tokens-remaining".into(), "150".into())],
-        ..Reply::sse(&mock::text_stream(&format!("anthropic answered: {}", last_prompt(body))))
-    });
-    let w = World::with("limits-api", headers);
-    let host = w.host();
-    let (_, lines) = rt().block_on(run(&host, prompt(None, "hello", Some(Eng::Anthropic.model()))));
-    assert_eq!(limits_of(&lines), [("anthropic".to_string(), LimitState::Warning, Some(85.0))]);
 }
 
 #[test]
@@ -1276,51 +957,6 @@ fn r_switch_4_a_switch_during_a_turn_is_kept_for_after_it() {
     assert_eq!(r3.model, Eng::Codex.model());
 }
 
-/// Native-only: krowk's own `subagent` tool.
-#[test]
-#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
-fn r_switch_4_a_switch_during_a_fan_out_moves_the_parent_and_leaves_its_subagent_on_its_model() {
-    let w = World::native("fan-out");
-    let host = w.host();
-    let rt = rt();
-    let (r1, _) = rt.block_on(run(&host, prompt(None, "hello", Some(Eng::Anthropic.model()))));
-    let id = r1.session_id.clone();
-    let (r2, switched) = rt.block_on(async {
-        let turn = run(&host, prompt(Some(&id), "fan out to a subagent", None));
-        let switch = async {
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            let (tx, _rx) = mpsc::channel(16);
-            host.execute(Command::SwitchModel { session_id: Some(id.clone()), model: Eng::Xai.model() }, tx).await
-        };
-        tokio::join!(turn, switch)
-    });
-    assert!(switched.is_ok(), "{switched:?}");
-    assert_eq!(r2.0.status, TurnStatus::Completed, "{:?}", r2.0.error);
-    let events = w.events(&id);
-    let child = events.iter().find_map(|e| match &e.body {
-        LogBody::SubagentStarted { subagent_session_id, model, .. } => Some((subagent_session_id.clone(), model.clone())),
-        _ => None,
-    });
-    let (child, child_model) = child.expect("the fan-out ran");
-    assert_eq!(child_model, Eng::Anthropic.model(), "the subagent ran on the model it was started on");
-    assert!(w.events(&child).iter().all(|e| !matches!(e.body, LogBody::ModelSwitched { .. })), "its log records no switch");
-    let to: Vec<ModelRef> = events.iter().filter_map(|e| match &e.body {
-        LogBody::ModelSwitched { to, .. } => Some(to.clone()),
-        _ => None,
-    }).collect();
-    assert_eq!(to, [Eng::Xai.model()], "the parent's switch, after its turn");
-    // A subagent's session is not one to switch.
-    let (tx, _rx) = mpsc::channel(16);
-    let e = rt.block_on(host.execute(Command::SwitchModel { session_id: Some(child.clone()), model: Eng::Openai.model() }, tx)).unwrap_err();
-    assert_eq!(e.code, "subagent_session");
-    // The parent's next turn is on Grok, and reads the subagent's call and result.
-    let from = w.requests(Eng::Xai);
-    let (r3, _) = rt.block_on(run(&host, prompt(Some(&id), "what did the subagent say?", None)));
-    assert_eq!((r3.status, r3.model), (TurnStatus::Completed, Eng::Xai.model()));
-    let seen = w.seen_by(Eng::Xai, from);
-    assert!(seen.contains("toolu_sub") && seen.contains("child did it"), "{seen}");
-}
-
 #[test]
 fn readiness_a_vendors_signed_in_is_believed_for_a_minute_and_a_signed_out_asked_every_time() {
     let mut w = World::new("readiness-cache");
@@ -1408,48 +1044,3 @@ fn a_bare_model_stays_on_the_sessions_account_and_two_accounts_are_refused_as_am
     assert!(e.code == "ambiguous_model" && e.message.contains("claude:personal, Claude subscription: --model claude:personal/haiku (could not be checked"), "{}", e.message);
 }
 
-/// Native-only: the API-key instances beside the subscriptions.
-#[test]
-#[ignore = "native loop: key-versus-subscription routing on an API instance krowk no longer runs (NL04); covered on accounts by krowk/tests/harness_routing.rs; goes with the native loop (NL06)"]
-fn a_bare_model_stays_on_the_sessions_account_and_refuses_to_guess() {
-    let mut w = World::native("routing-keys");
-    let rt = rt();
-    // The API key, the subscription, a ChatGPT one: several could run it.
-    let host = w.host();
-    let bare = |m: &str| Asked::Bare(m.into());
-    let repo = w.root.join("repo");
-    let route = |m: Option<&Asked>, current: Option<&ModelRef>| rt.block_on(host.route_model(m, current, &repo));
-    // A switch to `haiku` on a claude:work session: that account.
-    let on_work = ModelRef { instance: "claude:work".into(), model: "sonnet".into() };
-    assert_eq!(route(Some(&bare("haiku")), Some(&on_work)).unwrap(), ModelRef { instance: "claude:work".into(), model: "haiku".into() });
-    // With no session, a key and a subscription both serve it: refused,
-    // never guessed, each named with what it is and how to pick it.
-    let e = route(Some(&bare("haiku")), None).unwrap_err();
-    assert_eq!(e.code, "ambiguous_model");
-    assert!(e.message.contains("anthropic, Anthropic API key: --model anthropic/<model>") && e.message.contains("claude:work, Claude subscription: --model claude:work/haiku"), "{}", e.message);
-    assert!(e.message.contains("(e.g. `krowk connect anthropic --method api-key --default`)"), "{}", e.message);
-    // A subscription whose check could not answer is a candidate too: the
-    // key does not win over it by default.
-    w.claude("claude:slow", "claude-slow", None, true);
-    w.instances.retain(|(n, _)| n == "anthropic" || n == "claude:slow");
-    if let Some((_, InstanceKind::ClaudeCode { binary, .. })) = w.instances.iter_mut().find(|(n, _)| n == "claude:slow") {
-        // A `claude` whose status answer krowk cannot read: `unknown`.
-        let broken = w.root.join("bin/claude-broken");
-        std::fs::write(&broken, "#!/bin/sh\necho 'not json'\nexit 3\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&broken, std::fs::Permissions::from_mode(0o755)).unwrap();
-        *binary = Some(broken.display().to_string());
-    }
-    let host2 = w.host();
-    let e = rt.block_on(host2.route_model(Some(&bare("haiku")), None, &repo)).unwrap_err();
-    assert!(e.code == "ambiguous_model" && e.message.contains("claude:slow, Claude subscription: --model claude:slow/haiku (could not be checked"), "{}", e.message);
-    assert_eq!(route(Some(&bare("gpt-5.5")), None).unwrap_err().code, "ambiguous_model");
-    let sessions = || std::fs::read_dir(log::sessions_dir(&w.env()).unwrap()).map_or(0, |d| d.count());
-    let before = sessions();
-    let (tx, _rx) = mpsc::channel(64);
-    let e = rt.block_on(host.execute(prompt(None, "hello", None), tx)).unwrap_err();
-    assert_eq!((e.code.as_str(), sessions()), ("ambiguous_model", before), "no model and several ready: the same refusal, before a session exists");
-    // An explicit instance is never rerouted, nor checked by the router.
-    let exact = Asked::Exact(ModelRef { instance: "anthropic".into(), model: "claude-opus-5-5".into() });
-    assert_eq!(route(Some(&exact), None).unwrap().instance, "anthropic");
-}

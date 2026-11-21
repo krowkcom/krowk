@@ -100,7 +100,7 @@ async fn mcp_tool(name: &str, input: &Value, env: &BridgeEnv<'_>, mcp: &crate::m
         Err((m, _)) => return refuse(m),
     };
     let call = crate::permissions::Call { tool: format!("mcp__{server}__{tool}"), access: crate::permissions::Access::Mcp { server: server.clone(), tool: tool.clone() }, subject: None };
-    match gate.verdict(&call, None) {
+    match gate.verdict(&call) {
         crate::permissions::Verdict::Allow(_) => {}
         crate::permissions::Verdict::Deny(m) => return refuse(m),
         crate::permissions::Verdict::Ask { reason, .. } => {
@@ -166,8 +166,8 @@ fn publish<'a>(env: &'a BridgeEnv<'a>, input: &'a Value) -> BoxFuture<'a, (Strin
             Err(e) => return e,
         };
         let judged = match (env.evidence, env.cancel) {
-            (Some((_, events)), Some(cancel)) => env.gate.check(&call, evidence::PUBLISH, input, None, events, cancel).await.map(drop),
-            _ => match env.gate.verdict(&call, None) {
+            (Some((_, events)), Some(cancel)) => env.gate.check(&call, evidence::PUBLISH, input, events, cancel).await.map(drop),
+            _ => match env.gate.verdict(&call) {
                 crate::permissions::Verdict::Allow(_) => Ok(()),
                 crate::permissions::Verdict::Deny(m) => Err(m),
                 crate::permissions::Verdict::Ask { reason, .. } => Err(format!("publish needs approval — {reason} — and it was called where nobody can be asked")),

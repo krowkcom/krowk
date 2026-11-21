@@ -221,24 +221,6 @@ impl Scope {
         }
     }
 
-    /// Whether the sandbox hides `p` from a search walking `root`: judged
-    /// by where the root leads, so a root reached through a symlink skips
-    /// what the sandbox hides as the real one does.
-    pub(crate) fn walk_hides(&self, root: &Path) -> impl Fn(&Path) -> bool + '_ {
-        let real = self.sandbox.as_ref().map(|_| real_path(root, 0).unwrap_or_else(|_| root.to_path_buf()));
-        move |rel: &Path| match (&self.sandbox, &real) {
-            (Some(plan), Some(real)) => {
-                let at = real.join(rel);
-                // A symlink the walk lists is opened through, so it is judged
-                // by where it leads: a link in the workspace to a key in a
-                // hidden `~/.ssh` is skipped. Only links are resolved, so the
-                // walk stays cheap.
-                plan.hides(&at) || (std::fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink()) && plan.hides(&real_path(&at, 0).unwrap_or(at)))
-            }
-            _ => false,
-        }
-    }
-
     /// `path`, for a tool that changes the file: also never inside a fenced
     /// or `protected` directory unless the scope is open.
     pub fn edit_path(&self, path: &str) -> Result<PathBuf, String> {
@@ -303,3 +285,7 @@ pub(crate) fn real_path(p: &Path, links: usize) -> Result<PathBuf, String> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "scope_tests.rs"]
+mod scope_tests;

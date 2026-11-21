@@ -1,7 +1,7 @@
 //! The Claude-format `hooks` a settings file names (R-COMPAT-1), read with
 //! the permission rules: a file whose hooks do not parse refuses the
-//! prompt, and a repository's hooks widen what trusting it means. What runs
-//! them is `crate::hooks`.
+//! prompt, and a repository's hooks widen what trusting it means. The
+//! backend runs them itself.
 
 use serde_json::Value;
 use std::time::Duration;
@@ -77,11 +77,6 @@ impl Hooks {
     pub fn extend(&mut self, other: Hooks) {
         self.groups.extend(other.groups);
     }
-
-    /// Whether any hook is configured for `event`.
-    pub fn has(&self, event: Event) -> bool {
-        self.groups.iter().any(|g| g.event == event)
-    }
 }
 
 /// Reads a settings file's `hooks`. Events krowk does not run
@@ -122,12 +117,3 @@ pub fn parse(v: &Value, source: &str) -> Result<Hooks, String> {
     Ok(out)
 }
 
-/// A `PreToolUse` hook's say in a call's permission.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Decision {
-    /// Run it without asking — not past a deny rule, nor into a directory
-    /// the file tools keep out of.
-    Allow,
-    /// Ask the person, whatever the rules say.
-    Ask,
-}

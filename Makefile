@@ -69,7 +69,7 @@ check-run: golden-run test-run
 
 # The edit loop, not a gate: the harness build's lint, then the tests of the
 # crates this branch changed and of the crates that depend on them
-# (scripts/affected.sh), leaving out the five that take a minute or more
+# (scripts/affected.sh), leaving out the one that takes a minute or more
 # (.config/nextest.toml). The lint and the build are `check`'s, so each
 # reuses the other's. No golden cases: `make golden` runs them in about half
 # a minute. `make signoff` is still what a pull request needs.

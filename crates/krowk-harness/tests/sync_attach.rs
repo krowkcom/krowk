@@ -12,8 +12,6 @@
 
 #[path = "common/fake.rs"]
 mod fake;
-#[path = "common/mock.rs"]
-mod mock;
 #[path = "common/scratch.rs"]
 mod scratch;
 
@@ -81,24 +79,6 @@ fn scenario() -> String {
     .join("\n---\n")
 }
 
-/// The native model, for the one test of krowk's own `subagent` tool left
-/// for the native loop's removal: any prompt answered with the marker,
-/// except one starting a subagent, whose call is a slow answer.
-fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
-    let messages = body["messages"].as_array().cloned().unwrap_or_default();
-    let last = messages.last().cloned().unwrap_or_default();
-    let has_result = last["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
-    // A subagent's own call: a slow answer, stopped part way.
-    if body["system"].to_string().contains("You are a subagent") {
-        let words: String = (0..400).map(|i| format!("childword{i} ")).collect();
-        return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
-    }
-    if !has_result && last.to_string().contains("start a slow subagent") {
-        return mock::Reply::sse(&mock::tool_use("toolu_01Kid", "subagent", &serde_json::json!({"description": "a slow look", "prompt": "look slowly"})));
-    }
-    mock::Reply::paced(mock::text_stream(&format!("{ANSWER_MARKER} one two three four")), Duration::from_millis(20))
-}
-
 struct World {
     root: PathBuf,
     registry: krowk_devregistry::Running,
@@ -123,9 +103,6 @@ struct World {
     a_live: Arc<AtomicUsize>,
     relay_a: String,
     relay_b: String,
-    /// The native model and its `anthropic` instance, in place of the
-    /// fake `claude`: only for the test of krowk's own `subagent` tool.
-    native: Option<mock::Mock>,
     /// A's own way to the registry: `PASS`, `CUT` or `FAIL_WRITES`.
     reg_a: String,
     reg_mode: Arc<AtomicU8>,
@@ -253,32 +230,18 @@ impl World {
         let reg_times: RegTimes = Arc::default();
         let reg_refused = Arc::new(AtomicUsize::new(0));
         let reg_a = format!("http://{}/v1", registry_proxy(registry.addr(), reg_mode.clone(), reg_log.clone(), reg_times.clone(), reg_refused.clone()));
-        World { root, registry, api, list: Mutex::new(None), first: Mutex::new(None), seen, cut, a_mode, a_conns, a_live, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), native: None, reg_a, reg_mode, reg_log, reg_times, skew, reg_refused, late: Arc::default(), b_mode, b_batches, b_drop, token: TOKEN }
-    }
-
-    /// A world whose A runs the native model (`model`) on its `anthropic`
-    /// instance rather than the fake `claude`.
-    fn native(name: &str) -> World {
-        let mut w = World::new(name);
-        w.native = Some(mock::serve(model));
-        w
+        World { root, registry, api, list: Mutex::new(None), first: Mutex::new(None), seen, cut, a_mode, a_conns, a_live, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), reg_a, reg_mode, reg_log, reg_times, skew, reg_refused, late: Arc::default(), b_mode, b_batches, b_drop, token: TOKEN }
     }
 
     /// A's instances: the fake `claude` playing `scenario`, signed in, as
-    /// `claude` (none of its own on the native model).
+    /// `claude`.
     fn instances(&self) -> InstancesConfig {
-        if self.native.is_some() {
-            return InstancesConfig::default();
-        }
         InstancesConfig { instances: [("claude".to_string(), fake::claude(&self.root, "claude", Some(&scenario())))].into_iter().collect(), ..Default::default() }
     }
 
-    /// The model a prompt names: `claude/sonnet`, or the native model's.
+    /// The model a prompt names: `claude/sonnet`.
     fn model(&self) -> krowk_harness::protocol::ModelRef {
-        match self.native {
-            Some(_) => Registry::resolve(&InstancesConfig::default(), &self.env()).parse_model("claude-sonnet-4-6").unwrap(),
-            None => krowk_harness::protocol::ModelRef { instance: "claude".into(), model: "sonnet".into() },
-        }
+        krowk_harness::protocol::ModelRef { instance: "claude".into(), model: "sonnet".into() }
     }
 
     /// What A's fake `claude` logged.
@@ -373,14 +336,12 @@ impl World {
     /// Another machine's environment: a home and a runtime directory of its
     /// own, so a daemon of its own.
     fn env_at(&self, home: &str, run: &str) -> impl Fn(&str) -> String + Clone + Send + Sync + 'static {
-        let (root, url, home, run) = (self.root.clone(), self.native.as_ref().map(|m| m.url.clone()), home.to_string(), run.to_string());
+        let (root, home, run) = (self.root.clone(), home.to_string(), run.to_string());
         let _ = std::fs::create_dir_all(root.join(&home));
         let _ = std::fs::create_dir_all(root.join(&run));
         move |k| match k {
             "HOME" => root.join(&home).display().to_string(),
             "XDG_RUNTIME_DIR" => root.join(&run).display().to_string(),
-            "ANTHROPIC_API_KEY" if url.is_some() => "sk-test".into(),
-            "ANTHROPIC_BASE_URL" => url.clone().unwrap_or_default(),
             _ => String::new(),
         }
     }
@@ -2430,7 +2391,6 @@ async fn r_net_3_the_direct_listener_refuses_an_origin_it_did_not_publish() {
     join_direct(&o.via, &o.session, &o.b, &o.real, &o.b.signing).await.expect("B's correct join");
 }
 
-
 /// R-OFF-2: the relay drops every batch of a whole turn to B, and B sees
 /// the gap only when a later turn's batch arrives. The catch-up asks from
 /// the newest event B held before that batch, so the dropped turn's events
@@ -2594,7 +2554,6 @@ async fn r_hand_1_a_session_moves_to_b_mid_task_with_its_work_and_c_stays_attach
     assert_eq!(std::fs::read_to_string(applied.cwd.join("notes/new.txt")).unwrap(), "made mid-task", "the untracked file the session made moved");
     assert!(!applied.cwd.join("old.txt").exists(), "an untracked file from before the session did not");
 
-
     // C never let go: the host went, came back, and runs C's prompt on B.
     until(&mut cv, Duration::from_secs(30), &mut frames, |u| matches!(u, viewer::Update::Host(false))).await;
     until(&mut cv, Duration::from_secs(30), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
@@ -2731,88 +2690,6 @@ async fn chunks_hold(w: &World, session: &str, sessions: &[&str], wait: Duration
         assert!(!late, "the chunks hold, of the logs {:?}, only {:?}", short, short.iter().map(|(s, _)| ids_of(&rest, s)).collect::<Vec<_>>());
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-}
-
-/// R-SUB-12, R-SUB-6: B stops a subagent of the session it follows, by
-/// the child's id, while the parent's turn — started at A's terminal, in
-/// another directory than the bridge's — goes on and ends. B can stop
-/// nothing else that way: another session on A, an id it made up, and a
-/// steer of the child are refused. And the child's logged events are
-/// written into the parent's chunks: the parent's branch walk leaves them
-/// out, so its replay is its own log's, and the child is rebuilt from them.
-#[tokio::test]
-#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
-async fn r_sub_12_a_viewer_stops_the_sessions_own_child_and_nothing_else() {
-    let w = World::native("child");
-    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
-    let (d, session) = first_turn(&w).await;
-    let (tx, mut rx) = mpsc::channel(1024);
-    tokio::spawn(async move { while rx.recv().await.is_some() {} });
-    let other = d.execute(w.prompt(None, "another session"), tx).await.unwrap().unwrap().session_id;
-    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
-    w.synced(&session).await;
-    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
-    let mut frames = Vec::new();
-    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
-
-    // The person at A's terminal, in a subdirectory: the child runs on that
-    // directory's host, not on the bridge's.
-    let sub = w.repo().join("sub");
-    std::fs::create_dir_all(&sub).unwrap();
-    let terminal = Client::connect(&daemon::socket(&w.env()).unwrap(), &sub, "test", true).await.ok().expect("the daemon answers");
-    let ask = w.prompt(Some(&session), "start a slow subagent");
-    let parent_turn = tokio::spawn(async move {
-        let (tx, mut rx) = mpsc::channel(4096);
-        tokio::spawn(async move { while rx.recv().await.is_some() {} });
-        terminal.execute(ask, tx).await.map(|r| r.unwrap().status)
-    });
-    let started = |u: &viewer::Update| match u {
-        viewer::Update::Line(StreamLine::Log(e)) if e.session_id == session => match &e.body {
-            krowk_harness::protocol::LogBody::SubagentStarted { subagent_session_id, .. } => Some(subagent_session_id.clone()),
-            _ => None,
-        },
-        _ => None,
-    };
-    let got = until(&mut v, Duration::from_secs(15), &mut frames, |u| started(u).is_some()).await;
-    let child = got.iter().find_map(started).unwrap();
-    until(&mut v, Duration::from_secs(15), &mut frames, |u| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::ItemDelta { session_id, .. })) if *session_id == child)).await;
-    // A client in the bridge's directory following the child's own id: the
-    // hub that makes is on that directory's host, where the child runs
-    // nothing, and the interrupt still goes to the parent's.
-    let (tx, mut rx) = mpsc::channel(1024);
-    tokio::spawn(async move { while rx.recv().await.is_some() {} });
-    let follower = w.daemon().await;
-    follower.attach(&child, None, tx).await.unwrap();
-
-    let mut ack = async |c: Command| {
-        v.commands.send(c).unwrap();
-        let got = until(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
-        got.into_iter().find_map(|u| if let viewer::Update::Acked { error, .. } = u { Some(error) } else { None }).unwrap()
-    };
-    for refused in [other.as_str(), "01a0ec7b-0000-7000-8000-00000000beef"] {
-        let e = ack(Command::Interrupt { session_id: refused.into() }).await;
-        assert!(e.as_deref().is_some_and(|e| e.contains("nothing else")), "{refused}: {e:?}");
-    }
-    let e = ack(Command::Steer { session_id: child.clone(), text: "not you".into(), images: Vec::new() }).await;
-    assert!(e.as_deref().is_some_and(|e| e.contains("nothing else")), "a steer of the child: {e:?}");
-    assert_eq!(ack(Command::Interrupt { session_id: child.clone() }).await, None, "the session's own child stops");
-
-    let status = tokio::time::timeout(Duration::from_secs(15), parent_turn).await.expect("the parent's turn ends").unwrap().unwrap();
-    assert_eq!(status, krowk_harness::protocol::TurnStatus::Completed, "the parent's turn goes on past its stopped child");
-    let child_log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&child).join("events.jsonl")).unwrap();
-    assert!(child_log.contains("\"status\":\"interrupted\""), "the child ended interrupted: {child_log}");
-    assert!(!child_log.contains("childword399"), "short of its end");
-    let other_log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&other).join("events.jsonl")).unwrap();
-    assert!(!other_log.contains("interrupted"), "the other session was never reached");
-
-    // R-SUB-6: the child's events ride the parent's chunks.
-    let rest = chunks_hold(&w, &session, &[&session, &child], Duration::from_secs(30)).await;
-    let (parent_ids, child_ids) = (log_ids(&w, &session), log_ids(&w, &child));
-    assert!(rest.iter().all(|e| e["sessionId"] == session || e["sessionId"] == child), "nothing of another session");
-    let events: Vec<krowk_harness::protocol::LogEvent> = rest.iter().map(|e| serde_json::from_value(e.clone()).unwrap()).collect();
-    let walk = |head: &String| log::branch(&events, head).iter().map(|e| e.id.clone()).collect::<Vec<_>>();
-    assert_eq!(walk(parent_ids.last().unwrap()), parent_ids, "the parent's replay is its own log's, the child's events left out");
-    assert_eq!(walk(child_ids.last().unwrap()), child_ids, "the child is rebuilt from the parent's chunks");
 }
 
 /// The Claude Code transcript the handoff placed for B's worktree (its
