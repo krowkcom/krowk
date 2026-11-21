@@ -126,6 +126,7 @@ fn schema(name: &str) -> jsonschema::Validator {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn a_prompt_reads_a_file_streams_its_items_and_a_resume_continues_on_the_cache() {
     let m = mock::serve(mock::readme_script);
     let home = Home::new("session", &m.url);
@@ -286,6 +287,7 @@ fn assert_context_records(dir: &Path, m: &mock::Mock) {
 /// chosen from the model id, from the catalog's family, or by `--toolset` —
 /// and the request the provider was sent carries the same tools.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_tool_2_the_recorded_tools_carry_each_model_familys_edit_tool_and_toolset_overrides_it() {
     let m = mock::serve(|_, _| mock::Reply::sse(&mock::fixture("turn2_answer.sse")));
     let home = Home::new("toolset", &m.url);
@@ -341,6 +343,7 @@ fn r_tool_2_the_recorded_tools_carry_each_model_familys_edit_tool_and_toolset_ov
 /// Each family's model edits a file through the whole loop in its own
 /// format, and the edit lands; where edits are not allowed, it does not.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_tool_2_each_edit_format_runs_through_the_loop() {
     let m = mock::serve(mock::edit_script);
     let home = Home::new("edit-loop", &m.url);
@@ -399,6 +402,7 @@ fn detail(env: &dyn Fn(&str) -> String, id: &str) -> String {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_proto_1_steer_joins_the_running_turn_before_its_next_model_call() {
     use krowk_harness::host::Host;
     use krowk_harness::protocol::Command;
@@ -462,6 +466,7 @@ fn r_proto_1_steer_joins_the_running_turn_before_its_next_model_call() {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_proto_1_steering_an_interrupted_turn_never_read_comes_back_on_its_result() {
     use krowk_harness::host::Host;
     use krowk_harness::protocol::Command;
@@ -516,6 +521,7 @@ fn r_proto_1_steering_an_interrupted_turn_never_read_comes_back_on_its_result() 
 /// not stop it. Here a ticker on the same current-thread runtime keeps
 /// ticking through a turn whose command takes 1.5 s.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_cred_1_a_stored_keys_command_never_blocks_the_hosts_runtime() {
     let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("keyed")));
     let home = Home::new("keycmd", &m.url);
@@ -610,6 +616,7 @@ fn last_message(m: &mock::Mock, n: usize) -> String {
 /// job that ends while the turn runs reaches the model as a note at its next
 /// call, logged where it landed; and `bash_output` reads what it printed.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_steer_2_a_background_job_answers_at_once_and_its_end_reaches_the_next_call() {
     let m = mock::serve(|_, n| {
         mock::Reply::sse(&match n {
@@ -641,6 +648,7 @@ fn r_steer_2_a_background_job_answers_at_once_and_its_end_reaches_the_next_call(
 
 /// R-STEER-2: `kill_bash` stops a running job, and the job says so.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_steer_2_kill_bash_stops_a_running_job() {
     let m = mock::serve(|_, n| {
         mock::Reply::sse(&match n {
@@ -682,6 +690,7 @@ fn parent_seen(m: &mock::Mock) -> Vec<serde_json::Value> {
 /// logged where it landed, and completes after one more call. The child's
 /// spend is the tree's (R-SUB-4).
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_steer_3_a_background_child_answers_at_once_and_its_summary_holds_the_turn_open() {
     let gate = mock::Gate::default();
     let parent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -725,6 +734,7 @@ fn r_steer_3_a_background_child_answers_at_once_and_its_summary_holds_the_turn_o
 /// R-STEER-3: interrupting the parent interrupts its background child, and
 /// the child's log ends with its turn.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_steer_3_interrupting_the_parent_interrupts_its_background_child() {
     use krowk_harness::host::Host;
     use krowk_harness::protocol::Command;
@@ -779,6 +789,7 @@ fn r_steer_3_interrupting_the_parent_interrupts_its_background_child() {
 /// leaves, rather than waiting for them; each child's log ends with its
 /// turn.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_steer_3_a_failed_parent_turn_stops_its_background_children() {
     use krowk_harness::host::Host;
     use krowk_harness::protocol::Command;
@@ -881,6 +892,7 @@ fn timed(replies: Vec<String>) -> (mock::Mock, Arc<std::sync::Mutex<Vec<std::tim
 /// printed so far, the move, and the steer; the job then ends on its own,
 /// and what the answer showed plus `bash_output` is the whole output.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_steer_4_a_steer_moves_a_long_bash_call_to_the_background_at_two_seconds() {
     let (m, times) = timed(vec![
         mock::tool_use("t1", "bash", &serde_json::json!({"command": "echo before; sleep 3; echo after"})),
@@ -901,6 +913,7 @@ fn r_steer_4_a_steer_moves_a_long_bash_call_to_the_background_at_two_seconds() {
 
 /// R-STEER-4: a command under 2 s just finishes; the steer waits for it.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_steer_4_a_steer_during_a_short_command_waits_for_it() {
     let (m, _) = timed(vec![mock::tool_use("t1", "bash", &serde_json::json!({"command": "sleep 1; echo done"}))]);
     let home = Home::new("short-bash", &m.url);
@@ -951,6 +964,7 @@ fn two_children(gate: &mock::Gate, parent: impl Fn(usize) -> mock::Reply + Send 
 /// quick child's summary, the slow one's move and the steer; the turn
 /// waits for the slow one's note, reads it, and completes after it.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_steer_4_a_steer_moves_the_children_still_running_to_the_background() {
     let gate = mock::Gate::default();
     let g = gate.clone();
@@ -978,6 +992,7 @@ fn r_steer_4_a_steer_moves_the_children_still_running_to_the_background() {
 
 /// R-STEER-4: interrupting after the move still interrupts the moved child.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_steer_4_interrupting_after_the_move_interrupts_the_moved_child() {
     use krowk_harness::host::Host;
     use krowk_harness::protocol::Command;

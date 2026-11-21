@@ -993,6 +993,7 @@ fn tls_server() -> (String, Arc<AtomicU64>) {
 /// is made off it. The certificate is one no platform trusts, so each of
 /// the turn's attempts is refused after its stall and the turn fails.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_lag_9_a_turn_whose_tls_handshake_stalls_leaves_the_daemon_thread_on_time() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let (url, handshakes) = tls_server();

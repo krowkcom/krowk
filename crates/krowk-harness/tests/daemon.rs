@@ -531,6 +531,7 @@ fn r_host_1_a_follower_gets_the_running_turns_frames_and_its_result() {
 /// the job running on the first; and once it ends the daemon lets the
 /// session go and exits after its window.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_steer_2_a_job_outlives_its_client_and_a_later_follower_is_told_the_count_at_once() {
     let m = mock::serve(|_, n| {
         mock::Reply::sse(&match n {
