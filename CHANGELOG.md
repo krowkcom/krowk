@@ -19,8 +19,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   SuperGrok is not carried over; connect a Claude Code or Codex account
   instead. A key that is only in your environment (`ANTHROPIC_API_KEY`,
   `OPENAI_API_KEY`) is no longer an account by itself: connect it once with
-  `krowk connect anthropic --method api-key` (or `openai`). It is announced
-  and removed in the same release.
+  `krowk connect anthropic --method api-key` (or `openai`). Gone with
+  krowk's own agent: its tools and `subagent` tool, agent definitions read
+  from `.krowk/agents`, its reading of `AGENTS.md`, `CLAUDE.md` and
+  `.cursor/rules`, and its running of hooks (Claude Code and Codex read and
+  run their own); `--sandbox` with a profile, which only held krowk's own
+  tools, is refused; and `--client-id`, which only SuperGrok took. It is
+  announced and removed in the same release.
 
 ### Added
 

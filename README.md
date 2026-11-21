@@ -30,22 +30,21 @@ Builds are published for Linux and macOS (amd64/arm64) and Windows (amd64). On a
 ## The agent
 
 - **Headless.** `krowk -p` runs one prompt and prints the answer, or `--output-format json` or `stream-json` for another program to read. It never takes over the terminal, so it runs the same in a script, over SSH or inside another harness. Bare `krowk` prints an overview of the commands.
-- **Tools.** It can read, write, edit, run bash, grep, glob and publish. It also keeps a todo list, runs subagents in parallel, each with its own context and a cheaper model, and asks you with options to pick from when a choice is yours.
-- **Compatible with Claude Code.** It uses the same permission modes, `allow`/`ask`/`deny` rules and settings files. It reads `AGENTS.md`, `CLAUDE.md` and `.cursor/rules`, and loads Claude-format skills, hooks and `.claude/agents` without changes. It adds an `unhinged` mode that never asks for permission.
+- **Claude Code and Codex do the work.** Every session runs inside the stock `claude` or `codex`, with their own tools, agents, instructions and hooks. krowk adds `publish` and your MCP servers through its bridge, and asks you with options to pick from when a choice is yours.
+- **Compatible with Claude Code.** It uses the same permission modes, `allow`/`ask`/`deny` rules and settings files, and expands Claude-format skills you ask for by `/name`. It adds an `unhinged` mode that never asks for permission.
 - **Multiple accounts.** You can connect several accounts per provider and rename them with `krowk providers rename`. A second account is added with `--name work`.
 - **Claude Code or Codex accounts only.** krowk no longer runs models itself and drops the SuperGrok sign-in; API keys and gateways keep working as Claude Code or Codex accounts (`krowk connect` converts them).
-- **Cost limits.** `--max-usd` and `--max-tokens` stop a session before it goes over a limit, subagents included.
+- **Cost limits.** `--max-usd` and `--max-tokens` stop a session at a limit, its agents included.
 
 ## Worktrees
 
 Agents running at once can each work in a git worktree of their own, on a branch `krowk/<hex>`, so they don't overwrite each other's files.
 
-- **Subagents.** `isolation: "worktree"` on the `subagent` call, or `isolation: worktree` in an agent definition's frontmatter, runs the child in a new worktree started from your files as they are, uncommitted changes included. When it finishes, an unchanged worktree is removed; a changed one is applied back to your working tree (never your index or HEAD) and removed. A conflict, a submodule change or a change to `.git`, `.claude`, `.codex` or `.krowk` keeps it, and the summary names it.
 - **A session of its own.** `krowk --worktree` (or `krowk -p --worktree`) starts the session in a new worktree. On exit an unchanged one is removed and a kept one is named.
 - **By default.** `"worktrees": { "default": true }`, in your config or a trusted repository's `.krowk/config.json`, starts every new session in a repository that way, whatever model or agent runs it. A worktree it can't make stops the session rather than letting it run in your checkout; `--worktree=false` runs one in place. As with `--worktree`, the session runs in krowk's own process rather than the background host, so it ends with the terminal, and `/new` carries on in the same worktree.
 - **No hand-made ones.** Whatever the backend or mode, an agent's `git worktree add`, or Claude Code's `EnterWorktree` and `Agent` with `isolation: "worktree"`, is refused and pointed to `krowk worktrees add`. So is an upload to a paste site (`gh gist create`, `curl -F` to 0x0.st, transfer.sh and the like), pointed to `publish`. You can still run any of these at your own prompt.
 - **Ready to build.** Submodules are initialised from your checkout, `target` and `node_modules` are cloned in where the file system makes that nearly free (`worktrees.seed`), the ignored files your `.worktreeinclude` lists (`.env`, local config) are copied, and `worktrees.setup` runs a command such as `npm ci` in the sandbox. A repository's own setup command runs only once you trust it. On btrfs a worktree is a snapshot, made in tens of milliseconds whatever the repository's size.
-- **The machine's limits.** Build and test commands (`cargo`, `make`, `npm`, `pytest`, …) from every krowk on the machine queue for `builds.slots` slots, a quarter of the cores by default. Subagents and `--worktree` sessions share `subagents.maxHost` agent slots. A worktree is refused when its disk is short of 4 GiB beyond twice its expected size.
+- **The machine's limits.** A worktree's setup command, when it builds (`cargo`, `make`, `npm`, `pytest`, …), queues with every krowk on the machine for `builds.slots` slots, a quarter of the cores by default. `--worktree` sessions share `subagents.maxHost` agent slots. A worktree is refused when its disk is short of 4 GiB beyond twice its expected size.
 
 | Command | What it does |
 | --- | --- |
@@ -142,7 +141,7 @@ Everything krowk keeps is in `~/.krowk/` (move it with `KROWK_HOME`): settings i
 
 ### MCP servers
 
-krowk's own agent uses the MCP servers you already set up for Claude Code: `mcpServers` in `~/.claude.json` (user and per-project) and in Claude's `settings.json`, plus `mcpServers` in `~/.krowk/config.json`. A repository's `.mcp.json` is used only after you trust the repository, and your own servers of the same name win over it. Each server takes Claude Code's shape, with `${VAR}` and `${VAR:-default}` expanded:
+krowk hands Claude Code and Codex, through its bridge, the MCP servers you already set up for Claude Code: `mcpServers` in `~/.claude.json` (user and per-project) and in Claude's `settings.json`, plus `mcpServers` in `~/.krowk/config.json`. A repository's `.mcp.json` is used only after you trust the repository, and your own servers of the same name win over it. Each server takes Claude Code's shape, with `${VAR}` and `${VAR:-default}` expanded:
 
 ```json
 {

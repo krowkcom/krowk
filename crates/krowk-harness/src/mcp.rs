@@ -1,4 +1,5 @@
-//! MCP servers a native turn can use, with their tools deferred (R-TOOL-3).
+//! MCP servers a turn can use through krowk's bridge, with their tools
+//! deferred (R-TOOL-3).
 //!
 //! A person's MCP servers come from the places Claude Code keeps them, so a
 //! setup made for it needs nothing new. Lowest first — a later source's
@@ -17,7 +18,7 @@
 //! args, env}` for a stdio server, `{type: "http", url, headers}` for a
 //! streamable-HTTP one, with `${VAR}` and `${VAR:-default}` expanded from
 //! the environment. A server whose name or config cannot be used is left
-//! out and named, with why, in a notice of the native turn.
+//! out (`discover` names it, with why).
 //!
 //! **Trust.** A project's `.mcp.json` is a command someone else wrote, so it
 //! is neither started nor listed until the person answers the trust
@@ -38,15 +39,8 @@
 //! Every call is judged as `mcp__server__tool` (`Mcp(server:tool)` in a
 //! rule) by the one permission evaluator; a tool a deny rule covers is left
 //! out of search results too, as Claude Code leaves it out of the tool list.
-//! A subagent whose definition names MCP servers or tools reaches those
-//! alone (`crate::agents::AgentRun::reaches`): the rest are left out of its
-//! search, its calls to them refused, and a server it cannot reach is not
-//! started for it.
 //!
-//! Each server starts on its own, once a turn first needs it: the session
-//! and its subagents share the servers, and a subagent that reaches one
-//! server must neither start the others nor leave them unstarted for its
-//! parent.
+//! Each server starts on its own, once a turn first needs it.
 //!
 //! **Across turns.** A session's servers stay connected (`Pool`): each
 //! turn re-reads the configuration and adopts it, keeping a server whose

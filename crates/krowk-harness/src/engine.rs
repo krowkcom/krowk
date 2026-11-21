@@ -212,49 +212,28 @@ pub struct TurnContext {
 /// it is empty, and the host closes it when the turn is over, so a push that
 /// comes after either is told so instead of being queued for nobody.
 #[derive(Debug, Clone, Default)]
-pub struct Steers(Arc<Queue>);
-
-#[derive(Debug, Default)]
-struct Queue {
-    q: Mutex<SteerQueue>,
-    /// Woken by each push: a turn held open for its background children
-    /// waits on it for their notes, or the person's steering.
-    arrived: tokio::sync::Notify,
-}
+pub struct Steers(Arc<Mutex<SteerQueue>>);
 
 #[derive(Debug, Default)]
 struct SteerQueue {
     waiting: Vec<Steer>,
     closed: bool,
-    /// A call was moved to the background for the steering waiting
-    /// (R-STEER-4): the step's later calls are moved sooner. Cleared when
-    /// that steering is taken.
-    moved: bool,
 }
 
-/// One steer: its text, and the images it carries, already kept. Or a
-/// note of krowk's riding the same queue (`from_krowk`): a background job
-/// or child that ended, which the model reads as it reads steering but
-/// which is never handed back as the person's words.
+/// One steer: its text, and the images it carries, already kept.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Steer {
     pub text: String,
     pub images: Vec<ImageRef>,
-    pub from_krowk: bool,
 }
 
 impl From<&str> for Steer {
     fn from(text: &str) -> Steer {
-        Steer { text: text.to_string(), images: Vec::new(), from_krowk: false }
+        Steer { text: text.to_string(), images: Vec::new() }
     }
 }
 
 impl Steer {
-    /// A note of krowk's.
-    pub fn note(text: String) -> Steer {
-        Steer { text, images: Vec::new(), from_krowk: true }
-    }
-
     pub fn item(self) -> Item {
         Item::UserText { text: self.text, images: self.images }
     }
@@ -262,7 +241,7 @@ impl Steer {
 
 impl Steers {
     fn lock(&self) -> std::sync::MutexGuard<'_, SteerQueue> {
-        self.0.q.lock().unwrap_or_else(|e| e.into_inner())
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Queues `steer`, or hands it back when the turn takes no more.
@@ -272,8 +251,6 @@ impl Steers {
             return Err(steer);
         }
         q.waiting.push(steer);
-        drop(q);
-        self.0.arrived.notify_waiters();
         Ok(())
     }
 
@@ -282,47 +259,9 @@ impl Steers {
         self.lock().waiting.is_empty()
     }
 
-    /// Returns once the person's steering waits: krowk's notes do not
-    /// count.
-    pub async fn steered(&self) {
-        loop {
-            let arrived = self.0.arrived.notified();
-            tokio::pin!(arrived);
-            arrived.as_mut().enable();
-            if self.lock().waiting.iter().any(|s| !s.from_krowk) {
-                return;
-            }
-            arrived.await;
-        }
-    }
-
-    /// Returns once something waits in the queue.
-    pub async fn arrival(&self) {
-        let arrived = self.0.arrived.notified();
-        tokio::pin!(arrived);
-        arrived.as_mut().enable();
-        if !self.is_empty() {
-            return;
-        }
-        arrived.await;
-    }
-
     /// Everything waiting, oldest first, leaving the queue empty.
     pub fn take(&self) -> Vec<Steer> {
-        let mut q = self.lock();
-        q.moved = false;
-        std::mem::take(&mut q.waiting)
-    }
-
-    /// Says a call was moved to the background for the steering waiting.
-    pub fn moved_one(&self) {
-        self.lock().moved = true;
-    }
-
-    /// Whether a call was moved for the steering waiting: one after it in
-    /// the same step is moved after a moment, not its two seconds.
-    pub fn has_moved(&self) -> bool {
-        self.lock().moved
+        std::mem::take(&mut self.lock().waiting)
     }
 
     /// Closes the queue if nothing is waiting, and says whether it did: the
@@ -337,9 +276,7 @@ impl Steers {
 
     /// Returns steering to the front of the queue, oldest first, whether or
     /// not it is closed: steering a backend took but the model never read
-    /// (cancelled on an interrupt), and the host's notes of krowk's, taken
-    /// out with the person's steering when the turn ended and kept for the
-    /// next.
+    /// (cancelled on an interrupt).
     pub fn put_back(&self, steers: Vec<Steer>) {
         self.lock().waiting.splice(0..0, steers);
     }

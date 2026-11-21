@@ -729,7 +729,7 @@ impl Host {
                     false => tokio::task::spawn_blocking(move || images::save(&dir, &decoded)).await.map_err(|e| EngineError::new("log_failed", e.to_string()))??,
                 };
                 match Some(&steers) {
-                    Some(r) if r.push(Steer { text, images, from_krowk: false }).is_ok() => Ok(None),
+                    Some(r) if r.push(Steer { text, images }).is_ok() => Ok(None),
                     // The turn has taken its last input and is ending.
                     Some(_) => Err(EngineError::new("turn_ending", format!("the turn in session {session_id} is finishing and reads no more input — send it as the next prompt"))),
                     _ => unreachable!("the turn's queue was found"),

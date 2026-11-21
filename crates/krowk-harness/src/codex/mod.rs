@@ -607,7 +607,7 @@ impl Engine for CodexEngine {
                 if let Some(ev) = handoff {
                     let _ = events.send(ev).await;
                 }
-                p.turn(Steer { text: prompt, images, from_krowk: false }, &mut ctx, &ask, &events, &mut stops, &self.instance.name).await
+                p.turn(Steer { text: prompt, images }, &mut ctx, &ask, &events, &mut stops, &self.instance.name).await
             }
             .await;
             *self.stopper.lock().unwrap_or_else(|e| e.into_inner()) = None;

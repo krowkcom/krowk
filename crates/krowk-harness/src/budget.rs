@@ -28,7 +28,7 @@
 //! the turn starts and interrupts the turn as soon as a metered call has
 //! gone over (`Budget::over`).
 
-use crate::engine::{BoxFuture, EngineError};
+use crate::engine::EngineError;
 use crate::host::Pricer;
 use crate::log;
 use crate::protocol::{BudgetLimits, LogBody, LogEvent, Usage};
@@ -366,10 +366,6 @@ struct State {
     turn: Spend,
     /// Its subagents', as last counted from their logs.
     subagents: Spend,
-    /// Its subagents' calls since, as they reported them: without a limit
-    /// the logs are not read again during the turn, and this is what the
-    /// status bar adds.
-    live: Spend,
     last: Option<LastCall>,
 }
 
@@ -385,10 +381,6 @@ struct Inner {
     /// waits for its own before it asks for the next: the host records a
     /// call when it handles the event, which can trail the loop.
     recorded: watch::Sender<u64>,
-    /// The turn of the session that started this one, for a subagent: its
-    /// limits are the parent's, counted over the parent's whole tree, so a
-    /// subagent's call is judged where the parent's would be (R-SUB-4).
-    parent: Option<Budget>,
     /// The session's tree, counted incrementally, for a budget with a limit.
     meter: Arc<Mutex<TreeMeter>>,
 }
@@ -429,31 +421,9 @@ impl Budget {
             pricer,
             provider: provider.into(),
             model: model.into(),
-            state: Mutex::new(State { earlier, turn: Spend::default(), subagents, live: Spend::default(), last }),
+            state: Mutex::new(State { earlier, turn: Spend::default(), subagents, last }),
             recorded: watch::Sender::new(0),
-            parent: None,
             meter: Arc::new(Mutex::new(meter)),
-        }))
-    }
-
-    /// The budget of a subagent's turn: `parent`'s limits, held over the
-    /// parent's tree — the parent's own spend, every subagent's, this one's
-    /// included — rather than over this session alone. `events` is the
-    /// subagent's log so far.
-    pub fn for_subagent(parent: &Budget, session_id: &str, provider: &str, model: &str, events: &[LogEvent]) -> Budget {
-        let p = &parent.0;
-        let (earlier, last) = metered(events, &p.pricer);
-        Budget(Arc::new(Inner {
-            limits: p.limits,
-            session_id: session_id.into(),
-            sessions: p.sessions.clone(),
-            pricer: p.pricer.clone(),
-            provider: provider.into(),
-            model: model.into(),
-            state: Mutex::new(State { earlier, turn: Spend::default(), subagents: Spend::default(), live: Spend::default(), last }),
-            recorded: watch::Sender::new(0),
-            parent: Some(parent.clone()),
-            meter: Arc::default(),
         }))
     }
 
@@ -479,18 +449,6 @@ impl Budget {
         s.subagents = subagents;
     }
 
-    /// A subagent's call, as it reports it: added to what its parents show
-    /// while no limit has them read the logs again.
-    fn record_descendant(&self, call: &Spend) {
-        if !self.0.limits.is_empty() {
-            return;
-        }
-        self.state().live.merge(call);
-        if let Some(p) = &self.0.parent {
-            p.record_descendant(call);
-        }
-    }
-
     pub fn limits(&self) -> BudgetLimits {
         self.0.limits
     }
@@ -502,7 +460,6 @@ impl Budget {
     fn total(s: &State) -> Spend {
         let mut t = s.earlier.clone();
         t.merge(&s.subagents);
-        t.merge(&s.live);
         t.merge(&s.turn);
         t
     }
@@ -513,9 +470,6 @@ impl Budget {
     pub fn record_subagent(&self, answered: &str, usage: &Usage) -> Snapshot {
         let mut call = Spend::default();
         call.add(&self.0.pricer, &self.0.provider, answered, &self.0.model, usage);
-        if let Some(p) = &self.0.parent {
-            p.record_descendant(&call);
-        }
         let mut s = self.state();
         s.turn.merge(&call);
         Snapshot { total: Budget::total(&s), turn: s.turn.clone() }
@@ -533,9 +487,6 @@ impl Budget {
     pub fn record(&self, answered: &str, usage: &Usage) -> Snapshot {
         let mut call = Spend::default();
         call.add(&self.0.pricer, &self.0.provider, &self.0.model, answered, usage);
-        if let Some(p) = &self.0.parent {
-            p.record_descendant(&call);
-        }
         let snap = {
             let mut s = self.state();
             s.turn.merge(&call);
@@ -582,24 +533,16 @@ impl Budget {
         self.judge_tree(Some((next, price, model))).await
     }
 
-    /// Judges the call about to be made against the limits, over the tree
-    /// the limits hold: a subagent asks its parent, which asks its own, up
-    /// to the session the limits were set on. There the subagents are
-    /// counted again — one spends during its parent's turn — off the
-    /// runtime, like any file work; a subagent's own calls are in its log
-    /// before they are recorded, so the count has them.
-    fn judge_tree(&self, next: Option<(Usage, Option<f64>, String)>) -> BoxFuture<'_, Result<(), EngineError>> {
-        Box::pin(async move {
-            if let Some(parent) = &self.0.parent {
-                return parent.judge_tree(next).await;
-            }
-            self.recount().await;
-            let spent = Budget::total(&self.state());
-            match judge(&self.0.limits, &spent, next.as_ref().map(|(u, p, m)| (u, *p, m.as_str()))) {
-                None => Ok(()),
-                Some(trip) => Err(self.refusal(&trip, true)),
-            }
-        })
+    /// Judges the call about to be made against the limits, over the
+    /// session's tree: its agents are counted again — one spends during its
+    /// parent's turn — off the runtime, like any file work.
+    async fn judge_tree(&self, next: Option<(Usage, Option<f64>, String)>) -> Result<(), EngineError> {
+        self.recount().await;
+        let spent = Budget::total(&self.state());
+        match judge(&self.0.limits, &spent, next.as_ref().map(|(u, p, m)| (u, *p, m.as_str()))) {
+            None => Ok(()),
+            Some(trip) => Err(self.refusal(&trip, true)),
+        }
     }
 
     /// After a metered call: whether the session is already past a limit —
@@ -771,16 +714,6 @@ mod tests {
         f.write_all(&line.as_bytes()[20..]).unwrap();
         f.write_all(b"\n").unwrap();
         assert_eq!(meter.spent(&dir, &parent, &pricer()).generated(), 250);
-        // Without a limit a subagent's calls reach its parent as reported,
-        // and the logs are not read again.
-        let (_, events) = log::SessionLog::open(&dir, &parent).unwrap();
-        let root = Budget::new(BudgetLimits::default(), &parent, &dir, pricer(), "anthropic", "m", &events);
-        let kid = Budget::for_subagent(&root, &child, "anthropic", "m", &[]);
-        kid.record("m", &Usage { output_tokens: 7, ..Usage::default() });
-        std::fs::remove_dir_all(dir.join(&child)).unwrap();
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        let snap = rt.block_on(root.refreshed());
-        assert_eq!(snap.total.generated(), 100 + 250 + 7, "the count at the turn's start, and the call as reported");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
