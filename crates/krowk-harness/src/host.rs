@@ -2303,9 +2303,9 @@ impl Writer<'_> {
         Ok(())
     }
 
-    /// A backend's agent started (R-SUB-7): its child session, made as a
-    /// native child's is — its root naming the session, its one turn begun,
-    /// held as a session running here — and only then named by the
+    /// A backend's agent started (R-SUB-7): its child session made — its
+    /// root naming the session, its one turn begun, held as a session
+    /// running here — and only then named by the
     /// session's `subagent.started`, with what ran it and the backend's id
     /// for it, and sent: no client sees the child before the session names
     /// it, nor a session naming a child with no turn. Its prompt is its
@@ -2394,8 +2394,8 @@ impl Writer<'_> {
     }
 
     /// A backend's agent whose log could not be written: said, ended as
-    /// failed on its `subagent.status` when a client knows of it, as a
-    /// native child whose turn failed is, and the rest of it not followed.
+    /// failed on its `subagent.status` when a client knows of it, and the
+    /// rest of it not followed.
     async fn child_lost(&self, session_id: &str, which: &str, e: LogError, watch: Option<&ChildWatch>) {
         let text = lost_words(which, &e);
         self.live(LiveEvent::Notice { session_id: session_id.into(), turn_id: self.turn_id.clone(), text }).await;

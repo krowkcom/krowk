@@ -14,15 +14,15 @@
 //! way every krowk figure is. Both are the limits `krowk sessions budget`
 //! takes, with its meaning: at the limit is inside it.
 //!
-//! A turn's first call is not known before it is made, so once a call on
+//! A call's cost is not known before it is made, so once a call on
 //! the turn's model has been metered the check before a turn asks what the
 //! next costs at least: it resends at least the whole prompt of the call
 //! before it — the log is append-only, so the conversation only grows — and
 //! generates at least one token; priced as if that prompt were all read
 //! from cache, the cheapest a provider charges for input, that is a floor
 //! no real call comes in under. A turn is refused when what has been spent
-//! plus that floor would go past the limit; with no call metered yet, only
-//! when the spend is already past it. A model with no price trips
+//! plus that floor would go past the limit; with no call on the turn's model
+//! metered yet, only when the spend is already past it. A model with no price trips
 //! `--max-usd` outright: an unknown spend is not a spend inside the limit.
 //! During the turn the host interrupts it as soon as a metered call has
 //! gone over (`Budget::over`).
@@ -380,8 +380,8 @@ struct Inner {
 }
 
 /// One turn's view of the session's spend, shared by the host, which
-/// records every metered call, and the engine, which asks before each call
-/// it makes. It prices whether or not a limit is set: the status bar's cost
+/// records every metered call and checks it before each turn
+/// (`admit_turn`). It prices whether or not a limit is set: the status bar's cost
 /// is the same figure.
 #[derive(Clone)]
 pub struct Budget(Arc<Inner>);
@@ -508,7 +508,7 @@ impl Budget {
         self.judge_tree(Some((next, price, model))).await
     }
 
-    /// Judges the call about to be made against the limits, over the
+    /// Judges the turn about to start against the limits, over the
     /// session's tree: its agents are counted again — one spends during its
     /// parent's turn — off the runtime, like any file work.
     async fn judge_tree(&self, next: Option<(Usage, Option<f64>, String)>) -> Result<(), EngineError> {
@@ -532,7 +532,7 @@ impl Budget {
     /// of `krowk sessions budget`, its sentence, and the next action.
     fn refusal(&self, trip: &Trip, before_call: bool) -> EngineError {
         let id = &self.0.session_id;
-        let stopped = if before_call { "krowk stopped it before that call; what it produced is kept" } else { "krowk interrupted the turn; what it produced is kept" };
+        let stopped = if before_call { "krowk refused the turn before it started" } else { "krowk interrupted the turn; what it produced is kept" };
         let fix = match trip {
             Trip::Unknown { .. } => format!(
                 "refresh the prices with `krowk pricing refresh`, or hold it to --max-tokens instead: `krowk -p --resume {id} --max-tokens <count> \"…\"`"

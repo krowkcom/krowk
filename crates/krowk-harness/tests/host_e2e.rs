@@ -244,8 +244,9 @@ fn r_cred_1_a_stored_keys_command_never_blocks_the_hosts_runtime() {
         let cmd = krowk_harness::protocol::Command::Prompt { session_id: None, text: "hi".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
         let r = host.execute(cmd, tx).await;
         ticker.abort();
+        let took = started.elapsed();
         host.shutdown().await;
-        (ticks.load(std::sync::atomic::Ordering::Relaxed), started.elapsed(), r)
+        (ticks.load(std::sync::atomic::Ordering::Relaxed), took, r)
     });
     let r = result.unwrap_or_else(|e| panic!("{e:?}")).unwrap();
     assert_eq!(r.status, TurnStatus::Completed, "{:?}", r.error);

@@ -1816,7 +1816,7 @@ mod tests {
         let q = ask.answer("item/tool/requestUserInput", &json!({"questions": [{"id": "q1", "header": "h", "question": "which?"}]}), &mut t, None).await.unwrap();
         assert!(q["answers"]["q1"]["answers"][0].as_str().unwrap().contains("Decide"), "nobody to ask: the model is told to decide");
         assert_eq!(ask.answer("execCommandApproval", &json!({}), &mut t, None).await.unwrap()["decision"], "denied");
-        // publish is offered too, and judged as the native one is.
+        // publish is offered too, and judged by the one evaluator.
         let refused = ask.answer("item/tool/call", &json!({"namespace": "krowk", "tool": "publish", "arguments": {"files": ["a.png"]}}), &mut t, None).await.unwrap();
         assert_eq!(refused["success"], false);
         assert!(refused["contentItems"][0]["text"].as_str().unwrap().contains("needs approval"), "{refused}");

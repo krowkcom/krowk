@@ -89,9 +89,8 @@
 //! approval lists), the bridge also offers `mcp_search` and `mcp_call`, run
 //! on the session's own connections and sign-ins; a call is judged as
 //! `Mcp(server:tool)` — asked by `can_use_tool`, and judged again by the
-//! bridge, which refuses a call that needed asking and was not. Subagent
-//! allowlists are krowk's native agents'; Claude Code's own agents reach
-//! the same tools under krowk's rules, not an allowlist of their own.
+//! bridge, which refuses a call that needed asking and was not. Claude
+//! Code's own agents reach the same tools under krowk's rules.
 //!
 //! **Compliance** (R-BACK-2) is structural: krowk starts the binary as the
 //! user installed it, sends it no system prompt and no headers, sets only
@@ -308,7 +307,7 @@ pub fn transcript_path(config_dir: &Path, cwd: &str, session_id: &str) -> PathBu
 /// judges it (`crate::permissions`): Claude Code's own tool names are the
 /// names rules are written in. Calls Claude Code allows itself — its
 /// settings' allow rules, its hooks — never reach here (see the module's
-/// notes); what does is judged like a native call. krowk's own bridged
+/// notes); what does is judged by `crate::permissions`. krowk's own bridged
 /// tools need no permission; a tool this build does not know is asked
 /// about.
 pub fn call_of(tool: &str, input: &Value, cwd: &Path) -> Call {
