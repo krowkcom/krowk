@@ -37,12 +37,13 @@
 //! R-NAT-2): krowk no longer runs models itself. An Anthropic key is a
 //! Claude Code account, a gateway's base URL in its env; an OpenAI, xAI,
 //! OpenRouter or OpenAI-compatible key a Codex account on a model provider
-//! of its own (`-c model_providers.krowk-<vendor>…`, its default model
-//! with it). The instance keeps the name it would have had, and its key
+//! of its own (`-c model_providers.krowk-<vendor>…`, on the Responses wire
+//! API, its default model with it). The instance keeps the name it would have had, and its key
 //! stays where it was — in the credentials file or the variable the
 //! definition names — handed to the harness at launch; the account's
 //! directory holds no key. One that config.json defines for krowk to run
-//! itself is converted on first use (`convert_native`). SuperGrok is
+//! itself is converted on first use (`convert_native`), and so is a key's
+//! Codex account on the chat wire API, which Codex refuses. SuperGrok is
 //! refused: `NO_DIRECT_MODELS`.
 //!
 //! **A failed sign-in writes nothing**: no definition, and no directory
@@ -256,8 +257,9 @@ fn to_harness(native: &InstanceKind, r: &Resolved, dir: String, stores: bool) ->
     };
     let id = format!("krowk-{}", vendor.id());
     let q = |s: &str| serde_json::to_string(s).expect("a string serializes");
-    let wire = if r.wire_api == crate::protocol::WireApi::OpenaiResponses { "responses" } else { "chat" };
-    let mut set = vec![format!("model_providers.{id}.name={}", q(label)), format!("model_providers.{id}.base_url={}", q(&r.base_url)), format!("model_providers.{id}.wire_api={}", q(wire))];
+    // D3 as amended: the Responses API for every vendor — Codex refuses
+    // `wire_api = "chat"`.
+    let mut set = vec![format!("model_providers.{id}.name={}", q(label)), format!("model_providers.{id}.base_url={}", q(&r.base_url)), format!("model_providers.{id}.wire_api={}", q("responses"))];
     if let Some(v) = &var {
         set.push(format!("model_providers.{id}.env_key={}", q(v)));
     }
@@ -267,6 +269,25 @@ fn to_harness(native: &InstanceKind, r: &Resolved, dir: String, stores: bool) ->
     }
     let args = set.into_iter().flat_map(|s| ["-c".to_string(), s]).collect();
     Some(InstanceKind::CodexAppServer { binary: None, codex_home: Some(dir), env: Default::default(), args, api_key_env: var, effort: *effort })
+}
+
+/// A key's Codex account written on the chat wire API, which Codex
+/// refuses, on the Responses API instead (D3 as amended); `None` for any
+/// other definition.
+fn on_responses(def: &InstanceKind) -> Option<InstanceKind> {
+    let InstanceKind::CodexAppServer { args, .. } = def else { return None };
+    let at = format!("model_providers.krowk-{}.wire_api=", codex_provider(args)?.id());
+    let chat = |a: &String| a.strip_prefix(at.as_str()).is_some_and(|w| w.trim_matches('"') == "chat");
+    if !args.iter().any(chat) {
+        return None;
+    }
+    let mut def = def.clone();
+    if let InstanceKind::CodexAppServer { args, .. } = &mut def {
+        for a in args.iter_mut().filter(|a| chat(a)) {
+            *a = format!("{at}\"responses\"");
+        }
+    }
+    Some(def)
 }
 
 /// The native definition a key's account was made from, as far as it
@@ -1654,12 +1675,16 @@ impl ProviderAuth<'_> {
     /// one converted, and none once there are none left. One that cannot be
     /// converted — its directory another account's, a config.json that
     /// cannot be written — is said and left as it was: the run goes on.
+    /// A key's Codex account written on the chat wire API, which Codex
+    /// refuses, is moved to the Responses API the same way, with a line.
     pub fn convert_native(&self) -> Vec<String> {
         let Ok(defs) = self.definitions() else { return Vec::new() };
         let Ok(accounts) = self.home().map(|h| h.join(krowk_api::home::ACCOUNTS)) else { return Vec::new() };
         let known = Registry::resolve(&defs, self.env);
         let mut said = Vec::new();
         let mut made: Vec<(String, InstanceKind, Option<Made>)> = Vec::new();
+        // A key's Codex account on the chat wire API, rewritten too.
+        let rewired: Vec<(String, InstanceKind)> = defs.instances.iter().filter_map(|(n, d)| Some((n.clone(), on_responses(d)?))).collect();
         for (name, def) in &defs.instances {
             let Some(harness) = by_kind(def.tag()).and_then(harness_of) else { continue };
             let Ok(r) = known.get(name) else { continue };
@@ -1681,13 +1706,13 @@ impl ProviderAuth<'_> {
                 }
             }
         }
-        if made.is_empty() {
+        if made.is_empty() && rewired.is_empty() {
             return said;
         }
         let written = self.edit(|raw| {
             let all = raw.entry("instances").or_insert_with(|| Value::Object(Map::new()));
             if let Some(all) = all.as_object_mut() {
-                for (name, kind, _) in &made {
+                for (name, kind) in made.iter().map(|(n, k, _)| (n, k)).chain(rewired.iter().map(|(n, k)| (n, k))) {
                     all.insert(name.clone(), serde_json::to_value(kind).expect("a definition serializes"));
                 }
             }
@@ -1696,9 +1721,18 @@ impl ProviderAuth<'_> {
             for (_, _, m) in &made {
                 let _ = undo(m, EngineError::new("", ""));
             }
-            said.push(format!("{} could not become Claude Code or Codex accounts ({}) — krowk refuses them until they are connected again with `krowk connect`", made.iter().map(|(n, ..)| n.as_str()).collect::<Vec<_>>().join(", "), e.message));
+            if !made.is_empty() {
+                said.push(format!("{} could not become Claude Code or Codex accounts ({}) — krowk refuses them until they are connected again with `krowk connect`", made.iter().map(|(n, ..)| n.as_str()).collect::<Vec<_>>().join(", "), e.message));
+            }
+            if !rewired.is_empty() {
+                said.push(format!("{} could not be moved to the Responses API ({}) — Codex refuses them until they are connected again with `krowk connect`", rewired.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "), e.message));
+            }
             return said;
         }
+        said.extend(rewired.iter().map(|(name, _)| {
+            readiness::forget(name);
+            format!("{name} now uses the Responses API — Codex no longer accepts the chat wire API")
+        }));
         said.extend(made.iter().map(|(name, kind, _)| {
             // A gateway the environment named is the account's now: said.
             let from_env = match (defs.instances.get(name), kind) {

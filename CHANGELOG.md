@@ -81,7 +81,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
   turns an Anthropic API key into a Claude Code account, and an
   Anthropic-compatible gateway (`--base-url`) into one that sends to it; an
   OpenAI, xAI, OpenRouter or OpenAI-compatible key becomes a Codex account
-  on a model provider of its own, with that provider's default model. Each
+  on a model provider of its own, with that provider's default model, on the
+  Responses API (Codex no longer accepts the chat wire API, so an
+  OpenAI-compatible server must offer `/responses`, as recent Ollama and
+  vLLM do; one such account already written on the chat wire API is moved
+  to the Responses API the first time krowk uses it, with one line). Each
   keeps the name it had (`anthropic`, `openai:work`), gets a directory of its
   own under `~/.krowk/accounts`, and its key stays where it was: in krowk's
   credentials file (pasted, `$VAR` or `!command`) or the variable it names,
