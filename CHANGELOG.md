@@ -68,6 +68,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
   account you wrote by hand on a key read "ChatGPT subscription"; it now
   reads "Codex, API key", as `krowk status` already says.
 
+- **A turn waiting on Claude Code or Codex no longer wakes krowk up.** krowk
+  checked for steering ten times a second while a turn ran; it now waits for
+  the steering itself, so a long silent turn costs no CPU, and steering is
+  passed on the moment you send it rather than within a tenth of a second.
+
 ## [0.18.0] - 2026-11-20
 
 ### Added

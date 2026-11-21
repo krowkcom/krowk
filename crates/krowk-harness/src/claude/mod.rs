@@ -143,9 +143,6 @@ const STOP_GRACE: Duration = Duration::from_secs(10);
 const EXIT_GRACE: Duration = Duration::from_secs(5);
 /// The end of stderr kept for a failure's words.
 const STDERR_TAIL: usize = 4096;
-/// How often a running turn looks for steering to pass on, as the Codex
-/// backend does.
-const STEER_POLL: Duration = Duration::from_millis(100);
 /// After a `result` with steering written and not yet replayed, how long
 /// Claude Code has to begin the turn that reads it (at once, as recorded)
 /// before krowk stops waiting: an interrupt cancels it, and what its
@@ -1344,11 +1341,11 @@ impl Proc {
         // The `result` the turn ends at once the interrupt that cancels
         // the steering grace gave up on is answered.
         let mut given_up: Option<stream::Outcome> = None;
-        let mut poll = tokio::time::interval(STEER_POLL);
-        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let result = loop {
             let until = crate::engine::sleep_until(deadline);
             let drained = crate::engine::sleep_until(drain);
+            let graced = crate::engine::sleep_until(grace.as_ref().map(|(at, _)| *at));
+            let arrived = ctx.steers.arrived();
             let (receipt_required, cancel_queued) = said.unwrap_or((false, self.cancel_queued));
             tokio::select! {
                 biased;
@@ -1380,7 +1377,8 @@ impl Proc {
                 _ = drained => return self.ended_early(t, events, interrupted, (given_up.is_some(), before.take())).await,
                 // Steering, written as it arrives (R-STEER-1): Claude Code
                 // reads it at its next call, and replays it when it does.
-                _ = poll.tick(), if !interrupted && given_up.is_none() && cancel_queued => {
+                // The steering grace running out is checked the same way.
+                _ = async { tokio::select! { _ = arrived => {}, _ = graced => {} } }, if !interrupted && given_up.is_none() && cancel_queued => {
                     self.steer(&ctx.steers, &ctx.session_dir, &mut grace, receipt_required, (&mut receipt, &mut deadline, &mut given_up)).await?;
                 }
                 msg = next_line(&mut queued, &mut self.out) => {
