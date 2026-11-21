@@ -40,7 +40,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Notify};
 
 /// A boxed future that can move between threads: what a dyn-compatible
 /// async trait method returns.
@@ -209,8 +209,11 @@ pub struct TurnContext {
 /// engine closes the queue in the same locked step as its last check that
 /// it is empty, and the host closes it when the turn is over, so a push that
 /// comes after either is told so instead of being queued for nobody.
+///
+/// A running turn waits for steering on `arrived` rather than a timer, so a
+/// backend that has gone quiet leaves krowk asleep (R-PERF-2).
 #[derive(Debug, Clone, Default)]
-pub struct Steers(Arc<Mutex<SteerQueue>>);
+pub struct Steers(Arc<Mutex<SteerQueue>>, Arc<Notify>);
 
 #[derive(Debug, Default)]
 struct SteerQueue {
@@ -249,7 +252,17 @@ impl Steers {
             return Err(steer);
         }
         q.waiting.push(steer);
+        drop(q);
+        self.1.notify_one();
         Ok(())
+    }
+
+    /// Resolves once a steer has been pushed since the last time this
+    /// resolved — at once if one was pushed while nobody waited, so a push
+    /// between the engine's `take` and its next wait is never missed. It may
+    /// resolve with the queue already drained: `take` then finds nothing.
+    pub async fn arrived(&self) {
+        self.1.notified().await
     }
 
     /// Whether nothing waits.
@@ -454,5 +467,26 @@ mod tests {
         t.push("never read".into()).unwrap();
         assert_eq!(texts(t.close()), ["never read"], "a turn that stops early returns what it never took");
         assert!(t.push("x".into()).is_err());
+    }
+
+    /// The wake a waiting turn gets: a steer pushed between the engine's
+    /// `take` and its next wait still wakes it, and a turn with nothing
+    /// pushed stays asleep (R-PERF-2).
+    #[tokio::test]
+    async fn r_steer_1_a_steer_pushed_before_the_wait_still_wakes_it() {
+        let soon = std::time::Duration::from_millis(50);
+        let s = Steers::default();
+        assert!(tokio::time::timeout(soon, s.arrived()).await.is_err(), "nothing pushed: no wake");
+        s.push("between".into()).unwrap();
+        tokio::time::timeout(soon, s.arrived()).await.expect("pushed before the wait: woken at once");
+        assert!(tokio::time::timeout(soon, s.arrived()).await.is_err(), "one push, one wake");
+        let waiter = tokio::spawn({
+            let s = s.clone();
+            async move { s.arrived().await }
+        });
+        tokio::task::yield_now().await;
+        s.push("during".into()).unwrap();
+        tokio::time::timeout(soon * 20, waiter).await.expect("pushed during the wait: woken").unwrap();
+        assert_eq!(s.take().len(), 2);
     }
 }

@@ -103,13 +103,9 @@ status = "enforced"
 
 # --- Idle: `krowk -p` waiting on a backend that says nothing (Linux /proc) ---
 
-# Measured on the fake `claude` since krowk's own engine went (NL06). The
-# release build holds about 12 MB waiting on it, but wakes about 20 times a
-# second: the Claude Code backend looks for steering to pass on every 100 ms
-# (`claude::STEER_POLL`). Each wake is a few microseconds of CPU, which reads
-# as a whole tick whenever it crosses one, so `engine.idle_cpu` and
-# `engine.idle_wakeups` are pending until that poll waits on the steering
-# queue instead of a timer (owner: the Basecamp to-do 10534685604).
+# Measured on the fake `claude` since krowk's own engine went (NL06): a
+# running turn waits on the steering queue, not a timer, so krowk sleeps
+# until the backend or the person says something.
 [[budget]]
 id = "engine.idle_cpu"
 req = "R-PERF-2"
@@ -117,8 +113,7 @@ what = "`krowk -p` waiting on a silent Claude Code: CPU ticks over 10 s"
 unit = "ticks"
 max = 0
 window_s = 10
-status = "pending"
-owner = "10534685604"
+status = "enforced"
 
 [[budget]]
 id = "engine.idle_wakeups"
@@ -129,8 +124,7 @@ unit = "wakeups"
 # lands on a tick, but it is a context switch every time.
 max = 0
 window_s = 10
-status = "pending"
-owner = "10534685604"
+status = "enforced"
 
 [[budget]]
 id = "engine.idle_rss"

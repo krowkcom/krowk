@@ -96,8 +96,6 @@ const EXIT_GRACE: Duration = Duration::from_secs(5);
 const TERM_GRACE: Duration = Duration::from_secs(2);
 /// After Codex exits, how long what it already wrote is read.
 const DRAIN_GRACE: Duration = Duration::from_millis(500);
-/// How often a running turn looks for steering to pass on.
-const STEER_POLL: Duration = Duration::from_millis(100);
 /// The end of stderr kept for a failure's words.
 const STDERR_TAIL: usize = 4096;
 
@@ -1350,8 +1348,6 @@ impl Proc {
             let mut drain: Option<tokio::time::Instant> = None;
             let mut refused: Vec<Steer> = Vec::new();
             let mut completed: Option<Value> = None;
-            let mut poll = tokio::time::interval(STEER_POLL);
-            poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             while completed.is_none() || pending.values().any(|p| matches!(p, Pending::Steer(_))) {
                 let until = crate::engine::sleep_until(deadline);
                 let drained = crate::engine::sleep_until(drain);
@@ -1383,7 +1379,8 @@ impl Proc {
                         return self.died_in_turn(interrupted);
                     }
                     Some(s) = stops.recv() => self.stop_child(s, &mut pending).await,
-                    _ = poll.tick(), if steering => {
+                    // Steering, passed on as it arrives.
+                    _ = ctx.steers.arrived(), if steering => {
                         let turn = codex_turn.clone().expect("steering only once the turn has an id");
                         self.steer(&thread, &turn, ctx.steers.take(), &ctx.session_dir, &mut pending).await?;
                     }
