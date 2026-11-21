@@ -7,9 +7,6 @@
 
 #![cfg(feature = "harness")]
 
-#[path = "../../krowk-harness/tests/common/mock.rs"]
-mod mock;
-
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
@@ -28,23 +25,26 @@ impl Sandbox {
         Sandbox { root: root.canonicalize().unwrap() }
     }
 
-    fn krowk(&self, args: &[&str], url: &str) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_krowk"))
-            .args(args)
+    fn krowk(&self, args: &[&str]) -> Output {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
+        c.args(args)
             .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            // The fake `claude` first on PATH, for the session that runs.
+            .env("PATH", format!("{}:{}", self.root.join("bin").display(), std::env::var("PATH").unwrap_or_default()))
             .env("HOME", self.root.join("home"))
             .env("KROWK_NO_UPDATE_CHECK", "1")
-            .env("ANTHROPIC_API_KEY", "sk-test")
-            .env("ANTHROPIC_BASE_URL", url)
+            .env("FAKE_CLAUDE_LOG", self.root.join("fake.log"))
             .current_dir(self.root.join("repo"))
-            .stdin(Stdio::null())
-            .output()
-            .unwrap()
+            .stdin(Stdio::null());
+        let scenario = self.root.join("scenario.jsonl");
+        if scenario.exists() {
+            c.env("FAKE_CLAUDE_SCENARIO", scenario);
+        }
+        c.output().unwrap()
     }
 
     fn ok(&self, args: &[&str]) -> Value {
-        let out = self.krowk(args, "http://127.0.0.1:9");
+        let out = self.krowk(args);
         assert!(out.status.success(), "krowk {args:?}: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
         serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("krowk {args:?}: {e}"))
     }
@@ -92,13 +92,13 @@ fn r_cut_6_default_mode_is_set_nested_in_the_global_config_and_read_back() {
 fn r_cut_6_an_invalid_value_is_refused_naming_the_valid_ones() {
     let b = Sandbox::new("invalid");
     for (key, bad, valid) in [("defaultMode", "plan", "default, unhinged"), ("rollover", "sometimes", "auto, offer, off")] {
-        let out = b.krowk(&["config", "set", key, bad], "http://127.0.0.1:9");
+        let out = b.krowk(&["config", "set", key, bad]);
         let err = String::from_utf8_lossy(&out.stderr).into_owned() + &String::from_utf8_lossy(&out.stdout);
         assert!(!out.status.success() && err.contains(valid), "{key}: {err}");
     }
-    let out = b.krowk(&["config", "set", "rollover"], "http://127.0.0.1:9");
+    let out = b.krowk(&["config", "set", "rollover"]);
     assert!(!out.status.success() && (String::from_utf8_lossy(&out.stderr) + String::from_utf8_lossy(&out.stdout)).contains("auto|offer|off"), "a missing value names them too");
-    let out = b.krowk(&["config", "unset", "defaultMode"], "http://127.0.0.1:9");
+    let out = b.krowk(&["config", "unset", "defaultMode"]);
     assert!(!out.status.success(), "these two are set, not removed");
     assert!(!b.global().exists(), "nothing was written");
 }
@@ -126,19 +126,35 @@ fn r_cut_7_get_reads_workspace_and_refuses_an_unknown_key() {
     assert_eq!(b.get("workspace").1, "none");
     b.ok(&["config", "set", "workspace", "ws_one", "--global"]);
     assert_eq!(b.get("workspace"), ("ws_one".into(), "global config".into()));
-    let out = b.krowk(&["config", "get", "nonsense"], "http://127.0.0.1:9");
+    let out = b.krowk(&["config", "get", "nonsense"]);
     assert!(!out.status.success() && (String::from_utf8_lossy(&out.stderr) + String::from_utf8_lossy(&out.stdout)).contains("workspace, defaultMode, rollover"));
 }
 
+/// A session on Claude Code (the fake `claude`, signed in to the default
+/// account) started after `config set defaultMode unhinged` runs in that
+/// mode: krowk answers Claude Code's permission asks itself, and allows a
+/// command it would refuse headless in default with nobody to ask.
+#[cfg(unix)]
 #[test]
-#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_cut_6_a_session_started_after_config_set_uses_the_default_mode() {
-    let m = mock::serve(mock::readme_script);
     let b = Sandbox::new("session");
+    std::fs::create_dir_all(b.root.join("bin")).unwrap();
+    std::os::unix::fs::symlink(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures/claude/fake-claude"), b.root.join("bin/claude")).unwrap();
+    std::fs::create_dir_all(b.root.join("home/.claude")).unwrap();
+    std::fs::write(b.root.join("home/.claude/fake-login"), "").unwrap();
+    b.trust_repo();
+    let input = json!({"command": "rm -rf build"});
+    let call = json!({"type": "assistant", "message": {"id": "msg_rm", "model": "{{MODEL}}", "role": "assistant", "content": [{"type": "tool_use", "id": "toolu_rm", "name": "Bash", "input": input}]}, "parent_tool_use_id": null, "session_id": "{{SESSION}}"});
+    let ask = json!({"subtype": "can_use_tool", "tool_name": "Bash", "input": input, "tool_use_id": "toolu_rm"});
+    let done = r#"{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"{{SESSION}}"}"#;
+    std::fs::write(b.root.join("scenario.jsonl"), format!("{call}\n@ask {ask}\n@tool_result toolu_rm\n{done}\n")).unwrap();
     b.ok(&["config", "set", "defaultMode", "unhinged"]);
-    let out = b.krowk(&["-p", "read README.md and summarise it in one line", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "stream-json"], &m.url);
+    let out = b.krowk(&["-p", "read README.md and summarise it in one line", "--model", "claude/sonnet", "--output-format", "stream-json"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
     let started = stdout.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).find(|l| l["type"] == "turn.started").expect("turn.started");
     assert_eq!(started["permissionMode"], "unhinged");
+    let fake = std::fs::read_to_string(b.root.join("fake.log")).unwrap();
+    let answer = fake.lines().find(|l| l.starts_with("answer ") && l.contains("fake_3")).unwrap_or_else(|| panic!("the ask was answered: {fake}"));
+    assert!(answer.contains(r#""behavior":"allow""#), "{answer}");
 }
