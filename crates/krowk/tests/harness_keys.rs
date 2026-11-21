@@ -1,8 +1,8 @@
 //! Stored API keys (R-CRED-1, R-INST-5 as amended): `krowk connect <vendor>
 //! --method api-key` storing a pasted key, a `$VAR` or a `!command` in
-//! krowk's provider credentials file, the built binary against the
-//! stand-in Anthropic API, fake vendor binaries and a fake password
-//! manager. A sentinel key is followed through every path — connect, status,
+//! krowk's provider credentials file, the built binary against fake
+//! vendor binaries, a stand-in gateway and a fake password manager. A
+//! sentinel key is followed through every path — connect, status,
 //! providers list, doctor, a turn's stream-json and log, a failing request,
 //! disconnect — and found only in the credentials file.
 
@@ -164,8 +164,10 @@ fn printed(out: &Output) -> String {
     format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
 }
 
+/// A gateway's address for the sandbox's `ANTHROPIC_BASE_URL`: the fake
+/// `claude` runs the turns, so nothing it answers is a model's.
 fn answer() -> mock::Mock {
-    mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("stored keys work")))
+    mock::serve(|_, _| mock::Reply::json(200, &json!({})))
 }
 
 #[test]
@@ -345,69 +347,6 @@ fn r_cred_1_at_a_terminal_a_key_is_pasted_without_echo_and_without_one_the_flags
     assert!(t.text().contains("key stored in krowk's credentials file"), "{}", t.text());
     assert!(!t.text().contains(SENTINEL), "the key was echoed: {}", t.text());
     assert_eq!(b.stored()["keys"]["anthropic"], json!({"literal": SENTINEL}));
-}
-
-#[test]
-#[ignore = "native loop: krowk's own file tools run only in a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
-fn r_cred_1_the_file_tools_neither_read_search_nor_write_krowks_home_unasked() {
-    // The model goes for krowk's home by every spelling that leads there —
-    // by name, through `..`, in another case, through a symlinked alias —
-    // with allow rules for everything, from a session whose working
-    // directory holds the home: every read, search and write rooted in it
-    // is refused, a search of the directory around it skips it, and what
-    // the model is sent back never holds the key.
-    let target = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let path = target.clone();
-    let calls = [
-        ("read", json!({"path": ".krowk/config.json"})),
-        ("read", json!({"path": ".krowk/../.krowk/credentials.json"})),
-        ("read", json!({"path": ".KROWK/credentials.json"})),
-        ("read", json!({"path": "alias/credentials.json"})),
-        ("grep", json!({"pattern": "STORED-SENTINEL", "path": ".krowk"})),
-        ("grep", json!({"pattern": "STORED-SENTINEL", "path": "alias"})),
-        ("glob", json!({"pattern": "**/*.json", "path": ".krowk/../.krowk"})),
-        ("write", json!({"path": ".krowk/config.json", "content": "{}"})),
-        ("write", json!({"path": "alias/sessions/planted.json", "content": "{}"})),
-        ("grep", json!({"pattern": "STORED-SENTINEL", "path": "."})),
-        ("glob", json!({"pattern": "**/*.json", "path": "."})),
-    ];
-    let m = mock::serve(move |_, n| match n {
-        0 => mock::Reply::sse(&mock::tool_use("toolu_00Read", "read", &json!({"path": *path.lock().unwrap()}))),
-        n if n <= calls.len() => {
-            let (tool, input) = &calls[n - 1];
-            mock::Reply::sse(&mock::tool_use(&format!("toolu_{n:02}Call"), tool, input))
-        }
-        _ => mock::Reply::sse(&mock::text_stream("done")),
-    });
-    let b = Sandbox::new("fence", &m.url);
-    *target.lock().unwrap() = b.credentials().display().to_string();
-    // Stored for the built-in native instance, which runs krowk's own file
-    // tools: `krowk connect` makes a Claude Code account of a key now.
-    std::fs::create_dir_all(b.credentials().parent().unwrap()).unwrap();
-    std::fs::write(b.credentials(), json!({"keys": {"anthropic": {"literal": SENTINEL}}}).to_string()).unwrap();
-    let mut config = b.config();
-    config["permissions"] = json!({"allow": ["Read", "Edit", "Write", "Grep", "Glob"]});
-    std::fs::write(b.root.join("home/.krowk/config.json"), config.to_string()).unwrap();
-    std::fs::write(b.root.join("home/notes.txt"), "STORED-SENTINEL-control\n").unwrap();
-    std::fs::write(b.root.join("home/other.json"), "{}\n").unwrap();
-    std::fs::write(b.root.join("home/.krowk/notes.txt"), "STORED-SENTINEL-inside\n").unwrap();
-    std::os::unix::fs::symlink(b.root.join("home/.krowk"), b.root.join("home/alias")).unwrap();
-    let before = std::fs::read(b.root.join("home/.krowk/config.json")).unwrap();
-    let mut cmd = b.command(&["-p", "look", "--model", "anthropic/claude-sonnet-4-6", "--permission-mode", "acceptEdits"], &[]);
-    let out = cmd.current_dir(b.root.join("home")).output().unwrap();
-    assert!(out.status.success(), "{}", printed(&out));
-    let seen = m.seen.lock().unwrap();
-    let result = |i: usize| seen[i].body["messages"].as_array().unwrap().last().unwrap().to_string();
-    for i in 1..=10 {
-        assert!(result(i).contains("inside krowk's home"), "call {i} is refused: {}", result(i));
-    }
-    assert!(result(11).contains("notes.txt") && !result(11).contains("inside") && !result(11).contains(".krowk"), "a search around the home skips it: {}", result(11));
-    assert!(result(12).contains("other.json") && !result(12).contains("credentials.json") && !result(12).contains("config.json"), "so does a glob: {}", result(12));
-    assert_eq!(std::fs::read(b.root.join("home/.krowk/config.json")).unwrap(), before, "nothing was written");
-    assert!(!b.root.join("home/.krowk/sessions/planted.json").exists());
-    for s in seen.iter().skip(1) {
-        assert!(!s.body.to_string().contains(SENTINEL), "the key reached the model: {}", s.body);
-    }
 }
 
 #[test]

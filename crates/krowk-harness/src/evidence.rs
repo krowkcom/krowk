@@ -12,8 +12,8 @@
 //! anonymous and belongs to no run), then logged as `run.opened`, and every
 //! later publish — a resumed session's included — attaches to it.
 //!
-//! The same call serves the native loop and every backend, which is offered
-//! it through the tool bridge as `mcp__krowk__publish`.
+//! Every backend is offered it through the tool bridge as
+//! `mcp__krowk__publish`.
 
 use crate::engine::{EngineEvent, Events};
 use schemars::JsonSchema;
@@ -22,7 +22,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// The tool's name, native and bridged alike.
+/// The tool's name, as the bridge offers it.
 pub const PUBLISH: &str = "publish";
 
 /// What the model is told the tool does. Short: it rides on every call.
@@ -60,8 +60,8 @@ pub struct PublishRequest {
 /// turn's, not the session's first.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Producer {
-    /// `krowk.engine`: `krowk` for krowk's own loop, else the backend that
-    /// ran it — `claude-code`, `codex-app-server`.
+    /// `krowk.engine`: the backend that ran it — `claude-code`,
+    /// `codex-app-server`.
     pub engine: String,
     /// `gen_ai.request.model`: the provider's model id.
     pub model: String,
@@ -70,8 +70,8 @@ pub struct Producer {
 }
 
 impl Producer {
-    /// The engine name for a turn on this instance: a backend's kind, or
-    /// `krowk` when the native loop runs it.
+    /// The engine name for a turn on this instance: its backend's kind
+    /// (`krowk` for an instance with none, which runs no turn).
     pub fn new(instance: &crate::instances::Resolved, model: &str) -> Producer {
         let engine = if instance.backend.is_some() { instance.kind } else { "krowk" };
         Producer { engine: engine.into(), model: model.into(), provider: instance.provider.clone() }
@@ -103,10 +103,6 @@ pub struct Evidence {
     producer: Producer,
     /// Held across a publish, so two at once open one run between them.
     run: Arc<tokio::sync::Mutex<Option<String>>>,
-    /// Where a run it opens is reported instead of the caller's channel: a
-    /// subagent's publish opens its parent's run, which the parent's log
-    /// must hold for the parent's next turn to attach to it.
-    report_to: Option<Events>,
 }
 
 impl std::fmt::Debug for Evidence {
@@ -118,15 +114,7 @@ impl std::fmt::Debug for Evidence {
 impl Evidence {
     /// `run` is the session's, from its log's `run.opened`, if it has one.
     pub fn new(publisher: Publisher, session_id: &str, run: Option<String>, producer: Producer) -> Evidence {
-        Evidence { publisher, session_id: session_id.into(), producer, run: Arc::new(tokio::sync::Mutex::new(run)), report_to: None }
-    }
-
-    /// The same evidence — the same session tag, the same run — for a
-    /// subagent, whose run, when it opens one, is reported on its parent's
-    /// `events` and so logged in the parent's log. What it publishes is the
-    /// subagent's work, so the producer is its own.
-    pub fn for_subagent(&self, events: Events, producer: Producer) -> Evidence {
-        Evidence { report_to: Some(events), producer, ..self.clone() }
+        Evidence { publisher, session_id: session_id.into(), producer, run: Arc::new(tokio::sync::Mutex::new(run)) }
     }
 
     /// One `publish` call: the output the model reads and whether it is an
@@ -151,7 +139,7 @@ impl Evidence {
                 }
                 if let Some(opened) = p.run.filter(|r| run.as_ref() != Some(r)) {
                     *run = Some(opened.clone());
-                    let _ = self.report_to.as_ref().unwrap_or(events).send(EngineEvent::RunOpened { run: opened }).await;
+                    let _ = events.send(EngineEvent::RunOpened { run: opened }).await;
                 }
                 (p.text, false)
             }
@@ -166,8 +154,7 @@ impl Evidence {
 /// credential to read, so it is held to what changing files is — run under
 /// `acceptEdits` and `bypassPermissions`, asked about under `default`,
 /// refused in plan — and a `Read` deny rule denies it too: uploading a file
-/// is reading it out. One rule for the native tool and the bridged one,
-/// whoever asks.
+/// is reading it out. One rule whichever backend asks.
 pub fn call(cwd: &Path, input: &serde_json::Value) -> Result<crate::permissions::Call, (String, bool)> {
     let i = PublishInput::deserialize(input).map_err(|e| (format!("invalid input for publish: {e}"), true))?;
     let at = |f: &String| {
@@ -212,25 +199,5 @@ mod tests {
         assert_eq!((asked[0].run.as_deref(), asked[1].run.as_deref()), (None, Some("run_1")));
         assert_eq!((asked[0].session_id.as_str(), asked[0].caption.as_deref(), asked[0].root.as_path()), ("s-1", Some("the fix"), Path::new("/repo")));
         assert_eq!(asked[0].producer, producer, "R-EVID-2: each publish carries what did the work");
-    }
-
-    /// R-EVID-2: a subagent's file names the subagent's model, under its
-    /// parent's session.
-    #[test]
-    fn r_evid_2_a_subagents_publish_carries_its_own_producer() {
-        let asked: Arc<Mutex<Vec<PublishRequest>>> = Arc::default();
-        let seen = asked.clone();
-        let publisher: Publisher = Arc::new(move |r: &PublishRequest| {
-            seen.lock().unwrap().push(r.clone());
-            Ok(Published { text: "ok".into(), run: Some("run_1".into()), for_person: Vec::new() })
-        });
-        let parent = Producer { engine: "krowk".into(), model: "parent-model".into(), provider: "anthropic".into() };
-        let child = Producer { engine: "codex-app-server".into(), model: "child-model".into(), provider: "openai".into() };
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        let (tx, _rx) = tokio::sync::mpsc::channel(8);
-        let ev = Evidence::new(publisher, "s-1", Some("run_1".into()), parent).for_subagent(tx.clone(), child.clone());
-        rt.block_on(ev.publish(Path::new("/repo"), &serde_json::json!({"files": ["a.png"]}), &tx));
-        let asked = asked.lock().unwrap();
-        assert_eq!((asked[0].session_id.as_str(), &asked[0].producer), ("s-1", &child));
     }
 }

@@ -1,51 +1,48 @@
-//! krowk's own agent engine: the model loop behind `krowk -p`.
+//! krowk's host for Claude Code and Codex sessions: what `krowk -p`, the
+//! daemon and sync run turns through. krowk runs no model itself; every
+//! turn runs inside the stock `claude` or `codex`.
 //!
 //! - `protocol` — the typed commands, events and log lines every client
 //!   speaks; the JSON Schema in `schema/` is generated from it.
-//! - `engine` — the `Engine` trait native providers and vendor backends
-//!   implement, and the `EngineEvent`s they report.
-//! - `native` — krowk's own loop over a `ModelClient`, one per wire API:
-//!   `anthropic` (Messages), `openai` (Responses), `chat` (Chat
-//!   Completions: xAI, OpenRouter and anything compatible). `wire` is the
-//!   call and stream loop the three share; `http` the HTTP client every
-//!   request krowk makes goes through, and `sse` the event-stream parser.
+//! - `engine` — the `Engine` trait the backends implement, and the
+//!   `EngineEvent`s they report.
+//! - `claude` — the Claude Code backend: the user's own `claude` binary,
+//!   driven over stream-json and its control protocol, whose Messages
+//!   stream `claude::messages` decodes; `bridge` — krowk's tools offered to
+//!   a backend as an MCP server; `trust` — which repositories a backend may
+//!   run in.
+//! - `codex` — the Codex backend: the user's own `codex`, driven as `codex
+//!   app-server` over JSON-RPC, with krowk's tools as its dynamic tools.
+//! - `http` — the HTTP client every request krowk makes goes through, and
+//!   `sse` the event-stream parser.
 //! - `neutral` — text krowk frames around words it did not write, made
 //!   unable to close the frame (a handoff, another model's reasoning).
 //! - `catalog` — what the models.dev cache says of a model; `effort` — the
-//!   one reasoning-effort ladder, mapped per model.
-//! - `oauth` — the SuperGrok login and its tokens.
-//! - `claude` — the Claude Code backend: the user's own `claude` binary,
-//!   driven over stream-json and its control protocol, whose Messages
-//!   stream `claude::messages` decodes; `bridge` — krowk's
-//!   tools offered to a backend as an MCP server; `trust` — which
-//!   repositories a backend may run in.
-//! - `codex` — the Codex backend: the user's own `codex`, driven as `codex
-//!   app-server` over JSON-RPC, with krowk's tools as its dynamic tools.
-//! - `tools` — read, write, the edit tools, bash, grep and glob; `builds`
-//!   — the build slots bash queues build and test commands behind, on
-//!   `slots`, the machine-wide pools of lock files;
-//!   `evidence` — `publish`, and the session's krowk run; `todo` —
-//!   `todo_write` and the stale-list reminder.
-//! - `subagent` — the `subagent` tool: child sessions with their own
-//!   context, model and tools, fanned out in parallel; `agents` — the agent
-//!   definitions they run, krowk's and Claude Code's; `children` — how many
-//!   child sessions run at once, the machine's agent slots, and the watch
-//!   that frames each for its parent; `worktree` — the git worktree an
-//!   agent can run in, made, readied and removed.
-//! - `budget` — what a session may spend, checked before every model call.
+//!   one reasoning-effort ladder, mapped per model; `toolset` — the preset a
+//!   turn's context record names.
+//! - `oauth` — krowk's credentials file and the OAuth pieces its sign-ins
+//!   share; `mcp_oauth` — signing in to an MCP server.
+//! - `evidence` — `publish`, and the session's krowk run; `builds` — the
+//!   build slots, on `slots`, the machine-wide pools of lock files.
+//! - `agents` — the model listing and where krowk's worktrees are;
+//!   `children` — how many child sessions run at once, the machine's agent
+//!   slots, and the watch that frames a backend's agent for its parent;
+//!   `worktree` — the git worktree a session can run in, made, readied and
+//!   removed; `sandbox` — the OS sandbox a worktree's setup runs in.
+//! - `budget` — what a session may spend, checked before each turn and as
+//!   each call is metered.
 //! - `paste_guard` — refuses a `gh` post whose body carries a bare krowk
 //!   card link, on every backend and in every mode.
 //! - `tooling_guard` — refuses a worktree made by hand and a file sent to
 //!   a paste site, pointing at krowk's own, alongside the paste guard.
 //! - `permissions` — Claude-Code-compatible modes, rules and approvals:
-//!   the one evaluator every call is judged by, native or a backend's, with
-//!   the file tools' reach (`permissions::scope`), its globs and the hooks
-//!   the settings name.
-//! - `compat` — the instructions (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules`)
-//!   and skills a native turn reads; `hooks` — Claude-format command hooks.
+//!   the one evaluator every call a backend asks about is judged by, with
+//!   the reach of a file a call names (`permissions::scope`), its globs and
+//!   the hooks the settings name.
+//! - `compat` — the skills a person asks for by `/name`, and the MCP
+//!   servers a turn may use.
 //! - `mcp` — the person's and a trusted repository's MCP servers, their
 //!   tools deferred behind `mcp_search` and `mcp_call` (R-TOOL-3).
-//! - `toolset` — the preset registry: which edit tool a model is offered.
 //! - `host` — executes commands, writes the log, prices the turn.
 //! - `handoff` — carrying a session into a backend that did not run all of
 //!   it: its own thread caught up, another account's transcript copied, or
@@ -53,10 +50,11 @@
 //! - `log` — the append-only JSONL session log and its layout on disk;
 //!   `images` — the images a prompt carries, kept beside it.
 //! - `project` — the log as a `krowk_import::Source`, so krowk.db lists
-//!   native sessions beside imported ones.
-//! - `instances` — the named provider instances in krowk's config;
-//!   `readiness` — whether each can run a turn here, and what fixes it;
-//!   `connect` — connecting one and signing it out, for the CLI and an interactive client.
+//!   krowk's sessions beside imported ones.
+//! - `instances` — the named accounts in krowk's config; `readiness` —
+//!   whether each can run a turn here, and what fixes it; `connect` —
+//!   connecting one and signing it out, for the CLI and an interactive
+//!   client.
 //! - `headless` — `krowk -p`.
 //! - `daemon` — the per-user host daemon a session outlives the terminal
 //!   in, its unix socket, and the service that keeps it up (R-HOST-1,
@@ -66,14 +64,12 @@
 //! not open the code.
 
 pub mod agents;
-pub mod anthropic;
 pub mod ask;
 pub mod bridge;
 pub mod budget;
 pub mod builds;
 pub mod catalog;
 pub mod children;
-pub mod chat;
 pub mod claude;
 pub mod codex;
 pub mod compat;
@@ -86,7 +82,6 @@ pub mod evidence;
 pub mod group;
 pub mod handoff;
 pub mod headless;
-pub mod hooks;
 pub mod host;
 pub mod http;
 pub mod images;
@@ -94,15 +89,12 @@ pub mod pasted;
 pub mod upload;
 pub mod usage;
 pub mod instances;
-pub mod jobs;
 pub mod keys;
 pub mod log;
 pub mod mcp;
-pub mod native;
 pub mod mcp_oauth;
 pub mod neutral;
 pub mod oauth;
-pub mod openai;
 pub mod paste_guard;
 pub mod permissions;
 pub mod project;
@@ -115,18 +107,14 @@ pub mod relay;
 pub mod sandbox;
 pub mod schema;
 pub mod slots;
-pub mod subagent;
 #[cfg(unix)]
 pub mod sync;
 pub mod sse;
-pub mod todo;
 pub mod tooling_guard;
-pub mod tools;
 pub mod toolset;
 pub mod trust;
 // The archive compresses with ruzstd, which links on unix only, where
 // `krowk sessions` runs.
 #[cfg(unix)]
 pub mod vintage;
-pub mod wire;
 pub mod worktree;

@@ -48,7 +48,6 @@ const PASTE_HOSTS: &[&str] = &[
 
 /// What a worktree made by hand is refused with.
 pub const WORKTREE: &str = "krowk did not run this: krowk makes the worktrees agents work in, so each is readied and recorded, and `krowk worktrees` lists it. \
-     In krowk's own agent, a `subagent` call with `isolation: \"worktree\"` gives a child one. \
      On Claude Code or Codex, run `krowk worktrees add --json`, with `--from origin/main` to start from that ref rather than the files as they are and a long timeout if the repository has a setup command, and work in the `path` it answers, naming that path to any child agent; it is outside the session's working directory, so unless the session bypasses permissions its commands there may ask for approval. \
      Otherwise work where you are. A person can still make one by hand at their own prompt.";
 

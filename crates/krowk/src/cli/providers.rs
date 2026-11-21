@@ -1,8 +1,8 @@
 //! `krowk connect` and `krowk disconnect`: a model source, by vendor and
 //! method — a Claude subscription through Claude Code's own login
 //! (`claude:work`, R-INST-2), a ChatGPT subscription through Codex's
-//! (`codex:team`), SuperGrok through krowk's own OAuth, or an API key read
-//! from an environment variable — and `krowk providers add|list|remove`,
+//! (`codex:team`), or an API key, which runs as one of those accounts —
+//! and `krowk providers add|list|remove`,
 //! the same instances by backend kind, one level down. The sign-in itself
 //! is `krowk_harness::connect`, which every front end shares; this file is the
 //! terminal it asks and tells through, and the words of each result.
@@ -125,7 +125,7 @@ fn options(ctx: &Ctx) -> Result<Options, Error> {
         (false, None) => None,
     };
     let key = key.transpose().map_err(|e| fail("bad_flag", e))?;
-    Ok(Options { name: o(&ctx.f.name), api_key_env: o(&ctx.f.api_key_env), base_url: o(&ctx.f.base_url), client_id: o(&ctx.f.client_id), binary: o(&ctx.f.binary), config_dir: o(&ctx.f.config_dir), key })
+    Ok(Options { name: o(&ctx.f.name), api_key_env: o(&ctx.f.api_key_env), base_url: o(&ctx.f.base_url), binary: o(&ctx.f.binary), config_dir: o(&ctx.f.config_dir), key })
 }
 
 /// The shared sign-in, over this invocation's config and environment, and
@@ -204,10 +204,6 @@ fn report(ctx: &mut Ctx, done: &Connected, verb: &str) -> Result<(), Error> {
         }
         if let Some(s) = r.stored.source() {
             report["key_source"] = json!(s);
-            report["credentials"] = json!(credentials_path()?.display().to_string());
-        }
-        if done.oauth {
-            report["signed_in"] = json!(true);
             report["credentials"] = json!(credentials_path()?.display().to_string());
         }
         if verb != "added" {

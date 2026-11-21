@@ -6,18 +6,11 @@
 //! log, forwards live frames and adds up the cost, so every engine's turns
 //! land in the same log in the same shape (R-BACK-5).
 //!
-//! Two families implement it:
-//!
-//! - The native loop (`native::NativeEngine`), where krowk owns the prompt,
-//!   the tools and the loop, and a `ModelClient` speaks one provider's wire
-//!   API. The Anthropic Messages client is the first; OpenAI Responses and
-//!   Chat Completions are more `ModelClient`s under the same loop.
-//! - Backends (a vendor harness such as `claude -p` or `codex app-server`
-//!   driving its own loop), which implement `Engine` directly and translate
-//!   the vendor's stream into these events. `claude::ClaudeEngine` is the
-//!   first: one long-lived `claude` process per session, kept by the host
-//!   between turns; `codex::CodexEngine` drives `codex app-server` the same
-//!   way.
+//! Backends implement it: a vendor harness (`claude -p` or `codex
+//! app-server`) driving its own loop, its stream translated into these
+//! events. `claude::ClaudeEngine` keeps one long-lived `claude` process per
+//! session, kept by the host between turns; `codex::CodexEngine` drives
+//! `codex app-server` the same way.
 //!
 //! The rules every engine keeps:
 //!
@@ -41,11 +34,8 @@
 
 use crate::budget::Budget;
 use crate::evidence::Evidence;
-use crate::toolset::Preset;
 use crate::catalog::ModelInfo;
-use crate::protocol::{ApprovalDecision, ApprovalRequest, BackendAgent, Billing, Delta, Effort, ErrorInfo, HandoffKind, ImageRef, Item, ItemKind, LimitStatus, ModelRef, PermissionMode, Todo, ToolDefinition, Usage, WireApi};
-use crate::agents::AgentRun;
-use crate::subagent::Subagents;
+use crate::protocol::{ApprovalDecision, ApprovalRequest, BackendAgent, Billing, Delta, Effort, ErrorInfo, HandoffKind, ImageRef, Item, ItemKind, LimitStatus, ModelRef, PermissionMode, ToolDefinition, Usage, WireApi};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -86,8 +76,6 @@ pub enum EngineEvent {
     Approval(ApprovalRequest),
     /// It was answered.
     ApprovalResolved { request_id: String, decision: ApprovalDecision },
-    /// `todo_write` replaced the session's todo list: the host logs it.
-    Todos { todos: Vec<Todo> },
     /// A subagent started, as the child session `session_id`, answering
     /// the tool call `call_id`: the host logs the link, with who runs it
     /// and the backend's own id for it (R-SUB-7).
@@ -178,8 +166,6 @@ pub struct TurnContext {
     /// prompts carry are kept (`crate::images`).
     pub session_dir: PathBuf,
     pub permission_mode: PermissionMode,
-    /// The toolset preset the host chose for this turn's model.
-    pub preset: &'static Preset,
     /// The effort asked for, on krowk's ladder; the engine maps it onto the
     /// rungs the model takes.
     pub effort: Option<Effort>,
@@ -191,33 +177,22 @@ pub struct TurnContext {
     pub steers: Steers,
     /// The backend session the branch last ran in, from its
     /// `backend.session` event: what a backend resumes. None for a new
-    /// session, and for one that has only run natively.
+    /// session.
     pub backend_session: Option<String>,
-    /// What the session has spent and may spend: the engine asks it before
-    /// every model call it makes (R-BUDGET-1).
+    /// What the session has spent and may spend (R-BUDGET-1): the host
+    /// checks it before the turn and as each call is metered.
     pub budget: Budget,
     /// Where `publish` sends files; none when this host publishes nothing.
     pub evidence: Option<Evidence>,
-    /// The build slots bash's heavy commands wait for (`crate::builds`).
-    pub builds: crate::builds::Builds,
-    /// The session's background jobs (R-STEER-2), the host's: none where
-    /// nothing keeps them.
-    pub jobs: Option<Arc<crate::jobs::Jobs>>,
     /// The turn's permissions: every call the engine runs or is asked about
     /// is judged here, and asked about through it.
     pub gate: crate::permissions::Gate,
-    /// What the repository and the person's settings bring to a native
-    /// turn: instructions, skills, hooks.
+    /// What the repository and the person's settings bring to the turn:
+    /// its MCP servers, skills and hooks.
     pub compat: std::sync::Arc<crate::compat::Compat>,
-    /// What this turn may start subagents with; none in a subagent, which
-    /// starts none of its own, and for an engine that does not offer them.
-    pub subagents: Option<Subagents>,
-    /// For a subagent: the definition it runs — its instructions and its
-    /// tool allowlist.
-    pub agent: Option<AgentRun>,
     /// For a backend: how to bring its vendor session up to date with
     /// turns it did not run (`crate::handoff`). None when there is nothing
-    /// it has not seen; the native loop reads the whole branch instead.
+    /// it has not seen.
     pub handoff: Option<crate::handoff::Handoff>,
     /// The turn a backend began by itself (`Command::Continue`): nothing is
     /// sent, and the engine reads the turn already under way. Its prompt
@@ -235,49 +210,28 @@ pub struct TurnContext {
 /// it is empty, and the host closes it when the turn is over, so a push that
 /// comes after either is told so instead of being queued for nobody.
 #[derive(Debug, Clone, Default)]
-pub struct Steers(Arc<Queue>);
-
-#[derive(Debug, Default)]
-struct Queue {
-    q: Mutex<SteerQueue>,
-    /// Woken by each push: a turn held open for its background children
-    /// waits on it for their notes, or the person's steering.
-    arrived: tokio::sync::Notify,
-}
+pub struct Steers(Arc<Mutex<SteerQueue>>);
 
 #[derive(Debug, Default)]
 struct SteerQueue {
     waiting: Vec<Steer>,
     closed: bool,
-    /// A call was moved to the background for the steering waiting
-    /// (R-STEER-4): the step's later calls are moved sooner. Cleared when
-    /// that steering is taken.
-    moved: bool,
 }
 
-/// One steer: its text, and the images it carries, already kept. Or a
-/// note of krowk's riding the same queue (`from_krowk`): a background job
-/// or child that ended, which the model reads as it reads steering but
-/// which is never handed back as the person's words.
+/// One steer: its text, and the images it carries, already kept.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Steer {
     pub text: String,
     pub images: Vec<ImageRef>,
-    pub from_krowk: bool,
 }
 
 impl From<&str> for Steer {
     fn from(text: &str) -> Steer {
-        Steer { text: text.to_string(), images: Vec::new(), from_krowk: false }
+        Steer { text: text.to_string(), images: Vec::new() }
     }
 }
 
 impl Steer {
-    /// A note of krowk's.
-    pub fn note(text: String) -> Steer {
-        Steer { text, images: Vec::new(), from_krowk: true }
-    }
-
     pub fn item(self) -> Item {
         Item::UserText { text: self.text, images: self.images }
     }
@@ -285,7 +239,7 @@ impl Steer {
 
 impl Steers {
     fn lock(&self) -> std::sync::MutexGuard<'_, SteerQueue> {
-        self.0.q.lock().unwrap_or_else(|e| e.into_inner())
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Queues `steer`, or hands it back when the turn takes no more.
@@ -295,8 +249,6 @@ impl Steers {
             return Err(steer);
         }
         q.waiting.push(steer);
-        drop(q);
-        self.0.arrived.notify_waiters();
         Ok(())
     }
 
@@ -305,47 +257,9 @@ impl Steers {
         self.lock().waiting.is_empty()
     }
 
-    /// Returns once the person's steering waits: krowk's notes do not
-    /// count.
-    pub async fn steered(&self) {
-        loop {
-            let arrived = self.0.arrived.notified();
-            tokio::pin!(arrived);
-            arrived.as_mut().enable();
-            if self.lock().waiting.iter().any(|s| !s.from_krowk) {
-                return;
-            }
-            arrived.await;
-        }
-    }
-
-    /// Returns once something waits in the queue.
-    pub async fn arrival(&self) {
-        let arrived = self.0.arrived.notified();
-        tokio::pin!(arrived);
-        arrived.as_mut().enable();
-        if !self.is_empty() {
-            return;
-        }
-        arrived.await;
-    }
-
     /// Everything waiting, oldest first, leaving the queue empty.
     pub fn take(&self) -> Vec<Steer> {
-        let mut q = self.lock();
-        q.moved = false;
-        std::mem::take(&mut q.waiting)
-    }
-
-    /// Says a call was moved to the background for the steering waiting.
-    pub fn moved_one(&self) {
-        self.lock().moved = true;
-    }
-
-    /// Whether a call was moved for the steering waiting: one after it in
-    /// the same step is moved after a moment, not its two seconds.
-    pub fn has_moved(&self) -> bool {
-        self.lock().moved
+        std::mem::take(&mut self.lock().waiting)
     }
 
     /// Closes the queue if nothing is waiting, and says whether it did: the
@@ -360,9 +274,7 @@ impl Steers {
 
     /// Returns steering to the front of the queue, oldest first, whether or
     /// not it is closed: steering a backend took but the model never read
-    /// (cancelled on an interrupt), and the host's notes of krowk's, taken
-    /// out with the person's steering when the turn ended and kept for the
-    /// next.
+    /// (cancelled on an interrupt).
     pub fn put_back(&self, steers: Vec<Steer>) {
         self.lock().waiting.splice(0..0, steers);
     }
@@ -446,13 +358,6 @@ pub trait Engine: Send + Sync {
     /// Runs one turn to its end. Items produced before a failure were
     /// already sent and stay in the log.
     fn run_turn<'a>(&'a self, ctx: TurnContext, events: Events) -> BoxFuture<'a, Result<TurnEnd, EngineError>>;
-    /// Whether the engine asks `TurnContext::budget` before each model call
-    /// itself. The native loop does; a backend's calls are the vendor's to
-    /// make, so the host checks before its turn and interrupts it when a
-    /// metered call has gone over.
-    fn checks_budget(&self) -> bool {
-        false
-    }
     /// Lets go of whatever outlives a turn — a backend's process — cleanly,
     /// before the host goes away. Nothing, for an engine that keeps nothing.
     fn shutdown(&self) -> BoxFuture<'_, ()> {

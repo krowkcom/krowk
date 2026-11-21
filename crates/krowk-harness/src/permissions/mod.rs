@@ -5,15 +5,13 @@
 //! the places they are read from (`settings`), grants remembered for a
 //! session or a project, and approval requests any client can answer.
 //!
-//! One evaluator judges every call krowk is asked about: the native loop's
-//! tools, and what a backend (Claude Code's `can_use_tool`, Codex's
-//! approval requests) asks. The order, for a call:
+//! One evaluator judges every call krowk is asked about: what a backend
+//! (Claude Code's `can_use_tool`, Codex's approval requests) asks, and
+//! krowk's own bridged tools. The order, for a call:
 //!
 //! 0. **`unhinged` allows it**, and none of what follows is read: no deny
-//!    rule, no fence, no ask rule, no hook's ask. The person chose to trust
-//!    the model with everything this process can reach. A `PreToolUse`
-//!    hook still runs, and a hook that blocks still blocks: a hook is the
-//!    person's own program, not a rule.
+//!    rule, no fence, no ask rule. The person chose to trust the model with
+//!    everything this process can reach.
 //! 1. **A deny rule that matches denies it**, in every mode —
 //!    `bypassPermissions` too. Deny always wins.
 //! 2. What needs no permission (krowk's own bridged tools) runs.
@@ -24,12 +22,11 @@
 //!    permissions are bypassed — never allowed by a rule or a remembered
 //!    grant, since what is written there decides what runs next (git's
 //!    hooks, Claude Code's and Codex's settings, krowk's own rules).
-//! 5. An ask rule that matches, or a `PreToolUse` hook that says `ask`,
-//!    asks.
+//! 5. An ask rule that matches asks.
 //! 6. `bypassPermissions` allows the rest.
-//! 7. An allow rule, a grant remembered for the session or the project, or
-//!    a `PreToolUse` hook that says `allow`, allows it — all of it: every
-//!    path it names, every command of a command line.
+//! 7. An allow rule, or a grant remembered for the session or the project,
+//!    allows it — all of it: every path it names, every command of a
+//!    command line.
 //! 8. Otherwise the mode decides: reading inside the working directory and
 //!    the directories the settings add (`additionalDirectories`) runs; editing there runs under
 //!    `acceptEdits` and is asked about under `default`; anything reaching
@@ -460,7 +457,7 @@ impl Gate {
     }
 
     /// The evaluator itself (see the module's notes for the order).
-    pub fn verdict(&self, call: &Call, hook: Option<hooks::Decision>) -> Verdict {
+    pub fn verdict(&self, call: &Call) -> Verdict {
         if self.0.mode == PermissionMode::Unhinged {
             return Verdict::Allow(Opens { outside: true, fences: true });
         }
@@ -474,14 +471,10 @@ impl Gate {
             return Verdict::Allow(Opens::default());
         }
         // krowk's own session tools: no mode, plan's included, holds them,
-        // but an ask rule or a hook's ask does — in bypassPermissions too,
-        // as for any call.
+        // but an ask rule does — in bypassPermissions too, as for any call.
         if call.access == Access::Session {
             if let Some((_, r)) = p.loaded.rules.iter().find(|(k, r)| *k == Kind::Ask && rules::matches(r, call, &at, false)) {
                 return Verdict::Ask { reason: format!("the rule `{}` in {} asks first", r.text, r.source), remember: remember(call) };
-            }
-            if hook == Some(hooks::Decision::Ask) {
-                return Verdict::Ask { reason: "a PreToolUse hook asks for it to be approved".into(), remember: Vec::new() };
             }
             return Verdict::Allow(Opens::default());
         }
@@ -497,9 +490,6 @@ impl Gate {
         if let Some((_, r)) = p.loaded.rules.iter().find(|(k, r)| *k == Kind::Ask && rules::matches(r, call, &at, false)) {
             return Verdict::Ask { reason: format!("the rule `{}` in {} asks first", r.text, r.source), remember: remember(call) };
         }
-        if hook == Some(hooks::Decision::Ask) {
-            return Verdict::Ask { reason: "a PreToolUse hook asks for it to be approved".into(), remember: Vec::new() };
-        }
         // A command line whose program the shell computes, or that krowk
         // cannot follow, cannot be held to a deny rule: where one applies,
         // it is asked about — in bypassPermissions too, and refused where
@@ -513,7 +503,7 @@ impl Gate {
         if bypass {
             return Verdict::Allow(Opens { outside: true, fences: true });
         }
-        if hook == Some(hooks::Decision::Allow) || self.allowed(call) {
+        if self.allowed(call) {
             return Verdict::Allow(Opens { outside: !outside.is_empty(), fences: false });
         }
         let out = |ps: &[PathBuf]| ps.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ");
@@ -541,14 +531,14 @@ impl Gate {
     /// allow it. `tool` and `input` are the call as the model made it, for
     /// the person to see. Returns what the allowed call may reach, or the
     /// refusal the model reads.
-    pub async fn check(&self, call: &Call, tool: &str, input: &Value, hook: Option<hooks::Decision>, events: &Events, cancel: &watch::Receiver<bool>) -> Result<Opens, String> {
-        let (reason, remember) = match self.verdict(call, hook) {
+    pub async fn check(&self, call: &Call, tool: &str, input: &Value, events: &Events, cancel: &watch::Receiver<bool>) -> Result<Opens, String> {
+        let (reason, remember) = match self.verdict(call) {
             Verdict::Allow(o) => return Ok(o),
             Verdict::Deny(m) => return Err(m),
             Verdict::Ask { reason, remember } => (reason, remember),
         };
         let what = summary(call);
-        let Some(approvals) = &self.0.approvals else { return Err(self.nobody_to_ask(call, hook, &what, &reason, &remember)) };
+        let Some(approvals) = &self.0.approvals else { return Err(self.nobody_to_ask(call, &what, &reason, &remember)) };
         let request_id = krowk_store::new_id();
         let answer = approvals.wait(&request_id, &self.0.session_id);
         let req = ApprovalRequest {
@@ -646,16 +636,15 @@ impl Gate {
 
     /// The refusal for a call that would be asked about when nobody can
     /// answer: what it needed, and what would allow it.
-    fn nobody_to_ask(&self, call: &Call, hook: Option<hooks::Decision>, what: &str, reason: &str, remember: &[String]) -> String {
-        // A session tool is asked about only by an ask rule or a hook, which
-        // no allow rule and no mode but unhinged gets past.
+    fn nobody_to_ask(&self, call: &Call, what: &str, reason: &str, remember: &[String]) -> String {
+        // A session tool is asked about only by an ask rule, which no allow
+        // rule and no mode but unhinged gets past.
         if call.access == Access::Session {
             return format!("{what} needs approval — {reason} — and nobody is here to give it: this session cannot ask. Run it where someone can answer (bare `krowk`), remove what asks, or rerun with `--permission-mode unhinged`.");
         }
-        // What bypassPermissions would still ask about — an ask rule, a
-        // hook's ask, a line a deny rule could not see into — only unhinged
-        // runs.
-        let past_bypass = matches!(self.in_mode(PermissionMode::BypassPermissions).verdict(call, hook), Verdict::Ask { .. });
+        // What bypassPermissions would still ask about — an ask rule, a line
+        // a deny rule could not see into — only unhinged runs.
+        let past_bypass = matches!(self.in_mode(PermissionMode::BypassPermissions).verdict(call), Verdict::Ask { .. });
         let at = self.0.policy.places();
         let untrusted = self.0.policy.loaded.ignored_allow.iter().find(|r| rules::matches(r, call, &at, true));
         let (outside, fenced) = self.reach(call);
@@ -678,7 +667,7 @@ impl Gate {
 /// tests check their mapping against.
 #[cfg(test)]
 pub(crate) fn judge(mode: PermissionMode, call: Result<Call, String>, cwd: &Path, protected: &[PathBuf]) -> Result<(), String> {
-    match Gate::modes_only(cwd, mode).protecting(protected.to_vec()).verdict(&call?, None) {
+    match Gate::modes_only(cwd, mode).protecting(protected.to_vec()).verdict(&call?) {
         Verdict::Allow(_) => Ok(()),
         Verdict::Deny(m) => Err(m),
         Verdict::Ask { reason, .. } => Err(format!("asked: {reason}")),

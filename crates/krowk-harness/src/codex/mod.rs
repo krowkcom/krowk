@@ -607,7 +607,7 @@ impl Engine for CodexEngine {
                 if let Some(ev) = handoff {
                     let _ = events.send(ev).await;
                 }
-                p.turn(Steer { text: prompt, images, from_krowk: false }, &mut ctx, &ask, &events, &mut stops, &self.instance.name).await
+                p.turn(Steer { text: prompt, images }, &mut ctx, &ask, &events, &mut stops, &self.instance.name).await
             }
             .await;
             *self.stopper.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -668,8 +668,8 @@ impl Answers {
     async fn permit(&self, call: Result<Call, String>, tool: &str, input: &Value, asking: Asking<'_>) -> Result<(), String> {
         let call = call?;
         let r = match asking {
-            Some((events, cancel)) => self.gate.check(&call, tool, input, None, events, cancel).await.map(drop),
-            None => match self.gate.verdict(&call, None) {
+            Some((events, cancel)) => self.gate.check(&call, tool, input, events, cancel).await.map(drop),
+            None => match self.gate.verdict(&call) {
                 Verdict::Allow(_) => Ok(()),
                 Verdict::Deny(m) => Err(m),
                 Verdict::Ask { reason, .. } => Err(format!("{} needs approval — {reason} — and Codex asked outside a turn, where nobody can be asked", permissions::summary(&call))),
@@ -701,9 +701,9 @@ impl Answers {
             })
             .unwrap_or_default();
         // A deny rule on Claude Code's name for it holds, as it does for
-        // the native tool and Claude Code's own.
+        // Claude Code's own.
         let call = Call { tool: "AskUserQuestion".into(), access: Access::Session, subject: None };
-        let answered = match (self.gate.verdict(&call, None), asking) {
+        let answered = match (self.gate.verdict(&call), asking) {
             (Verdict::Deny(m), _) => Err(m),
             (_, Some((events, cancel))) if !questions.is_empty() => self.gate.ask("request_user_input", params, questions.clone(), events, cancel).await,
             _ => Err(permissions::NOBODY_TO_ASK.into()),
@@ -1816,7 +1816,7 @@ mod tests {
         let q = ask.answer("item/tool/requestUserInput", &json!({"questions": [{"id": "q1", "header": "h", "question": "which?"}]}), &mut t, None).await.unwrap();
         assert!(q["answers"]["q1"]["answers"][0].as_str().unwrap().contains("Decide"), "nobody to ask: the model is told to decide");
         assert_eq!(ask.answer("execCommandApproval", &json!({}), &mut t, None).await.unwrap()["decision"], "denied");
-        // publish is offered too, and judged as the native one is.
+        // publish is offered too, and judged by the one evaluator.
         let refused = ask.answer("item/tool/call", &json!({"namespace": "krowk", "tool": "publish", "arguments": {"files": ["a.png"]}}), &mut t, None).await.unwrap();
         assert_eq!(refused["success"], false);
         assert!(refused["contentItems"][0]["text"].as_str().unwrap().contains("needs approval"), "{refused}");

@@ -24,8 +24,8 @@ pub fn files() -> Vec<(&'static str, String)> {
     ]
 }
 
-/// The schema of a tool's input — a native tool's, an MCP meta tool's, a
-/// bridge tool's — as the Anthropic API wants it: an object
+/// The schema of a tool's input — an MCP meta tool's, a bridge tool's — as
+/// the Anthropic API wants it: an object
 /// schema, without the `$schema` and `title` noise schemars adds, and
 /// tidied, since every byte of it rides on every model call: a nested type
 /// is written in place rather than referenced, and an optional field is its

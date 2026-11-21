@@ -615,7 +615,7 @@
           ]
         },
         {
-          "description": "The session's todo list, whole, as `todo_write` last set it\n(R-TODO-2): each write replaces the list before it.",
+          "description": "The session's todo list, whole, as krowk's own `todo_write` last set\nit (R-TODO-2), in logs from before that engine went: each write\nreplaced the list before it.",
           "type": "object",
           "properties": {
             "turnId": {
@@ -1156,7 +1156,7 @@
       "description": "Who runs a subagent's loop (R-SUB-7).",
       "oneOf": [
         {
-          "description": "krowk's own loop, through its `subagent` tool.",
+          "description": "krowk's own loop, through its `subagent` tool, in logs from before\nthat engine went.",
           "type": "string",
           "const": "krowk"
         },
@@ -1529,7 +1529,7 @@
           ]
         },
         {
-          "description": "How many background jobs and background children the session has\nrunning (R-STEER-2, R-STEER-3), each time it changes: during a turn\nand between turns alike, to a host's watchers (`Host::watch`).",
+          "description": "How many background jobs and background children the session had\nrunning, from krowk's own engine (R-STEER-2, R-STEER-3). Nothing\nsends it since that engine went; kept so a client that reads it\nstill parses.",
           "type": "object",
           "properties": {
             "sessionId": {

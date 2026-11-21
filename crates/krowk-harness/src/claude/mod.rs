@@ -89,9 +89,8 @@
 //! approval lists), the bridge also offers `mcp_search` and `mcp_call`, run
 //! on the session's own connections and sign-ins; a call is judged as
 //! `Mcp(server:tool)` — asked by `can_use_tool`, and judged again by the
-//! bridge, which refuses a call that needed asking and was not. Subagent
-//! allowlists are krowk's native agents'; Claude Code's own agents reach
-//! the same tools under krowk's rules, not an allowlist of their own.
+//! bridge, which refuses a call that needed asking and was not. Claude
+//! Code's own agents reach the same tools under krowk's rules.
 //!
 //! **Compliance** (R-BACK-2) is structural: krowk starts the binary as the
 //! user installed it, sends it no system prompt and no headers, sets only
@@ -308,7 +307,7 @@ pub fn transcript_path(config_dir: &Path, cwd: &str, session_id: &str) -> PathBu
 /// judges it (`crate::permissions`): Claude Code's own tool names are the
 /// names rules are written in. Calls Claude Code allows itself — its
 /// settings' allow rules, its hooks — never reach here (see the module's
-/// notes); what does is judged like a native call. krowk's own bridged
+/// notes); what does is judged by `crate::permissions`. krowk's own bridged
 /// tools need no permission; a tool this build does not know is asked
 /// about.
 pub fn call_of(tool: &str, input: &Value, cwd: &Path) -> Call {
@@ -887,8 +886,8 @@ impl Answers {
     async fn permit(&self, tool: &str, input: &Value, asking: Asking<'_>) -> Result<(), String> {
         let call = call_of(tool, input, &self.cwd);
         match asking {
-            Some((events, cancel)) => self.gate.check(&call, tool, input, None, events, cancel).await.map(drop),
-            None => match self.gate.verdict(&call, None) {
+            Some((events, cancel)) => self.gate.check(&call, tool, input, events, cancel).await.map(drop),
+            None => match self.gate.verdict(&call) {
                 Verdict::Allow(_) => Ok(()),
                 Verdict::Deny(m) => Err(m),
                 Verdict::Ask { reason, .. } => Err(format!("{} needs approval — {reason} — and Claude Code asked outside a turn, where nobody can be asked", permissions::summary(&call))),
@@ -901,10 +900,9 @@ impl Answers {
     /// as Claude Code joins them — or the refusal the model reads. A deny
     /// rule on it holds.
     async fn ask_user(&self, input: &Value, asking: Asking<'_>) -> Result<Value, String> {
-        // The session's own, as the native `ask_user` is: no mode refuses
-        // it, plan included.
+        // The session's own: no mode refuses it, plan included.
         let call = Call { tool: "AskUserQuestion".into(), access: Access::Session, subject: None };
-        if let Verdict::Deny(m) = self.gate.verdict(&call, None) {
+        if let Verdict::Deny(m) = self.gate.verdict(&call) {
             return Err(m);
         }
         let Some((events, cancel)) = asking else { return Err(permissions::NOBODY_TO_ASK.into()) };
@@ -940,7 +938,7 @@ impl Answers {
                         // asked and allowed, once.
                         if tool == format!("mcp__{}__{}", bridge::SERVER, crate::mcp::CALL)
                             && let Some(id) = req.get("tool_use_id").and_then(Value::as_str)
-                            && matches!(self.gate.verdict(&call_of(tool, &input, &self.cwd), None), Verdict::Ask { .. })
+                            && matches!(self.gate.verdict(&call_of(tool, &input, &self.cwd)), Verdict::Ask { .. })
                         {
                             self.approved.lock().unwrap_or_else(|e| e.into_inner()).push(id.to_string());
                         }

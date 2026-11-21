@@ -680,7 +680,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
         if f.given.contains("name") && !add && !connect && !names_device {
             return Err(fail("bad_flag", "`--name` is only a flag of `krowk connect`, `krowk providers add`, and `krowk sync`"));
         }
-        for name in ["api-key-env", "base-url", "client-id", "binary", "config-dir"] {
+        for name in ["api-key-env", "base-url", "binary", "config-dir"] {
             if f.given.contains(name) && !add && !connect {
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk connect` and `krowk providers add`")));
             }

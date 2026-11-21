@@ -9,22 +9,15 @@
 //! appends it, and only then forwards it — a client never sees an event the
 //! log does not have.
 
-use crate::anthropic::AnthropicClient;
 use crate::catalog::ModelInfo;
-use crate::chat::{ChatClient, Credential};
 use crate::budget::Budget;
-use crate::agents;
-use crate::engine::{BoxFuture, Engine, EngineError, EngineEvent, Events, HistoryItem, Idle, Steer, Steers, TurnContext, TurnEnd};
+use crate::engine::{BoxFuture, Engine, EngineError, EngineEvent, HistoryItem, Idle, Steer, Steers, TurnContext, TurnEnd};
 use crate::images;
-use crate::agents::{AgentRun, AgentsConfig};
+use crate::agents::AgentsConfig;
 use crate::children::ChildWatch;
-use crate::subagent::{ParentTurn, Spawn, Subagents};
 use crate::evidence::{Evidence, Publisher};
-use crate::instances::{Asked, Auth, Registry, Resolved};
-use crate::oauth;
-use crate::openai::ResponsesClient;
+use crate::instances::{Asked, Registry, Resolved};
 use crate::log::{self, LogError, SessionLog};
-use crate::native::NativeEngine;
 use crate::toolset;
 use crate::handoff::{self, TurnSpan};
 use crate::instances::Rollover;
@@ -41,7 +34,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tokio::sync::{broadcast, mpsc, watch, Semaphore};
+use tokio::sync::{broadcast, mpsc, watch};
 
 /// Prices a model call: (provider, model, usage) to USD, or none when the
 /// model has no price. Supplied by the caller, which owns the price cache.
@@ -120,9 +113,6 @@ pub(crate) struct Shared {
     /// Each session with a turn running — a subagent's too: its cancel
     /// switch and the queue its steering waits in.
     running: Mutex<HashMap<String, Running>>,
-    /// Each subagent whose worktree is being readied, shown started but
-    /// with no turn yet: the switch that stops it (`subagent::worktree`).
-    pub(crate) readying: Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>,
     /// Each session's backend engine, with the instance it runs on: its
     /// process outlives a turn and serves the session's next one.
     backends: Mutex<HashMap<String, Backend>>,
@@ -142,14 +132,8 @@ pub(crate) struct Shared {
     /// What a person allowed for the rest of each session. A subagent
     /// shares its parent's: a grant for the session holds in its subagents.
     grants: Mutex<HashMap<String, permissions::SessionGrants>>,
-    /// The sessions this host has run a turn of: a session's first turn
-    /// here is its SessionStart.
-    started: Mutex<std::collections::HashSet<String>>,
     /// What the backends say between turns, to whoever watches (`watch`).
     watch: broadcast::Sender<StreamLine>,
-    /// Every session's background commands (R-STEER-2): they outlive the
-    /// turn that started them, and end with the host.
-    pub(crate) jobs: Arc<crate::jobs::Jobs>,
     /// Each session's early offers, in memory (D14): not kept across a
     /// daemon restart.
     early: Mutex<HashMap<String, EarlyOffers>>,
@@ -441,17 +425,11 @@ impl Host {
     pub fn new(mut cfg: HostConfig) -> Host {
         let registry = Arc::new(std::mem::take(&mut cfg.registry));
         let watch = broadcast::channel(64).0;
-        // How many jobs run, to whoever watches: the status line's count.
-        let tell = watch.clone();
-        let jobs = Arc::new(crate::jobs::Jobs::new(cfg.sessions_dir.clone()).telling(Arc::new(move |session: &str, running: usize| {
-            let _ = tell.send(StreamLine::Live(LiveEvent::Background { session_id: session.into(), running: running as u32 }));
-        })));
         Host {
             shared: Arc::new(Shared {
                 instances: std::sync::RwLock::new(Instances { registry, changed: HashMap::new() }),
                 cfg,
                 running: Mutex::new(HashMap::new()),
-                readying: Mutex::new(HashMap::new()),
                 backends: Mutex::new(HashMap::new()),
                 mcp: Mutex::new(HashMap::new()),
                 backend_idle: BACKEND_IDLE,
@@ -459,9 +437,7 @@ impl Host {
                 between_lag: std::time::Duration::ZERO,
                 approvals: permissions::Approvals::default(),
                 grants: Mutex::new(HashMap::new()),
-                started: Mutex::new(std::collections::HashSet::new()),
                 watch,
-                jobs,
                 early: Mutex::new(HashMap::new()),
                 clock: Arc::new(krowk_store::now_ms),
             }),
@@ -484,15 +460,7 @@ impl Host {
 
     /// Those sessions, by id.
     pub fn background_sessions(&self) -> Vec<String> {
-        let mut busy: std::collections::HashSet<String> = self.shared.backends.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|(_, b)| b.engine.busy()).map(|(id, _)| id.clone()).collect();
-        busy.extend(self.shared.jobs.busy_sessions());
-        busy.into_iter().collect()
-    }
-
-    /// `session`'s count of background work running here — its jobs and
-    /// background children — as the status line has it (`background`).
-    pub fn background_of(&self, session: &str) -> u32 {
-        self.shared.jobs.counted(session) as u32
+        self.shared.backends.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|(_, b)| b.engine.busy()).map(|(id, _)| id.clone()).collect()
     }
 
     /// Whether `session` is held running here — a turn's, from its
@@ -500,12 +468,6 @@ impl Host {
     /// — so that a prompt to it is refused as busy.
     pub fn holds(&self, session: &str) -> bool {
         self.shared.running.lock().unwrap_or_else(|e| e.into_inner()).contains_key(session)
-    }
-
-    /// Every background job running here, as (session, id): what
-    /// `shutdown` stops.
-    pub fn running_jobs(&self) -> Vec<(String, String)> {
-        self.shared.jobs.running_all()
     }
 
     /// Denies every approval request of these sessions still waiting: the
@@ -617,7 +579,6 @@ impl Host {
     /// killed instead, so a host going away never waits on one. They are let
     /// go together, so the wait is the slowest one's, not their sum.
     pub async fn shutdown(&self) {
-        self.shared.jobs.shutdown().await;
         let pools: Vec<Arc<crate::mcp::Pool>> = self.shared.mcp.lock().unwrap_or_else(|e| e.into_inner()).drain().map(|(_, (p, _))| p).collect();
         let closes = pools.iter().map(|p| -> BoxFuture<'_, ()> { Box::pin(async move { let _ = tokio::time::timeout(SHUTDOWN_GRACE, p.close()).await; }) });
         crate::engine::join_all(closes.collect()).await;
@@ -731,12 +692,6 @@ impl Host {
                             let _ = r.cancel.send(true);
                             return Ok(None);
                         }
-                        // A subagent shown started while its worktree is
-                        // readied: stopped there, and not run.
-                        None if let Some(stop) = shared.readying.lock().unwrap_or_else(|e| e.into_inner()).get(&session_id) => {
-                            stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                            return Ok(None);
-                        }
                         None => return Err(EngineError::new("no_running_turn", format!("session {session_id} has no turn running, so there is nothing to interrupt"))),
                     }
                 };
@@ -774,7 +729,7 @@ impl Host {
                     false => tokio::task::spawn_blocking(move || images::save(&dir, &decoded)).await.map_err(|e| EngineError::new("log_failed", e.to_string()))??,
                 };
                 match Some(&steers) {
-                    Some(r) if r.push(Steer { text, images, from_krowk: false }).is_ok() => Ok(None),
+                    Some(r) if r.push(Steer { text, images }).is_ok() => Ok(None),
                     // The turn has taken its last input and is ending.
                     Some(_) => Err(EngineError::new("turn_ending", format!("the turn in session {session_id} is finishing and reads no more input — send it as the next prompt"))),
                     _ => unreachable!("the turn's queue was found"),
@@ -818,24 +773,14 @@ struct TurnPlan {
     backend_session: Option<String>,
     budget: Budget,
     evidence: Option<Evidence>,
-    /// The rules the turn is judged by, its instructions, skills and hooks,
-    /// and the session's grants: a subagent's are its parent's.
+    /// The rules the turn is judged by, its MCP servers, skills and hooks,
+    /// and the session's grants.
     policy: permissions::Policy,
     compat: compat::Compat,
     grants: permissions::SessionGrants,
-    /// A subagent's definition.
-    agent: Option<AgentRun>,
-    /// Whether the turn may start subagents: a session's own native turn,
-    /// never a subagent's.
-    spawns: bool,
-    /// A subagent's parent turn: where its spend is also reported.
-    parent: Option<ParentLink>,
-    /// Flips when the parent's turn is interrupted.
-    parent_cancel: Option<watch::Receiver<bool>>,
-    /// Whether the result goes to the client as a `result` frame: a
-    /// subagent's goes back to the tool call instead. Only such a turn — a
-    /// session's own, never a subagent's, which stays on the model it was
-    /// started on — follows up a failure with a switch.
+    /// Whether the result goes to the client as a `result` frame, and a
+    /// failure is followed up with a switch: not for a turn the backend
+    /// began by itself ahead of a prompt (`unprompted`).
     announce: bool,
     started: Instant,
     /// How a backend's thread is brought up to date (`crate::handoff`).
@@ -855,14 +800,6 @@ struct TurnPlan {
     /// What a limit does to this session: its own value, else the repository's
     /// when trusted, else the global config's (R-ROLL-5).
     rollover: Rollover,
-}
-
-/// The parent turn a subagent's spend is reported to.
-#[derive(Clone)]
-struct ParentLink {
-    budget: Budget,
-    session_id: String,
-    turn_id: String,
 }
 
 impl Shared {
@@ -1401,18 +1338,13 @@ impl Shared {
         let family = info.as_ref().and_then(|i| i.family.clone());
         let (preset, _) = toolset::choose(toolset, registry.toolset.as_deref(), family.as_deref(), &model.model).map_err(|e| EngineError::new("bad_toolset", e))?;
         let wire = instance.wire_for(info.as_ref().and_then(|i| i.wire_api));
-        let native: Option<Box<dyn Engine>> = match &instance.backend {
-            // D4: krowk runs a turn only in Claude Code or Codex.
-            None => return Err(crate::connect::no_direct_models()),
-            // A backend runs the repository's own hooks and MCP servers, so
-            // it is not started in one nobody trusted; and a binary that is
-            // not there, or a login that is not, is named before a session
-            // exists for it.
-            Some(_) => {
-                self.ready(&instance, &cwd, self.backend_up(session_id, &instance.name, generation)).await.map_err(staying)?;
-                None
-            }
-        };
+        // D4: krowk runs a turn only in Claude Code or Codex.
+        let Some(backend) = &instance.backend else { return Err(crate::connect::no_direct_models()) };
+        // A backend runs the repository's own hooks and MCP servers, so it
+        // is not started in one nobody trusted; and a binary that is not
+        // there, or a login that is not, is named before a session exists
+        // for it.
+        self.ready(&instance, &cwd, self.backend_up(session_id, &instance.name, generation)).await.map_err(staying)?;
         let effort = effort.or(instance.effort);
         // The rules, instructions, skills and hooks for where the session
         // runs. A settings file that does not parse refuses the prompt: a
@@ -1421,19 +1353,14 @@ impl Shared {
         // R-PERM-3, fail closed: a sandbox this machine cannot enforce, or
         // a backend that runs its own tools outside it, refuses the turn
         // rather than running it unsandboxed.
-        if let Some(crate::sandbox::Sandbox { profile, by }) = policy.sandbox {
-            if instance.backend.is_some() {
-                return Err(staying(EngineError::new("sandbox_unsupported", format!("{} runs {} as a backend, which runs its own tools outside krowk's {} sandbox — run without --sandbox", instance.name, instance.vendor, profile.name()))));
-            }
-            if by == crate::sandbox::By::Bubblewrap {
-                crate::sandbox::enforcer().map_err(|fix| staying(EngineError::new("sandbox_unavailable", fix)))?;
-            }
+        if let Some(crate::sandbox::Sandbox { profile, .. }) = policy.sandbox {
+            return Err(staying(EngineError::new("sandbox_unsupported", format!("{} runs {} as a backend, which runs its own tools outside krowk's {} sandbox — run without --sandbox", instance.name, instance.vendor, profile.name()))));
         }
         // R-ROLL-5: the session's value (asked now, else the last one logged),
         // else a trusted repository's, else the global config's.
         let session_rollover = rollover.or(past.rollover);
         let rollover = session_rollover.or(policy.loaded.rollover).unwrap_or(registry.rollover);
-        let mut compat = compat::Compat::load(&self.cfg.permissions, &cwd, policy.loaded.hooks.clone());
+        let mut compat = compat::Compat::load(&self.cfg.permissions, &cwd);
         policy.read_dirs = compat.skills.iter().map(|k| k.dir.clone()).collect();
         let (log, events) = match opened {
             Some(opened) => opened,
@@ -1463,28 +1390,20 @@ impl Shared {
             }
         };
         let session_id = log.session_id.clone();
-        let spawns = native.is_some();
-        let engine: Arc<dyn Engine> = match native {
-            Some(e) => Arc::from(e),
-            None => self.backend_for(&session_id, &instance, generation)?,
-        };
+        let engine = self.backend_for(&session_id, &instance, generation)?;
         // A backend keeps its own thread and reads nothing of the log: the
         // thread it resumes — its own, or another account's of the same
         // vendor copied over — and what to tell it of the turns it did not
-        // run (`handoff`). The native loop reads the whole branch.
-        let (backend_session, handoff) = match &instance.backend {
-            Some(_) if unprompted.is_some() => (None, None),
-            Some(b) => self.carry_over(&past, &instance, b, &text),
-            None => (None, None),
+        // run (`handoff`).
+        let (backend_session, handoff) = match unprompted {
+            Some(_) => (None, None),
+            None => self.carry_over(&past, &instance, backend, &text),
         };
-        // Everything the session and its subagents have spent, from their
+        // Everything the session and its agents have spent, from their
         // logs; this turn's calls are added as they are metered.
         let budget = Budget::new(limits, &session_id, &self.cfg.sessions_dir, self.cfg.pricer.clone(), &instance.provider, &model.model, &events);
         drop(events);
         let evidence = self.cfg.publisher.clone().map(|p| Evidence::new(p, &session_id, past.run.clone(), crate::evidence::Producer::new(&instance, &model.model)));
-        let first_here = self.started.lock().unwrap_or_else(|e| e.into_inner()).insert(session_id.clone());
-        compat.session_start = first_here.then_some(if past.items.is_empty() { "startup" } else { "resume" });
-        compat.transcript = self.cfg.sessions_dir.join(&session_id).join(log::EVENTS_FILE).display().to_string();
         // The session's MCP connections, kept from its earlier turns, under
         // the configuration just read: closed, restarted or kept before the
         // turn's first model call (D5). A backend turn has them too, through the bridge.
@@ -1511,10 +1430,6 @@ impl Shared {
             policy,
             compat,
             grants,
-            agent: None,
-            spawns,
-            parent: None,
-            parent_cancel: None,
             announce: true,
             started,
             handoff,
@@ -1554,84 +1469,6 @@ impl Shared {
         Some(Kids { shared: self.clone(), state, _pen, woke_from, sessions_dir: self.cfg.sessions_dir.clone(), cwd: plan.cwd.clone(), krowk_version: self.cfg.krowk_version.clone(), ran_by, permission_mode: plan.permission_mode, effort: plan.effort })
     }
 
-    /// A subagent (R-SUB-1): a child session of the parent turn `spawn`
-    /// describes, answering its tool call with one turn on `model`, as the session `child` in the directory `cwd` — the
-    /// parent's, or a worktree of its own (WT3). Its lines go to the
-    /// parent's client; its result comes back here, for the tool call. Its
-    /// `subagent.started` the caller has sent (`subagent::run_child`).
-    pub(crate) async fn subagent(self: &Arc<Self>, spawn: &Spawn, prompt: &str, model: ModelRef, run: AgentRun, (child, cwd, env): (&str, &std::path::Path, Vec<(String, String)>), events: &Events) -> Result<RunResult, EngineError> {
-        let instance = self.registry().get(&model.instance).map_err(|e| EngineError::new("no_instance", e))?.clone();
-        // A vendor runs its own agents, with its own tools: it could not be
-        // held to the allowlist, so a subagent is always krowk's own loop.
-        if instance.backend.is_some() {
-            return Err(EngineError::new(
-                "bad_subagent_model",
-                format!("{model} runs on a vendor's own agent, and subagents run on krowk's own loop — name an API model in the agent definition or in `subagents.model`"),
-            ));
-        }
-        let info = (self.cfg.catalog)(&instance.provider, &model.model);
-        let family = info.as_ref().and_then(|i| i.family.clone());
-        let (preset, _) = toolset::choose(None, self.registry().toolset.as_deref(), family.as_deref(), &model.model).map_err(|e| EngineError::new("bad_toolset", e))?;
-        let wire = instance.wire_for(info.as_ref().and_then(|i| i.wire_api));
-        key_off_thread(&instance).await?;
-        let engine = engine_for(&instance, wire, &self.cfg.credentials, &self.cfg.krowk_version)?;
-        let p = &spawn.parent;
-        let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, child, cwd, &self.cfg.krowk_version, Some(&p.session_id), run.name.as_deref()).await.map_err(log_failure)?;
-        let _ = spawn.out.send(StreamLine::Log(root.clone())).await;
-        let child = log.session_id.clone();
-        let budget = Budget::for_subagent(&p.budget, &child, &instance.provider, &model.model, std::slice::from_ref(&root));
-        let producer = crate::evidence::Producer::new(&instance, &model.model);
-        let plan = TurnPlan {
-            log,
-            past: Past { cwd: Some(cwd.to_path_buf()), ..Past::default() },
-            text: prompt.into(),
-            images: Vec::new(),
-            model,
-            provider: instance.provider.clone(),
-            engine: Arc::from(engine),
-            preset,
-            wire,
-            info,
-            permission_mode: p.permission_mode,
-            effort: instance.effort,
-            cwd: cwd.to_path_buf(),
-            env,
-            backend_session: None,
-            budget,
-            evidence: p.evidence.as_ref().map(|e| e.for_subagent(events.clone(), producer)),
-            // The parent's rules, instructions, skills and hooks, and its
-            // session's grants: a subagent is judged as its parent would be,
-            // in its parent's mode, and asks under its own session id. In
-            // a worktree of its own, that is its working directory — what
-            // it may edit unasked, and the sandbox's workspace — and the
-            // repository's rules hold there as they do in the checkout.
-            policy: match cwd == p.cwd {
-                true => p.gate.policy().clone(),
-                false => p.gate.policy().in_worktree(cwd),
-            },
-            compat: compat::Compat { session_start: None, transcript: self.cfg.sessions_dir.join(&child).join(log::EVENTS_FILE).display().to_string(), ..(*p.compat).clone() },
-            grants: p.grants.clone(),
-            agent: Some(run),
-            spawns: false,
-            parent: Some(ParentLink { budget: p.budget.clone(), session_id: p.session_id.clone(), turn_id: p.turn_id.clone() }),
-            parent_cancel: Some(p.cancel.clone()),
-            announce: false,
-            started: Instant::now(),
-            handoff: None,
-            here: Registration::new(self.clone()),
-            rolling: None,
-            tried: Vec::new(),
-            unprompted: false,
-            // A subagent never rolls over.
-            session_rollover: None,
-            rollover: Rollover::default(),
-        };
-        // Boxed: a subagent's turn is a turn of this host, inside the
-        // parent's.
-        let turn: BoxFuture<'_, Result<(RunResult, Option<Rolling>), EngineError>> = Box::pin(self.turn(plan, spawn.out.clone()));
-        turn.await.map(|(r, _)| r)
-    }
-
     /// Runs one settled turn to its end and logs it whole, with what
     /// follows from how it ended for a session's own turn: a switch that
     /// could not run going back (R-SWITCH-4), a limit's offer, or where
@@ -1660,8 +1497,6 @@ impl Shared {
             wire: plan.wire,
             provider: plan.provider.clone(),
             backend: plan.past.backend.clone(),
-            child: ChildWatch::of(plan.parent.as_ref(), &session_id),
-            parent: plan.parent.clone(),
             handoff: None,
             kids,
             usage: crate::usage::Usage::in_home(self.cfg.sessions_dir.parent().unwrap_or(&self.cfg.sessions_dir)),
@@ -1671,8 +1506,7 @@ impl Shared {
         let read_before = w.snapshot(plan.announce && plan.rollover != Rollover::Off);
         w.begin(plan.rolling.as_ref(), &session_id, &model, LogBody::TurnStarted { turn_id: turn_id.clone(), model: model.clone(), provider: engine.provider().into(), wire_api: engine.wire_api(), permission_mode: plan.permission_mode, effort: plan.effort, rollover: plan.session_rollover }).await?;
         let mut history = std::mem::take(&mut plan.past.items);
-        let skills = plan.agent.is_none().then_some(plan.compat.skills.as_slice());
-        w.prompt((std::mem::take(&mut plan.text), std::mem::take(&mut plan.images)), &mut history, skills, plan.spawns).await?;
+        w.prompt((std::mem::take(&mut plan.text), std::mem::take(&mut plan.images)), &mut history, &plan.compat.skills).await?;
 
         let gate = permissions::Gate::new(
             plan.policy.clone(),
@@ -1685,55 +1519,7 @@ impl Shared {
         );
         let compat = Arc::new(std::mem::take(&mut plan.compat));
         let (cancel_tx, cancel, steers) = (plan.here.cancel.clone(), plan.here.cancel_rx.clone(), plan.here.steers.clone());
-        // The agent definitions a subagent can be started from, read afresh
-        // each turn from the repository and the person's own.
-        let subagents = plan.spawns.then(|| {
-            let (defs, problems) = agents::discover(&trust::root(&plan.cwd), &self.cfg.agents.user_dirs);
-            // What the children follow: the parent's interrupt, and the
-            // turn ending while background children run (R-STEER-3).
-            let (stop, stopped) = watch::channel(false);
-            let stop = Arc::new(stop);
-            let (mut parent, follows) = (cancel.clone(), stop.clone());
-            tokio::spawn(async move {
-                tokio::select! {
-                    _ = crate::engine::cancelled(&mut parent) => {
-                        let _ = follows.send(true);
-                    }
-                    _ = follows.closed() => {}
-                }
-            });
-            let spawn = Spawn {
-                host: self.clone(),
-                parent: ParentTurn {
-                    session_id: session_id.clone(),
-                    turn_id: turn_id.clone(),
-                    model: model.clone(),
-                    provider: plan.provider.clone(),
-                    cwd: plan.cwd.clone(),
-                    permission_mode: plan.permission_mode,
-                    budget: plan.budget.clone(),
-                    evidence: plan.evidence.clone(),
-                    gate: gate.clone(),
-                    compat: compat.clone(),
-                    grants: plan.grants.clone(),
-                    cancel: stopped,
-                    steers: steers.clone(),
-                },
-                out: out.clone(),
-                gate: Arc::new(Semaphore::new(self.registry().subagents.max_parallel())),
-                defs,
-                spent: std::sync::Mutex::new((0.0, false)),
-                background: std::sync::Mutex::new(Vec::new()),
-                running: std::sync::atomic::AtomicUsize::new(0),
-                stop,
-                moving: watch::channel(false).0,
-            };
-            (Subagents(Arc::new(spawn)), problems)
-        });
-        let (subagents, problems) = subagents.unzip();
-        w.skipped(&session_id, problems, &compat.mcp_skipped).await;
         let budget = plan.budget.clone();
-        let spawned = subagents.clone();
         let ctx = TurnContext {
             session_id: session_id.clone(),
             turn_id: turn_id.clone(),
@@ -1743,7 +1529,6 @@ impl Shared {
             env: plan.env.clone(),
             session_dir,
             permission_mode: plan.permission_mode,
-            preset: plan.preset,
             effort: plan.effort,
             model_info: plan.info.clone(),
             cancel,
@@ -1751,50 +1536,20 @@ impl Shared {
             backend_session: plan.backend_session.clone(),
             budget: budget.clone(),
             evidence: plan.evidence.clone(),
-            builds: self.registry().builds.clone(),
-            // A subagent's one turn would leave its jobs to nobody: only
-            // a session's own turns keep them.
-            jobs: plan.agent.is_none().then(|| self.jobs.clone()),
             gate,
             compat,
-            subagents,
-            agent: plan.agent.clone(),
             handoff: plan.handoff.take(),
             unprompted: plan.unprompted,
         };
         let mut tally = Tally::default();
         // A backend's calls are the vendor's to make: its turn is not begun
         // when the session is already at its budget, and is interrupted when
-        // a metered call takes it past (`Writer::handle`). The native loop
-        // asks before each call itself.
-        let watch = (!engine.checks_budget()).then(|| (budget.clone(), cancel_tx.clone()));
-        let before = match &watch {
-            Some((b, _)) => b.admit_turn().await,
-            None => Ok(()),
-        };
-        // A subagent stops when its parent's turn is interrupted, the way
-        // it stops for its own interrupt: keeping what it made.
-        let parent_cancel = plan.parent_cancel.as_mut();
-        let follow = async {
-            if let Some(pc) = parent_cancel {
-                crate::engine::cancelled(pc).await;
-                let _ = cancel_tx.send(true);
-            }
-            std::future::pending::<()>().await
-        };
-        let outcome = match before {
-            Ok(()) => tokio::select! {
-                biased;
-                o = w.drive(engine.as_ref(), ctx, &mut tally, &model, &budget, watch.as_ref()) => o,
-                _ = follow => unreachable!("following the parent never ends"),
-            },
+        // a metered call takes it past (`Writer::handle`).
+        let watch = (budget.clone(), cancel_tx.clone());
+        let outcome = match budget.admit_turn().await {
+            Ok(()) => w.drive(engine.as_ref(), ctx, &mut tally, &model, &budget, Some(&watch)).await,
             Err(e) => Err(e),
         };
-        // Background children still running end with the turn that
-        // started them, their logs closed (R-STEER-3).
-        if let Some(s) = &spawned {
-            s.settle_background().await;
-        }
         // A backend turn the budget interrupted failed on it, whatever the
         // vendor made of the interrupt.
         let outcome = match tally.tripped.take() {
@@ -1803,11 +1558,7 @@ impl Shared {
         };
         // Refused from here on, not queued for a turn that is over; what an
         // interrupted or failed turn never took goes back on its result.
-        // krowk's own notes are not the person's words: they wait for the
-        // session's next turn (`Registration::finish`).
-        let (notes, unread): (Vec<Steer>, Vec<Steer>) = steers.close().into_iter().partition(|s| s.from_krowk);
-        steers.put_back(notes);
-        let unread_steers = unread.into_iter().map(|s| s.text).collect();
+        let unread_steers = steers.close().into_iter().map(|s| s.text).collect();
         self.approvals.forget_session(&session_id);
         self.touch(&session_id);
 
@@ -1818,11 +1569,8 @@ impl Shared {
         };
         let (after, offer, next) = self.follow_up(&outcome, (plan.announce, plan.past.reached.as_ref(), &plan.tried, &plan.cwd, plan.rollover), (&w, read_before.as_ref()), (&model, &session_id, tally.calls), error.as_mut()).await;
         let duration_ms = plan.started.elapsed().as_millis() as u64;
-        // The turn's cost is its subagents' too, as a backend's own
-        // subagents' are part of its turn (R-SUB-4).
-        let (children_usd, children_unpriced) = spawned.as_ref().map_or((0.0, false), Subagents::spent);
         let completed = LogBody::TurnCompleted { turn_id: turn_id.clone(), status, usage: tally.usage, duration_ms, error: error.clone(), reported_cost_usd: tally.reported, reported_tokens: None };
-        let next = w.finish(completed, status, &model, after.as_ref(), &mut plan.here, next).await?;
+        let next = w.finish(completed, &model, after.as_ref(), &mut plan.here, next).await?;
         // An early offer is remembered once its turn is logged, so a log
         // that failed leaves no decline behind for an offer never made.
         if let (Some(o), Some(before)) = (offer.as_ref().filter(|o| o.early), read_before.as_ref()) {
@@ -1840,7 +1588,7 @@ impl Shared {
             result: tally.last_text,
             model,
             usage: tally.usage,
-            cost_usd: if tally.unpriced || children_unpriced { None } else { Some(tally.cost + children_usd) },
+            cost_usd: if tally.unpriced { None } else { Some(tally.cost) },
             duration_ms,
             num_model_calls: tally.calls,
             error,
@@ -1937,17 +1685,6 @@ impl Shared {
         (resume, plan)
     }
 
-}
-
-/// How a subagent ended, as its last `subagent.status` says: failed too
-/// when its log could not be closed.
-fn ended(status: TurnStatus, closed: bool) -> ChildState {
-    match status {
-        _ if !closed => ChildState::Failed,
-        TurnStatus::Completed => ChildState::Done,
-        TurnStatus::Interrupted => ChildState::Interrupted,
-        TurnStatus::Failed => ChildState::Failed,
-    }
 }
 
 /// A move `rollover = "auto"` makes: from the limited model to the next
@@ -2063,8 +1800,6 @@ impl Registration {
         }
         running.insert(id.to_string(), Running { cancel: self.cancel.clone(), steers: self.steers.clone(), switch: None, backend_child: None, closing: false });
         self.id = Some(id.to_string());
-        // A background job's note, held for this turn, is read first.
-        self.shared.jobs.attach(id, &self.steers);
         Ok(())
     }
 
@@ -2078,8 +1813,7 @@ impl Registration {
             return None;
         }
         self.closed = true;
-        let notes = self.steers.close().into_iter().filter(|s| s.from_krowk).collect();
-        self.shared.jobs.detach(id, notes);
+        self.steers.close();
         let mut running = self.shared.running.lock().unwrap_or_else(|e| e.into_inner());
         running.get_mut(id).and_then(|r| {
             r.closing = true;
@@ -2141,7 +1875,7 @@ pub fn clock(ms: i64) -> String {
 
 /// A stored key's command, run off the runtime's thread when this process
 /// has no key from it yet: it may take its whole timeout, and a client's
-/// drawing and keys run on that one thread. After it, `engine_for` finds
+/// drawing and keys run on that one thread. After it, the engine finds
 /// the key kept (`keys::run`) and runs nothing; a failure is the turn's.
 async fn key_off_thread(instance: &Resolved) -> Result<(), EngineError> {
     let crate::keys::Stored::Command { command, .. } = &instance.stored else { return Ok(()) };
@@ -2150,34 +1884,6 @@ async fn key_off_thread(instance: &Resolved) -> Result<(), EngineError> {
     }
     let inst = instance.clone();
     tokio::task::spawn_blocking(move || crate::keys::materialise(&inst).map(drop)).await.unwrap_or_else(|_| Err(EngineError::new("not_authenticated", "the stored key's command did not finish")))
-}
-
-/// The engine an instance runs a model on, over the wire API chosen for
-/// it. A credential that is missing is refused here, before a session is
-/// created for a turn that could not run.
-fn engine_for(instance: &Resolved, wire: WireApi, credentials: &std::path::Path, krowk_version: &str) -> Result<Box<dyn Engine>, EngineError> {
-    // A stored key's command runs here if nothing has run it yet in this
-    // process; one that fails refuses the turn, with no fallback.
-    let instance = &*crate::keys::materialise(instance)?;
-    // A native instance's readiness needs no process: a key, or a login in
-    // krowk's own file that is there and not expired past refreshing.
-    if let Some(r) = readiness::local(instance, credentials)
-        && let Some(e) = readiness::report(instance, r, credentials).refusal(instance)
-    {
-        return Err(e);
-    }
-    let credential = match &instance.auth {
-        Auth::ApiKey => Credential::Key(instance.api_key.clone()),
-        Auth::Keyless | Auth::Vendor => Credential::None,
-        Auth::OAuth { .. } => Credential::OAuth(Arc::new(oauth::Tokens::open(oauth::Store::new(credentials.to_path_buf()), &instance.name)?)),
-    };
-    match wire {
-        WireApi::AnthropicMessages => Ok(Box::new(NativeEngine { client: AnthropicClient::new(instance.clone(), krowk_version)? })),
-        WireApi::OpenaiResponses => Ok(Box::new(NativeEngine { client: ResponsesClient::new(instance.clone(), krowk_version)? })),
-        WireApi::ChatCompletions => Ok(Box::new(NativeEngine { client: ChatClient::new(instance.clone(), credential, krowk_version)? })),
-        WireApi::ClaudeCode => Err(EngineError::new("bad_config", format!("{} runs Claude Code as a backend, not a native wire API", instance.name))),
-        WireApi::CodexAppServer => Err(EngineError::new("bad_config", format!("{} runs Codex as a backend, not a native wire API", instance.name))),
-    }
 }
 
 /// What the branch so far says: its items, grouped the way they were on the
@@ -2333,11 +2039,6 @@ struct Writer<'a> {
     /// The backend session last logged: one that did not change is not
     /// logged again.
     backend: Option<BackendRecord>,
-    /// A subagent's parent turn, whose spend the subagent's calls add to.
-    parent: Option<ParentLink>,
-    /// A subagent's state, sent as `subagent.status` on each change
-    /// (R-SUB-9).
-    child: Option<ChildWatch>,
     /// What a backend was sent to bring it up to date, for the turn's
     /// context record.
     handoff: Option<String>,
@@ -2438,13 +2139,6 @@ impl Writer<'_> {
         let _ = self.out.send(StreamLine::Live(ev)).await;
     }
 
-    /// Where a subagent stands, on the parent's stream (R-SUB-9).
-    async fn child_status(&self, status: ChildState) {
-        if let Some(c) = &self.child {
-            self.live(c.frame(status)).await;
-        }
-    }
-
     /// Where a metered call left the turn and the session: the result's
     /// cost, and R-BUDGET-2's frame for the status bar.
     async fn spent(&self, session_id: &str, turn_id: String, tally: &mut Tally, spent: &crate::budget::Snapshot) {
@@ -2458,19 +2152,6 @@ impl Writer<'_> {
             generated_tokens: spent.total.generated(),
         })
         .await;
-        // A subagent spends during its parent's turn: the parent's figure,
-        // its whole tree counted again, moves with it (R-SUB-4).
-        if let Some(p) = &self.parent {
-            let tree = p.budget.refreshed().await;
-            self.live(LiveEvent::Cost {
-                session_id: p.session_id.clone(),
-                turn_id: p.turn_id.clone(),
-                cost_usd: tree.total.cost(),
-                turn_cost_usd: tree.turn.cost(),
-                generated_tokens: tree.total.generated(),
-            })
-            .await;
-        }
     }
 
     /// A turn's opening records: a rollover that brought it to `model`,
@@ -2491,8 +2172,8 @@ impl Writer<'_> {
     }
 
     /// Logs the prompt, its images kept first, and puts it on `history`,
-    /// with a skill it names from `skills` when there are any to name.
-    async fn prompt(&mut self, (text, decoded): (String, Vec<images::Decoded>), history: &mut Vec<HistoryItem>, skills: Option<&[compat::skills::Skill]>, spawns: bool) -> Result<(), EngineError> {
+    /// with a skill it names from `skills`.
+    async fn prompt(&mut self, (text, decoded): (String, Vec<images::Decoded>), history: &mut Vec<HistoryItem>, skills: &[compat::skills::Skill]) -> Result<(), EngineError> {
         let dir = self.log.dir.clone();
         let images = match decoded.is_empty() {
             true => Vec::new(),
@@ -2506,41 +2187,24 @@ impl Writer<'_> {
         // reads no `.agents/skills`, Codex no `.claude/skills` nor
         // `~/.agents/skills`) and then refuses the name. A backend is sent only the last item, so it gets
         // one text, the skill first: a leading `/` is the vendor's command.
-        let asked = match (&prompt_item, skills) {
-            (Item::UserText { text, .. }, Some(skills)) => compat::skills::invoked(skills, text).map(|skill| (skill, text.clone())),
+        let asked = match &prompt_item {
+            Item::UserText { text, .. } => compat::skills::invoked(skills, text).map(|skill| (skill, text.clone())),
             _ => None,
         };
         history.push(HistoryItem { item: prompt_item, response: None });
         if let Some((skill, prompt)) = asked {
             let item = Item::user(skill.clone());
             self.log(LogBody::ItemCompleted { turn_id: self.turn_id.clone(), item_id: krowk_store::new_id(), item: item.clone() }).await?;
-            if spawns {
-                history.push(HistoryItem { item, response: None });
-            } else if let Some(HistoryItem { item: Item::UserText { text, .. }, .. }) = history.last_mut() {
+            if let Some(HistoryItem { item: Item::UserText { text, .. }, .. }) = history.last_mut() {
                 *text = format!("{skill}\n\n{prompt}");
             }
         }
-        // A subagent is under way once it has its prompt.
-        self.child_status(ChildState::Running).await;
         Ok(())
     }
 
-    /// Tells every client what reading the agent definitions found wrong —
-    /// a definition skipped, an MCP entry of one left out
-    /// (`agents::discover`, which words each line) — and the MCP servers
-    /// left out for their name or config. `None`: not a native turn, which
-    /// neither starts a subagent nor uses an MCP server.
-    async fn skipped(&self, session_id: &str, problems: Option<Vec<String>>, mcp: &[String]) {
-        let Some(problems) = problems else { return };
-        for text in problems.into_iter().chain(mcp.iter().cloned()) {
-            self.live(LiveEvent::Notice { session_id: session_id.into(), turn_id: self.turn_id.clone(), text }).await;
-        }
-    }
-
-    /// `close`, and a subagent's last `subagent.status`: how it ended.
-    async fn finish(&mut self, completed: LogBody, status: TurnStatus, model: &ModelRef, after: Option<&(ModelRef, SwitchReason, String)>, here: &mut Registration, next: Option<Rolling>) -> Result<Option<Rolling>, EngineError> {
+    /// `close`.
+    async fn finish(&mut self, completed: LogBody, model: &ModelRef, after: Option<&(ModelRef, SwitchReason, String)>, here: &mut Registration, next: Option<Rolling>) -> Result<Option<Rolling>, EngineError> {
         let closed = self.close(completed, model, after, here, next).await;
-        self.child_status(ended(status, closed.is_ok())).await;
         #[cfg(feature = "test-hooks")]
         held(HoldAt::Result).await;
         closed
@@ -2639,9 +2303,9 @@ impl Writer<'_> {
         Ok(())
     }
 
-    /// A backend's agent started (R-SUB-7): its child session, made as a
-    /// native child's is — its root naming the session, its one turn begun,
-    /// held as a session running here — and only then named by the
+    /// A backend's agent started (R-SUB-7): its child session made — its
+    /// root naming the session, its one turn begun, held as a session
+    /// running here — and only then named by the
     /// session's `subagent.started`, with what ran it and the backend's id
     /// for it, and sent: no client sees the child before the session names
     /// it, nor a session naming a child with no turn. Its prompt is its
@@ -2730,8 +2394,8 @@ impl Writer<'_> {
     }
 
     /// A backend's agent whose log could not be written: said, ended as
-    /// failed on its `subagent.status` when a client knows of it, as a
-    /// native child whose turn failed is, and the rest of it not followed.
+    /// failed on its `subagent.status` when a client knows of it, and the
+    /// rest of it not followed.
     async fn child_lost(&self, session_id: &str, which: &str, e: LogError, watch: Option<&ChildWatch>) {
         let text = lost_words(which, &e);
         self.live(LiveEvent::Notice { session_id: session_id.into(), turn_id: self.turn_id.clone(), text }).await;
@@ -2741,14 +2405,7 @@ impl Writer<'_> {
     }
 
     async fn handle(&mut self, ev: EngineEvent, session_id: &str, tally: &mut Tally, texts: &mut HashMap<String, String>, model: &ModelRef, budget: &Budget) -> Result<(), EngineError> {
-        // A subagent's frame follows the line it reports on, once per
-        // change of its state, never per delta.
-        let changed = self.child.as_mut().is_some_and(|c| c.note(&ev, krowk_store::now_ms()));
-        self.handle_event(ev, session_id, tally, texts, model, budget).await?;
-        if changed {
-            self.child_status(ChildState::Running).await;
-        }
-        Ok(())
+        self.handle_event(ev, session_id, tally, texts, model, budget).await
     }
 
     /// What a backend said of the account the turn runs on: saved (R-ROLL-2),
@@ -2860,9 +2517,6 @@ impl Writer<'_> {
             EngineEvent::Approval(req) => self.live(LiveEvent::ApprovalRequested(req)).await,
             EngineEvent::ApprovalResolved { request_id, decision } => {
                 self.live(LiveEvent::ApprovalResolved { session_id: session_id.into(), turn_id, request_id, decision }).await;
-            }
-            EngineEvent::Todos { todos } => {
-                self.log(LogBody::TodosUpdated { turn_id, todos }).await?;
             }
             EngineEvent::SubagentStarted { call_id, session_id: child, description, agent, model, ran_by, backend_id } => {
                 self.log(LogBody::SubagentStarted { turn_id, call_id, subagent_session_id: child, description, agent, model, ran_by, backend_id }).await?;

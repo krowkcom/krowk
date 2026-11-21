@@ -1454,8 +1454,7 @@ fn r_steer_1_a_claude_that_cannot_cancel_steering_is_written_none_and_hands_it_b
 }
 
 /// R-SUB-7: a Claude Code agent's child session is held as a session
-/// running here while the agent runs, as a native child's turn is: a
-/// prompt to it is refused as busy, and a steer of it is answered for what
+/// running here while the agent runs: a prompt to it is refused as busy, and a steer of it is answered for what
 /// it is — Claude Code's to run — rather than taken and dropped (its
 /// interrupt is a `stop_task`, R-SUB-10). Once it has ended, nothing holds
 /// it.

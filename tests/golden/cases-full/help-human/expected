@@ -171,7 +171,8 @@ Global flags
 
 Agent flags (krowk, krowk -p)
   --print, -p                 Run the prompt given as the arguments (or on
-                              stdin) headless: krowk's own agent answers it,
+                              stdin) headless: Claude Code or Codex answers it,
+                              on the default account or the one --model names,
                               then exits
   --output-format <string> (default text)
                               With -p: text (the answer), json (the result
@@ -194,18 +195,12 @@ Agent flags (krowk, krowk -p)
                               rule, ask rule or protected directory holds.
                               Without it, the settings' permissions.defaultMode;
                               in every other mode a deny rule holds
-  --sandbox <string>          With -p: run the tools in an OS sandbox —
-                              workspace (the working directory writable,
-                              credentials hidden), read-only, or strict (no
-                              network, the home hidden) — or off. .git, .claude
-                              and krowk's settings stay read-only inside it, and
-                              a sandbox this machine cannot enforce refuses the
-                              run. Without it, a run with no mode set takes the
-                              workspace sandbox and acceptEdits where bubblewrap
-                              works
-  --toolset <string>          With -p: the tools' preset — claude (str_replace),
-                              gpt (apply_patch) or grok (search_replace). The
-                              model's family picks one when absent
+  --sandbox <string>          With -p: off. Claude Code and Codex run their own
+                              tools outside krowk's OS sandbox, so a profile
+                              (workspace, read-only, strict) is refused
+  --toolset <string>          With -p: the preset the session's context record
+                              names — claude, gpt or grok. The model's family
+                              picks one when absent
   --effort <string>           With -p: how hard the model thinks — none,
                               minimal, low, medium, high, xhigh or max, mapped
                               onto the nearest the model takes. The instance's,
@@ -222,14 +217,16 @@ Agent flags (krowk, krowk -p)
                               to 20. Each is shrunk to fit (2000 px a side, JPEG
                               if still over 2.75 MiB); a missing or non-image
                               file refuses the run before any turn starts
-  --max-usd <string>          With -p: stop the session before the model call
-                              that would take it, with its subagents, past this
-                              many dollars — metered, priced from models.dev.
-                              Exits 4, like `krowk sessions budget`
-  --max-tokens <string>       With -p: stop the session before the model call
-                              that would take its generated tokens (output and
-                              reasoning, subagents included) past this many.
-                              Exits 4
+  --max-usd <string>          With -p: stop the session once it, with its
+                              agents, is past this many dollars — metered,
+                              priced from models.dev: a turn at the limit is
+                              refused, and one a call takes past it is
+                              interrupted. Exits 4, like `krowk sessions budget`
+  --max-tokens <string>       With -p: stop the session once its generated
+                              tokens (output and reasoning, its agents included)
+                              are past this many: a turn at the limit is
+                              refused, and one a call takes past it is
+                              interrupted. Exits 4
   --trust                     With -p: let a backend (Claude Code, Codex) run in
                               a repository not yet trusted — it runs the
                               repository's hooks and MCP servers without asking.

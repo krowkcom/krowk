@@ -1,11 +1,20 @@
-//! MCP servers through the host and the native loop (R-TOOL-3), against a
-//! stand-in Anthropic API and a stand-in stdio MCP server
-//! (`fixtures/mcp/fake-mcp`, a bash script): a repository's `.mcp.json`,
-//! what trust turns on, the two deferred meta-tools the model is offered,
-//! the permission rules its calls are judged by, and the servers a
-//! subagent's definition lets it reach.
+//! MCP servers through the host (R-TOOL-3, R-MCP), for a session running
+//! in Claude Code — the fake `claude` (`common/fake.rs`) — against a
+//! stand-in stdio MCP server (`fixtures/mcp/fake-mcp`, a bash script) and a
+//! stand-in streamable-HTTP one: a repository's `.mcp.json`, what trust
+//! turns on, the two deferred meta-tools krowk's bridge offers Claude Code,
+//! the permission rules a call is judged by, and the life of a session's
+//! connections across its turns.
+//!
+//! Claude Code is started `--strict-mcp-config` with only krowk's bridge,
+//! so every server here is krowk's to start, judge and close: the model's
+//! `mcp_search` and `mcp_call` are Claude Code's calls of
+//! `mcp__krowk__mcp_search` and `mcp__krowk__mcp_call`, asked about with
+//! `can_use_tool` and run over the bridge (`mcp_message`).
 #![cfg(unix)]
 
+#[path = "common/fake.rs"]
+mod fake;
 #[path = "common/mock.rs"]
 mod mock;
 
@@ -13,7 +22,7 @@ use krowk_harness::host::{Host, HostConfig};
 use krowk_harness::instances::{InstancesConfig, Registry};
 use krowk_harness::log;
 use krowk_harness::permissions::Config;
-use krowk_harness::protocol::{Command, ContextRecord, ModelRef, PermissionMode, RunResult};
+use krowk_harness::protocol::{Command, Item, LogBody, LogEvent, ModelRef, PermissionMode, RunResult, StreamLine};
 use mock::Reply;
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -21,30 +30,26 @@ use std::sync::Arc;
 
 struct Home {
     root: PathBuf,
-    url: String,
+    instances: InstancesConfig,
 }
 
 impl Home {
-    fn new(name: &str, url: &str) -> Home {
+    /// A home whose one instance, `claude`, is the fake playing `scenario`.
+    fn new(name: &str, scenario: Option<&str>) -> Home {
         let root =
             std::env::temp_dir().join(format!("krowk-mcp-e2e-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
-        Home {
-            root: root.canonicalize().unwrap(),
-            url: url.into(),
-        }
+        let root = root.canonicalize().unwrap();
+        let instances = InstancesConfig { instances: [("claude".to_string(), fake::claude(&root, "claude", scenario))].into_iter().collect(), ..Default::default() };
+        Home { root, instances }
     }
 
     fn env(&self) -> impl Fn(&str) -> String + '_ {
         move |k| match k {
             "HOME" => self.root.join("home").display().to_string(),
-            "ANTHROPIC_API_KEY" => "sk-test".into(),
-            "ANTHROPIC_BASE_URL" => self.url.clone(),
-            "OPENAI_API_KEY" => "sk-openai-test".into(),
-            "OPENAI_BASE_URL" => format!("{}/v1", self.url),
-            "XAI_API_KEY" => "xai-test".into(),
+            "PATH" => std::env::var("PATH").unwrap_or_default(),
             _ => String::new(),
         }
     }
@@ -78,13 +83,6 @@ impl Home {
         }
     }
 
-    /// Only the xAI instance needs its stand-in's address named.
-    fn instances(&self) -> InstancesConfig {
-        let mut cfg = InstancesConfig::default();
-        cfg.instances.insert("xai".into(), krowk_harness::instances::InstanceKind::XaiApi { api_key_env: None, base_url: Some(self.url.clone()), effort: None });
-        cfg
-    }
-
     fn host(&self, trusted: bool, user: Value) -> Host {
         self.host_by(Arc::new(move |_: &std::path::Path| trusted), user)
     }
@@ -93,7 +91,7 @@ impl Home {
         Host::new(HostConfig {
             sessions_dir: log::sessions_dir(&self.env()).unwrap(),
             cwd: self.repo(),
-            registry: Registry::resolve(&self.instances(), &self.env()),
+            registry: Registry::resolve(&self.instances, &self.env()),
             krowk_version: "test".into(),
             pricer: Arc::new(|_, _, _| None),
             catalog: Arc::new(|_, _| None),
@@ -112,13 +110,13 @@ impl Home {
         })
     }
 
-    fn context(&self, session: &str) -> Vec<ContextRecord> {
-        let dir = log::sessions_dir(&self.env()).unwrap().join(session);
-        std::fs::read_to_string(dir.join(log::CONTEXT_FILE))
-            .unwrap()
-            .lines()
-            .map(|l| serde_json::from_str(l).unwrap())
-            .collect()
+    /// The names of the tools krowk's bridge last listed to Claude Code
+    /// (`tools/list`, asked when a process starts): krowk's own and, when
+    /// the session has servers, the two MCP meta-tools.
+    fn listed(&self) -> Vec<String> {
+        let log = fake::log(&self.root, "claude");
+        let tools = log.lines().filter_map(|l| l.strip_prefix("answer ")).filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter_map(|v| v.pointer("/response/response/mcp_response/result/tools").cloned()).next_back().expect("the bridge listed its tools");
+        tools.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect()
     }
 }
 
@@ -134,8 +132,8 @@ fn prompt(mode: PermissionMode) -> Command {
         session_id: None,
         text: "echo hi through MCP".into(), images: Vec::new(),
         model: Some(ModelRef {
-            instance: "anthropic".into(),
-            model: "claude-sonnet-4-6".into(),
+            instance: "claude".into(),
+            model: "sonnet".into(),
         }),
         permission_mode: mode,
         toolset: None,
@@ -144,111 +142,78 @@ fn prompt(mode: PermissionMode) -> Command {
     }
 }
 
-/// A model that calls each tool in turn, one per request, then answers.
-fn script(calls: Vec<(&'static str, Value)>) -> impl Fn(&Value, usize) -> Reply + Send + 'static {
-    move |body, _| {
-        let done = body["messages"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|m| {
-                m["content"]
-                    .as_array()
-                    .is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"))
-            })
-            .count();
-        match calls.get(done) {
-            Some((name, input)) => {
-                Reply::sse(&mock::tool_use(&format!("toolu_{done}"), name, input))
-            }
-            None => Reply::sse(&mock::text_stream("Done.")),
-        }
-    }
+/// The model calls krowk's bridged `tool` (`mcp_search` or `mcp_call`)
+/// with `input`: Claude Code asks krowk whether it may (`can_use_tool`),
+/// runs it over the bridge when `runs`, and the model reads what came back
+/// — the bridge's answer, or the denial's message.
+fn bridged(id: &str, tool: &str, input: Value, runs: bool) -> String {
+    let name = format!("mcp__krowk__{tool}");
+    let call = json!({"type": "assistant", "message": {"id": format!("msg_{id}"), "model": "{{MODEL}}", "role": "assistant", "content": [{"type": "tool_use", "id": id, "name": name, "input": input}]}, "parent_tool_use_id": null, "session_id": "{{SESSION}}"});
+    let ask = json!({"subtype": "can_use_tool", "tool_name": name, "mcp_server": {"name": "krowk", "source": "sdk"}, "input": input, "tool_use_id": id});
+    let run = json!({"subtype": "mcp_message", "server_name": "krowk", "message": {"method": "tools/call", "params": {"name": tool, "arguments": input, "_meta": {"claudecode/toolUseId": id}}, "jsonrpc": "2.0", "id": 2}});
+    if runs { format!("{call}\n@ask {ask}\n@ask {run}\n@tool_result {id}") } else { format!("{call}\n@ask {ask}\n@tool_result {id}") }
 }
 
-fn run(host: &Host, cmd: Command) -> RunResult {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+/// A model that calls each tool in turn, then answers "Done.".
+fn script(calls: Vec<(&str, Value)>) -> String {
+    let mut s: Vec<String> = calls.into_iter().enumerate().map(|(i, (tool, input))| bridged(&format!("toolu_{i}"), tool, input, true)).collect();
+    s.push(fake::answer("Done."));
+    s.join("\n")
+}
+
+/// A model that answers each prompt with one `mcp_search`, which starts
+/// every server, then "Done.": a turn that touches all the servers.
+fn search_each_turn() -> String {
+    format!("@when echo hi\n{}", script(vec![("mcp_search", json!({"query": "echo"}))]))
+}
+
+/// Runs a prompt to its end, then shuts the host down: its result, and
+/// what the model read back from each tool, in order.
+fn run(host: &Host, cmd: Command) -> (RunResult, Vec<String>) {
+    let rt = runtime();
     rt.block_on(async {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
-        let r = host.execute(cmd, tx).await.unwrap().unwrap();
-        while rx.try_recv().is_ok() {}
+        let (lines, r) = execute(host, cmd).await;
         host.shutdown().await;
-        r
+        (r, results(&lines))
     })
 }
 
-/// Every tool result the model was sent, in order.
-fn results(m: &mock::Mock) -> Vec<String> {
-    let seen = m.seen.lock().unwrap();
-    results_in(&seen.last().unwrap().body)
+async fn execute(host: &Host, cmd: Command) -> (Vec<StreamLine>, RunResult) {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(4096);
+    let collect = async {
+        let mut lines = Vec::new();
+        while let Some(l) = rx.recv().await {
+            lines.push(l);
+        }
+        lines
+    };
+    let (r, lines) = tokio::join!(host.execute(cmd, tx), collect);
+    (lines, r.unwrap().unwrap())
 }
 
-/// Every tool result one request carries, in order.
-fn results_in(body: &Value) -> Vec<String> {
-    body["messages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .flat_map(|msg| msg["content"].as_array().cloned().unwrap_or_default())
-        .filter(|b| b["type"] == "tool_result")
-        .map(|b| match &b["content"] {
-            Value::String(s) => s.clone(),
-            Value::Array(parts) => parts
-                .iter()
-                .filter_map(|p| p["text"].as_str())
-                .collect::<Vec<_>>()
-                .join("\n"),
-            v => v.to_string(),
-        })
-        .collect()
-}
-
-/// The names of the tools the model was offered on its first request.
-fn offered(m: &mock::Mock) -> Vec<String> {
-    let seen = m.seen.lock().unwrap();
-    seen[0].body["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|t| t["name"].as_str().unwrap().to_string())
-        .collect()
-}
-
-/// `context.tokens` in krowk-bench's budgets.toml: ticket 03's ceiling on
-/// the system prompt plus the tool definitions.
-fn context_tokens_budget() -> u64 {
-    let file = include_str!("../../krowk-bench/budgets.toml");
-    let at = file.find("id = \"context.tokens\"").unwrap();
-    file[at..]
-        .lines()
-        .find_map(|l| l.strip_prefix("max = "))
-        .unwrap()
-        .trim()
-        .replace('_', "")
-        .parse()
-        .unwrap()
+/// Every tool result of a turn, in order: what Claude Code handed the model.
+fn results(lines: &[StreamLine]) -> Vec<String> {
+    lines.iter().filter_map(|l| match l {
+        StreamLine::Log(LogEvent { body: LogBody::ItemCompleted { item: Item::ToolResult { output, .. }, .. }, .. }) => Some(output.clone()),
+        _ => None,
+    }).collect()
 }
 
 #[test]
-#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_tool_3_a_trusted_projects_mcp_server_is_found_by_search_and_called() {
-    let m = mock::serve(script(vec![
+    let h = Home::new("found", Some(&script(vec![
         ("mcp_search", json!({"query": "echo text"})),
         (
             "mcp_call",
             json!({"tool": "fake:echo", "input": {"text": "hi"}}),
         ),
-    ]));
-    let h = Home::new("found", &m.url);
+    ])));
     h.mcp_json(1);
     // The person allows this one MCP tool; default mode would ask otherwise.
     let host = h.host(true, json!({"permissions": {"allow": ["Mcp(fake:echo)"]}}));
-    let r = run(&host, prompt(PermissionMode::Default));
+    let (r, sent) = run(&host, prompt(PermissionMode::Default));
     assert_eq!(r.result, "Done.");
-    let tools = offered(&m);
+    let tools = h.listed();
     assert!(
         tools.contains(&"mcp_search".into()) && tools.contains(&"mcp_call".into()),
         "{tools:?}"
@@ -257,7 +222,6 @@ fn r_tool_3_a_trusted_projects_mcp_server_is_found_by_search_and_called() {
         !tools.iter().any(|t| t.contains("echo")),
         "the server's tool is deferred, not offered: {tools:?}"
     );
-    let sent = results(&m);
     assert!(
         sent[0].contains("\"fake:echo\"") && sent[0].contains("\"input_schema\""),
         "search returns the match with its schema: {}",
@@ -272,21 +236,22 @@ fn r_tool_3_a_trusted_projects_mcp_server_is_found_by_search_and_called() {
         log.contains("\"method\":\"initialize\"") && log.contains("\"method\":\"tools/call\""),
         "{log}"
     );
+    // Claude Code loads no server itself: only krowk's bridge is passed.
+    let argv = fake::log(&h.root, "claude").lines().find(|l| l.starts_with("argv -p ")).unwrap().to_string();
+    assert!(argv.contains("--strict-mcp-config") && !argv.contains("fake-mcp"), "{argv}");
 }
 
 #[test]
-#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_tool_3_an_untrusted_repositorys_mcp_json_starts_nothing() {
-    let m = mock::serve(script(vec![("mcp_search", json!({"query": "echo"}))]));
-    let h = Home::new("untrusted", &m.url);
+    let h = Home::new("untrusted", Some(&fake::answer("Done.")));
     h.mcp_json(1);
     let host = h.host(false, json!({}));
-    let r = run(&host, prompt(PermissionMode::BypassPermissions));
+    let (r, _) = run(&host, prompt(PermissionMode::BypassPermissions));
     assert_eq!(r.result, "Done.");
     assert!(
-        !offered(&m).iter().any(|t| t.starts_with("mcp_")),
+        !h.listed().iter().any(|t| t.starts_with("mcp_")),
         "no MCP tools before trust: {:?}",
-        offered(&m)
+        h.listed()
     );
     assert!(!h.fake_log().exists(), "the server was never started");
     // The trust question is asked for it.
@@ -301,76 +266,32 @@ fn r_tool_3_an_untrusted_repositorys_mcp_json_starts_nothing() {
 }
 
 #[test]
-#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
-fn r_tool_3_fifty_mcp_tools_cost_the_context_two_definitions_within_the_ticket_3_budget() {
-    let m = mock::serve(script(vec![("mcp_search", json!({"query": "filler"}))]));
-    let h = Home::new("fifty", &m.url);
-    h.mcp_json(50);
-    let host = h.host(true, json!({}));
-    let r = run(&host, prompt(PermissionMode::BypassPermissions));
-    assert_eq!(r.result, "Done.");
-    let sent = results(&m);
-    assert!(
-        sent[0].contains("fake:tool_"),
-        "the fifty were listed and searched: {}",
-        sent[0]
-    );
-    assert_eq!(
-        sent[0].matches("\"tool\":").count(),
-        5,
-        "search returns the best five, not all fifty"
-    );
-    let ctx = h.context(&r.session_id);
-    let budget = context_tokens_budget();
-    for c in &ctx {
-        let names: Vec<&str> = c.tools.iter().map(|t| t.name.as_str()).collect();
-        assert!(
-            names.contains(&"mcp_search") && !names.iter().any(|n| n.starts_with("tool_")),
-            "{names:?}"
-        );
-        let total = c.system_tokens + c.tools_tokens;
-        println!(
-            "R-TOOL-3 context tokens with 50 MCP tools: system {} + tools {} = {total} (budget {budget})",
-            c.system_tokens, c.tools_tokens
-        );
-        assert!(
-            total <= budget,
-            "{total} tokens with 50 MCP tools configured, over context.tokens' {budget}"
-        );
-    }
-}
-
-#[test]
-#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_tool_3_plan_mode_and_a_whole_server_deny_start_no_server() {
     for (mode, user) in [(PermissionMode::Plan, json!({})), (PermissionMode::BypassPermissions, json!({"permissions": {"deny": ["Mcp(fake)"]}}))] {
-        let m = mock::serve(script(vec![("mcp_search", json!({"query": "echo"}))]));
-        let h = Home::new("nostart", &m.url);
+        let h = Home::new("nostart", Some(&script(vec![("mcp_search", json!({"query": "echo"}))])));
         h.mcp_json(1);
         let host = h.host(true, user.clone());
-        let r = run(&host, prompt(mode));
+        let (r, sent) = run(&host, prompt(mode));
         assert_eq!(r.result, "Done.");
         assert!(!h.fake_log().exists(), "{mode:?} {user}: the server was started");
-        assert!(!results(&m)[0].contains("fake:echo"), "{mode:?}: {}", results(&m)[0]);
+        assert!(!sent[0].contains("fake:echo"), "{mode:?}: {}", sent[0]);
+        if mode == PermissionMode::Plan {
+            assert!(sent[0].contains("plan mode runs no commands"), "the bridge refuses the search that would start it: {}", sent[0]);
+        } else {
+            assert!(!h.listed().iter().any(|t| t.starts_with("mcp_")), "a server denied whole is not offered: {:?}", h.listed());
+        }
     }
 }
 
 #[test]
-#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_tool_3_a_deny_rule_on_mcp_server_tool_blocks_the_call() {
-    let m = mock::serve(script(vec![
-        ("mcp_search", json!({"query": "echo"})),
-        (
-            "mcp_call",
-            json!({"tool": "fake:echo", "input": {"text": "hi"}}),
-        ),
-    ]));
-    let h = Home::new("deny", &m.url);
+    // Claude Code is told no at `can_use_tool`, and calls nothing.
+    let scenario = [bridged("toolu_0", "mcp_search", json!({"query": "echo"}), true), bridged("toolu_1", "mcp_call", json!({"tool": "fake:echo", "input": {"text": "hi"}}), false), fake::answer("Done.")].join("\n");
+    let h = Home::new("deny", Some(&scenario));
     h.mcp_json(1);
     let host = h.host(true, json!({"permissions": {"deny": ["Mcp(fake:echo)"]}}));
-    let r = run(&host, prompt(PermissionMode::BypassPermissions));
+    let (r, sent) = run(&host, prompt(PermissionMode::BypassPermissions));
     assert_eq!(r.result, "Done.");
-    let sent = results(&m);
     assert!(
         !sent[0].contains("\"fake:echo\""),
         "search does not offer a denied tool: {}",
@@ -389,7 +310,6 @@ fn r_tool_3_a_deny_rule_on_mcp_server_tool_blocks_the_call() {
 }
 
 #[test]
-#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_tool_3_a_streamable_http_server_from_the_persons_own_config_is_called() {
     // The server answers JSON, and `tools/call` as an SSE stream; its
     // session id is carried from `initialize` on.
@@ -417,124 +337,18 @@ fn r_tool_3_a_streamable_http_server_from_the_persons_own_config_is_called() {
             _ => Reply::status(202, ""),
         }
     });
-    let m = mock::serve(script(vec![(
+    let h = Home::new("http", Some(&script(vec![(
         "mcp_call",
         json!({"tool": "web:echo", "input": {"text": "over http"}}),
-    )]));
-    let h = Home::new("http", &m.url);
+    )])));
     // krowk's own config.json, which needs no trust: it is the person's.
     let host = h.host(
         false,
         json!({"mcpServers": {"web": {"type": "http", "url": server.url}}}),
     );
-    let r = run(&host, prompt(PermissionMode::BypassPermissions));
+    let (r, sent) = run(&host, prompt(PermissionMode::BypassPermissions));
     assert_eq!(r.result, "Done.");
-    assert_eq!(results(&m)[0], "echo: over http");
-}
-
-/// Whether a request is a subagent's: its system prompt says so.
-fn is_child(body: &Value) -> bool {
-    body["system"].to_string().contains("You are a subagent")
-}
-
-/// R-SUB-1 (ticket 25): a subagent whose definition names one MCP server
-/// is offered the MCP tools for it alone — its search finds nothing on the
-/// other, its call there is refused before it runs, and the other is never
-/// started for it — while the session that started it still reaches both.
-#[test]
-#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
-fn r_sub_1_a_subagent_limited_to_one_mcp_server_cannot_call_another() {
-    let parent = script(vec![
-        ("subagent", json!({"description": "echo", "prompt": "echo hi through fake", "agent": "fake-only"})),
-        ("mcp_call", json!({"tool": "other:echo", "input": {"text": "from the parent"}})),
-    ]);
-    let child = script(vec![
-        ("mcp_search", json!({"query": "echo"})),
-        ("mcp_call", json!({"tool": "other:echo", "input": {"text": "sneaked"}})),
-        ("mcp_call", json!({"tool": "fake:echo", "input": {"text": "hi"}})),
-    ]);
-    // Whether the other server had been started when the parent's model is
-    // handed the subagent's answer: read then, before its own call.
-    let other_log: Arc<std::sync::Mutex<Option<PathBuf>>> = Arc::default();
-    let started_before: Arc<std::sync::Mutex<Option<bool>>> = Arc::default();
-    let (log, before) = (other_log.clone(), started_before.clone());
-    let m = mock::serve(move |body, n| {
-        if is_child(body) {
-            return child(body, n);
-        }
-        if results_in(body).len() == 1 {
-            *before.lock().unwrap() = log.lock().unwrap().as_ref().map(|p| p.exists());
-        }
-        parent(body, n)
-    });
-    let h = Home::new("subagent-allowlist", &m.url);
-    h.mcp_json_of(&["fake", "other"], 1);
-    *other_log.lock().unwrap() = Some(h.log_of("other"));
-    std::fs::create_dir_all(h.repo().join(".krowk/agents")).unwrap();
-    std::fs::write(h.repo().join(".krowk/agents/fake-only.md"), "---\nname: fake-only\ndescription: Echoes through fake.\ntools: Read, mcp__fake\n---\nEcho.\n").unwrap();
-    let host = h.host(true, json!({}));
-    let r = run(&host, prompt(PermissionMode::BypassPermissions));
-    assert_eq!(r.result, "Done.");
-    let seen: Vec<Value> = m.seen.lock().unwrap().iter().map(|s| s.body.clone()).collect();
-    let children: Vec<&Value> = seen.iter().filter(|b| is_child(b)).collect();
-    let tools: Vec<&Value> = children[0]["tools"].as_array().unwrap().iter().collect();
-    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["read", "mcp_search", "mcp_call"], "its list, and the MCP tools for the server it names");
-    let search = tools.iter().find(|t| t["name"] == "mcp_search").unwrap()["description"].as_str().unwrap();
-    assert!(search.contains("(fake)") && !search.contains("other"), "only its server is named to it: {search}");
-    let sent = results_in(children.last().unwrap());
-    assert!(sent[0].contains("\"fake:echo\"") && !sent[0].contains("other"), "its search finds nothing on the other server: {}", sent[0]);
-    assert_eq!(sent[1], "other:echo was not run: agent fake-only reaches only the MCP tools its definition names — fake (any tool)", "refused before it ran, even in bypass mode");
-    assert_eq!(sent[2], "echo: hi", "its own server answers");
-    assert_eq!(*started_before.lock().unwrap(), Some(true), "the session's own turn connects every server in the background (R-MCP-3), the subagent's allowlist or not");
-    let other = std::fs::read_to_string(h.log_of("other")).unwrap_or_default();
-    assert!(!other.contains("sneaked"), "the refused call never reached the other server: {other}");
-    // The session that started it reaches every server still, the other
-    // started for it now.
-    let parent_sent = results_in(seen.iter().rfind(|b| !is_child(b)).unwrap());
-    assert_eq!(parent_sent[1], "echo: from the parent", "{parent_sent:?}");
-    assert!(std::fs::read_to_string(h.log_of("other")).unwrap().contains("tools/call"));
-    // The subagent used the session's connection to `fake`, not one of its
-    // own.
-    assert_eq!(count(&h.fake_log(), "initialize"), 1, "one connection to fake, shared by the parent and its subagent");
-}
-
-/// R-SUB-1 (ticket 25): a subagent whose definition names one MCP tool,
-/// `mcp__fake__echo`, finds that tool alone on its server and is refused
-/// its sibling, before the server sees the call.
-#[test]
-#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
-fn r_sub_1_a_subagent_limited_to_one_mcp_tool_cannot_call_its_sibling() {
-    let parent = script(vec![("subagent", json!({"description": "echo", "prompt": "echo hi", "agent": "echo-only"}))]);
-    let child = script(vec![
-        ("mcp_search", json!({"query": "filler echo"})),
-        ("mcp_call", json!({"tool": "fake:tool_2", "input": {"q": "sneaked"}})),
-        ("mcp_call", json!({"tool": "fake:echo", "input": {"text": "hi"}})),
-    ]);
-    let m = mock::serve(move |body, n| if is_child(body) { child(body, n) } else { parent(body, n) });
-    let h = Home::new("subagent-one-tool", &m.url);
-    h.mcp_json(2);
-    std::fs::create_dir_all(h.repo().join(".claude/agents")).unwrap();
-    std::fs::write(h.repo().join(".claude/agents/echo-only.md"), "---\nname: echo-only\ndescription: Echoes.\ntools: mcp__fake__echo\n---\nEcho.\n").unwrap();
-    let host = h.host(true, json!({}));
-    let r = run(&host, prompt(PermissionMode::BypassPermissions));
-    assert_eq!(r.result, "Done.");
-    let seen: Vec<Value> = m.seen.lock().unwrap().iter().map(|s| s.body.clone()).collect();
-    let sent = results_in(seen.iter().rfind(|b| is_child(b)).unwrap());
-    assert!(sent[0].contains("\"fake:echo\"") && !sent[0].contains("tool_2"), "its search finds the one tool, not its sibling: {}", sent[0]);
-    assert_eq!(sent[1], "fake:tool_2 was not run: agent echo-only reaches only the MCP tools its definition names — fake:echo");
-    assert_eq!(sent[2], "echo: hi");
-    let log = std::fs::read_to_string(h.fake_log()).unwrap();
-    assert!(!log.contains("sneaked") && log.matches("tools/call").count() == 1, "only the allowed call reached the server: {log}");
-}
-
-/// A model that answers each prompt with one `mcp_search`, which starts
-/// every server, then "Done.": a turn that touches all the servers.
-fn search_each_turn(body: &Value, _: usize) -> Reply {
-    match body["messages"].as_array().and_then(|m| m.last()) {
-        Some(last) if last["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result")) => Reply::sse(&mock::text_stream("Done.")),
-        _ => Reply::sse(&mock::tool_use("toolu_s", "mcp_search", &json!({"query": "echo"}))),
-    }
+    assert_eq!(sent[0], "echo: over http");
 }
 
 /// One turn of a session, on a runtime that outlives it: the host is not
@@ -542,12 +356,7 @@ fn search_each_turn(body: &Value, _: usize) -> Reply {
 fn turn(rt: &tokio::runtime::Runtime, host: &Host, session: Option<&str>) -> RunResult {
     let Command::Prompt { text, model, permission_mode, .. } = prompt(PermissionMode::BypassPermissions) else { unreachable!() };
     let cmd = Command::Prompt { session_id: session.map(String::from), text, images: Vec::new(), model, permission_mode, toolset: None, effort: None, rollover: None, budget: None };
-    rt.block_on(async {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
-        let r = host.execute(cmd, tx).await.unwrap().unwrap();
-        while rx.try_recv().is_ok() {}
-        r
-    })
+    rt.block_on(execute(host, cmd)).1
 }
 
 fn runtime() -> tokio::runtime::Runtime {
@@ -609,17 +418,16 @@ fn http_count(server: &mock::Mock, method: &str) -> usize {
 /// process and one `initialize` for the stdio server, one `initialize` for
 /// the HTTP one.
 #[test]
-#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_mcp_1_two_turns_of_a_session_start_each_server_once() {
     let web = http_server();
-    let m = mock::serve(search_each_turn);
-    let h = Home::new("reuse", &m.url);
+    let h = Home::new("reuse", Some(&search_each_turn()));
     h.mcp_json(1);
     let host = h.host(true, json!({"mcpServers": {"web": {"type": "http", "url": web.url}}}));
     let rt = runtime();
     let first = turn(&rt, &host, None);
     let second = turn(&rt, &host, Some(&first.session_id));
     assert_eq!(second.result, "Done.");
+    assert_eq!(fake::prompts(&h.root, "claude").len(), 2, "both turns reached Claude Code");
     assert_eq!(count(&h.fake_log(), "initialize"), 1, "the stdio server was initialized once");
     assert_eq!(pids(&h, "fake").len(), 1, "and spawned once");
     assert_eq!(http_count(&web, "initialize"), 1, "the HTTP server was initialized once");
@@ -628,13 +436,11 @@ fn r_mcp_1_two_turns_of_a_session_start_each_server_once() {
 }
 
 /// D5, R-MCP-2: between turns, a changed server restarts alone; a removed
-/// one and one of a repository that is no longer trusted are closed before
-/// the next model call.
+/// one and one of a repository that is no longer trusted are closed when
+/// the next turn starts, and Claude Code is offered no MCP tool for them.
 #[test]
-#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_mcp_2_a_changed_server_restarts_alone_and_a_removed_or_untrusted_one_is_closed() {
-    let m = mock::serve(search_each_turn);
-    let h = Home::new("changes", &m.url);
+    let h = Home::new("changes", Some(&search_each_turn()));
     h.mcp_json_of(&["a", "b", "c"], 1);
     let trusted = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let t = trusted.clone();
@@ -648,32 +454,28 @@ fn r_mcp_2_a_changed_server_restarts_alone_and_a_removed_or_untrusted_one_is_clo
     turn(&rt, &host, Some(&id));
     assert_eq!((count(&h.log_of("a"), "initialize"), count(&h.log_of("b"), "initialize"), count(&h.log_of("c"), "initialize")), (1, 2, 1));
     assert!(gone(pids(&h, "b")[0]), "b's old process was stopped");
-    // c is removed: its process is gone before the turn's model call.
+    // c is removed: its process is gone.
     v["mcpServers"].as_object_mut().unwrap().remove("c");
     std::fs::write(h.repo().join(".mcp.json"), v.to_string()).unwrap();
     turn(&rt, &host, Some(&id));
     assert!(gone(pids(&h, "c")[0]), "c was closed");
     assert!(alive(pids(&h, "a")[0]), "a was not touched");
-    // The repository is no longer trusted: its servers are closed, and the
-    // model is offered no MCP tool.
+    // The repository is no longer trusted: its servers are closed, and
+    // Claude Code is offered no MCP tool.
     trusted.store(false, std::sync::atomic::Ordering::SeqCst);
     turn(&rt, &host, Some(&id));
     assert!(gone(pids(&h, "a")[0]), "a was closed once its repository was untrusted");
-    let seen = m.seen.lock().unwrap();
-    let last = seen.last().unwrap().body["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let last = h.listed();
     assert!(!last.iter().any(|t| t.starts_with("mcp_")), "{last:?}");
-    drop(seen);
     rt.block_on(host.shutdown());
 }
 
 /// R-MCP-5: the idle sweep closes a session's servers, and so does the
 /// host's shutdown — processes stopped, an HTTP session ended with DELETE.
 #[test]
-#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_mcp_5_the_idle_sweep_and_shutdown_close_a_sessions_servers() {
     let web = http_server();
-    let m = mock::serve(search_each_turn);
-    let h = Home::new("close", &m.url);
+    let h = Home::new("close", Some(&search_each_turn()));
     h.mcp_json(1);
     let host = h.host(true, json!({"mcpServers": {"web": {"type": "http", "url": web.url}}})).with_backend_idle(std::time::Duration::ZERO);
     let rt = runtime();
@@ -692,127 +494,17 @@ fn r_mcp_5_the_idle_sweep_and_shutdown_close_a_sessions_servers() {
     assert_eq!(http_count(&web, "DELETE"), 2);
 }
 
-const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01";
-
-#[test]
-#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
-fn r_mcp_14_an_image_block_and_an_image_resource_reach_the_model_inside_the_tool_result() {
-    use base64::Engine as _;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(PNG);
-    let m = mock::serve(script(vec![(
-        "mcp_call",
-        json!({"tool": "fake:echo", "input": {"text": "x"}}),
-    )]));
-    let h = Home::new("image", &m.url);
-    let fake = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp/fake-mcp");
-    let content = json!([
-        {"type": "text", "text": "a screen"},
-        {"type": "image", "data": b64, "mimeType": "image/png"},
-        {"type": "resource", "resource": {"uri": "x://y", "mimeType": "image/png", "blob": b64}},
-        {"type": "image", "data": "bm90IGFuIGltYWdl", "mimeType": "image/png"},
-    ]);
-    std::fs::write(h.repo().join(".mcp.json"), json!({"mcpServers": {"fake": {"command": "bash", "args": [fake], "env": {"FAKE_CONTENT": content.to_string()}}}}).to_string()).unwrap();
-    let host = h.host(true, json!({"permissions": {"allow": ["Mcp(fake:echo)"]}}));
-    let r = run(&host, prompt(PermissionMode::Default));
-    assert_eq!(r.result, "Done.");
-    let seen = m.seen.lock().unwrap();
-    let result = seen.last().unwrap().body["messages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .flat_map(|msg| msg["content"].as_array().cloned().unwrap_or_default())
-        .find(|b| b["type"] == "tool_result")
-        .unwrap();
-    let parts = result["content"].as_array().unwrap();
-    let text = parts.iter().filter_map(|p| p["text"].as_str()).collect::<Vec<_>>().join("\n");
-    assert!(text.starts_with("a screen\n[image #1]\n[image #2]\n[image not shown: it is not a PNG"), "{text}");
-    // The same bytes twice are one file, sent once and named after that.
-    assert_eq!(parts.iter().filter(|p| p["type"] == "image").count(), 1, "{parts:?}");
-    assert_eq!(parts.iter().find(|p| p["type"] == "image").unwrap()["source"]["data"], b64);
-    let id = std::fs::read_dir(log::sessions_dir(&h.env()).unwrap()).unwrap().next().unwrap().unwrap().path();
-    assert_eq!(std::fs::read_dir(id.join("images")).unwrap().count(), 1);
-}
-
-/// A model on another wire that calls `mcp_call` once, then answers; the
-/// request that answers is the one returned.
-fn image_result_request(instance: &str, model: &str, call: Reply, answer: Reply) -> Value {
-    use base64::Engine as _;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(PNG);
-    let (call, answer) = (std::sync::Mutex::new(Some(call)), std::sync::Mutex::new(Some(answer)));
-    let m = mock::serve(move |body, _| {
-        let answered = body.to_string().contains("a screen");
-        let slot = if answered { &answer } else { &call };
-        slot.lock().unwrap().take().unwrap_or_else(|| Reply::sse(&mock::text_stream("Done.")))
-    });
-    let h = Home::new(instance, &m.url);
-    let fake = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp/fake-mcp");
-    let content = json!([{"type": "text", "text": "a screen"}, {"type": "image", "data": b64, "mimeType": "image/png"}]);
-    std::fs::write(h.repo().join(".mcp.json"), json!({"mcpServers": {"fake": {"command": "bash", "args": [fake], "env": {"FAKE_CONTENT": content.to_string()}}}}).to_string()).unwrap();
-    let host = h.host(true, json!({"permissions": {"allow": ["Mcp(fake:echo)"]}}));
-    let Command::Prompt { text, permission_mode, .. } = prompt(PermissionMode::Default) else { unreachable!() };
-    let cmd = Command::Prompt { session_id: None, text, images: Vec::new(), model: Some(ModelRef { instance: instance.into(), model: model.into() }), permission_mode, toolset: None, effort: None, rollover: None, budget: None };
-    run(&host, cmd);
-    let seen = m.seen.lock().unwrap();
-    assert_eq!(seen.len(), 2);
-    seen[1].body.clone()
-}
-
-#[test]
-#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
-fn r_mcp_14_an_image_reaches_a_responses_model_as_an_input_image_in_the_function_call_output() {
-    let call = r#"event: response.output_item.added
-data: {"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"mcp_call","arguments":""}}
-
-event: response.output_item.done
-data: {"type":"response.output_item.done","sequence_number":1,"output_index":0,"item":{"id":"fc_1","type":"function_call","status":"completed","call_id":"call_1","name":"mcp_call","arguments":"{\"tool\":\"fake:echo\",\"input\":{\"text\":\"x\"}}"}}
-
-event: response.completed
-data: {"type":"response.completed","sequence_number":2,"response":{"id":"resp_1","object":"response","status":"completed","model":"gpt-5.4","output":[],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}
-
-"#;
-    let done = std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/openai/turn1_answer.sse")).unwrap();
-    let body = image_result_request("openai", "gpt-5.4", Reply::sse(call), Reply::sse(&done));
-    let out = body["input"].as_array().unwrap().iter().find(|i| i["type"] == "function_call_output").unwrap();
-    let parts = out["output"].as_array().unwrap();
-    assert_eq!(parts[0], json!({"type": "input_text", "text": parts[0]["text"]}));
-    assert!(parts[0]["text"].as_str().unwrap().starts_with("a screen"), "{parts:?}");
-    assert_eq!(parts.iter().filter(|p| p["type"] == "input_image").count(), 1, "{parts:?}");
-    let url = parts.iter().find(|p| p["type"] == "input_image").unwrap()["image_url"].as_str().unwrap();
-    assert!(url.starts_with("data:image/png;base64,"), "{url}");
-}
-
-#[test]
-#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
-fn r_mcp_14_an_image_reaches_a_chat_completions_model_in_a_user_message_after_the_tool_message() {
-    let chunk = |delta: Value, finish: Value| format!("data: {}\n\n", json!({"id": "c1", "object": "chat.completion.chunk", "created": 1, "model": "grok-4.7", "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}));
-    let call = chunk(json!({"role": "assistant", "tool_calls": [{"index": 0, "id": "call_1", "type": "function", "function": {"name": "mcp_call", "arguments": "{\"tool\":\"fake:echo\",\"input\":{\"text\":\"x\"}}"}}]}), Value::Null) + &chunk(json!({}), json!("tool_calls")) + "data: [DONE]\n\n";
-    let done = std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/chat/xai_answer.sse")).unwrap();
-    let body = image_result_request("xai", "grok-4.7", Reply::sse(&call), Reply::sse(&done));
-    let msgs = body["messages"].as_array().unwrap();
-    let roles: Vec<&str> = msgs.iter().map(|m| m["role"].as_str().unwrap()).collect();
-    assert_eq!(roles, ["system", "user", "assistant", "tool", "user"], "tool messages stay right after the call; the images follow");
-    assert!(msgs[3]["content"].as_str().unwrap().starts_with("a screen"));
-    let parts = msgs[4]["content"].as_array().unwrap();
-    assert!(parts[0]["text"].as_str().unwrap().contains("call_1"), "{parts:?}");
-    let url = parts.iter().find(|p| p["type"] == "image_url").unwrap()["image_url"]["url"].as_str().unwrap();
-    assert!(url.starts_with("data:image/png;base64,"), "{url}");
-}
-
 /// R-MCP-21: the host reports a session's servers — name, where each is
 /// configured, status and tools — and starts one again on request.
 #[test]
-#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_mcp_21_the_host_reports_the_sessions_servers_and_reconnects_one() {
     use krowk_harness::protocol::McpState;
-    let m = mock::serve(script(vec![]));
-    let h = Home::new("view", &m.url);
+    let h = Home::new("view", None);
     h.mcp_json(2);
     let host = h.host(true, json!({}));
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = runtime();
     rt.block_on(async {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
-        let r = host.execute(prompt(PermissionMode::Default), tx).await.unwrap().unwrap();
-        while rx.try_recv().is_ok() {}
+        let (_, r) = execute(&host, prompt(PermissionMode::Default)).await;
         let connected = async |host: &Host| {
             for _ in 0..200 {
                 let s = host.mcp_servers(&r.session_id);

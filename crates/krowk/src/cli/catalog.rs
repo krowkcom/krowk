@@ -732,7 +732,7 @@ fn trust_command() -> Command {
     }
 }
 
-/// `krowk mcp`: the MCP servers krowk's own agent talks to.
+/// `krowk mcp`: the MCP servers krowk hands Claude Code and Codex.
 #[cfg(feature = "harness")]
 fn mcp_command() -> Command {
     Command {
@@ -911,7 +911,7 @@ fn prompt_flags() -> Vec<Flag> {
     vec![
         Flag {
             aliases: vec!["p"],
-            ..flag("print", BOOL, "Run the prompt given as the arguments (or on stdin) headless: krowk's own agent answers it, then exits")
+            ..flag("print", BOOL, "Run the prompt given as the arguments (or on stdin) headless: Claude Code or Codex answers it, on the default account or the one --model names, then exits")
         },
         with_default(flag("output-format", STRING, "With -p: text (the answer), json (the result event) or stream-json (every event, one per line)"), "text"),
         flag("model", STRING, "With -p: the model, as <instance>/<model> or a model id on the anthropic instance, e.g. claude-opus-5-5, claude:work/sonnet to run Claude Code, or codex:team/gpt-5.5 to run Codex; with --resume, the session moves there"),
@@ -932,12 +932,12 @@ fn prompt_flags() -> Vec<Flag> {
         flag(
             "sandbox",
             STRING,
-            "With -p: run the tools in an OS sandbox — workspace (the working directory writable, credentials hidden), read-only, or strict (no network, the home hidden) — or off. .git, .claude and krowk's settings stay read-only inside it, and a sandbox this machine cannot enforce refuses the run. Without it, a run with no mode set takes the workspace sandbox and acceptEdits where bubblewrap works",
+            "With -p: off. Claude Code and Codex run their own tools outside krowk's OS sandbox, so a profile (workspace, read-only, strict) is refused",
         ),
         flag(
             "toolset",
             STRING,
-            "With -p: the tools' preset — claude (str_replace), gpt (apply_patch) or grok (search_replace). The model's family picks one when absent",
+            "With -p: the preset the session's context record names — claude, gpt or grok. The model's family picks one when absent",
         ),
         flag(
             "effort",
@@ -956,12 +956,12 @@ fn prompt_flags() -> Vec<Flag> {
         flag(
             "max-usd",
             STRING,
-            "With -p: stop the session before the model call that would take it, with its subagents, past this many dollars — metered, priced from models.dev. Exits 4, like `krowk sessions budget`",
+            "With -p: stop the session once it, with its agents, is past this many dollars — metered, priced from models.dev: a turn at the limit is refused, and one a call takes past it is interrupted. Exits 4, like `krowk sessions budget`",
         ),
         flag(
             "max-tokens",
             STRING,
-            "With -p: stop the session before the model call that would take its generated tokens (output and reasoning, subagents included) past this many. Exits 4",
+            "With -p: stop the session once its generated tokens (output and reasoning, its agents included) are past this many: a turn at the limit is refused, and one a call takes past it is interrupted. Exits 4",
         ),
         flag(
             "trust",
@@ -1078,8 +1078,8 @@ Adds a Claude Code or Codex account: on a subscription (signed in with
         "mcp" => "\
 Servers live in krowk's config.json (`mcpServers`, the shape Claude Code
 uses), for every repository. Project servers stay in the repository's
-.mcp.json, behind trust; `list` shows them, and Claude Code's, too. Only
-krowk's own agent uses them, not the Claude Code or Codex backends.
+.mcp.json, behind trust; `list` shows them, and Claude Code's, too. Claude
+Code and Codex reach them through krowk's bridge (`mcp_search`, `mcp_call`).
 
 A server that asks for OAuth, like Mobbin:
 
@@ -1140,7 +1140,7 @@ its final state kept as refs/krowk/snapshots/<hex> for 30 days. When a file
 does not apply cleanly nothing changes, both are kept, and the files are
 named. A worktree that changed submodules is not applied. The checkout must
 be one of the same repository. Files in .git, .claude, .codex and .krowk
-directories, which a subagent's changes leave to you, are applied.",
+directories, which an agent's changes leave to you, are applied.",
         #[cfg(feature = "harness")]
         "host" => "\
 The first krowk that needs it starts the daemon, and it exits after ten idle

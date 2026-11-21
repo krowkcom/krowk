@@ -190,12 +190,11 @@ pub enum Access {
     /// `SKILL.md`, when krowk knows where that is: `Skill(name)` rules
     /// judge it by name, and a `Read` deny rule by the file.
     Skill(Option<PathBuf>),
-    /// Needs no permission at all: krowk's own bridged tools, a todo list.
+    /// Needs no permission at all: krowk's own bridged tools.
     Free,
-    /// One of krowk's own session tools — `todo_write` (`TodoWrite`), a
-    /// subagent (`Task`, its agent the subject): no mode governs it, since
-    /// it writes the session's own log or starts a session held to these
-    /// same rules, but a deny rule, an ask rule and a hook's `ask` do.
+    /// One of the session's own tools — Claude Code's `AskUserQuestion`,
+    /// `TodoWrite`, an agent (`Task`, its agent the subject): no mode
+    /// governs it, but a deny rule and an ask rule do.
     Session,
     /// Anything else, by name — asked about unless a rule says otherwise.
     Other,

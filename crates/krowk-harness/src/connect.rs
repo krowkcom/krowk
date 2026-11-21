@@ -8,8 +8,7 @@
 //! Anthropic by a Claude subscription (a Claude Code account, `claude:work`,
 //! signed in by `claude auth login`) or an API key (`anthropic:work`);
 //! OpenAI by a ChatGPT subscription (a Codex account, signed in by `codex
-//! login`, or `codex login --device-auth`) or an API key; xAI by SuperGrok
-//! (krowk's own OAuth, a browser or a device code) or an API key; OpenRouter
+//! login`, or `codex login --device-auth`) or an API key; xAI, OpenRouter
 //! and an OpenAI-compatible server by an API key. `METHODS` is that table,
 //! and each row names the provider its instances are called after — the
 //! word `krowk providers add` takes.
@@ -55,7 +54,7 @@ use crate::claude::auth as claude_auth;
 use crate::codex::{self, auth as codex_auth};
 use crate::engine::EngineError;
 use crate::instances::{self, Auth, InstanceKind, InstancesConfig, Registry, Resolved};
-use crate::oauth::{self, Step, Store};
+use crate::oauth::Store;
 use crate::readiness::{self, Probe, Report};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
@@ -448,7 +447,6 @@ pub struct Options {
     pub name: Option<String>,
     pub api_key_env: Option<String>,
     pub base_url: Option<String>,
-    pub client_id: Option<String>,
     pub binary: Option<String>,
     pub config_dir: Option<String>,
     /// A key to store (`--key-stdin`, `--key-ref`); asked at a terminal
@@ -498,8 +496,6 @@ pub struct Connected {
     pub resolved: Resolved,
     /// It existed, and this renewed it.
     pub renewed: bool,
-    /// A SuperGrok login, its tokens in the credentials file.
-    pub oauth: bool,
     pub vendor: Option<VendorLogin>,
     /// `defaultModel`, when this connection set it.
     pub default_model: Option<String>,
@@ -554,7 +550,6 @@ impl Connected {
             }
             Some(k) if unset => notes.push(format!("${k} is not set here — export it before running a prompt")),
             Some(k) => facts.push(format!("key from ${k}")),
-            None if self.oauth => facts.push("signed in".into()),
             None => {}
         }
         let mut signed_in_already = false;
@@ -1292,7 +1287,7 @@ impl ProviderAuth<'_> {
                 api_key_env: key_env,
                 effort: None,
             },
-            _ => InstanceKind::XaiOauth { base_url, issuer: None, client_id: clean(&o.client_id), scope: None, effort: None },
+            _ => return Err(no_direct_models()),
         };
         // A key's account that exists is updated as the native definition it
         // was made from, and made again, in the directory it has.
@@ -1367,20 +1362,6 @@ impl ProviderAuth<'_> {
             }
             k => k,
         };
-        // SuperGrok signs in first too: a login that fails leaves nothing.
-        let oauth = matches!(kind, InstanceKind::XaiOauth { .. });
-        if oauth {
-            let Auth::OAuth { issuer, client_id, scope } = self.resolve(&instance, &kind)?.auth else { unreachable!("an xai-oauth instance signs in with OAuth") };
-            let stored = oauth::sign_in(&oauth::Login { issuer, client_id, scope }, way.method == Method::Device, &mut |step| match step {
-                Step::Open(url) => ui.notify(Notice::AuthUrl { url, message: "Sign in to xAI with your SuperGrok or X Premium account:" }),
-                Step::Device(p) => ui.notify(Notice::DeviceCode {
-                    url: p.verification_uri_complete.as_deref().unwrap_or(&p.verification_uri),
-                    code: &p.user_code,
-                    message: "to sign in to xAI with your SuperGrok or X Premium account",
-                }),
-            })?;
-            Store::new(self.credentials.clone()).save(&instance, &stored).map_err(|e| EngineError::new("credentials_unwritable", e.message))?;
-        }
         // The key before the definition, so a definition is never there
         // reading the environment in the moment before its key is; the key
         // taken away again if the definition cannot be written.
@@ -1407,7 +1388,7 @@ impl ProviderAuth<'_> {
         }
         let resolved = self.resolve(&instance, &kind)?;
         let stored_key = stored_key.map(|k| k.source());
-        Ok(Connected { instance, definition: kind, resolved, renewed, oauth, vendor, default_model, stored_key, way })
+        Ok(Connected { instance, definition: kind, resolved, renewed, vendor, default_model, stored_key, way })
     }
 
     /// The key a way in by API key stores, if any: the one given, else —

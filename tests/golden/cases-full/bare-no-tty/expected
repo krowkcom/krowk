@@ -1653,7 +1653,7 @@ stdout:
       ],
       "type": "bool",
       "default": "false",
-      "usage": "Run the prompt given as the arguments (or on stdin) headless: krowk's own agent answers it, then exits"
+      "usage": "Run the prompt given as the arguments (or on stdin) headless: Claude Code or Codex answers it, on the default account or the one --model names, then exits"
     },
     {
       "name": "output-format",
@@ -1689,13 +1689,13 @@ stdout:
       "name": "sandbox",
       "type": "string",
       "default": "",
-      "usage": "With -p: run the tools in an OS sandbox — workspace (the working directory writable, credentials hidden), read-only, or strict (no network, the home hidden) — or off. .git, .claude and krowk's settings stay read-only inside it, and a sandbox this machine cannot enforce refuses the run. Without it, a run with no mode set takes the workspace sandbox and acceptEdits where bubblewrap works"
+      "usage": "With -p: off. Claude Code and Codex run their own tools outside krowk's OS sandbox, so a profile (workspace, read-only, strict) is refused"
     },
     {
       "name": "toolset",
       "type": "string",
       "default": "",
-      "usage": "With -p: the tools' preset — claude (str_replace), gpt (apply_patch) or grok (search_replace). The model's family picks one when absent"
+      "usage": "With -p: the preset the session's context record names — claude, gpt or grok. The model's family picks one when absent"
     },
     {
       "name": "effort",
@@ -1720,13 +1720,13 @@ stdout:
       "name": "max-usd",
       "type": "string",
       "default": "",
-      "usage": "With -p: stop the session before the model call that would take it, with its subagents, past this many dollars — metered, priced from models.dev. Exits 4, like `krowk sessions budget`"
+      "usage": "With -p: stop the session once it, with its agents, is past this many dollars — metered, priced from models.dev: a turn at the limit is refused, and one a call takes past it is interrupted. Exits 4, like `krowk sessions budget`"
     },
     {
       "name": "max-tokens",
       "type": "string",
       "default": "",
-      "usage": "With -p: stop the session before the model call that would take its generated tokens (output and reasoning, subagents included) past this many. Exits 4"
+      "usage": "With -p: stop the session once its generated tokens (output and reasoning, its agents included) are past this many: a turn at the limit is refused, and one a call takes past it is interrupted. Exits 4"
     },
     {
       "name": "trust",
@@ -3504,7 +3504,7 @@ tty:
       ],
       "type": "bool",
       "default": "false",
-      "usage": "Run the prompt given as the arguments (or on stdin) headless: krowk's own agent answers it, then exits"
+      "usage": "Run the prompt given as the arguments (or on stdin) headless: Claude Code or Codex answers it, on the default account or the one --model names, then exits"
     },
     {
       "name": "output-format",
@@ -3540,13 +3540,13 @@ tty:
       "name": "sandbox",
       "type": "string",
       "default": "",
-      "usage": "With -p: run the tools in an OS sandbox — workspace (the working directory writable, credentials hidden), read-only, or strict (no network, the home hidden) — or off. .git, .claude and krowk's settings stay read-only inside it, and a sandbox this machine cannot enforce refuses the run. Without it, a run with no mode set takes the workspace sandbox and acceptEdits where bubblewrap works"
+      "usage": "With -p: off. Claude Code and Codex run their own tools outside krowk's OS sandbox, so a profile (workspace, read-only, strict) is refused"
     },
     {
       "name": "toolset",
       "type": "string",
       "default": "",
-      "usage": "With -p: the tools' preset — claude (str_replace), gpt (apply_patch) or grok (search_replace). The model's family picks one when absent"
+      "usage": "With -p: the preset the session's context record names — claude, gpt or grok. The model's family picks one when absent"
     },
     {
       "name": "effort",
@@ -3571,13 +3571,13 @@ tty:
       "name": "max-usd",
       "type": "string",
       "default": "",
-      "usage": "With -p: stop the session before the model call that would take it, with its subagents, past this many dollars — metered, priced from models.dev. Exits 4, like `krowk sessions budget`"
+      "usage": "With -p: stop the session once it, with its agents, is past this many dollars — metered, priced from models.dev: a turn at the limit is refused, and one a call takes past it is interrupted. Exits 4, like `krowk sessions budget`"
     },
     {
       "name": "max-tokens",
       "type": "string",
       "default": "",
-      "usage": "With -p: stop the session before the model call that would take its generated tokens (output and reasoning, subagents included) past this many. Exits 4"
+      "usage": "With -p: stop the session once its generated tokens (output and reasoning, its agents included) are past this many: a turn at the limit is refused, and one a call takes past it is interrupted. Exits 4"
     },
     {
       "name": "trust",
