@@ -1715,7 +1715,7 @@ impl ProviderAuth<'_> {
             for (_, _, m) in &made {
                 let _ = undo(m, EngineError::new("", ""));
             }
-            said.push(format!("{} could not become Claude Code or Codex accounts ({}) — they run as before for now", made.iter().map(|(n, ..)| n.as_str()).collect::<Vec<_>>().join(", "), e.message));
+            said.push(format!("{} could not become Claude Code or Codex accounts ({}) — krowk refuses them until they are connected again with `krowk connect`", made.iter().map(|(n, ..)| n.as_str()).collect::<Vec<_>>().join(", "), e.message));
             return said;
         }
         said.extend(made.iter().map(|(name, kind, _)| {

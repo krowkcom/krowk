@@ -108,12 +108,10 @@ impl Sandbox {
         self.root.join("repo")
     }
 
-    /// krowk's config: `v`, with the implicit `codex` pointed at a binary
-    /// that is not there, so a Codex installed on the machine running the
-    /// tests is never asked.
+    /// krowk's config: `v`. The implicit `codex` is the fake on PATH,
+    /// signed in to nothing, so a Codex installed on the machine running
+    /// the tests is never asked.
     fn config(&self, v: &Value) {
-        let mut v = v.clone();
-        v["instances"]["codex"] = json!({"kind": "codex-app-server", "binary": self.root.join("bin/no-codex").display().to_string()});
         std::fs::create_dir_all(self.root.join("home/.krowk")).unwrap();
         std::fs::write(self.root.join("home/.krowk/config.json"), v.to_string()).unwrap();
     }
@@ -266,6 +264,10 @@ fn with_nothing_connected_the_refusal_is_the_one_line() {
     b.config(&json!({"instances": {"claude:work": {"kind": "claude-code", "configDir": b.account("claude-work")}}}));
     let err = fail(&b.krowk(&["-p", "hi"], &[]), "none_ready");
     assert!(err.starts_with("no connected account is ready to run a model (no --model, and config names no defaultModel). What each one needs:") && err.contains("\n  claude:work, Claude subscription (not signed in): "), "{err}");
+    // So does one connected under a built-in name: an API key's account.
+    b.config(&json!({"instances": {"anthropic": keyed_claude(&b)}}));
+    let err = fail(&b.krowk(&["-p", "hi"], &[]), "none_ready");
+    assert!(err.contains("\n  anthropic, Claude Code, API key (key not set): "), "{err}");
     b.config(&json!({}));
 
     // A bare id names only the accounts of its own line, and how to
@@ -311,8 +313,10 @@ fn a_removed_provider_is_refused_with_the_one_line_and_never_rerouted() {
 #[test]
 fn an_explicit_instance_is_never_rerouted_even_when_only_another_one_is_ready() {
     let b = Sandbox::new("explicit", true);
-    // `codex` is not installed here; `claude` is signed in.
+    // `codex` is not signed in here; `claude` is.
     let out = b.krowk(&["-p", "hi", "--model", "codex/gpt-5.5", "--trust"], &[]);
-    assert!(fail(&out, "backend_not_found").contains("bin/no-codex was not found"), "the codex instance's own refusal");
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(out.status.code(), Some(3), "{err}");
+    assert!(err.contains("Codex is not signed in for the codex instance"), "the codex instance's own refusal: {err}");
     assert!(b.turns().is_empty(), "claude never ran in its place: {}", b.fake_log());
 }

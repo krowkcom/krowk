@@ -616,6 +616,9 @@ pub struct Registry {
     pub rollover_order: Vec<String>,
     /// Config's `renamed`: an old name, and the one it became.
     pub renamed: BTreeMap<String, String>,
+    /// The names config.json defines an instance under: an account the
+    /// person connected, as against an implicit one (D4's "none connected").
+    pub configured: std::collections::BTreeSet<String>,
 }
 
 impl Registry {
@@ -643,6 +646,7 @@ impl Registry {
             rollover: cfg.rollover.unwrap_or_default(),
             rollover_order: cfg.rollover_order.clone(),
             renamed: cfg.renamed.clone(),
+            configured: cfg.instances.keys().cloned().collect(),
         }
     }
 

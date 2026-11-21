@@ -404,10 +404,10 @@ pub fn route(
     };
     match pool.as_slice() {
         [one] => spell(one),
-        // D4: with no model asked and nothing connected — only the implicit
-        // `claude` and `codex`, neither ready — the one line; an account
-        // the person connected says what it needs instead.
-        [] if bare.is_none() && cands.iter().all(|i| crate::instances::implicit().iter().any(|(n, _)| *n == i.name)) => Err(EngineError::new("none_ready", crate::connect::NO_DIRECT_MODELS)),
+        // D4: with no model asked and nothing connected — no account in
+        // config.json, and the implicit `claude` and `codex` not ready — the
+        // one line; an account the person connected says what it needs.
+        [] if bare.is_none() && !cands.iter().any(|i| reg.configured.contains(&i.name)) => Err(EngineError::new("none_ready", crate::connect::NO_DIRECT_MODELS)),
         [] => {
             let run: Vec<String> = crate::instances::serving(bare)
                 .1
