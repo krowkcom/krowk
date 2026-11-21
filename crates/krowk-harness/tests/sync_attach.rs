@@ -10,6 +10,8 @@
 
 #![cfg(unix)]
 
+#[path = "common/fake.rs"]
+mod fake;
 #[path = "common/mock.rs"]
 mod mock;
 #[path = "common/scratch.rs"]
@@ -49,11 +51,39 @@ const ANSWER_MARKER: &str = "plaintext-marker-answer-93be";
 /// The one model the catalog a test's host announces with lists.
 const CATALOG_MODEL: &str = "claude-catalog-model-7f3a";
 
-/// A prompt A's `anthropic` instance answers with its rate limit.
+/// A prompt A's `claude` instance answers with its usage limit.
 const LIMITED: &str = "past-the-limit-prompt";
 
-/// A model that answers any prompt with the marker, except one asking for
-/// the file, which it makes with `bash` — an approval — and then answers.
+/// What A's `claude` answers, by the prompt (the fake `claude`'s `@when`):
+/// any prompt with the marker, typed, except one asking for the file, which
+/// it makes with `Bash` — an approval — and then answers; one past the
+/// limit, with Claude Code's limit; and the long answers, typed at a known
+/// rate.
+fn scenario() -> String {
+    let typed = |n: usize, word: &str| fake::typed(n, 0.02, word, 1);
+    let limited = [
+        r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1790431200,"rateLimitType":"five_hour","utilization":1.0},"session_id":"{{SESSION}}"}"#,
+        r#"{"type":"assistant","message":{"id":"msg_limit","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"5-hour limit reached ∙ resets 2pm"}]},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}"#,
+        r#"{"type":"result","subtype":"success","is_error":true,"result":"5-hour limit reached ∙ resets 2pm","session_id":"{{SESSION}}"}"#,
+    ]
+    .join("\n");
+    let answer = format!("@type 5 0.02 {ANSWER_MARKER}\n{}", fake::result(ANSWER_MARKER));
+    [
+        format!("@when {LIMITED}\n{limited}"),
+        // Fifteen seconds, typed a dozen words at a time: fifty of these at
+        // once, a word at a time, would be a thousand `sleep`s a second.
+        format!("@when a very long answer\n{}", fake::typed(750, 0.24, "word", 12)),
+        format!("@when an answer of many batches\n{}", typed(400, "word")),
+        format!("@when a long answer\n{}", typed(160, "word")),
+        format!("@when make the file\n{}\n@touch approved.txt\n{answer}", fake::asks_bash("toolu_01Touch", "touch approved.txt")),
+        format!("@when \"type\":\"user\"\n{answer}"),
+    ]
+    .join("\n---\n")
+}
+
+/// The native model, for the one test of krowk's own `subagent` tool left
+/// for the native loop's removal: any prompt answered with the marker,
+/// except one starting a subagent, whose call is a slow answer.
 fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     let messages = body["messages"].as_array().cloned().unwrap_or_default();
     let last = messages.last().cloned().unwrap_or_default();
@@ -63,32 +93,8 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
         let words: String = (0..400).map(|i| format!("childword{i} ")).collect();
         return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
     }
-    // A's own instance at its rate limit; the instance it offers answers.
-    if !has_result && last.to_string().contains(LIMITED) {
-        return mock::Reply { headers: vec![("retry-after".into(), "0".into())], ..mock::Reply::json(429, &serde_json::json!({"type": "error", "error": {"type": "rate_limit_error", "message": "Number of request tokens has exceeded your per-minute rate limit"}})) };
-    }
     if !has_result && last.to_string().contains("start a slow subagent") {
         return mock::Reply::sse(&mock::tool_use("toolu_01Kid", "subagent", &serde_json::json!({"description": "a slow look", "prompt": "look slowly"})));
-    }
-    // Fifteen seconds of typing: long enough for fifty sessions, started
-    // together on a loaded machine, to stream at once.
-    if !has_result && last.to_string().contains("a very long answer") {
-        let words: String = (0..750).map(|i| format!("word{i} ")).collect();
-        return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
-    }
-    // Eight seconds of typing: well over a hundred of the host's batches,
-    // one a frame, even where the frame's timer wakes late (40 ms, not 16,
-    // on a macOS runner).
-    if !has_result && last.to_string().contains("an answer of many batches") {
-        let words: String = (0..400).map(|i| format!("word{i} ")).collect();
-        return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
-    }
-    if !has_result && last.to_string().contains("a long answer") {
-        let words: String = (0..160).map(|i| format!("word{i} ")).collect();
-        return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
-    }
-    if !has_result && last.to_string().contains("make the file") {
-        return mock::Reply::sse(&mock::tool_use("toolu_01Touch", "bash", &serde_json::json!({"command": "touch approved.txt"})));
     }
     mock::Reply::paced(mock::text_stream(&format!("{ANSWER_MARKER} one two three four")), Duration::from_millis(20))
 }
@@ -117,8 +123,9 @@ struct World {
     a_live: Arc<AtomicUsize>,
     relay_a: String,
     relay_b: String,
-    _mock: mock::Mock,
-    mock_url: String,
+    /// The native model and its `anthropic` instance, in place of the
+    /// fake `claude`: only for the test of krowk's own `subagent` tool.
+    native: Option<mock::Mock>,
     /// A's own way to the registry: `PASS`, `CUT` or `FAIL_WRITES`.
     reg_a: String,
     reg_mode: Arc<AtomicU8>,
@@ -246,9 +253,37 @@ impl World {
         let reg_times: RegTimes = Arc::default();
         let reg_refused = Arc::new(AtomicUsize::new(0));
         let reg_a = format!("http://{}/v1", registry_proxy(registry.addr(), reg_mode.clone(), reg_log.clone(), reg_times.clone(), reg_refused.clone()));
-        let m = mock::serve(model);
-        let mock_url = m.url.clone();
-        World { root, registry, api, list: Mutex::new(None), first: Mutex::new(None), seen, cut, a_mode, a_conns, a_live, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, reg_log, reg_times, skew, reg_refused, late: Arc::default(), b_mode, b_batches, b_drop, token: TOKEN }
+        World { root, registry, api, list: Mutex::new(None), first: Mutex::new(None), seen, cut, a_mode, a_conns, a_live, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), native: None, reg_a, reg_mode, reg_log, reg_times, skew, reg_refused, late: Arc::default(), b_mode, b_batches, b_drop, token: TOKEN }
+    }
+
+    /// A world whose A runs the native model (`model`) on its `anthropic`
+    /// instance rather than the fake `claude`.
+    fn native(name: &str) -> World {
+        let mut w = World::new(name);
+        w.native = Some(mock::serve(model));
+        w
+    }
+
+    /// A's instances: the fake `claude` playing `scenario`, signed in, as
+    /// `claude` (none of its own on the native model).
+    fn instances(&self) -> InstancesConfig {
+        if self.native.is_some() {
+            return InstancesConfig::default();
+        }
+        InstancesConfig { instances: [("claude".to_string(), fake::claude(&self.root, "claude", Some(&scenario())))].into_iter().collect(), ..Default::default() }
+    }
+
+    /// The model a prompt names: `claude/sonnet`, or the native model's.
+    fn model(&self) -> krowk_harness::protocol::ModelRef {
+        match self.native {
+            Some(_) => Registry::resolve(&InstancesConfig::default(), &self.env()).parse_model("claude-sonnet-4-6").unwrap(),
+            None => krowk_harness::protocol::ModelRef { instance: "claude".into(), model: "sonnet".into() },
+        }
+    }
+
+    /// What A's fake `claude` logged.
+    fn fake_log(&self) -> String {
+        fake::log(&self.root, "claude")
     }
 
     /// The registry's clock moved `by` ahead, so a lease it lapses has
@@ -338,14 +373,14 @@ impl World {
     /// Another machine's environment: a home and a runtime directory of its
     /// own, so a daemon of its own.
     fn env_at(&self, home: &str, run: &str) -> impl Fn(&str) -> String + Clone + Send + Sync + 'static {
-        let (root, url, home, run) = (self.root.clone(), self.mock_url.clone(), home.to_string(), run.to_string());
+        let (root, url, home, run) = (self.root.clone(), self.native.as_ref().map(|m| m.url.clone()), home.to_string(), run.to_string());
         let _ = std::fs::create_dir_all(root.join(&home));
         let _ = std::fs::create_dir_all(root.join(&run));
         move |k| match k {
             "HOME" => root.join(&home).display().to_string(),
             "XDG_RUNTIME_DIR" => root.join(&run).display().to_string(),
-            "ANTHROPIC_API_KEY" => "sk-test".into(),
-            "ANTHROPIC_BASE_URL" => url.clone(),
+            "ANTHROPIC_API_KEY" if url.is_some() => "sk-test".into(),
+            "ANTHROPIC_BASE_URL" => url.clone().unwrap_or_default(),
             _ => String::new(),
         }
     }
@@ -361,7 +396,7 @@ impl World {
 
     /// The host daemon of the machine `env` describes, its home `home`.
     fn serve_env(&self, env: impl Fn(&str) -> String + Clone + Send + Sync + 'static, home: &str) {
-        self.serve_with(env, home, InstancesConfig::default());
+        self.serve_with(env, home, self.instances());
     }
 
     /// `serve_env`, the daemon's instances `instances`.
@@ -417,8 +452,7 @@ impl World {
     }
 
     fn prompt(&self, session: Option<&str>, text: &str) -> Command {
-        let model = Registry::resolve(&InstancesConfig::default(), &self.env()).parse_model("claude-sonnet-4-6").unwrap();
-        Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None }
+        Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(self.model()), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None }
     }
 
     /// A's bridge for `session`, running until the handle is stopped.
@@ -928,16 +962,14 @@ async fn first_turn(w: &World) -> (Arc<Client>, String) {
     (d, r.session_id)
 }
 
-/// A's daemon with a second instance, `mock2`, on the same mock model, and
-/// a first turn on `anthropic`; B attached to it through A's bridge.
+/// A's daemon with a second Claude Code account, `twin`, which answers
+/// any prompt with the marker, and a first turn on `claude`; B attached to
+/// it through A's bridge.
 async fn two_instances(w: &World) -> (String, viewer::Viewer, Vec<Instant>, (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>)) {
-    two_instances_at(w, &w.mock_url).await
-}
-
-/// `two_instances`, `mock2` on the model at `url`.
-async fn two_instances_at(w: &World, url: &str) -> (String, viewer::Viewer, Vec<Instant>, (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>)) {
-    let kind = krowk_harness::instances::InstanceKind::AnthropicApi { api_key_env: None, base_url: Some(url.into()), thinking: None, max_tokens: None, effort: None };
-    w.serve_with(w.env(), "home", InstancesConfig { instances: [("mock2".to_string(), kind)].into_iter().collect(), ..Default::default() });
+    let mut instances = w.instances();
+    let twin = format!("@when \"type\":\"user\"\n{}", fake::answer(ANSWER_MARKER));
+    instances.instances.insert("twin".into(), fake::claude(&w.root, "twin", Some(&twin)));
+    w.serve_with(w.env(), "home", instances);
     let d = w.daemon().await;
     let (tx, mut rx) = mpsc::channel(1024);
     tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -970,12 +1002,12 @@ async fn ack(v: &mut viewer::Viewer, frames: &mut Vec<Instant>) -> Option<String
 async fn r_switch_4_a_switch_from_b_runs_the_next_turn_on_that_model() {
     let w = World::new("switch-remote");
     let (session, mut v, mut frames, _bridge) = two_instances(&w).await;
-    let to = krowk_harness::protocol::ModelRef { instance: "mock2".into(), model: "claude-haiku-4-5".into() };
+    let to = krowk_harness::protocol::ModelRef { instance: "twin".into(), model: "haiku".into() };
     v.commands.send(Command::SwitchModel { session_id: Some(session.clone()), model: to.clone() }).unwrap();
     assert_eq!(ack(&mut v, &mut frames).await, None);
     let switched: Vec<_> = a_log(&w, &session).into_iter().filter(|e| e["type"] == "model.switched").collect();
     assert_eq!(switched.len(), 1, "{switched:?}");
-    assert_eq!((switched[0]["reason"].as_str(), switched[0]["to"]["instance"].as_str(), switched[0]["to"]["model"].as_str()), (Some("requested"), Some("mock2"), Some("claude-haiku-4-5")), "{}", switched[0]);
+    assert_eq!((switched[0]["reason"].as_str(), switched[0]["to"]["instance"].as_str(), switched[0]["to"]["model"].as_str()), (Some("requested"), Some("twin"), Some("haiku")), "{}", switched[0]);
 
     let mut next = w.prompt(Some(&session), "and now");
     if let Command::Prompt { model, .. } = &mut next {
@@ -984,11 +1016,12 @@ async fn r_switch_4_a_switch_from_b_runs_the_next_turn_on_that_model() {
     v.commands.send(next).unwrap();
     until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
     let started = a_log(&w, &session).into_iter().rfind(|e| e["type"] == "turn.started").unwrap();
-    assert_eq!((started["model"]["instance"].as_str(), started["model"]["model"].as_str()), (Some("mock2"), Some("claude-haiku-4-5")), "{started}");
-    let seen = w._mock.seen.lock().unwrap();
-    let call = seen.last().expect("the next turn called the model");
-    assert_eq!(call.body["model"], "claude-haiku-4-5");
-    assert!(call.body["messages"].to_string().contains("say hello"), "R-SWITCH-1: the first turn's text rides to the new model");
+    assert_eq!((started["model"]["instance"].as_str(), started["model"]["model"].as_str()), (Some("twin"), Some("haiku")), "{started}");
+    let twin = fake::log(&w.root, "twin");
+    assert!(twin.lines().any(|l| l.starts_with("argv -p ") && l.contains("--model haiku")) || twin.contains("set_model haiku"), "the next turn ran on haiku: {twin}");
+    assert!(fake::prompts(&w.root, "twin").last().is_some_and(|p| p.to_string().contains("and now")), "the next turn called the twin: {twin}");
+    let carried = std::fs::read_dir(w.root.join("twin/projects")).unwrap().flatten().flat_map(|d| std::fs::read_dir(d.path()).unwrap().flatten()).map(|f| std::fs::read_to_string(f.path()).unwrap()).collect::<String>();
+    assert!(carried.contains("say hello"), "R-SWITCH-1: the first turn's text rides to the new account: {carried}");
 }
 
 /// R-SWITCH-4: a switch B sends while a turn runs is acked at once and
@@ -1003,7 +1036,7 @@ async fn r_switch_4_a_switch_from_b_during_a_turn_is_kept_for_after_it() {
     }
     v.commands.send(long).unwrap();
     assert_eq!(ack(&mut v, &mut frames).await, None, "the turn started");
-    let to = krowk_harness::protocol::ModelRef { instance: "mock2".into(), model: "claude-haiku-4-5".into() };
+    let to = krowk_harness::protocol::ModelRef { instance: "twin".into(), model: "haiku".into() };
     v.commands.send(Command::SwitchModel { session_id: Some(session.clone()), model: to }).unwrap();
     let got = until(&mut v, Duration::from_secs(15), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
     assert!(!got.iter().any(result_of), "acked before the turn ended: {got:?}");
@@ -1016,9 +1049,9 @@ async fn r_switch_4_a_switch_from_b_during_a_turn_is_kept_for_after_it() {
     }
     let log = a_log(&w, &session);
     let long_turn = log.iter().filter(|e| e["type"] == "turn.started").nth(1).unwrap();
-    assert_eq!(long_turn["model"]["instance"], "anthropic", "the running turn ends on its model: {long_turn}");
+    assert_eq!(long_turn["model"]["instance"], "claude", "the running turn ends on its model: {long_turn}");
     let switched = log.iter().find(|e| e["type"] == "model.switched").unwrap();
-    assert_eq!(switched["to"]["instance"], "mock2", "{switched}");
+    assert_eq!(switched["to"]["instance"], "twin", "{switched}");
 }
 
 /// R-SWITCH-4, R-CRED-1: a switch B asks for to an instance A lacks is
@@ -1055,8 +1088,7 @@ async fn r_switch_4_a_switch_b_asks_for_an_instance_a_lacks_is_refused_and_the_s
 #[tokio::test]
 async fn r_switch_4_a_rate_limit_offer_is_accepted_from_b_and_the_prompt_runs_on_the_offered_instance() {
     let w = World::new("switch-offer");
-    let other = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream(ANSWER_MARKER)));
-    let (session, mut v, mut frames, _bridge) = two_instances_at(&w, &other.url).await;
+    let (session, mut v, mut frames, _bridge) = two_instances(&w).await;
     let mut limited = w.prompt(Some(&session), LIMITED);
     if let Command::Prompt { model, .. } = &mut limited {
         *model = None;
@@ -1066,7 +1098,7 @@ async fn r_switch_4_a_rate_limit_offer_is_accepted_from_b_and_the_prompt_runs_on
     let r = got.into_iter().find_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::Result(r))) = u { Some(r) } else { None }).unwrap();
     assert_eq!(r.error.as_ref().map(|e| e.code.as_str()), Some("rate_limited"), "{r:?}");
     let offer = r.switch_offer.expect("B hears the offer");
-    assert_eq!((offer.from.instance.as_str(), offer.to.instance.as_str(), offer.to.model.as_str()), ("anthropic", "mock2", "claude-sonnet-4-6"));
+    assert_eq!((offer.from.instance.as_str(), offer.to.instance.as_str(), offer.to.model.as_str()), ("claude", "twin", "sonnet"));
     assert!(!a_log(&w, &session).iter().any(|e| e["type"] == "model.switched"), "offered, never taken by itself");
 
     // The yes, from B: the switch, taken, then the prompt again.
@@ -1075,16 +1107,15 @@ async fn r_switch_4_a_rate_limit_offer_is_accepted_from_b_and_the_prompt_runs_on
     v.commands.send(limited).unwrap();
     let got = until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
     let r = got.into_iter().find_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::Result(r))) = u { Some(r) } else { None }).unwrap();
-    assert_eq!((r.status, r.model.instance.as_str()), (krowk_harness::protocol::TurnStatus::Completed, "mock2"), "{r:?}");
+    assert_eq!((r.status, r.model.instance.as_str()), (krowk_harness::protocol::TurnStatus::Completed, "twin"), "{r:?}");
     assert!(r.result.contains(ANSWER_MARKER), "{r:?}");
     let log = a_log(&w, &session);
     let switched: Vec<_> = log.iter().filter(|e| e["type"] == "model.switched").collect();
     assert_eq!(switched.len(), 1, "{switched:?}");
-    assert_eq!((switched[0]["to"]["instance"].as_str(), switched[0]["to"]["model"].as_str()), (Some("mock2"), Some("claude-sonnet-4-6")), "{}", switched[0]);
+    assert_eq!((switched[0]["to"]["instance"].as_str(), switched[0]["to"]["model"].as_str()), (Some("twin"), Some("sonnet")), "{}", switched[0]);
     let started = log.iter().rfind(|e| e["type"] == "turn.started").unwrap();
-    assert_eq!(started["model"]["instance"], "mock2", "{started}");
-    let seen = other.seen.lock().unwrap();
-    assert!(seen.last().is_some_and(|c| c.body["messages"].to_string().contains(LIMITED)), "the prompt ran again on the offered instance");
+    assert_eq!(started["model"]["instance"], "twin", "{started}");
+    assert!(fake::prompts(&w.root, "twin").last().is_some_and(|p| p.to_string().contains(LIMITED)), "the prompt ran again on the offered instance");
 }
 
 /// R-SWITCH-4, R-CRED-1: a prompt from B naming an instance A lacks is
@@ -1192,7 +1223,7 @@ async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
     let mut unhinged = w.prompt(Some(&session), "asking for more than it may");
     if let Command::Prompt { permission_mode, model, toolset, effort, budget, .. } = &mut unhinged {
         *permission_mode = PermissionMode::Unhinged;
-        *model = Some(Registry::resolve(&InstancesConfig::default(), &w.env()).parse_model("claude-haiku-4-5").unwrap());
+        *model = Some(krowk_harness::protocol::ModelRef { instance: "claude".into(), model: "haiku".into() });
         *toolset = Some("gpt".into());
         *effort = Some(krowk_harness::protocol::Effort::Max);
         *budget = Some(krowk_harness::protocol::BudgetLimits { max_usd: Some(1000.0), max_tokens: None });
@@ -1203,7 +1234,7 @@ async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
     let started: Vec<serde_json::Value> = log.lines().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()).filter(|e| e["type"] == "turn.started").collect();
     let (first, last) = (&started[0], started.last().unwrap());
     assert_eq!(last["permissionMode"], "default", "never the viewer's unhinged: {last}");
-    assert_eq!(last["model"]["model"], "claude-haiku-4-5", "the viewer's model, checked by A: {last}");
+    assert_eq!(last["model"]["model"], "haiku", "the viewer's model, checked by A: {last}");
     assert_ne!(last["model"], first["model"]);
     assert_eq!(last.get("effort"), first.get("effort"), "never the viewer's effort: {last}");
 
@@ -1214,7 +1245,7 @@ async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
     let acked = got.iter().position(|u| matches!(u, viewer::Update::Acked { error: None, .. })).expect("and settled by A's ack");
     assert!(sent < acked);
     let req = got.iter().find_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(r))) = u { Some(r.clone()) } else { None }).unwrap();
-    assert_eq!(req.tool, "bash");
+    assert_eq!(req.tool, "Bash");
     assert!(!w.repo().join("approved.txt").exists(), "A waits on the approval");
     v.commands.send(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() }).unwrap();
     until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
@@ -1288,7 +1319,7 @@ async fn r_host_1_a_terminal_that_leaves_with_a_question_open_is_not_kept_waitin
     let (_stop, _cp, _bridge) = w.bridge_with(&a, &session, w.daemon().await, host::LEASE_TTL, host::KEEP, wait);
     w.synced(&session).await;
     let (t, turn, req) = ask_at_the_terminal(&w, &session).await;
-    assert_eq!(req.tool, "bash");
+    assert_eq!(req.tool, "Bash");
     // The terminal goes, its turn's command with it.
     turn.abort();
     drop((t, d));
@@ -1324,7 +1355,7 @@ async fn r_host_1_a_terminal_that_leaves_with_a_question_open_is_not_kept_waitin
     // And the turn goes on at once: the model's short answer to the denial.
     assert!(ended <= denied + Duration::from_secs(3), "the turn ended {ended:?} after the terminal went, denied at {denied:?}");
     assert!(matches!(results.as_slice(), [(_, true)]), "bash was denied: {results:?}");
-    assert!(!w.repo().join("approved.txt").exists());
+    assert!(w.fake_log().lines().any(|l| l.starts_with("answer ") && l.contains(r#""behavior":"deny""#)), "claude was told no");
 }
 
 /// R-PERM-2, R-HOST-1: while the terminal that started the turn still
@@ -1957,7 +1988,7 @@ async fn r_net_2_moving_to_the_direct_path_mid_session_stalls_nothing_and_shows_
     let mut frames = Vec::new();
     v.commands.send(w.prompt(Some(&session), "a long answer, queued")).unwrap();
     // The long answer streams for about 3.3 seconds, on schedule wherever
-    // it runs (the mock makes up a late wake); the wait is only how long
+    // it runs; the wait is only how long
     // the test gives up after.
     let mut got = until(&mut v, Duration::from_secs(90), &mut frames, result_of).await;
     assert!(got.iter().any(|u| matches!(u, viewer::Update::Sent { queued: true, .. })), "the prompt waited for the host: {got:?}");
@@ -2468,12 +2499,15 @@ async fn take_up(w: &World, b: &Device, session: &str, a_bridge: tokio::task::Jo
 
     // B takes it up, as `krowk sync take` does.
     let (api, keys, chain, id, slug, b_env2, from, me, wt_root, b_repo2) = (w.as_device(b), w.keys(), w.chain(), session.to_string(), handed.transport.clone(), b_env.clone(), handed.from_device.clone(), b.key.id().to_string(), w.root.join("worktrees-b"), b_repo.clone());
+    let claude_home = w.root.join("claude");
     let key = handoff::key_from_hex(&handed.key).unwrap();
     let applied = tokio::task::spawn_blocking(move || {
         let sealed = api.read_transport(&slug).unwrap();
         let plain = e2e::open_transport(&sealed, &krowk_harness::daemon::ws::uuid(&id), &key).unwrap();
         let bundle = handoff::Bundle::decode(&plain, &id).unwrap();
         let applied = handoff::apply(&bundle, &b_repo2, &wt_root).unwrap();
+        // As `krowk sync take` does: Claude Code's transcript, where B's resumes it.
+        handoff::place_transcript(&bundle, &claude_home, &applied.cwd).unwrap();
         api.spend_transport(&slug).unwrap();
         let gone = api.read_transport(&slug).unwrap_err();
         assert_eq!(gone.status, 404, "R-HAND-2: a transport is read once, and gone when spent");
@@ -2571,12 +2605,12 @@ async fn r_hand_1_a_session_moves_to_b_mid_task_with_its_work_and_c_stays_attach
     until(&mut cv, Duration::from_secs(20), &mut frames, result_of).await;
     assert!(applied.cwd.join("approved.txt").exists(), "the turn ran on B, in B's worktree");
     {
-        let seen = w._mock.seen.lock().unwrap();
-        let last = seen.last().expect("B called the model");
-        let sent = last.body["messages"].to_string();
-        assert!(sent.contains(&data), "R-IMG-12: B's call carries the image A's first turn named");
+        let prompts = fake::prompts(&w.root, "claude");
+        let sent = prompts.last().expect("B called the model").to_string();
+        assert!(sent.contains("make the file"), "{sent}");
         assert!(!sent.contains("file is gone"), "and does not call it gone");
     }
+    assert!(moved_transcript(&w).contains(&data), "R-IMG-12: the transcript B's claude resumed carries the image A's first turn named");
     assert!(!repo.join("approved.txt").exists(), "not on A");
     let b_log = std::fs::read_to_string(log::sessions_dir(&b_env).unwrap().join(&session).join("events.jsonl")).unwrap();
     assert!(b_log.contains("session.moved"), "B logged the move");
@@ -2592,8 +2626,7 @@ async fn r_hand_1_a_session_moves_to_b_mid_task_with_its_work_and_c_stays_attach
 /// `putImage`, over the relay to A's host, and the prompt naming them; A's
 /// model call carries all three; A's writer puts each sealed to the registry
 /// under its keyed name; a third device fetches each and its sha256 is the
-/// image's; and after the session moves to B, B's next model call carries
-/// them still.
+/// image's; and after the session moves to B, B runs its next turn.
 #[tokio::test]
 async fn r_img_wave_three_screenshots_over_4_mib_reach_the_model_the_registry_and_the_next_host() {
     use base64::Engine as _;
@@ -2628,9 +2661,9 @@ async fn r_img_wave_three_screenshots_over_4_mib_reach_the_model_the_registry_an
     let want: Vec<String> = pngs.iter().map(b64).collect();
     // The images the model call that carried `text` was sent.
     let sent = |text: &str| -> Vec<String> {
-        let seen = w._mock.seen.lock().unwrap();
-        let call = seen.iter().rev().find(|r| r.body["messages"].to_string().contains(text)).expect("the model was called");
-        call.body["messages"].as_array().unwrap().iter().flat_map(|m| m["content"].as_array().cloned().unwrap_or_default()).filter(|b| b["type"] == "image").map(|b| b["source"]["data"].as_str().unwrap().to_string()).collect()
+        let prompts = fake::prompts(&w.root, "claude");
+        let call = prompts.iter().rev().find(|p| p.to_string().contains(text)).expect("the model was called");
+        call["message"]["content"].as_array().cloned().unwrap_or_default().into_iter().filter(|b| b["type"] == "image").map(|b| b["source"]["data"].as_str().unwrap().to_string()).collect()
     };
     assert_eq!(sent("what are [Image #1]"), want, "A's model call carries all three, as sent");
     drop(v);
@@ -2668,7 +2701,9 @@ async fn r_img_wave_three_screenshots_over_4_mib_reach_the_model_the_registry_an
     until(&mut cv, Duration::from_secs(30), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
     cv.commands.send(w.prompt(Some(&session), "and what did you see before the move?")).unwrap();
     until(&mut cv, Duration::from_secs(30), &mut frames, result_of).await;
-    assert_eq!(sent("and what did you see before the move?"), want, "B's call carries the earlier three");
+    assert!(fake::prompts(&w.root, "claude").iter().any(|p| p.to_string().contains("and what did you see before the move?")), "B called the model");
+    let carried = moved_transcript(&w);
+    assert!(want.iter().all(|d| carried.contains(d.as_str())), "the transcript B's claude resumed carries the earlier three");
     // Both resolved: macOS reaches the temp folder through /var -> /private/var.
     assert!(applied.cwd.canonicalize().unwrap().starts_with(w.root.join("worktrees-b").canonicalize().unwrap()), "the turn ran in B's worktree");
 }
@@ -2707,7 +2742,7 @@ async fn chunks_hold(w: &World, session: &str, sessions: &[&str], wait: Duration
 /// out, so its replay is its own log's, and the child is rebuilt from them.
 #[tokio::test]
 async fn r_sub_12_a_viewer_stops_the_sessions_own_child_and_nothing_else() {
-    let w = World::new("child");
+    let w = World::native("child");
     let (a, b) = (w.device("machine-a"), w.device("machine-b"));
     let (d, session) = first_turn(&w).await;
     let (tx, mut rx) = mpsc::channel(1024);
@@ -2777,6 +2812,15 @@ async fn r_sub_12_a_viewer_stops_the_sessions_own_child_and_nothing_else() {
     let walk = |head: &String| log::branch(&events, head).iter().map(|e| e.id.clone()).collect::<Vec<_>>();
     assert_eq!(walk(parent_ids.last().unwrap()), parent_ids, "the parent's replay is its own log's, the child's events left out");
     assert_eq!(walk(child_ids.last().unwrap()), child_ids, "the child is rebuilt from the parent's chunks");
+}
+
+/// The Claude Code transcript the handoff placed for B's worktree (its
+/// directory is named after B's `worktrees-b`), as B's claude resumed it.
+fn moved_transcript(w: &World) -> String {
+    let projects = w.root.join("claude/projects");
+    let dirs = std::fs::read_dir(&projects).unwrap_or_else(|e| panic!("{}: {e}", projects.display()));
+    let dir = dirs.flatten().find(|d| d.file_name().to_string_lossy().contains("worktrees-b")).unwrap_or_else(|| panic!("no transcript placed for B's worktree under {}", projects.display()));
+    std::fs::read_dir(dir.path()).unwrap().flatten().map(|f| std::fs::read_to_string(f.path()).unwrap()).collect()
 }
 
 /// The fake `claude` beside the Claude Code tests, as an instance whose
@@ -3147,7 +3191,7 @@ impl World {
         let AutoOpts { panic_first, idle, on, refuse, paid_pause, parked_recheck, announce, announce_with, at: (home, run), slow_build, lease_held_wait } = o;
         let (turns, turns_rx) = mpsc::unbounded_channel();
         let bridged: Arc<Mutex<BTreeSet<String>>> = Arc::default();
-        let daemon = self.serve_hooked(self.env_at(home, run), home, InstancesConfig::default(), Some(turns.clone()), Some(bridged.clone()));
+        let daemon = self.serve_hooked(self.env_at(home, run), home, self.instances(), Some(turns.clone()), Some(bridged.clone()));
         let built: Built = Arc::default();
         let (seen, a2, api, relay, keys, chain, sessions) = (built.clone(), a.copy(), self.a_client(a), self.relay_a.clone(), self.user_key(), self.chain(), log::sessions_dir(&self.env_at(home, run)).unwrap());
         let announce = announce_with.or_else(|| announce.then(|| self.announcer(a, home, run)));
@@ -3217,13 +3261,14 @@ impl World {
 
     /// What machine `a`, its home `home`, announces itself with: its keys
     /// as they are now and its own registry client, the instances its
-    /// environment resolves (`anthropic`, ready on the mock), a catalog
+    /// world gives it (`claude`, signed in), a catalog
     /// listing `CATALOG_MODEL`, and the world's repository, trusted.
     fn announcer(&self, a: &Device, home: &str, run: &str) -> announce::Options {
         let (api, device, user, chain) = (self.as_device(a), a.key.id(), self.user_key(), self.chain());
-        let env = self.env_at(home, run);
+        let (env, instances) = (self.env_at(home, run), self.instances());
         let krowk = self.root.join(home).join(".krowk");
-        std::fs::create_dir_all(&krowk).unwrap();
+        // Where `claude auth status` is asked.
+        std::fs::create_dir_all(krowk.join("probe")).unwrap();
         let trusted = krowk_harness::trust::Store::new(Some(krowk.join(krowk_harness::trust::FILE)), Some(self.root.join(home)));
         trusted.trust(&self.repo().canonicalize().unwrap()).unwrap();
         let catalog = serde_json::json!({"anthropic": {"models": {CATALOG_MODEL: {"family": "claude", "tool_call": true, "release_date": "2026-09-01"}}}});
@@ -3233,7 +3278,7 @@ impl World {
             online_since_ms: 1_790_000_000_000,
             keys: Box::new(move |_fresh| Ok(announce::Announcer { api: api.clone(), keys: UserKeys::new(user.clone(), []).unwrap(), chain: chain.clone(), device })),
             instances: Box::new(move || {
-                let registry = Registry::resolve(&InstancesConfig::default(), &env);
+                let registry = Registry::resolve(&instances, &env);
                 let all: Vec<_> = registry.instances.values().collect();
                 let probe = krowk_harness::readiness::Probe::at(krowk.join("probe"));
                 let reports = krowk_harness::readiness::check_all(&all, &krowk.join("credentials.json"), &probe);
@@ -4397,7 +4442,7 @@ fn presences_held(w: &World) -> String {
 
 /// R-HOST-3, R-NET-4: host A, sync set up and on, runs no session at all,
 /// and still B lists A's announcement and opens it: A online, its ready
-/// mock instance with its own default model first and the catalog's, its
+/// `claude` instance with its own default model first and the catalog's, its
 /// trusted repository, A's krowk version — and its name and OS the device
 /// list's. R-INST-6: an instance's limit rides along, none when the daemon
 /// has seen none.
@@ -4409,9 +4454,9 @@ async fn r_host_3_a_daemon_with_no_synced_session_announces_itself() {
     let (p, got) = w.announced_until(&b, &a, Instant::now() + Duration::from_secs(10), |p, _| p.online).await;
     assert_eq!((got.name.as_str(), got.os.as_str(), got.version.as_str(), got.online_since_ms), ("presence-host-a", "linux", "test", 1_790_000_000_000));
     assert!(!p.updated_at.is_empty());
-    let anthropic = got.instances.iter().find(|i| i.kind == "anthropic-api").unwrap_or_else(|| panic!("{got:?}"));
-    assert!(anthropic.ready && anthropic.state == "ready" && anthropic.fix.is_none() && anthropic.limit.is_none(), "{anthropic:?}");
-    assert_eq!(anthropic.models, [krowk_harness::instances::default_model_of("anthropic-api").unwrap(), CATALOG_MODEL]);
+    let claude = got.instances.iter().find(|i| i.kind == "claude-code").unwrap_or_else(|| panic!("{got:?}"));
+    assert!(claude.ready && claude.state == "ready" && claude.fix.is_none() && claude.limit.is_none(), "{claude:?}");
+    assert_eq!(claude.models, [krowk_harness::instances::default_model_of("claude-code").unwrap(), CATALOG_MODEL]);
     assert!(got.instances.iter().filter(|i| !i.ready).all(|i| i.models.is_empty() && i.fix.is_some()), "{got:?}");
     assert_eq!(got.directories, [w.repo().canonicalize().unwrap().display().to_string()]);
     assert!(got.sessions.is_empty(), "no session");
@@ -4549,11 +4594,6 @@ fn start_json(cwd: &str, model: &krowk_harness::protocol::ModelRef, prompt: &str
     serde_json::json!({"type": "start", "cwd": cwd, "model": model, "prompt": prompt})
 }
 
-/// The mock's model on A's `anthropic` instance.
-fn mock_model(w: &World) -> krowk_harness::protocol::ModelRef {
-    Registry::resolve(&InstancesConfig::default(), &w.env()).parse_model("claude-sonnet-4-6").unwrap()
-}
-
 /// The world's repository, as A announces it.
 fn offered_dir(w: &World) -> String {
     w.repo().canonicalize().unwrap().display().to_string()
@@ -4592,8 +4632,8 @@ async fn turn_started_on_a(w: &World, session: &str, by: Instant) -> (String, kr
     }
 }
 
-/// R-HOST-4, R-SYNC-3: B sends A a start in A's trusted repository on the
-/// mock's model. B's poll gets `started` with the session's id; A's daemon
+/// R-HOST-4, R-SYNC-3: B sends A a start in A's trusted repository on
+/// `claude`'s model. B's poll gets `started` with the session's id; A's daemon
 /// holds the session, its first turn ran in that directory on that model,
 /// and auto-sync took it up, so B lists it.
 #[tokio::test]
@@ -4602,7 +4642,7 @@ async fn r_host_4_a_start_from_b_runs_on_a_in_a_trusted_directory() {
     let (a, b) = (w.device("start-host-a"), w.device("start-b"));
     let mut auto = w.auto_with(&a, AutoOpts { announce: true, ..AutoOpts::default() });
     w.announced_until(&b, &a, Instant::now() + Duration::from_secs(10), |p, _| p.online).await;
-    let (id, cwd, model) = (command_id(), offered_dir(&w), mock_model(&w));
+    let (id, cwd, model) = (command_id(), offered_dir(&w), w.model());
     let sent = send_command(&w, &b, &a, &id, &start_json(&cwd, &model, "hello from b"));
     assert!(!sent.answered);
     let by = Instant::now() + Duration::from_secs(20);
@@ -4624,7 +4664,7 @@ async fn r_host_4_a_directory_a_did_not_offer_is_refused_and_nothing_starts() {
     let mut auto = w.auto_with(&a, AutoOpts { announce: true, ..AutoOpts::default() });
     let id = command_id();
     let elsewhere = w.root.join("home").canonicalize().unwrap().display().to_string();
-    send_command(&w, &b, &a, &id, &start_json(&elsewhere, &mock_model(&w), "hello"));
+    send_command(&w, &b, &a, &id, &start_json(&elsewhere, &w.model(), "hello"));
     let HostAnswer::Refused { code, message } = answer_of(&w, &b, &a, &id, Instant::now() + Duration::from_secs(20)).await else { panic!("started") };
     assert_eq!(code, "directory_not_offered");
     assert!(message.starts_with(&format!("start-host-a does not offer {elsewhere}: run `krowk trust {elsewhere}` on start-host-a")) && message.ends_with(&offered_dir(&w)), "{message}");
@@ -4648,7 +4688,7 @@ async fn r_switch_4_a_model_a_cannot_run_is_refused_with_the_fix_and_nothing_sta
     assert!(message.contains("nope"), "{message}");
     // And what the daemon refuses of the prompt itself is its own refusal.
     let id = command_id();
-    send_command(&w, &b, &a, &id, &start_json(&offered_dir(&w), &mock_model(&w), "   "));
+    send_command(&w, &b, &a, &id, &start_json(&offered_dir(&w), &w.model(), "   "));
     let HostAnswer::Refused { code, .. } = answer_of(&w, &b, &a, &id, Instant::now() + Duration::from_secs(20)).await else { panic!("started") };
     assert_eq!(code, "empty_prompt");
     assert!(daemon_sessions(&w).await.is_empty(), "nothing started");
@@ -4670,7 +4710,7 @@ async fn r_host_4_the_session_runs_in_the_hosts_default_mode_whatever_the_comman
     let said = hosts.clone();
     o.mode_for = Box::new(move |_| Ok(*said.lock().unwrap()));
     let mut auto = w.auto_with(&a, AutoOpts { announce_with: Some(o), ..AutoOpts::default() });
-    let mut json = start_json(&offered_dir(&w), &mock_model(&w), "hello");
+    let mut json = start_json(&offered_dir(&w), &w.model(), "hello");
     json["permissionMode"] = "unhinged".into();
     json["toolset"] = "grok".into();
     json["effort"] = "max".into();
@@ -4697,7 +4737,7 @@ async fn r_host_4_a_started_sessions_first_approval_waits_for_its_bridge() {
     let (a, b) = (w.device("start-host-a"), w.device("start-b"));
     let mut auto = w.auto_with(&a, AutoOpts { announce: true, slow_build: Duration::from_secs(1), ..AutoOpts::default() });
     let id = command_id();
-    send_command(&w, &b, &a, &id, &start_json(&offered_dir(&w), &mock_model(&w), "make the file"));
+    send_command(&w, &b, &a, &id, &start_json(&offered_dir(&w), &w.model(), "make the file"));
     let by = Instant::now() + Duration::from_secs(20);
     let HostAnswer::Started { session_id } = answer_of(&w, &b, &a, &id, by).await else { panic!("refused") };
     // The test's own status client follows nothing.
@@ -4749,7 +4789,7 @@ async fn r_sync_2_the_same_start_sent_twice_starts_one_session() {
     o.keys = Box::new(move |_| Ok(announce::Announcer { api: api.clone(), keys: UserKeys::new(user.clone(), []).unwrap(), chain: chain.clone(), device }));
     let mut auto = w.auto_with(&a, AutoOpts { announce_with: Some(o), ..AutoOpts::default() });
     w.reg_mode.store(FAIL_ANSWERS, Ordering::SeqCst);
-    let (id, json) = (command_id(), start_json(&offered_dir(&w), &mock_model(&w), "hello once"));
+    let (id, json) = (command_id(), start_json(&offered_dir(&w), &w.model(), "hello once"));
     let sealed = e2e::seal_to_person(&w.keys(), 1, e2e::Label::HostCommand, &host_command::binding(&id, &b.key.id(), &a.key.id()), &serde_json::to_vec(&json).unwrap()).unwrap();
     let to = a.key.id().to_string();
     // Sent twice, as a sender's retry sends it: the registry's 200 with
@@ -4794,8 +4834,8 @@ async fn r_host_4_a_command_from_a_device_removed_from_as_list_does_not_open_and
     let mut auto = w.auto_with(&a, AutoOpts { announce_with: Some(o), ..AutoOpts::default() });
     let (from_b, from_c) = (command_id(), command_id());
     // B, removed, still holds generation 1, and seals under it.
-    send_command(&w, &b, &a, &from_b, &start_json(&offered_dir(&w), &mock_model(&w), "from b"));
-    send_sealed(&w, &c, &a, &from_c, &start_json(&offered_dir(&w), &mock_model(&w), "from c"), &UserKeys::new(user.clone(), []).unwrap(), chain.generation());
+    send_command(&w, &b, &a, &from_b, &start_json(&offered_dir(&w), &w.model(), "from b"));
+    send_sealed(&w, &c, &a, &from_c, &start_json(&offered_dir(&w), &w.model(), "from c"), &UserKeys::new(user.clone(), []).unwrap(), chain.generation());
     let by = Instant::now() + Duration::from_secs(20);
     let answered = loop {
         let state = w.as_device(&c).host_command(&a.key.id().to_string(), &from_c).unwrap();

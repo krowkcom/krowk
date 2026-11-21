@@ -1,7 +1,11 @@
-//! A whole headless session against a stand-in Anthropic API: a prompt that
-//! reads a file, a resumed follow-up, and what both leave behind — the log,
-//! its context record, and the rows krowk.db derives from it.
+//! A whole headless session against the fake `claude` (`common/fake.rs`):
+//! a prompt that reads a file, a resumed follow-up, and what both leave
+//! behind — the log and the rows krowk.db derives from it — and an image
+//! kept beside the log. The native loop's own tests run against a stand-in
+//! Anthropic API, and go with it.
 
+#[path = "common/fake.rs"]
+mod fake;
 #[path = "common/mock.rs"]
 mod mock;
 
@@ -10,7 +14,7 @@ use krowk_harness::headless::{self, OutputFormat};
 use krowk_harness::host::HostConfig;
 use krowk_harness::instances::{InstancesConfig, Registry};
 use krowk_harness::log;
-use krowk_harness::protocol::{ContextRecord, Item, LiveEvent, LogBody, LogEvent, PermissionMode, RunResult, StreamLine, TurnStatus, Usage};
+use krowk_harness::protocol::{ContextRecord, Item, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RunResult, StreamLine, TurnStatus, Usage};
 use krowk_import::Source;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -20,22 +24,32 @@ const SIGNATURE: &str = "EqQBCkYIBxgCKkD3xG+4n0t/7i2rQzYkWmV9pL+/aX0c3R8s1QvT2nB
 struct Home {
     root: PathBuf,
     url: String,
+    instances: InstancesConfig,
 }
 
 impl Home {
+    /// A home whose default `anthropic` instance is the mock at `url`.
     fn new(name: &str, url: &str) -> Home {
         let root = std::env::temp_dir().join(format!("krowk-harness-e2e-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
         std::fs::write(root.join("repo/README.md"), "# krowk\n\nPermalinks for agent output.\n").unwrap();
-        Home { root, url: url.into() }
+        Home { root, url: url.into(), instances: InstancesConfig::default() }
+    }
+
+    /// A home whose one instance, `claude`, is the fake playing `scenario`.
+    fn fake(name: &str, scenario: Option<&str>) -> Home {
+        let mut home = Home::new(name, "");
+        home.instances = InstancesConfig { instances: [("claude".to_string(), fake::claude(&home.root, "claude", scenario))].into_iter().collect(), ..Default::default() };
+        home
     }
 
     fn env(&self) -> impl Fn(&str) -> String + '_ {
         move |k| match k {
             "HOME" => self.root.join("home").display().to_string(),
-            "ANTHROPIC_API_KEY" => "sk-test".into(),
+            "PATH" if self.url.is_empty() => std::env::var("PATH").unwrap_or_default(),
+            "ANTHROPIC_API_KEY" if !self.url.is_empty() => "sk-test".into(),
             "ANTHROPIC_BASE_URL" => self.url.clone(),
             _ => String::new(),
         }
@@ -49,7 +63,7 @@ impl Home {
         HostConfig {
             sessions_dir: log::sessions_dir(&self.env()).unwrap(),
             cwd: self.repo(),
-            registry: Registry::resolve(&InstancesConfig::default(), &self.env()),
+            registry: Registry::resolve(&self.instances, &self.env()),
             krowk_version: "test".into(),
             // Sonnet's list prices, per million tokens.
             pricer: Arc::new(|_, model, u: &Usage| {
@@ -79,7 +93,7 @@ impl Home {
 
     fn run_as(&self, prompt: &str, resume: Option<&str>, model: &str, toolset: Option<&str>, permission_mode: PermissionMode) -> (Vec<StreamLine>, RunResult) {
         let mut out = Vec::new();
-        let reg = Registry::resolve(&InstancesConfig::default(), &self.env());
+        let reg = Registry::resolve(&self.instances, &self.env());
         let opts = headless::Options {
             rollover: None,
             images: Vec::new(),
@@ -170,6 +184,48 @@ fn a_prompt_reads_a_file_streams_its_items_and_a_resume_continues_on_the_cache()
     let row2 = rebuilt.iter().find(|r| r.harness == "krowk").unwrap();
     assert_eq!(detail(&env, &row2.id), before, "rebuilt from the JSONL alone");
     assert_eq!(row2.id, first.session_id, "and under the same id");
+}
+
+/// What Claude Code does with "read README.md": its Read call, the file's
+/// text as its result, then the answer; asked the language, one more
+/// answer (in the resumed process, which plays the scenario afresh).
+fn reads_the_readme() -> String {
+    let call = serde_json::json!({"type": "assistant", "message": {"id": "msg_read", "model": "{{MODEL}}", "role": "assistant", "content": [{"type": "tool_use", "id": "toolu_read", "name": "Read", "input": {"file_path": "README.md"}}], "usage": {"input_tokens": 9, "output_tokens": 20}}, "parent_tool_use_id": null, "session_id": "{{SESSION}}"});
+    let read = serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": "toolu_read", "type": "tool_result", "content": "# krowk\n\nPermalinks for agent output.\n"}]}, "parent_tool_use_id": null, "session_id": "{{SESSION}}"});
+    format!("@when what language\n{}\n---\n{call}\n{read}\n{}", fake::answer("It is written in Rust."), fake::answer("krowk turns agent output into permalinks."))
+}
+
+/// R-LOG-1, R-LOG-2, R-LOG-5: a session on Claude Code, through the host:
+/// its turn streams items, a resume continues it, every log line validates
+/// and hangs from the one before, and the log projects into krowk.db, a
+/// rebuild from the JSONL alone giving the same rows.
+#[test]
+fn a_session_streams_its_items_resumes_and_projects_its_log_into_krowk_db() {
+    let home = Home::fake("session-fake", Some(&reads_the_readme()));
+    let (lines, first) = home.run_on("read README.md and summarise it in one line", None, "claude/sonnet", None);
+    assert_eq!(first.status, TurnStatus::Completed, "{:?}", first.error);
+    assert_eq!(first.result, "krowk turns agent output into permalinks.");
+    assert!(matches!(lines.last(), Some(StreamLine::Live(LiveEvent::Result(r))) if *r == first), "the stream ends with the result");
+    let read = lines.iter().any(|l| matches!(l, StreamLine::Log(LogEvent { body: LogBody::ItemCompleted { item: Item::ToolResult { output, is_error: false, .. }, .. }, .. }) if output.contains("Permalinks for agent output.")));
+    assert!(read, "the read's result is logged");
+
+    let (_, second) = home.run_on("what language is it written in?", Some(&first.session_id), "claude/sonnet", None);
+    assert_eq!(second.session_id, first.session_id);
+    assert_eq!(second.result, "It is written in Rust.");
+
+    let dir = log::sessions_dir(&home.env()).unwrap().join(&first.session_id);
+    assert_log_chain(&dir, &lines, &first);
+
+    let env = home.env();
+    let listed = project_all(&env);
+    let row = listed.iter().find(|r| r.id == first.session_id).expect("the session in the listing, under the log's own id");
+    assert_eq!((row.turn_count, row.foreign_session_id.as_str()), (2, first.session_id.as_str()));
+    assert_eq!(row.title, "read README.md and summarise it in one line");
+    let before = detail(&env, &row.id);
+    std::fs::remove_file(krowk_store::db_path(&env).unwrap()).unwrap();
+    let rebuilt = project_all(&env);
+    let row2 = rebuilt.iter().find(|r| r.id == first.session_id).expect("and under the same id");
+    assert_eq!(detail(&env, &row2.id), before, "rebuilt from the JSONL alone");
 }
 
 /// The first turn's stream: start and delta frames, the result last, and the
@@ -500,10 +556,9 @@ fn an_image_sent_with_a_prompt_is_kept_beside_the_log_and_reaches_the_model() {
     use krowk_harness::host::Host;
     use krowk_harness::protocol::{Command, ImageInput};
     use tokio::sync::mpsc;
-    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("A red dot.")));
-    let home = Home::new("image", &m.url);
+    let home = Home::fake("image", Some(&fake::answer("A red dot.")));
     let host = Host::new(home.config());
-    let model = Registry::resolve(&InstancesConfig::default(), &home.env()).parse_model("claude-sonnet-4-6").unwrap();
+    let model = ModelRef { instance: "claude".into(), model: "sonnet".into() };
     let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x02\0\0\0";
     let data = base64::engine::general_purpose::STANDARD.encode(png);
     let prompt = |images: Vec<ImageInput>| Command::Prompt { session_id: None, text: "what is in [Image #1]?".into(), images, model: Some(model.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
@@ -538,9 +593,11 @@ fn an_image_sent_with_a_prompt_is_kept_beside_the_log_and_reaches_the_model() {
     assert_eq!(std::fs::read(&file).unwrap(), png, "the bytes, kept as sent");
     #[cfg(unix)]
     assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&file).unwrap().permissions()) & 0o777, 0o600);
-    let seen = m.seen.lock().unwrap();
-    let content = &seen[0].body["messages"][0]["content"];
-    assert_eq!(content[1]["text"], "[Image #1]");
+    let sent = fake::prompts(&home.root, "claude");
+    let content = &sent[0]["message"]["content"];
+    // The prompt, its label, then the image it names.
+    assert_eq!(content[1]["text"], "[Image #1]", "{content}");
+    assert_eq!(content[2]["type"], "image", "{content}");
     assert_eq!(content[2]["source"]["data"], data.as_str(), "{content}");
 }
 
