@@ -1,7 +1,8 @@
 //! Stored API keys (R-CRED-1, R-INST-5 as amended): `krowk connect <vendor>
 //! --method api-key` storing a pasted key, a `$VAR` or a `!command` in
 //! krowk's provider credentials file, the built binary against fake
-//! vendor binaries, a stand-in gateway and a fake password manager. A sentinel key is followed through every path — connect, status,
+//! vendor binaries, a stand-in gateway and a fake password manager. A
+//! sentinel key is followed through every path — connect, status,
 //! providers list, doctor, a turn's stream-json and log, a failing request,
 //! disconnect — and found only in the credentials file.
 

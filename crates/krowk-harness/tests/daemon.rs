@@ -24,9 +24,6 @@ use tokio::sync::mpsc;
 
 struct Home {
     root: PathBuf,
-    /// The mock Anthropic API's address, for the native loop's test alone;
-    /// every other test runs on the fake `claude`.
-    url: Option<String>,
     instances: InstancesConfig,
     /// How many hosts' configurations the daemon has asked for.
     made: Arc<std::sync::atomic::AtomicUsize>,
@@ -40,17 +37,15 @@ impl Home {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
         let instances = InstancesConfig { instances: [("claude".to_string(), fake::claude(&root, "claude", scenario))].into_iter().collect(), ..Default::default() };
-        Home { root, url: None, instances, made: Arc::default() }
+        Home { root, instances, made: Arc::default() }
     }
 
     fn env(&self) -> impl Fn(&str) -> String + Clone + Send + 'static {
-        let (root, url) = (self.root.clone(), self.url.clone());
-        move |k| match (k, &url) {
-            ("HOME", _) => root.join("home").display().to_string(),
-            ("XDG_RUNTIME_DIR", _) => root.join("run").display().to_string(),
-            ("PATH", None) => std::env::var("PATH").unwrap_or_default(),
-            ("ANTHROPIC_API_KEY", Some(_)) => "sk-test".into(),
-            ("ANTHROPIC_BASE_URL", Some(url)) => url.clone(),
+        let root = self.root.clone();
+        move |k| match k {
+            "HOME" => root.join("home").display().to_string(),
+            "XDG_RUNTIME_DIR" => root.join("run").display().to_string(),
+            "PATH" => std::env::var("PATH").unwrap_or_default(),
             _ => String::new(),
         }
     }
@@ -137,10 +132,7 @@ impl Home {
     }
 
     fn prompt(&self, text: &str) -> Command {
-        let model = match self.url {
-            Some(_) => Registry::resolve(&self.instances, &self.env()).parse_model("claude-sonnet-4-6").unwrap(),
-            None => ModelRef { instance: "claude".into(), model: "sonnet".into() },
-        };
+        let model = ModelRef { instance: "claude".into(), model: "sonnet".into() };
         Command::Prompt { session_id: None, text: text.into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None }
     }
 }

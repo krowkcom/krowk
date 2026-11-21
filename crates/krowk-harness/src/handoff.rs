@@ -1,10 +1,7 @@
 //! Moving a session between engines (R-SWITCH-2, R-SWITCH-3, R-INST-4).
 //!
-//! The session log is the conversation, whichever engine ran each turn, so
-//! a native turn needs nothing here: its client sends the whole branch,
-//! and a backend's turns are already items in it — switching back from a
-//! backend is lossless (R-SWITCH-3). A backend is the other way round: it
-//! keeps its own thread (Claude Code's session, Codex's thread) and reads
+//! The session log is the conversation, whichever engine ran each turn,
+//! and a backend's turns are items in it. A backend keeps its own thread (Claude Code's session, Codex's thread) and reads
 //! nothing of krowk's log, so a turn krowk hands it must first bring that
 //! thread up to date with whatever it did not run.
 //!

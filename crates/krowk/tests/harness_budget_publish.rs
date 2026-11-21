@@ -113,7 +113,7 @@ fn reading_until_stopped() -> String {
 /// metered call that does, keeping what it made; a turn begun at the limit
 /// is refused before Claude Code is sent the prompt.
 #[test]
-fn r_budget_1_max_usd_stops_the_session_before_the_call_that_would_cross_it_and_exits_4() {
+fn r_budget_1_max_usd_interrupts_the_turn_a_call_takes_past_it_and_exits_4() {
     let b = Sandbox::new("usd", &reading_until_stopped());
     let out = b.krowk(&["-p", "read the README until you are told to stop", "--model", "claude/sonnet", "--max-usd", "0.01", "--output-format", "json"]);
     let (stdout, stderr) = (text(&out.stdout), text(&out.stderr));

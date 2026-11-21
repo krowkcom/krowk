@@ -12,8 +12,8 @@
 //! anonymous and belongs to no run), then logged as `run.opened`, and every
 //! later publish — a resumed session's included — attaches to it.
 //!
-//! The same call serves the native loop and every backend, which is offered
-//! it through the tool bridge as `mcp__krowk__publish`.
+//! Every backend is offered it through the tool bridge as
+//! `mcp__krowk__publish`.
 
 use crate::engine::{EngineEvent, Events};
 use schemars::JsonSchema;
@@ -60,8 +60,8 @@ pub struct PublishRequest {
 /// turn's, not the session's first.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Producer {
-    /// `krowk.engine`: `krowk` for krowk's own loop, else the backend that
-    /// ran it — `claude-code`, `codex-app-server`.
+    /// `krowk.engine`: the backend that ran it — `claude-code`,
+    /// `codex-app-server`.
     pub engine: String,
     /// `gen_ai.request.model`: the provider's model id.
     pub model: String,
@@ -70,8 +70,8 @@ pub struct Producer {
 }
 
 impl Producer {
-    /// The engine name for a turn on this instance: a backend's kind, or
-    /// `krowk` when the native loop runs it.
+    /// The engine name for a turn on this instance: its backend's kind
+    /// (`krowk` for an instance with none, which runs no turn).
     pub fn new(instance: &crate::instances::Resolved, model: &str) -> Producer {
         let engine = if instance.backend.is_some() { instance.kind } else { "krowk" };
         Producer { engine: engine.into(), model: model.into(), provider: instance.provider.clone() }
@@ -154,8 +154,7 @@ impl Evidence {
 /// credential to read, so it is held to what changing files is — run under
 /// `acceptEdits` and `bypassPermissions`, asked about under `default`,
 /// refused in plan — and a `Read` deny rule denies it too: uploading a file
-/// is reading it out. One rule for the native tool and the bridged one,
-/// whoever asks.
+/// is reading it out. One rule whichever backend asks.
 pub fn call(cwd: &Path, input: &serde_json::Value) -> Result<crate::permissions::Call, (String, bool)> {
     let i = PublishInput::deserialize(input).map_err(|e| (format!("invalid input for publish: {e}"), true))?;
     let at = |f: &String| {

@@ -888,9 +888,8 @@ impl Mcp {
     }
 
     /// Runs `mcp_call`, which the evaluator has allowed. A tool `denied`
-    /// covers is refused here too, before any server starts: the native
-    /// loop refuses a subagent's call outside its allowlist before it is
-    /// judged, and this holds it for any other caller.
+    /// covers is refused here too, before any server starts, whoever
+    /// calls.
     pub async fn call(&self, input: &Value, denied: Denied<'_>, cancel: &watch::Receiver<bool>) -> (String, bool) {
         self.call_with_images(input, denied, cancel, &mut Vec::new()).await
     }

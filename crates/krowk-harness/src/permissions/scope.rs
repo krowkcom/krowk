@@ -1,7 +1,7 @@
 //! Where the file tools may reach (`Scope`): the working directory, the
 //! directories the settings add, the fenced and secret directories, and
-//! where a path really leads. The permission evaluator judges every call
-//! against it, a backend's as well as a native tool's.
+//! where a path really leads. The permission evaluator judges every call a
+//! backend asks about against it.
 
 use std::path::{Path, PathBuf};
 

@@ -830,6 +830,36 @@ mod tests {
         assert!(secret_component(Path::new("src/env.rs")).is_none());
     }
 
+/// R-EVID-1: what `publish` — krowk_push, and the bridge's `publish` on
+    /// Claude Code and Codex — refuses: a credential file, a path outside
+    /// the root (a symlink out of it too), and a file with a second name.
+    #[test]
+    fn r_evid_1_publish_refuses_credentials_paths_outside_the_root_and_hard_links() {
+        let base = std::env::temp_dir().join(format!("krowk-permit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (root, outside) = (base.join("repo"), base.join("elsewhere"));
+        std::fs::create_dir_all(root.join(".ssh")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let (root, outside) = (root.canonicalize().unwrap(), outside.canonicalize().unwrap());
+        std::fs::write(root.join("shot.png"), "png").unwrap();
+        std::fs::write(root.join(".env"), "KEY=x").unwrap();
+        std::fs::write(root.join(".ssh/id_ed25519"), "PRIVATE").unwrap();
+        std::fs::write(outside.join("key"), "PRIVATE").unwrap();
+        let code = |path: &str| permit(&root, &root, path).map(|_| String::new()).unwrap_or_else(|e| e.code());
+        assert_eq!(permit(&root, &root, "shot.png").unwrap(), root.join("shot.png").display().to_string());
+        assert_eq!(code(".env"), "secret_path");
+        assert_eq!(code(".ssh/id_ed25519"), "secret_path");
+        assert_eq!(code(&outside.join("key").display().to_string()), "outside_root");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.join("key"), root.join("link.png")).unwrap();
+            assert_eq!(code("link.png"), "outside_root", "a symlink is judged by where it leads");
+            std::fs::hard_link(outside.join("key"), root.join("hard.png")).unwrap();
+            assert_eq!(code("hard.png"), "hard_linked");
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     fn serve(input: &[u8]) -> (std::io::Result<()>, String) {
         let env = |_: &str| String::new();
         let server = Server { client: Client::new("http://127.0.0.1:9", ""), env: &env, version: "t".into(), root: String::new(), workspace_err: None };

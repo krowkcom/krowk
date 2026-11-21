@@ -5,8 +5,7 @@
 //!
 //! It guards the shape of a paste, not what may run, so it is no permission
 //! rule: it holds in every mode, `bypassPermissions` and `unhinged`
-//! included. The native loop asks it before a bash call's hooks; Claude
-//! Code asks it through a `PreToolUse` hook callback krowk registers on
+//! included. Claude Code asks it through a `PreToolUse` hook callback krowk registers on
 //! `initialize`; Codex runs it as a `PreToolUse` command hook,
 //! `krowk __paste-guard` (`HOOK_ARG`), answered by `pre_tool_use`. The
 //! tooling guard (`crate::tooling_guard`) rides the same three ways, asked

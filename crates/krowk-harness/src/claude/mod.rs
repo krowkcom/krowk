@@ -901,8 +901,7 @@ impl Answers {
     /// as Claude Code joins them — or the refusal the model reads. A deny
     /// rule on it holds.
     async fn ask_user(&self, input: &Value, asking: Asking<'_>) -> Result<Value, String> {
-        // The session's own, as the native `ask_user` is: no mode refuses
-        // it, plan included.
+        // The session's own: no mode refuses it, plan included.
         let call = Call { tool: "AskUserQuestion".into(), access: Access::Session, subject: None };
         if let Verdict::Deny(m) = self.gate.verdict(&call) {
             return Err(m);

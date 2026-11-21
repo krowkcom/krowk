@@ -956,12 +956,12 @@ fn prompt_flags() -> Vec<Flag> {
         flag(
             "max-usd",
             STRING,
-            "With -p: stop the session before the model call that would take it, with its subagents, past this many dollars — metered, priced from models.dev. Exits 4, like `krowk sessions budget`",
+            "With -p: stop the session once it, with its agents, is past this many dollars — metered, priced from models.dev: a turn at the limit is refused, and one a call takes past it is interrupted. Exits 4, like `krowk sessions budget`",
         ),
         flag(
             "max-tokens",
             STRING,
-            "With -p: stop the session before the model call that would take its generated tokens (output and reasoning, subagents included) past this many. Exits 4",
+            "With -p: stop the session once its generated tokens (output and reasoning, its agents included) are past this many: a turn at the limit is refused, and one a call takes past it is interrupted. Exits 4",
         ),
         flag(
             "trust",

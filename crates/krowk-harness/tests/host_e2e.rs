@@ -18,24 +18,23 @@ use std::sync::Arc;
 
 struct Home {
     root: PathBuf,
-    url: String,
     instances: InstancesConfig,
 }
 
 impl Home {
-    /// A home whose default `anthropic` instance is the mock at `url`.
-    fn new(name: &str, url: &str) -> Home {
+    /// A home with no instance yet.
+    fn new(name: &str) -> Home {
         let root = std::env::temp_dir().join(format!("krowk-harness-e2e-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
         std::fs::write(root.join("repo/README.md"), "# krowk\n\nPermalinks for agent output.\n").unwrap();
-        Home { root, url: url.into(), instances: InstancesConfig::default() }
+        Home { root, instances: InstancesConfig::default() }
     }
 
     /// A home whose one instance, `claude`, is the fake playing `scenario`.
     fn fake(name: &str, scenario: Option<&str>) -> Home {
-        let mut home = Home::new(name, "");
+        let mut home = Home::new(name);
         home.instances = InstancesConfig { instances: [("claude".to_string(), fake::claude(&home.root, "claude", scenario))].into_iter().collect(), ..Default::default() };
         home
     }
@@ -43,9 +42,7 @@ impl Home {
     fn env(&self) -> impl Fn(&str) -> String + '_ {
         move |k| match k {
             "HOME" => self.root.join("home").display().to_string(),
-            "PATH" if self.url.is_empty() => std::env::var("PATH").unwrap_or_default(),
-            "ANTHROPIC_API_KEY" if !self.url.is_empty() => "sk-test".into(),
-            "ANTHROPIC_BASE_URL" => self.url.clone(),
+            "PATH" => std::env::var("PATH").unwrap_or_default(),
             _ => String::new(),
         }
     }
@@ -208,6 +205,53 @@ fn detail(env: &dyn Fn(&str) -> String, id: &str) -> String {
         .map(|m| format!("{} {} [{}]", m.role, m.model, m.parts.iter().map(|p| format!("{}:{}:{}", p.kind, p.tool_call_id, p.data)).collect::<Vec<_>>().join(", ")))
         .collect();
     format!("{}\n{}\n{}", d.session.title, turns.join("\n"), msgs.join("\n"))
+}
+
+/// An interactive client draws and reads keys on a single-threaded
+/// runtime; a turn whose key comes from a slow command (a password manager
+/// asking gpg-agent) must not stop it. Here a ticker on the same
+/// current-thread runtime keeps ticking through a turn on a key's Claude
+/// Code account whose command takes 1.5 s, and the key it printed is what
+/// Claude Code is handed (R-CRED-1, R-NAT-2).
+#[test]
+fn r_cred_1_a_stored_keys_command_never_blocks_the_hosts_runtime() {
+    let mut home = Home::new("keycmd");
+    let creds = home.root.join("home/.krowk/credentials.json");
+    std::fs::create_dir_all(creds.parent().unwrap()).unwrap();
+    std::fs::write(&creds, serde_json::json!({"version": 1, "keys": {"anthropic": {"command": "sleep 1.5; echo sk-from-command"}}}).to_string()).unwrap();
+    // A gateway's account: the key goes on as ANTHROPIC_AUTH_TOKEN, which
+    // the fake logs whole.
+    let krowk_harness::instances::InstanceKind::ClaudeCode { binary, config_dir, mut env, args, effort, .. } = fake::claude(&home.root, "anthropic", None) else { unreachable!() };
+    env.insert("ANTHROPIC_BASE_URL".into(), "http://127.0.0.1:9".into());
+    let kind = krowk_harness::instances::InstanceKind::ClaudeCode { binary, config_dir, env, args, api_key_env: Some("ANTHROPIC_API_KEY".into()), effort };
+    home.instances = InstancesConfig { instances: [("anthropic".to_string(), kind)].into_iter().collect(), keys_from: Some(creds), ..Default::default() };
+    let cfg = home.config();
+    let model = ModelRef { instance: "anthropic".into(), model: "sonnet".into() };
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let (ticks, took, result) = rt.block_on(async {
+        let host = krowk_harness::host::Host::new(cfg);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let ticks = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let t = ticks.clone();
+        let ticker = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                t.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+        let started = std::time::Instant::now();
+        let cmd = krowk_harness::protocol::Command::Prompt { session_id: None, text: "hi".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
+        let r = host.execute(cmd, tx).await;
+        ticker.abort();
+        host.shutdown().await;
+        (ticks.load(std::sync::atomic::Ordering::Relaxed), started.elapsed(), r)
+    });
+    let r = result.unwrap_or_else(|e| panic!("{e:?}")).unwrap();
+    assert_eq!(r.status, TurnStatus::Completed, "{:?}", r.error);
+    assert!(took >= std::time::Duration::from_millis(1400), "the command ran: {took:?}");
+    assert!(ticks >= 15, "the runtime kept running while the command did: {ticks} ticks in {took:?}");
+    assert!(fake::log(&home.root, "anthropic").contains("env ANTHROPIC_AUTH_TOKEN=sk-from-command"), "the command's key is handed to Claude Code: {}", fake::log(&home.root, "anthropic"));
 }
 
 #[test]

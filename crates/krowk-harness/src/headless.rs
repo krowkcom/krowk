@@ -10,7 +10,7 @@
 //!   `item.started`/`item.delta` frames, and the `result` last.
 //!
 //! One prompt is the whole run: an agent a backend runs in the background
-//! (Claude Code's `Agent` tool), or a background job, is not waited for,
+//! (Claude Code's `Agent` tool) is not waited for,
 //! and stops with the run — stderr says so.
 
 use crate::engine::EngineError;

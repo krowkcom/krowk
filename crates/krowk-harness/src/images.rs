@@ -2,8 +2,7 @@
 //! with the prompt (`ImageInput`), so a host on another machine gets them
 //! too; the host checks them, keeps them in the session's `images/`
 //! directory beside its log, and logs only a reference (`ImageRef`). A
-//! native turn reads them back for its model calls, a backend is handed
-//! the file.
+//! backend is handed the file.
 //!
 //! Files are named by the sha256 of their bytes (`<sha256>.<ext>`), so the
 //! same image is the same name on every device; files an older host named

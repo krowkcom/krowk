@@ -1,6 +1,5 @@
 //! The HTTP client krowk makes its requests with: MCP servers and their
-//! sign-ins, sync, and the native model clients (whose calls, retries and
-//! stream reading are `crate::wire`'s).
+//! sign-ins, and sync.
 //!
 //! Redirects are never followed. A request carries a key or a token, and a
 //! redirect is a request the client did not choose to make — to wherever

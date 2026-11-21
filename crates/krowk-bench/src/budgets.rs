@@ -326,8 +326,6 @@ mod tests {
             "lean.size",
             "lean.deps",
             "log.append",
-            "engine.idle_cpu",
-            "context.tokens",
             "remote.attach",
             "remote.resume",
         ] {

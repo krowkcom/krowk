@@ -350,7 +350,6 @@ impl Flags {
             #[cfg(feature = "harness")]
             "base-url" => text(&mut self.base_url),
             #[cfg(feature = "harness")]
-            #[cfg(feature = "harness")]
             "binary" => text(&mut self.binary),
             #[cfg(feature = "harness")]
             "config-dir" => text(&mut self.config_dir),

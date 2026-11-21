@@ -92,7 +92,6 @@ fn main() {
                     "remote.attach" => measure::remote_attach(runs, false),
                     #[cfg(unix)]
                     "remote.resume" => measure::remote_attach(runs, true),
-                    "context.tokens" => measure::context_tokens(&full, &measure::fresh_dir(&work, "context-tokens")),
                     "engine.idle_cpu" | "engine.idle_wakeups" | "engine.idle_rss" => {
                         let window = Duration::from_secs(b.window_s.unwrap_or(10));
                         let sample = idle.get_or_insert_with(|| engine_idle(&full, &measure::fresh_dir(&work, "engine-idle"), window));

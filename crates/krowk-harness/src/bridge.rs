@@ -17,7 +17,7 @@
 //!
 //! Every tool in `EXPOSED` is offered to every backend session, and only
 //! those: a tool is exposed by being listed there, with its input a Rust
-//! type its schema is derived from, as the native tools' are.
+//! type its schema is derived from.
 
 use crate::engine::{BoxFuture, Events};
 use crate::evidence::{self, Evidence};
@@ -42,8 +42,8 @@ pub struct BridgeEnv<'a> {
     /// The backend running the session, e.g. `claude-code`.
     pub backend: &'a str,
     pub krowk_version: &'a str,
-    /// The turn's permissions: `publish` is judged by them, as the native
-    /// one is — whatever a vendor's own settings allowed.
+    /// The turn's permissions: `publish` is judged by them, whatever a
+    /// vendor's own settings allowed.
     pub gate: &'a crate::permissions::Gate,
     /// The turn's interrupt, while a person is asked; none outside a turn.
     pub cancel: Option<&'a tokio::sync::watch::Receiver<bool>>,
@@ -51,7 +51,7 @@ pub struct BridgeEnv<'a> {
     /// none when the host publishes nothing.
     pub evidence: Option<(&'a Evidence, &'a Events)>,
     /// The session's MCP servers, offered as `mcp_search` and `mcp_call`
-    /// (the native engine's two tools) when there is at least one; none for
+    /// when there is at least one; none for
     /// a backend that does not carry them.
     pub mcp: Option<&'a crate::mcp::Mcp>,
     /// The tool calls (by Claude Code's tool-use id) the person was asked
@@ -151,8 +151,8 @@ pub const EXPOSED: &[Exposed] = &[
         input_schema: crate::schema::input_schema::<SessionInfoInput>,
         run: |env, input| Box::pin(std::future::ready(session_info(env, input))),
     },
-    // The native `publish`, the same call: a backend's evidence lands under
-    // the same run, tagged with the same krowk session.
+    // `publish`: a backend's evidence lands under the session's run,
+    // tagged with its krowk session.
     Exposed { name: evidence::PUBLISH, description: evidence::DESCRIPTION, input_schema: crate::schema::input_schema::<evidence::PublishInput>, run: publish },
 ];
 

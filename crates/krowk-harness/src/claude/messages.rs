@@ -1,7 +1,6 @@
 //! Anthropic's Messages stream, decoded straight into krowk's items
 //! (R-PROV-1): one content block is one item, streamed under one id. Claude
-//! Code forwards this stream as its `stream_event` lines (`super::stream`);
-//! the native Anthropic client reads it too, as `crate::anthropic::stream`.
+//! Code forwards this stream as its `stream_event` lines (`super::stream`).
 //!
 //! Thinking is where fidelity matters. A `thinking` block's text and its
 //! `signature` must go back to the API exactly as they came, or the next

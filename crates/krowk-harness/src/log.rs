@@ -28,13 +28,13 @@ use std::sync::Arc;
 pub const EVENTS_FILE: &str = "events.jsonl";
 pub const CONTEXT_FILE: &str = "context.jsonl";
 
-/// What a note of background work that ended starts with (`crate::jobs`):
-/// krowk's words in a user item, not the person's, as a log read later
-/// shows them.
+/// What a note of background work that ended started with, in logs from
+/// krowk's own engine: krowk's words in a user item, not the person's, as
+/// a log read later shows them.
 pub const BACKGROUND_DONE: &str = "<background-done ";
 
-/// What a reminder krowk adds to a user item starts with (`crate::todo`):
-/// krowk's words, not the person's.
+/// What a reminder krowk added to a user item started with, in logs from
+/// its own engine: krowk's words, not the person's.
 pub const REMINDER: &str = "<system-reminder>";
 
 /// `sessions/` in krowk's home, where krowk.db is too.

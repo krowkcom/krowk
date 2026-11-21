@@ -2518,9 +2518,6 @@ impl Writer<'_> {
             EngineEvent::ApprovalResolved { request_id, decision } => {
                 self.live(LiveEvent::ApprovalResolved { session_id: session_id.into(), turn_id, request_id, decision }).await;
             }
-            EngineEvent::Todos { todos } => {
-                self.log(LogBody::TodosUpdated { turn_id, todos }).await?;
-            }
             EngineEvent::SubagentStarted { call_id, session_id: child, description, agent, model, ran_by, backend_id } => {
                 self.log(LogBody::SubagentStarted { turn_id, call_id, subagent_session_id: child, description, agent, model, ran_by, backend_id }).await?;
             }

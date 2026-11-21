@@ -36,9 +36,6 @@ struct Home {
     /// The instances a configuration read finds: the fake `claude`, as
     /// `claude`, under `root/claude`.
     instances: InstancesConfig,
-    /// The stand-in Anthropic API of a test of the native loop's own
-    /// client, which runs on the `anthropic` instance instead.
-    url: Option<String>,
     /// The daemon's thread's worst lateness, in µs, since last zeroed.
     late: Arc<AtomicU64>,
     /// How the next configuration reads go, one each, first first: how long
@@ -60,7 +57,7 @@ impl Home {
     fn on(name: &str, dir: &str, scenario: Option<&str>) -> Home {
         let root = Home::root(name);
         let instances = Home::claude(&root, dir, scenario);
-        Home { root, instances, url: None, late: Arc::default(), reads: Arc::default(), begun: Arc::default() }
+        Home { root, instances, late: Arc::default(), reads: Arc::default(), begun: Arc::default() }
     }
 
     fn root(name: &str) -> PathBuf {
@@ -77,12 +74,10 @@ impl Home {
     }
 
     fn env(&self) -> impl Fn(&str) -> String + Clone + Send + 'static {
-        let (root, url) = (self.root.clone(), self.url.clone());
-        move |k| match (k, &url) {
-            ("HOME", _) => root.join("home").display().to_string(),
-            ("XDG_RUNTIME_DIR", _) => root.join("run").display().to_string(),
-            ("ANTHROPIC_API_KEY", Some(_)) => "sk-test".into(),
-            ("ANTHROPIC_BASE_URL", Some(url)) => url.clone(),
+        let root = self.root.clone();
+        move |k| match k {
+            "HOME" => root.join("home").display().to_string(),
+            "XDG_RUNTIME_DIR" => root.join("run").display().to_string(),
             _ => String::new(),
         }
     }
@@ -167,10 +162,7 @@ impl Home {
     }
 
     fn prompt(&self, text: &str, mode: PermissionMode) -> Command {
-        let model = match self.url {
-            Some(_) => Registry::resolve(&InstancesConfig::default(), &self.env()).parse_model("claude-sonnet-4-6").unwrap(),
-            None => ModelRef { instance: "claude".into(), model: "sonnet".into() },
-        };
+        let model = ModelRef { instance: "claude".into(), model: "sonnet".into() };
         Command::Prompt { session_id: None, text: text.into(), images: Vec::new(), model: Some(model), permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None }
     }
 }

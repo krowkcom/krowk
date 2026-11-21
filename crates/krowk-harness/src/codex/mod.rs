@@ -701,7 +701,7 @@ impl Answers {
             })
             .unwrap_or_default();
         // A deny rule on Claude Code's name for it holds, as it does for
-        // the native tool and Claude Code's own.
+        // Claude Code's own.
         let call = Call { tool: "AskUserQuestion".into(), access: Access::Session, subject: None };
         let answered = match (self.gate.verdict(&call), asking) {
             (Verdict::Deny(m), _) => Err(m),

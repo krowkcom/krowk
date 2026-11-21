@@ -107,7 +107,7 @@ fn r_perm_1_a_repository_that_denies_bash_rm_blocks_it_in_every_mode_bypass_incl
 }
 
 #[test]
-fn r_perm_1_unhinged_runs_everything_and_no_rule_fence_or_hooks_ask_holds_it() {
+fn r_perm_1_unhinged_runs_everything_and_no_rule_or_fence_holds_it() {
     let d = repo("unhinged");
     let p = policy(&d, &[(Kind::Deny, "Bash"), (Kind::Deny, "Read(.env)"), (Kind::Deny, "Edit"), (Kind::Ask, "WebFetch"), (Kind::Deny, "mcp__gh"), (Kind::Deny, "Task")]);
     let calls = [

@@ -873,7 +873,7 @@
       "description": "Who runs a subagent's loop (R-SUB-7).",
       "oneOf": [
         {
-          "description": "krowk's own loop, through its `subagent` tool.",
+          "description": "krowk's own loop, through its `subagent` tool, in logs from before\nthat engine went.",
           "type": "string",
           "const": "krowk"
         },

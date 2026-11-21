@@ -35,7 +35,7 @@
 use crate::budget::Budget;
 use crate::evidence::Evidence;
 use crate::catalog::ModelInfo;
-use crate::protocol::{ApprovalDecision, ApprovalRequest, BackendAgent, Billing, Delta, Effort, ErrorInfo, HandoffKind, ImageRef, Item, ItemKind, LimitStatus, ModelRef, PermissionMode, Todo, ToolDefinition, Usage, WireApi};
+use crate::protocol::{ApprovalDecision, ApprovalRequest, BackendAgent, Billing, Delta, Effort, ErrorInfo, HandoffKind, ImageRef, Item, ItemKind, LimitStatus, ModelRef, PermissionMode, ToolDefinition, Usage, WireApi};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -76,8 +76,6 @@ pub enum EngineEvent {
     Approval(ApprovalRequest),
     /// It was answered.
     ApprovalResolved { request_id: String, decision: ApprovalDecision },
-    /// `todo_write` replaced the session's todo list: the host logs it.
-    Todos { todos: Vec<Todo> },
     /// A subagent started, as the child session `session_id`, answering
     /// the tool call `call_id`: the host logs the link, with who runs it
     /// and the backend's own id for it (R-SUB-7).

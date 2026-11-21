@@ -8,11 +8,12 @@
 //! instance's tokens live in krowk's provider credentials file, so
 //! definitions can sync between hosts and keys cannot (R-INST-5). A key
 //! can be stored too — in that same credentials file, never here — and is
-//! then used before the variable (`crate::keys`). The kinds
-//! are the native providers' (R-PROV-4): `anthropic-api`, `openai-api`,
-//! `xai-api`, `openrouter-api`, `openai-compatible` for anything else that
-//! speaks Chat Completions, and `xai-oauth` for a SuperGrok subscription.
-//! The vendor backends are more variants: `claude-code` drives the user's
+//! then used before the variable (`crate::keys`). The kinds krowk once ran
+//! itself — `anthropic-api`, `openai-api`, `xai-api`, `openrouter-api`,
+//! `openai-compatible`, and `xai-oauth` for SuperGrok — are still read, so
+//! that a key's definition is turned into a Claude Code or Codex account
+//! (`crate::connect`) and the rest refused with D4's line; no turn runs on
+//! one. The kinds that run: `claude-code` drives the user's
 //! own `claude` binary (R-BACK-1), and is a binary path, a config directory
 //! (`CLAUDE_CONFIG_DIR`), environment variables and launch arguments
 //! (R-INST-1) — so `claude:work` and `claude:personal` are two Claude
@@ -776,9 +777,8 @@ impl Registry {
 
     /// `read_model`, a bare id put on the implicit API instance of the
     /// provider its family names, ready or not (`gpt-…`, `o3`, `codex-…` on
-    /// `openai`, `grok-…` on `xai`, anything else on `anthropic`): where a
-    /// subagent's model goes, since a subagent runs only on krowk's own loop
-    /// and so never on a backend. A turn's model is routed instead.
+    /// `openai`, `grok-…` on `xai`, anything else on `anthropic`). A turn's
+    /// model is routed instead.
     pub fn parse_model(&self, s: &str) -> Result<ModelRef, String> {
         match self.read_model(s)? {
             Asked::Exact(m) => Ok(m),
