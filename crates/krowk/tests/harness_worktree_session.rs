@@ -243,6 +243,10 @@ fn worktrees_default_starts_a_new_session_in_its_own_worktree_without_the_flag()
     // untrusted one's is never reached by a session.)
     std::fs::create_dir_all(b.repo().join(".krowk")).unwrap();
     std::fs::write(b.repo().join(".krowk/config.json"), r#"{"worktrees": {"default": false}}"#).unwrap();
+    // A file that can run code changed since the repository was trusted, so
+    // it is trusted again, as a person who looked at the change would.
+    let o = b.krowk_in(&b.repo(), &["trust"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let (out, _) = b.prompt(&["--output-format", "json", "make a file"]);
     assert!(!out.contains("\"worktree\""), "the trusted repository's no is read: {out}");
     assert!(b.repo().join("NEW.md").is_file());

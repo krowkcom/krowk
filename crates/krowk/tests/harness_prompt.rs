@@ -470,15 +470,19 @@ fn r_roll_5_krowk_p_resolves_rollover_per_session_repo_and_global() {
 #[test]
 fn r_cut_8_bare_krowk_on_a_terminal_prints_the_overview_and_the_old_tui_flags_point_to_p() {
     let b = Sandbox::new("bare-tty");
+    // A Claude Code account on an API key, ready here without a login, so
+    // bare `krowk` has no first-machine setup to ask.
+    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
+    std::fs::write(b.root.join("home/.krowk/config.json"), serde_json::json!({"instances": {"claude:console": {"kind": "claude-code", "apiKeyEnv": "ANTHROPIC_API_KEY"}}}).to_string()).unwrap();
     let on_a_tty = |args: &[&str]| {
         let mut c = b.command(args);
-        c.env("NO_COLOR", "1").env("TERM", "xterm-256color");
+        c.env("NO_COLOR", "1").env("TERM", "xterm-256color").env("ANTHROPIC_API_KEY", "sk-test");
         let mut t = pty::Pty::spawn(c, 120, 40);
         let st = t.wait(std::time::Duration::from_secs(20)).expect("krowk exits at once");
         (t.text().replace("\r\n", "\n"), st)
     };
     let mut piped = b.command(&[]);
-    piped.env("NO_COLOR", "1").env("TERM", "xterm-256color");
+    piped.env("NO_COLOR", "1").env("TERM", "xterm-256color").env("ANTHROPIC_API_KEY", "sk-test");
     let piped = piped.output().unwrap();
     assert!(piped.status.success());
     let (greeting, st) = on_a_tty(&[]);
