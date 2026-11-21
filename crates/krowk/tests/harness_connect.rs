@@ -292,6 +292,20 @@ fn connect_refuses_a_name_that_would_share_a_login_or_a_key_or_pass_for_another_
     assert!(!out.status.success() && stderr(&out).contains("give the whole path"), "{}", stderr(&out));
 }
 
+/// A name taken by a hand-written Codex account on a key is refused with
+/// what that account is, a key, never a ChatGPT subscription.
+#[test]
+fn a_name_taken_by_a_hand_written_codex_key_account_is_called_one() {
+    let b = Sandbox::new("names-keyed");
+    std::fs::create_dir_all(b.config_path().parent().unwrap()).unwrap();
+    std::fs::write(b.config_path(), json!({"instances": {"local": {"kind": "codex-app-server", "apiKeyEnv": "LOCAL_KEY"}}}).to_string()).unwrap();
+    let out = b.krowk(&["connect", "openai-compatible", "--name", "local", "--base-url", "http://127.0.0.1:1/v1"], &[]);
+    assert!(!out.status.success(), "the name was taken");
+    let err = stderr(&out);
+    assert!(err.contains("local is already codex-app-server (Codex, API key)"), "{err}");
+    assert!(!err.contains("subscription"), "{err}");
+}
+
 #[test]
 fn a_failed_codex_sign_in_leaves_a_home_that_was_there_as_it_was() {
     let b = Sandbox::new("codex-existing");
