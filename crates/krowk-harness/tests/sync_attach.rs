@@ -71,7 +71,10 @@ fn scenario() -> String {
         // Fifteen seconds, typed a dozen words at a time: fifty of these at
         // once, a word at a time, would be a thousand `sleep`s a second.
         format!("@when a very long answer\n{}", fake::typed(750, 0.24, "word", 12)),
-        format!("@when an answer of many batches\n{}", typed(400, "word")),
+        // Two words a `sleep`: 200 waits each longer than a batch, so 200
+        // batches at least however slow a `sleep` is (a macOS runner's
+        // can take 150 ms).
+        format!("@when an answer of many batches\n{}", fake::typed(400, 0.02, "word", 2)),
         format!("@when a long answer\n{}", typed(160, "word")),
         format!("@when make the file\n{}\n@touch approved.txt\n{answer}", fake::asks_bash("toolu_01Touch", "touch approved.txt")),
         format!("@when \"type\":\"user\"\n{answer}"),
@@ -1557,8 +1560,11 @@ async fn r_lag_7_a_viewer_acks_so_a_long_answer_reaches_it_whole() {
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
         let _ = dd.execute(prompt, tx).await;
     });
-    let got = until(&mut v, Duration::from_secs(30), &mut frames, result_of).await;
+    // The bound is the fake's 200 `sleep`s, not R-LAG-7's: a macOS runner
+    // takes 30 s over them.
+    let got = until(&mut v, Duration::from_secs(90), &mut frames, result_of).await;
     let batches = w.b_batches.load(Ordering::SeqCst) - before;
+    eprintln!("{batches} batches");
     assert!(batches > 100, "only {batches} batches");
     assert!(got.iter().any(|u| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::ItemDelta { .. }))) ), "the typing arrived");
     let text: String = got.iter().filter_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::ItemDelta { delta, .. })) = u && let krowk_harness::protocol::Delta::Text { text } = delta { Some(text.clone()) } else { None }).collect();
@@ -2615,7 +2621,9 @@ async fn r_img_wave_three_screenshots_over_4_mib_reach_the_model_the_registry_an
         *images = shas.iter().enumerate().map(|(n, sha)| krowk_harness::protocol::ImageInput { number: n as u32 + 1, media_type: "image/png".into(), data: String::new(), sha256: Some(sha.clone()) }).collect();
     }
     v.commands.send(ask).unwrap();
-    until(&mut v, Duration::from_secs(30), &mut frames, result_of).await;
+    // The bound is the fake's, not R-IMG's: bash reads a pipe a byte at a
+    // time, and the prompt is 6.4 MB of base64 on one line.
+    until(&mut v, Duration::from_secs(90), &mut frames, result_of).await;
     let b64 = |p: &Vec<u8>| base64::engine::general_purpose::STANDARD.encode(p);
     let want: Vec<String> = pngs.iter().map(b64).collect();
     // The images the model call that carried `text` was sent.

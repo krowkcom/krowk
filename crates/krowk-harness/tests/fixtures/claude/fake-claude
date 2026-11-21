@@ -357,9 +357,15 @@ queue_steer() {
   done
 }
 
-# A line of krowk's printed back, as `--replay-user-messages` does.
+# A line of krowk's printed back, as `--replay-user-messages` does: as
+# written, no placeholders filled. Its closing `}` is cut by length:
+# bash 3.2 takes minutes over `${1%\}}`, or a `//` substitution, on a
+# prompt carrying megabytes of images.
 replay() {
-  emit "${1%\}},\"isReplay\":true}"
+  [ -n "$1" ] || return 0
+  local out="${1:0:${#1}-1},\"isReplay\":true}"
+  log "out $out"
+  printf '%s\n' "$out"
 }
 
 init() {
@@ -376,18 +382,31 @@ turn() {
     emit '{"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login","session_id":"{{SESSION}}"}'
     return
   fi
-  local w=0 back
+  # Bash 3.2 matches `*text*` in time growing faster than the line, so a
+  # long prompt (one carrying images) is written out once and searched
+  # by grep: this process's own file, should two read one config dir.
+  local w=0 back hit long=""
+  if [ ${#WHEN[@]} -gt 0 ] && [ -n "${1:65536:1}" ]; then
+    long="$DIR/fake-prompt.$$"
+    printf '%s' "$1" >"$long"
+  fi
   while [ $w -lt ${#WHEN[@]} ]; do
-    case "$1" in
-    *"${WHEN[$w]}"*)
+    hit=""
+    if [ -n "$long" ]; then
+      grep -qF -- "${WHEN[$w]}" "$long" && hit=1
+    else
+      case "$1" in
+      *"${WHEN[$w]}"*) hit=1 ;;
+      esac
+    fi
+    if [ -n "$hit" ]; then
       back=$POS
       POS=${WHEN_AT[$w]}
       log "when ${WHEN[$w]}"
       play
       POS=$back
       return
-      ;;
-    esac
+    fi
     w=$((w + 1))
   done
   if [ $POS -ge ${#LINES[@]} ]; then
