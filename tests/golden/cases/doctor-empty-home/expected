@@ -4,7 +4,7 @@ stdout:
   "version": "0.0.0-golden",
   "runtime": "<runtime>",
   "api": "http://127.0.0.1:9/v1",
-  "registry": "custom (KROWK_API_URL)",
+  "registry": "custom (GRUNTAS_API_URL)",
   "api_status": "unreachable — network_unreachable — <transport error>",
   "authenticated": false,
   "token_source": "none",
@@ -97,7 +97,7 @@ stdout:
 Version         0.0.0-golden
 Runtime         <runtime>
 API             http://127.0.0.1:9/v1
-Registry        custom (KROWK_API_URL)
+Registry        custom (GRUNTAS_API_URL)
 API status      unreachable — network_unreachable — <transport error>
 Signed in       no
 Key from        none

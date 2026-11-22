@@ -75,7 +75,7 @@ the network:
 
 | When | Where | What it sends | How to stop it |
 |---|---|---|---|
-| after a command, at most once a day, on a release build | `api.github.com` (`/repos/krowkcom/krowk/releases/latest`) | a GET with `User-Agent: krowk-cli/<version>`, nothing else | `KROWK_NO_UPDATE_CHECK=1`; never under `CI` or GitHub Actions |
+| after a command, at most once a day, on a release build | `api.github.com` (`/repos/krowkcom/krowk/releases/latest`) | a GET with `User-Agent: krowk-cli/<version>`, nothing else | `GRUNTAS_NO_UPDATE_CHECK=1`; never under `CI` or GitHub Actions |
 | `krowk sessions sync`, when prices are a day old | `models.dev/api.json` | a GET, nothing else | `krowk sessions sync --no-network` |
 
 Everything else goes where you point it: your model providers, your krowk
@@ -139,16 +139,16 @@ hold it on any signed version between this one and the newest.
 The installer checks the signature with `cosign verify-blob`, as above, when
 cosign is installed, and refuses the install if it fails; without cosign it
 checks the checksum only, over HTTPS, and prints the command.
-`KROWK_REQUIRE_SIGNATURE=1` makes the signature required, refusing to install
+`GRUNTAS_REQUIRE_SIGNATURE=1` makes the signature required, refusing to install
 without cosign:
 
 ```bash
-curl -fsSL https://krowk.com/install | KROWK_REQUIRE_SIGNATURE=1 bash
+curl -fsSL https://krowk.com/install | GRUNTAS_REQUIRE_SIGNATURE=1 bash
 ```
 
-Releases before 0.12.0 were not signed, so a `KROWK_VERSION` pinned before
+Releases before 0.12.0 were not signed, so a `GRUNTAS_VERSION` pinned before
 it is installed on its checksum alone, and refused under
-`KROWK_REQUIRE_SIGNATURE=1`.
+`GRUNTAS_REQUIRE_SIGNATURE=1`.
 
 ### Rebuilding a release
 

@@ -38,7 +38,7 @@
 //! Both commands need a person at a terminal: an agent told to run `krowk
 //! devices add` must not hand a stranger's machine every session. Debug
 //! builds let the test suite stand in for the person
-//! (`KROWK_TEST_UNATTENDED_DEVICE_APPROVAL=1`, and the code on stdin); a
+//! (`GRUNTAS_TEST_UNATTENDED_DEVICE_APPROVAL=1`, and the code on stdin); a
 //! release build has no such path.
 
 use super::Ctx;
@@ -64,7 +64,7 @@ const POLL: Duration = Duration::from_millis(500);
 const WAIT: Duration = Duration::from_secs(10 * 60);
 
 fn unattended(ctx: &Ctx) -> bool {
-    cfg!(debug_assertions) && ctx.env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL") == "1"
+    cfg!(debug_assertions) && ctx.env("GRUNTAS_TEST_UNATTENDED_DEVICE_APPROVAL") == "1"
 }
 
 fn terminal(ctx: &Ctx, refused: &str) -> Result<(), Error> {
@@ -664,7 +664,7 @@ fn open_pairing_and_code(ctx: &mut Ctx, client: &Client) -> Result<(Pairing, Pai
 /// says none is online: three of a host's refreshes (`announce::EVERY`) and a
 /// breath. A debug build's tests shorten it.
 fn no_host_after(ctx: &Ctx) -> Duration {
-    let tested = ctx.env("KROWK_TEST_NO_HOST_SECS").parse::<u64>().ok().filter(|_| cfg!(debug_assertions));
+    let tested = ctx.env("GRUNTAS_TEST_NO_HOST_SECS").parse::<u64>().ok().filter(|_| cfg!(debug_assertions));
     Duration::from_secs(tested.unwrap_or(40))
 }
 

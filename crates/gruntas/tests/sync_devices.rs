@@ -37,9 +37,9 @@ fn attended(home: &Path, api: &str, token: &str, args: &[&str]) -> Command {
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", home)
-        .env("KROWK_NO_UPDATE_CHECK", "1")
-        .env("KROWK_API_URL", api)
-        .env("KROWK_TOKEN", token)
+        .env("GRUNTAS_NO_UPDATE_CHECK", "1")
+        .env("GRUNTAS_API_URL", api)
+        .env("GRUNTAS_TOKEN", token)
         .current_dir(home)
         .stdin(Stdio::null());
     c

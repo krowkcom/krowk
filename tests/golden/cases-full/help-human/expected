@@ -164,7 +164,7 @@ krowk help flags — The flags every command takes
 
 Global flags
   --workspace <string>  Use this workspace's stored key for this one command —
-                        outranks KROWK_WORKSPACE and every config file
+                        outranks GRUNTAS_WORKSPACE and every config file
   --dev                 Talk to a local registry at http://localhost:8787/v1
   --format <string>     human | json | markdown | url (default: human on a TTY,
                         json when piped). markdown and url describe an upload;

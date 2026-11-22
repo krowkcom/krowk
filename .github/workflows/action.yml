@@ -81,7 +81,7 @@ jobs:
         run: |
           set -euo pipefail
           ruby -ryaml -e 'puts YAML.load_file("action.yml")["runs"]["steps"][0]["run"]' > /tmp/install_step.sh
-          export GITHUB_ACTION_PATH="$PWD" GITHUB_ACTION_REF=v0.7.0 KROWK_SKIP_SKILL=1
+          export GITHUB_ACTION_PATH="$PWD" GITHUB_ACTION_REF=v0.7.0 GRUNTAS_SKIP_SKILL=1
           export RUNNER_TEMP=/tmp/pin GITHUB_PATH=/tmp/pin_path
           mkdir -p /tmp/pin && : > /tmp/pin_path
           bash /tmp/install_step.sh
@@ -99,7 +99,7 @@ jobs:
           action="$(mktemp -d)"
           git archive HEAD | tar -x -C "$action"
           ruby -ryaml -e 'puts YAML.load_file("action.yml")["runs"]["steps"][0]["run"]' > /tmp/remote_step.sh
-          export GITHUB_ACTION_PATH="$action" GITHUB_ACTION_REF=v0.7.0 KROWK_SKIP_SKILL=1
+          export GITHUB_ACTION_PATH="$action" GITHUB_ACTION_REF=v0.7.0 GRUNTAS_SKIP_SKILL=1
           export GITHUB_ACTION_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_REPOSITORY=acme/webapp
           export RUNNER_TEMP=/tmp/remote GITHUB_PATH=/tmp/remote_path
           mkdir -p /tmp/remote && : > /tmp/remote_path
@@ -118,7 +118,7 @@ jobs:
         run: |
           set -euo pipefail
           ruby -ryaml -e 'puts YAML.load_file("action.yml")["runs"]["steps"][0]["run"]' > /tmp/install_step.sh
-          export GITHUB_ACTION_PATH="$PWD" GITHUB_ACTION_REF=v0 KROWK_SKIP_SKILL=1
+          export GITHUB_ACTION_PATH="$PWD" GITHUB_ACTION_REF=v0 GRUNTAS_SKIP_SKILL=1
           export RUNNER_TEMP=/tmp/major GITHUB_PATH=/tmp/major_path
           mkdir -p /tmp/major && : > /tmp/major_path
           bash /tmp/install_step.sh
@@ -147,7 +147,7 @@ jobs:
           ruby -ryaml -e 'puts YAML.load_file("action.yml")["runs"]["steps"][1]["run"]' > /tmp/push_step.sh
           /bin/bash -c 'echo "stock bash: $BASH_VERSION"'
           set +e
-          out=$(INPUT_FILES='shots/**/*.png' INPUT_RUN= INPUT_TITLE= INPUT_PULL_REQUEST= KROWK_TOKEN= \
+          out=$(INPUT_FILES='shots/**/*.png' INPUT_RUN= INPUT_TITLE= INPUT_PULL_REQUEST= GRUNTAS_TOKEN= \
             GITHUB_OUTPUT=/tmp/o GITHUB_STEP_SUMMARY=/tmp/s /bin/bash /tmp/push_step.sh 2>&1)
           code=$?
           set -e

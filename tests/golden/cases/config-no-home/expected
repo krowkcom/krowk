@@ -23,7 +23,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "no_home",
-    "fix": "there is no home directory to keep krowk's files in — set HOME, or KROWK_HOME to an absolute path",
+    "fix": "there is no home directory to keep krowk's files in — set HOME, or GRUNTAS_HOME to an absolute path",
     "retryable": false
   }
 }

@@ -27,7 +27,7 @@ impl Sandbox {
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", self.root.join("home"))
-            .env("KROWK_NO_UPDATE_CHECK", "1")
+            .env("GRUNTAS_NO_UPDATE_CHECK", "1")
             .current_dir(self.root.join("repo"))
             .stdin(Stdio::null())
             .output()

@@ -47,14 +47,14 @@ impl Sandbox {
             .env_clear()
             .env("PATH", format!("{}:{}", self.root.join("bin").display(), std::env::var("PATH").unwrap_or_default()))
             .env("HOME", self.root.join("home"))
-            .env("KROWK_NO_UPDATE_CHECK", "1")
-            .env("KROWK_API_URL", &self.api)
+            .env("GRUNTAS_NO_UPDATE_CHECK", "1")
+            .env("GRUNTAS_API_URL", &self.api)
             .env("FAKE_CLAUDE_LOG", self.root.join("fake.log"))
             .env("FAKE_CLAUDE_SCENARIO", self.root.join("scenario.jsonl"))
             .current_dir(self.root.join("repo"))
             .stdin(Stdio::null());
         if !self.token.is_empty() {
-            c.env("KROWK_TOKEN", &self.token);
+            c.env("GRUNTAS_TOKEN", &self.token);
         }
         c.output().unwrap()
     }

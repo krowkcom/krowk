@@ -27,7 +27,7 @@ const MACOS_SOCKETS: [&str; 2] = ["/var/run/tailscaled.socket", SOCKET];
 
 /// The three ways to name a LocalAPI krowk found none of, for every error
 /// that ends a search.
-const OPTIONS: &str = "start Tailscale, name tailscaled's socket in KROWK_TAILSCALE_SOCKET, or name the macOS app's LocalAPI in KROWK_TAILSCALE_LOCALAPI (http://127.0.0.1:<port> with KROWK_TAILSCALE_LOCALAPI_TOKEN, or the path of its sameuserproof file)";
+const OPTIONS: &str = "start Tailscale, name tailscaled's socket in GRUNTAS_TAILSCALE_SOCKET, or name the macOS app's LocalAPI in GRUNTAS_TAILSCALE_LOCALAPI (http://127.0.0.1:<port> with GRUNTAS_TAILSCALE_LOCALAPI_TOKEN, or the path of its sameuserproof file)";
 
 /// Where tailscaled's LocalAPI answers.
 #[derive(Clone, PartialEq, Eq)]
@@ -60,17 +60,17 @@ impl From<PathBuf> for LocalApi {
     }
 }
 
-/// The LocalAPI to ask. `KROWK_TAILSCALE_SOCKET` wins, then
-/// `KROWK_TAILSCALE_LOCALAPI`; with neither, Linux asks the default socket
+/// The LocalAPI to ask. `GRUNTAS_TAILSCALE_SOCKET` wins, then
+/// `GRUNTAS_TAILSCALE_LOCALAPI`; with neither, Linux asks the default socket
 /// and macOS looks for one (see [`discover`]).
 pub fn socket(env: &dyn Fn(&str) -> String) -> LocalApi {
-    match env("KROWK_TAILSCALE_SOCKET") {
+    match env("GRUNTAS_TAILSCALE_SOCKET") {
         s if !s.is_empty() => return LocalApi::Unix(PathBuf::from(s)),
         _ => {}
     }
-    let api = env("KROWK_TAILSCALE_LOCALAPI");
+    let api = env("GRUNTAS_TAILSCALE_LOCALAPI");
     if !api.is_empty() {
-        return localapi_override(&api, &env("KROWK_TAILSCALE_LOCALAPI_TOKEN")).unwrap_or_else(LocalApi::NotFound);
+        return localapi_override(&api, &env("GRUNTAS_TAILSCALE_LOCALAPI_TOKEN")).unwrap_or_else(LocalApi::NotFound);
     }
     #[cfg(target_os = "macos")]
     {
@@ -82,8 +82,8 @@ pub fn socket(env: &dyn Fn(&str) -> String) -> LocalApi {
     LocalApi::Unix(PathBuf::from(SOCKET))
 }
 
-/// `KROWK_TAILSCALE_LOCALAPI`: `http://127.0.0.1:<port>` with the token in
-/// `KROWK_TAILSCALE_LOCALAPI_TOKEN`, or the path of a sameuserproof file.
+/// `GRUNTAS_TAILSCALE_LOCALAPI`: `http://127.0.0.1:<port>` with the token in
+/// `GRUNTAS_TAILSCALE_LOCALAPI_TOKEN`, or the path of a sameuserproof file.
 /// Only loopback is taken: the token is the Tailscale app's password, and
 /// krowk sends it nowhere else.
 fn localapi_override(v: &str, token: &str) -> Result<LocalApi, String> {
@@ -91,14 +91,14 @@ fn localapi_override(v: &str, token: &str) -> Result<LocalApi, String> {
         return proof_file(Path::new(v));
     };
     // The value is not echoed: a URL can carry the token in its userinfo.
-    let bad = || "KROWK_TAILSCALE_LOCALAPI must be http://127.0.0.1:<port> or the path of a sameuserproof file".to_string();
+    let bad = || "GRUNTAS_TAILSCALE_LOCALAPI must be http://127.0.0.1:<port> or the path of a sameuserproof file".to_string();
     let (host, port) = rest.trim_end_matches('/').rsplit_once(':').ok_or_else(bad)?;
     let port: u16 = port.parse().ok().filter(|p| *p != 0).ok_or_else(bad)?;
     if scheme != "http" || !matches!(host, "127.0.0.1" | "localhost") {
         return Err(bad());
     }
     if !valid_token(token) {
-        return Err("KROWK_TAILSCALE_LOCALAPI names a port, so KROWK_TAILSCALE_LOCALAPI_TOKEN must hold the app's token".into());
+        return Err("GRUNTAS_TAILSCALE_LOCALAPI names a port, so GRUNTAS_TAILSCALE_LOCALAPI_TOKEN must hold the app's token".into());
     }
     Ok(LocalApi::Tcp { port, token: token.into() })
 }
@@ -140,7 +140,7 @@ fn proof_file(path: &Path) -> Result<LocalApi, String> {
             }
             Ok(LocalApi::Tcp { port, token: token.into() })
         }
-        None => Err(format!("KROWK_TAILSCALE_LOCALAPI names a file in {dir} that is not a sameuserproof file (sameuserproof-<port>-<token>, or sameuserproof-<port> holding the token)")),
+        None => Err(format!("GRUNTAS_TAILSCALE_LOCALAPI names a file in {dir} that is not a sameuserproof file (sameuserproof-<port>-<token>, or sameuserproof-<port> holding the token)")),
     }
 }
 
@@ -536,17 +536,17 @@ mod tests {
         }
     }
 
-    /// The overrides: KROWK_TAILSCALE_SOCKET before KROWK_TAILSCALE_LOCALAPI
+    /// The overrides: GRUNTAS_TAILSCALE_SOCKET before GRUNTAS_TAILSCALE_LOCALAPI
     /// before discovery, and a LocalAPI anywhere but loopback refused.
     #[test]
     fn overrides_take_precedence_and_only_loopback_is_taken() {
-        let both = [("KROWK_TAILSCALE_SOCKET", "/s.sock"), ("KROWK_TAILSCALE_LOCALAPI", "http://127.0.0.1:41112"), ("KROWK_TAILSCALE_LOCALAPI_TOKEN", "abc")];
+        let both = [("GRUNTAS_TAILSCALE_SOCKET", "/s.sock"), ("GRUNTAS_TAILSCALE_LOCALAPI", "http://127.0.0.1:41112"), ("GRUNTAS_TAILSCALE_LOCALAPI_TOKEN", "abc")];
         assert_eq!(socket(&env(&both)), LocalApi::Unix("/s.sock".into()));
         assert_eq!(socket(&env(&both[1..])), LocalApi::Tcp { port: 41112, token: "abc".into() });
-        assert_eq!(socket(&env(&[("KROWK_TAILSCALE_LOCALAPI", "http://localhost:41112/"), ("KROWK_TAILSCALE_LOCALAPI_TOKEN", "abc")])), LocalApi::Tcp { port: 41112, token: "abc".into() });
-        assert_eq!(socket(&env(&[("KROWK_TAILSCALE_LOCALAPI", "/x/Group Containers/W.io.tailscale.ipn.macos/sameuserproof-41112-abc")])), LocalApi::Tcp { port: 41112, token: "abc".into() });
+        assert_eq!(socket(&env(&[("GRUNTAS_TAILSCALE_LOCALAPI", "http://localhost:41112/"), ("GRUNTAS_TAILSCALE_LOCALAPI_TOKEN", "abc")])), LocalApi::Tcp { port: 41112, token: "abc".into() });
+        assert_eq!(socket(&env(&[("GRUNTAS_TAILSCALE_LOCALAPI", "/x/Group Containers/W.io.tailscale.ipn.macos/sameuserproof-41112-abc")])), LocalApi::Tcp { port: 41112, token: "abc".into() });
         for (url, token) in [("http://10.0.0.1:41112", "abc"), ("https://127.0.0.1:41112", "abc"), ("http://127.0.0.1", "abc"), ("http://127.0.0.1:41112", ""), ("http://127.0.0.1:41112", "a\r\nb")] {
-            let api = socket(&env(&[("KROWK_TAILSCALE_LOCALAPI", url), ("KROWK_TAILSCALE_LOCALAPI_TOKEN", token)]));
+            let api = socket(&env(&[("GRUNTAS_TAILSCALE_LOCALAPI", url), ("GRUNTAS_TAILSCALE_LOCALAPI_TOKEN", token)]));
             assert!(matches!(api, LocalApi::NotFound(_)), "{url} {token:?}: {api:?}");
             assert!(!status(&api).unwrap_err().contains("a\r\nb"));
         }
@@ -571,7 +571,7 @@ mod tests {
         let LocalApi::NotFound(why) = &nothing else { panic!("{nothing:?}") };
         assert!(why.contains("none.sock") && why.contains("Group Containers") && why.contains("Library/Tailscale"), "{why}");
         let e = status(&nothing).unwrap_err();
-        for option in ["start Tailscale", "KROWK_TAILSCALE_SOCKET", "KROWK_TAILSCALE_LOCALAPI"] {
+        for option in ["start Tailscale", "GRUNTAS_TAILSCALE_SOCKET", "GRUNTAS_TAILSCALE_LOCALAPI"] {
             assert!(e.contains(option), "{option}: {e}");
         }
 

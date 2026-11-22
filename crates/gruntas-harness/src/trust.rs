@@ -489,7 +489,7 @@ impl Store {
     }
 
     fn write(&self, listed: &Listed) -> Result<(), String> {
-        let path = self.path.as_ref().ok_or("there is no home directory to remember it in — set HOME, or KROWK_HOME to an absolute path")?;
+        let path = self.path.as_ref().ok_or("there is no home directory to remember it in — set HOME, or GRUNTAS_HOME to an absolute path")?;
         let dir = path.parent().ok_or_else(|| format!("{} has no directory", path.display()))?;
         crate::log::private_dir(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
         let tmp = path.with_extension("json.tmp");

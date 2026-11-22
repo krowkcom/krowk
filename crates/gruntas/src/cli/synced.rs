@@ -24,7 +24,7 @@
 //!   of the person's machines (R-HOST-4), checked first against what it
 //!   announced, then follows it as `attach` does.
 //!
-//! The relay is `KROWK_RELAY_URL`, else the reference relay on this
+//! The relay is `GRUNTAS_RELAY_URL`, else the reference relay on this
 //! machine (`krowk relay serve`), until the hosted relay has a published
 //! address.
 
@@ -87,11 +87,11 @@ fn signed(ctx: &Ctx, k: &Keys, what: &str) -> Result<Client, Error> {
 /// The relay hosted beside the production registry.
 const HOSTED_RELAY: &str = "wss://relay.krowk.com";
 
-/// The relay a sync link dials: `KROWK_RELAY_URL` when set, else the hosted
+/// The relay a sync link dials: `GRUNTAS_RELAY_URL` when set, else the hosted
 /// relay for the production registry, else the local stand-in (`krowk relay
 /// serve`) that a stand-in or custom registry is run beside.
 fn relay(ctx: &Ctx, base_url: &str) -> String {
-    relay_for(&ctx.env("KROWK_RELAY_URL"), base_url)
+    relay_for(&ctx.env("GRUNTAS_RELAY_URL"), base_url)
 }
 
 fn relay_for(asked: &str, base_url: &str) -> String {
@@ -107,9 +107,9 @@ fn relay_for(asked: &str, base_url: &str) -> String {
 /// Without them there is no direct listener, never a weaker one: nothing
 /// but a ticket may let a device in. Either missing, the host says why in
 /// one line and goes by the relay; Tailscale is asked first, so a machine
-/// without it asks the registry nothing more. `KROWK_TAILSCALE_SAME_USER=1`
+/// without it asks the registry nothing more. `GRUNTAS_TAILSCALE_SAME_USER=1`
 /// also requires tailscaled to name the far end as this tailnet user
-/// (R-NET-3). The LAN address is offered only with `KROWK_DIRECT_LAN=1`: it
+/// (R-NET-3). The LAN address is offered only with `GRUNTAS_DIRECT_LAN=1`: it
 /// is off the tailnet, so plain `ws://` there is reachable by the whole
 /// network. With it, a machine without Tailscale offers the LAN alone,
 /// advertised over mDNS.
@@ -118,7 +118,7 @@ fn direct(ctx: &mut Ctx, api: &Client) -> Result<Option<gruntas_harness::sync::d
     // A named file that does not read is a mistake said at once, Tailscale
     // up or not.
     let named = named_ticket_keys(ctx)?;
-    let (same_user, lan) = (ctx.env("KROWK_TAILSCALE_SAME_USER") == "1", ctx.env("KROWK_DIRECT_LAN") == "1");
+    let (same_user, lan) = (ctx.env("GRUNTAS_TAILSCALE_SAME_USER") == "1", ctx.env("GRUNTAS_DIRECT_LAN") == "1");
     // With the LAN offered, Tailscale not running leaves the LAN, found
     // over mDNS too (ticket 27); the listener says if there is none.
     let roster = match gruntas_harness::sync::direct::running(&socket) {
@@ -144,16 +144,16 @@ const TICKET_KEYS_CACHE: &str = "relay-ticket-keys.json";
 /// longer than this after the last fetch that listed it.
 const TICKET_KEYS_KEPT_MS: i64 = 24 * 60 * 60 * 1000;
 
-/// The keys `KROWK_RELAY_TICKET_KEYS` names a file of (the one `krowk relay
+/// The keys `GRUNTAS_RELAY_TICKET_KEYS` names a file of (the one `krowk relay
 /// serve --ticket-keys` reads), for a stand-in registry: they win over the
 /// registry's. None when it is unset; a file that does not read is an error.
 fn named_ticket_keys(ctx: &Ctx) -> Result<Option<gruntas_harness::relay::Roster>, Error> {
-    let named = ctx.env("KROWK_RELAY_TICKET_KEYS");
+    let named = ctx.env("GRUNTAS_RELAY_TICKET_KEYS");
     let named = named.trim();
     if named.is_empty() {
         return Ok(None);
     }
-    let text = std::fs::read_to_string(named).map_err(|e| fail("bad_ticket_keys", format!("KROWK_RELAY_TICKET_KEYS names {named}, which could not be read: {e}")))?;
+    let text = std::fs::read_to_string(named).map_err(|e| fail("bad_ticket_keys", format!("GRUNTAS_RELAY_TICKET_KEYS names {named}, which could not be read: {e}")))?;
     gruntas_harness::relay::Roster::parse(&text).map(Some).map_err(|e| fail("bad_ticket_keys", e))
 }
 
@@ -1116,8 +1116,8 @@ mod tests {
     }
 
     /// The production registry's devices dial the hosted relay with no
-    /// `KROWK_RELAY_URL`; a stand-in or custom registry keeps the local
-    /// relay, and `KROWK_RELAY_URL` always wins.
+    /// `GRUNTAS_RELAY_URL`; a stand-in or custom registry keeps the local
+    /// relay, and `GRUNTAS_RELAY_URL` always wins.
     #[test]
     fn r_relay_1_the_production_registry_defaults_to_the_hosted_relay() {
         assert_eq!(relay_for("", "https://api.krowk.com/v1"), "wss://relay.krowk.com");

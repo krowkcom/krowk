@@ -2,7 +2,7 @@
 //!
 //! What it does not buy is a second contract: every command renders what it
 //! would have, and the filter reads that. The process environment is out of
-//! reach — `env` and `$ENV` answer `{}` — because KROWK_TOKEN lives there and
+//! reach — `env` and `$ENV` answer `{}` — because GRUNTAS_TOKEN lives there and
 //! an expression is a string that travels: into a skill file, a CI job, a
 //! command one agent hands another.
 

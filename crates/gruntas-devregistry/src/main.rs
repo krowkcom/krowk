@@ -152,8 +152,8 @@ fn serve(w: &mut dyn Write, ln: TcpListener, asked: &str, site: &str, limit_byte
     let config = Config {
         limit_bytes,
         site: site.to_owned(),
-        v1_until: env("KROWK_DEVREGISTRY_V1_UNTIL"),
-        v2_release: env("KROWK_DEVREGISTRY_V2_RELEASE"),
+        v1_until: env("GRUNTAS_DEVREGISTRY_V1_UNTIL"),
+        v2_release: env("GRUNTAS_DEVREGISTRY_V2_RELEASE"),
         ..Config::default()
     };
     RunError::Stopped(asked.to_owned(), gruntas_devregistry::serve(ln, config))
@@ -168,7 +168,7 @@ fn banner(bound: &str, asked: &str) -> String {
         lines.push("  krowk push screenshot.png --dev".into());
     } else {
         // --dev only knows the default address, so say what to use instead.
-        lines.push(format!("  KROWK_API_URL={base}/v1 krowk push screenshot.png"));
+        lines.push(format!("  GRUNTAS_API_URL={base}/v1 krowk push screenshot.png"));
     }
     let host = listen_host(asked);
     if !is_loopback_host(&host) {

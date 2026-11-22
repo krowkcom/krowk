@@ -1124,7 +1124,7 @@ impl Conn {
                 let mut command = tokio::process::Command::new(program(cmd, cwd)?);
                 for (k, _) in std::env::vars_os() {
                     let Some(k) = k.to_str() else { continue };
-                    if (SCRUBBED.contains(&k) || k.starts_with("KROWK_")) && !c.env.contains_key(k) {
+                    if (SCRUBBED.contains(&k) || k.starts_with("GRUNTAS_")) && !c.env.contains_key(k) {
                         command.env_remove(k);
                     }
                 }

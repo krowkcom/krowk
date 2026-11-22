@@ -4,7 +4,7 @@ stdout:
   "version": "0.0.0-golden",
   "runtime": "<runtime>",
   "api": "http://127.0.0.1:9/v1",
-  "registry": "custom (KROWK_API_URL)",
+  "registry": "custom (GRUNTAS_API_URL)",
   "api_status": "unreachable — network_unreachable — <transport error>",
   "authenticated": false,
   "token_source": "none",
@@ -17,7 +17,7 @@ stdout:
     "name": "store",
     "status": "fail",
     "message": "krowk.db has nowhere to live",
-    "hint": "there is no home directory to keep krowk's files in — set HOME, or KROWK_HOME to an absolute path"
+    "hint": "there is no home directory to keep krowk's files in — set HOME, or GRUNTAS_HOME to an absolute path"
   },
   "pricing": {
     "name": "pricing",
@@ -72,8 +72,8 @@ stdout:
       "name": "store",
       "status": "fail",
       "message": "krowk.db has nowhere to live",
-      "hint": "there is no home directory to keep krowk's files in — set HOME, or KROWK_HOME to an absolute path",
-      "fix": "there is no home directory to keep krowk's files in — set HOME, or KROWK_HOME to an absolute path"
+      "hint": "there is no home directory to keep krowk's files in — set HOME, or GRUNTAS_HOME to an absolute path",
+      "fix": "there is no home directory to keep krowk's files in — set HOME, or GRUNTAS_HOME to an absolute path"
     },
     {
       "name": "pricing",

@@ -14,5 +14,5 @@ krowk config show
 krowk config unset workspace --global
 krowk config show --format human
 krowk config set bogus_key 1
-@env KROWK_WORKSPACE=ws_env
+@env GRUNTAS_WORKSPACE=ws_env
 krowk config show

@@ -38,7 +38,7 @@ pub(super) fn home(ctx: &Ctx) -> Result<PathBuf, Error> {
 
 /// Whether the debug build's test suite stands in for the person.
 fn unattended(ctx: &Ctx) -> bool {
-    cfg!(debug_assertions) && ctx.env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL") == "1"
+    cfg!(debug_assertions) && ctx.env("GRUNTAS_TEST_UNATTENDED_DEVICE_APPROVAL") == "1"
 }
 
 /// Whether a person is at the terminal to answer: stdin and stderr both
@@ -61,14 +61,14 @@ pub(super) fn need_person(ctx: &Ctx, what: &str, piped_words: bool) -> Result<()
 }
 
 /// The debug build's stand-in answer to the next prompt, from
-/// KROWK_TEST_ANSWERS (`|`-separated, taken in order).
+/// GRUNTAS_TEST_ANSWERS (`|`-separated, taken in order).
 fn test_answer(ctx: &Ctx) -> Option<String> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     if !unattended(ctx) {
         return None;
     }
-    let all = ctx.env("KROWK_TEST_ANSWERS");
+    let all = ctx.env("GRUNTAS_TEST_ANSWERS");
     let i = NEXT.fetch_add(1, Ordering::SeqCst);
     Some(all.split('|').nth(i).unwrap_or("").to_string())
 }

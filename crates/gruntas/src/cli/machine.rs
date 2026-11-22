@@ -4,7 +4,7 @@
 
 use super::Ctx;
 
-/// `--name`, else KROWK_DEVICE_NAME, else its host name, which is what a
+/// `--name`, else GRUNTAS_DEVICE_NAME, else its host name, which is what a
 /// person recognises it by — and which the registry sees in the clear, so
 /// either of the first two keeps it from going there. Control characters
 /// are dropped: the name is printed on other machines' terminals.
@@ -14,7 +14,7 @@ pub(super) fn name(ctx: &Ctx) -> String {
     let given = ctx.f.name.clone();
     #[cfg(not(feature = "harness"))]
     let given = String::new();
-    let chosen = if given.is_empty() { ctx.env("KROWK_DEVICE_NAME") } else { given };
+    let chosen = if given.is_empty() { ctx.env("GRUNTAS_DEVICE_NAME") } else { given };
     let name = if chosen.trim().is_empty() { host_name() } else { chosen };
     printable(&name)
 }

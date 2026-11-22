@@ -225,7 +225,7 @@ pub(super) fn local(ctx: &Ctx, signed_in: bool, lookup: &Lookup) -> (Vec<Check>,
 /// the always-on service (a person may have said no).
 pub(super) fn top_problem(ctx: &Ctx) -> Option<String> {
     let client = super::agent::new_client(ctx).ok()?;
-    let signed_in = client.authenticated() && ctx.env("KROWK_TOKEN").is_empty();
+    let signed_in = client.authenticated() && ctx.env("GRUNTAS_TOKEN").is_empty();
     if !signed_in {
         return None;
     }
@@ -261,8 +261,8 @@ impl Machine {
         if !signed_in {
             return Machine::NotApplicable("no account");
         }
-        if !ctx.env("KROWK_TOKEN").is_empty() {
-            return Machine::NotApplicable("This machine uses the key in KROWK_TOKEN, which does not register it for sync");
+        if !ctx.env("GRUNTAS_TOKEN").is_empty() {
+            return Machine::NotApplicable("This machine uses the key in GRUNTAS_TOKEN, which does not register it for sync");
         }
         let kept = (|| {
             let ks = super::sync::keystore(ctx).map_err(|e| e.fix())?;

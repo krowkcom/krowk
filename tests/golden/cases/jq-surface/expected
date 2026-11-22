@@ -47,7 +47,7 @@ exit: 0
 
 $ krowk help --jq '.environment[0] | tojson'
 stdout:
-{"name":"KROWK_TOKEN","usage":"API token — wins over the credentials file"}
+{"name":"GRUNTAS_TOKEN","usage":"API token — wins over the credentials file"}
 exit: 0
 
 $ krowk help --jq '[.commands[0].args[0] | tostream]'

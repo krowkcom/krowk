@@ -103,7 +103,7 @@ fn login_with_token(ctx: &mut Ctx) -> Result<(), Error> {
     let path = creds::save_credentials(&token, id.as_ref().unwrap_or(&Identity::default())).map_err(|e| {
         fail("credentials_unwritable", format!("could not write {}: {}", creds::credentials_text(), e.fix()))
     })?;
-    let mut result = Login { path, confirmed: verified.is_ok(), shadowed: !ctx.env("KROWK_TOKEN").is_empty(), ..Login::default() };
+    let mut result = Login { path, confirmed: verified.is_ok(), shadowed: !ctx.env("GRUNTAS_TOKEN").is_empty(), ..Login::default() };
     match &verified {
         Ok(k) => (result.key_id, result.workspace) = (k.key_id.clone(), k.workspace.clone()),
         Err(e) if e.status != 0 => result.reason = format!("{} (HTTP {})", e.code(), e.status),
@@ -135,7 +135,7 @@ fn login_in_browser(ctx: &mut Ctx) -> Result<(), Error> {
 /// A browser login, its key stored as `krowk login` stores one, `action`
 /// saying what it is for. Returns the key itself beside what was
 /// stored, so a caller acts with the key just minted even where
-/// KROWK_TOKEN would shadow it.
+/// GRUNTAS_TOKEN would shadow it.
 pub(super) fn browser_login(ctx: &mut Ctx, action: gruntas_api::LoginAction) -> Result<(String, Login), Error> {
     if in_ci(ctx) && !ctx.f.no_browser {
         return Err(fail(
@@ -153,7 +153,7 @@ pub(super) fn browser_login(ctx: &mut Ctx, action: gruntas_api::LoginAction) -> 
         if e.status == 404 {
             e.body.insert(
                 "fix".into(),
-                json!("this registry does not answer browser login — check KROWK_API_URL, or issue a key in the dashboard and store it with `krowk login --token krowk_sk_...`"),
+                json!("this registry does not answer browser login — check GRUNTAS_API_URL, or issue a key in the dashboard and store it with `krowk login --token krowk_sk_...`"),
             );
         }
         e
@@ -188,7 +188,7 @@ pub(super) fn browser_login(ctx: &mut Ctx, action: gruntas_api::LoginAction) -> 
         key_id: granted.key_id,
         workspace: granted.workspace,
         confirmed,
-        shadowed: !ctx.env("KROWK_TOKEN").is_empty(),
+        shadowed: !ctx.env("GRUNTAS_TOKEN").is_empty(),
         reason: if confirmed { String::new() } else { "the registry approved it without naming the key or its workspace".into() },
     };
     Ok((granted.token, result))
@@ -251,7 +251,7 @@ pub(super) fn open_browser(target: &str) -> bool {
 /// The token a command here would send: the resolved workspace's, not
 /// whatever logged in last.
 pub(crate) fn token(ctx: &mut Ctx) -> Result<(), Error> {
-    let env_token = ctx.env("KROWK_TOKEN");
+    let env_token = ctx.env("GRUNTAS_TOKEN");
     let token = if env_token.is_empty() {
         let (ws, _) = resolve_workspace(ctx)?;
         creds::resolve_token(ctx.io.env, &ws)?
@@ -291,7 +291,7 @@ pub(crate) fn logout(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         fail("credentials_unwritable", format!("could not write {}: {}", creds::credentials_text(), e.fix()))
     })?;
     let path = creds::credentials_text();
-    let shadowed = !ctx.env("KROWK_TOKEN").is_empty();
+    let shadowed = !ctx.env("GRUNTAS_TOKEN").is_empty();
     let left: Vec<String> = creds::stored_workspaces().into_iter().map(|k| k.name).collect();
     if ctx.format != crate::output::Format::Human {
         let data = json!({
@@ -316,7 +316,7 @@ pub(crate) fn logout(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         lines.push(format!("  still stored: {} — `krowk workspaces use <name>` makes one the default", left.join(", ")));
     }
     if shadowed {
-        lines.push("  ! KROWK_TOKEN is set and still wins — unset it too".into());
+        lines.push("  ! GRUNTAS_TOKEN is set and still wins — unset it too".into());
     }
     ctx.emit(&lines.join("\n"))
 }
@@ -329,7 +329,7 @@ pub(crate) fn verify(ctx: &mut Ctx) -> Result<(), Error> {
         return Err(fail("not_authenticated", "no key to verify — run `krowk login --token krowk_sk_...`, or upload anonymously"));
     }
     let key = client.verify_key()?;
-    if ctx.env("KROWK_TOKEN").is_empty() {
+    if ctx.env("GRUNTAS_TOKEN").is_empty() {
         let _ = creds::adopt_identity(
             &client.token,
             &Identity { key_id: key.key_id.clone(), workspace: key.workspace.clone(), workspace_name: key.workspace_name.clone() },

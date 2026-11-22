@@ -1,4 +1,4 @@
 @registry
-@env KROWK_TOKEN=krowk_sk_freeplan
+@env GRUNTAS_TOKEN=krowk_sk_freeplan
 @file a.txt hello
 krowk push a.txt

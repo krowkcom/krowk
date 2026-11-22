@@ -169,7 +169,7 @@ pub struct WorkspaceKey {
     pub default: bool,
 }
 
-pub const TOKEN_SOURCE_ENV: &str = "KROWK_TOKEN";
+pub const TOKEN_SOURCE_ENV: &str = "GRUNTAS_TOKEN";
 pub const TOKEN_SOURCE_FILE: &str = "credentials file";
 pub const TOKEN_SOURCE_NONE: &str = "none";
 
@@ -268,10 +268,10 @@ impl Credentials {
     }
 }
 
-/// The token a call would carry, lenient: KROWK_TOKEN, else the named or
+/// The token a call would carry, lenient: GRUNTAS_TOKEN, else the named or
 /// default workspace's stored key, else "".
 pub fn read_token(env: Env, workspace: &str) -> String {
-    let t = env("KROWK_TOKEN");
+    let t = env("GRUNTAS_TOKEN");
     if !t.is_empty() {
         return t;
     }
@@ -281,7 +281,7 @@ pub fn read_token(env: Env, workspace: &str) -> String {
 /// The token a call must carry. A workspace that was named and holds no key is
 /// a refusal, not an anonymous upload; so is a default naming nothing stored.
 pub fn resolve_token(env: Env, workspace: &str) -> Result<String, Error> {
-    let t = env("KROWK_TOKEN");
+    let t = env("GRUNTAS_TOKEN");
     if !t.is_empty() {
         return Ok(t);
     }
@@ -328,7 +328,7 @@ pub fn resolve_token(env: Env, workspace: &str) -> Result<String, Error> {
 
 /// Where the token a call carries comes from.
 pub fn token_source(env: Env, workspace: &str) -> &'static str {
-    if !env("KROWK_TOKEN").is_empty() {
+    if !env("GRUNTAS_TOKEN").is_empty() {
         return TOKEN_SOURCE_ENV;
     }
     match read_lenient().entry(workspace) {
@@ -338,9 +338,9 @@ pub fn token_source(env: Env, workspace: &str) -> &'static str {
 }
 
 /// The identity recorded beside the stored key, when a login recorded one.
-/// None under KROWK_TOKEN, whose key the file knows nothing about.
+/// None under GRUNTAS_TOKEN, whose key the file knows nothing about.
 pub fn read_identity(env: Env, workspace: &str) -> Option<Identity> {
-    if !env("KROWK_TOKEN").is_empty() {
+    if !env("GRUNTAS_TOKEN").is_empty() {
         return None;
     }
     let c = read_lenient();

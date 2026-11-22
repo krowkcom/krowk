@@ -90,7 +90,7 @@ pub struct SessionSetup {
     /// the top of that session's first prompt (`worktree::first_prompt`).
     pub notes: Vec<String>,
     /// What every session's commands get in their environment beyond
-    /// krowk's own: the worktree's `KROWK_PORT_BASE`.
+    /// krowk's own: the worktree's `GRUNTAS_PORT_BASE`.
     pub env: Vec<(String, String)>,
     /// Whether this process holds one of the machine's agent slots for its
     /// sessions, as a `--worktree` session's does (WT12): their subagents
@@ -768,7 +768,7 @@ struct TurnPlan {
     effort: Option<Effort>,
     cwd: PathBuf,
     /// What the turn's commands get in their environment beyond krowk's
-    /// own: a worktree's `KROWK_PORT_BASE`.
+    /// own: a worktree's `GRUNTAS_PORT_BASE`.
     env: Vec<(String, String)>,
     backend_session: Option<String>,
     budget: Budget,

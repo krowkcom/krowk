@@ -62,9 +62,9 @@ fn r_inst_5_take_refuses_with_a_fix_when_the_sessions_instance_is_missing_and_th
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", &b_home)
-        .env("KROWK_NO_UPDATE_CHECK", "1")
-        .env("KROWK_API_URL", &api_url)
-        .env("KROWK_TOKEN", device_list::key(TOKEN, "machine-b"))
+        .env("GRUNTAS_NO_UPDATE_CHECK", "1")
+        .env("GRUNTAS_API_URL", &api_url)
+        .env("GRUNTAS_TOKEN", device_list::key(TOKEN, "machine-b"))
         .current_dir(&b_home)
         .output()
         .unwrap();

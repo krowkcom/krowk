@@ -1,5 +1,5 @@
 @registry
-@env KROWK_TOKEN=krowk_sk_test
+@env GRUNTAS_TOKEN=krowk_sk_test
 @file a.txt hello
 @tty krowk push a.txt --title "a run"
 @tty krowk artifacts list

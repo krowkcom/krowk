@@ -163,7 +163,7 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let store = trust::Store::new(Some(super::providers::krowk_dir()?.join(trust::FILE)), home);
     let permissions = prompt::permissions_config(ctx, &config, Arc::new(move |repo: &std::path::Path| store.trusts(repo)), false);
     // The session asking, when one is: `krowk worktrees` names it.
-    let owner = ["KROWK_SESSION", "CLAUDE_CODE_SESSION_ID"].iter().map(|k| ctx.env(k)).find(|s| !s.trim().is_empty()).unwrap_or_else(gruntas_store::new_id);
+    let owner = ["GRUNTAS_SESSION", "CLAUDE_CODE_SESSION_ID"].iter().map(|k| ctx.env(k)).find(|s| !s.trim().is_empty()).unwrap_or_else(gruntas_store::new_id);
     let (in_use, notes) = own_worktree::make(ctx, &root, &cwd, &permissions, &registry, &owner, Some(from.as_str()).filter(|f| !f.is_empty())).map_err(|mut e| {
         if e.code() == "not_a_repository" {
             e.body.insert("fix".into(), "`krowk worktrees add` makes a worktree of the repository you are in, and this directory is in none — run it from inside a repository".into());

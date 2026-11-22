@@ -1,8 +1,8 @@
-# krowk_push never publishes anything in krowk's home, wherever KROWK_HOME
+# krowk_push never publishes anything in krowk's home, wherever GRUNTAS_HOME
 # puts it and however the path reaches it, nor a directory named .krowk; a
 # root inside the home is refused.
 @registry
-@env KROWK_HOME={work}/state
+@env GRUNTAS_HOME={work}/state
 @file state/config.json {}
 @file .krowk/config.json {}
 @file ok.txt fine

@@ -108,7 +108,7 @@ impl Policy {
     pub fn load(cfg: &Config, cwd: &Path) -> Result<Policy, String> {
         let loaded = settings::load(cfg, cwd)?;
         let protected: Vec<PathBuf> = cfg.claude_home().into_iter().collect();
-        // The home in use and the default one (a KROWK_HOME elsewhere does
+        // The home in use and the default one (a GRUNTAS_HOME elsewhere does
         // not open `~/.krowk`), each with its migration staging directory
         // and lock (`gruntas_api::home::siblings`), as named and, when they
         // exist, as they lead (`Scope::secret`).

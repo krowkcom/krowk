@@ -5,7 +5,7 @@
 //!
 //! Every key, user key and signature is deterministic, so the file is too.
 //! This test fails when the committed file differs from what it would
-//! write; `KROWK_UPDATE_CORPUS=1 cargo test -p gruntas-client --test
+//! write; `GRUNTAS_UPDATE_CORPUS=1 cargo test -p gruntas-client --test
 //! device_chain_corpus` rewrites it after an intended change.
 //!
 //! A case holds its entries (`bytes` and the wire `signatures`, in hex),
@@ -389,12 +389,12 @@ fn corpus() -> String {
 #[test]
 fn d1_the_device_chain_corpus_is_current() {
     let fresh = corpus();
-    if std::env::var_os("KROWK_UPDATE_CORPUS").is_some() {
+    if std::env::var_os("GRUNTAS_UPDATE_CORPUS").is_some() {
         std::fs::write(PATH, &fresh).unwrap();
         return;
     }
     let committed = std::fs::read_to_string(PATH).unwrap_or_default();
-    assert!(committed == fresh, "tests/fixtures/device_chain_corpus.json is stale: rerun with KROWK_UPDATE_CORPUS=1 and commit it");
+    assert!(committed == fresh, "tests/fixtures/device_chain_corpus.json is stale: rerun with GRUNTAS_UPDATE_CORPUS=1 and commit it");
 }
 
 /// Every case the corpus says is accepted, or refused, is — a sanity check

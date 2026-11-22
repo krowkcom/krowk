@@ -12,7 +12,7 @@ krowk push a.txt
 @let ART3 .data.artifacts[0].slug
 @let TOKEN3 .data.artifacts[0].claim_token
 krowk claim {ART} {TOKEN}
-@env KROWK_TOKEN=krowk_sk_test
+@env GRUNTAS_TOKEN=krowk_sk_test
 krowk claim {ART} {TOKEN}
 krowk claim {ART} {TOKEN}
 krowk claim {ART} krowk_claim_0000000000000000000000000000000000000000000000000000000000000000
@@ -20,7 +20,7 @@ krowk runs start --title claimed
 @let RUN .data.slug
 krowk claim {ART2} {TOKEN2} --run {RUN}
 @tty krowk claim {ART2} {TOKEN2}
-@unenv KROWK_TOKEN
+@unenv GRUNTAS_TOKEN
 krowk artifacts delete {ART3} krowk_claim_0000000000000000000000000000000000000000000000000000000000000000
 krowk artifacts delete {ART3} {TOKEN3}
 krowk artifacts delete {ART3} {TOKEN3}

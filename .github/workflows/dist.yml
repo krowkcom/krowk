@@ -83,7 +83,7 @@ jobs:
 
       - name: Build
         env:
-          KROWK_FAST_BUILD: ${{ inputs.fast && '1' || '' }}
+          GRUNTAS_FAST_BUILD: ${{ inputs.fast && '1' || '' }}
           TARGET: ${{ matrix.target }}
           VERSION: ${{ inputs.version }}
         run: scripts/dist.sh build "$TARGET" "$VERSION"

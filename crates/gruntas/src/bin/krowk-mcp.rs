@@ -1,4 +1,4 @@
-//! krowk over MCP stdio. Reads its key the way the CLI does — KROWK_TOKEN,
+//! krowk over MCP stdio. Reads its key the way the CLI does — GRUNTAS_TOKEN,
 //! then the workspace the root's config names — and serves without one when
 //! that key cannot be had: reads still work, writes are refused rather than
 //! landing in the anonymous workspace the config was written to avoid.
@@ -38,7 +38,7 @@ fn main() {
     }
     let env = |k: &str| std::env::var(k).unwrap_or_default();
     if root.is_empty() {
-        root = env("KROWK_MCP_ROOT");
+        root = env("GRUNTAS_MCP_ROOT");
     }
 
     // A home krowk cannot use is no key, and says why, rather than a key

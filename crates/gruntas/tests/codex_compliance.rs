@@ -206,7 +206,7 @@ fn r_back_3_a_whole_codex_workflow_never_opens_codexs_login_file() {
             .env_clear()
             .env("PATH", format!("{}:{}", root.join("bin").display(), std::env::var("PATH").unwrap_or_default()))
             .env("HOME", root.join("home"))
-            .env("KROWK_NO_UPDATE_CHECK", "1")
+            .env("GRUNTAS_NO_UPDATE_CHECK", "1")
             .current_dir(root.join("repo"))
             .stdin(Stdio::null())
             .output()

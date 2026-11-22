@@ -58,7 +58,7 @@ impl Sandbox {
             .env("HOME", self.root.join("home"))
             .env("XDG_DATA_HOME", self.root.join("data"))
             .env("XDG_RUNTIME_DIR", self.root.join("run"))
-            .env("KROWK_NO_UPDATE_CHECK", "1")
+            .env("GRUNTAS_NO_UPDATE_CHECK", "1")
             .env("FAKE_CLAUDE_LOG", self.root.join("fake.log"))
             .env("FAKE_CLAUDE_SCENARIO", self.root.join("scenario.jsonl"))
             .env("GIT_CONFIG_GLOBAL", "/dev/null")

@@ -887,7 +887,7 @@ stdout:
               "name": "older-than",
               "type": "string",
               "default": "",
-              "usage": "Idle cut-off in days (default 14, or KROWK_ARCHIVE_AFTER_DAYS)"
+              "usage": "Idle cut-off in days (default 14, or GRUNTAS_ARCHIVE_AFTER_DAYS)"
             },
             {
               "name": "weekly",
@@ -1471,7 +1471,7 @@ stdout:
               "name": "name",
               "type": "string",
               "default": "",
-              "usage": "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+              "usage": "What your device list calls this machine; its host name when absent (also GRUNTAS_DEVICE_NAME)"
             }
           ],
           "hidden": false
@@ -1485,7 +1485,7 @@ stdout:
               "name": "name",
               "type": "string",
               "default": "",
-              "usage": "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+              "usage": "What your device list calls this machine; its host name when absent (also GRUNTAS_DEVICE_NAME)"
             }
           ],
           "hidden": false
@@ -1539,7 +1539,7 @@ stdout:
               "name": "name",
               "type": "string",
               "default": "",
-              "usage": "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+              "usage": "What the workspace's device list calls this machine; its host name when absent (also GRUNTAS_DEVICE_NAME)"
             }
           ],
           "hidden": false
@@ -1837,7 +1837,7 @@ stdout:
       "name": "workspace",
       "type": "string",
       "default": "",
-      "usage": "Use this workspace's stored key for this one command — outranks KROWK_WORKSPACE and every config file"
+      "usage": "Use this workspace's stored key for this one command — outranks GRUNTAS_WORKSPACE and every config file"
     },
     {
       "name": "dev",
@@ -1984,32 +1984,32 @@ stdout:
   ],
   "environment": [
     {
-      "name": "KROWK_TOKEN",
+      "name": "GRUNTAS_TOKEN",
       "usage": "API token — wins over the credentials file"
     },
     {
-      "name": "KROWK_WORKSPACE",
+      "name": "GRUNTAS_WORKSPACE",
       "usage": "Workspace whose stored key to use, as if by --workspace — outranks the config files, loses to the flag"
     },
     {
-      "name": "KROWK_API_URL",
+      "name": "GRUNTAS_API_URL",
       "usage": "API base URL",
       "default": "https://api.krowk.com/v1"
     },
     {
-      "name": "KROWK_DEV",
+      "name": "GRUNTAS_DEV",
       "usage": "1/true/yes/on — same as --dev"
     },
     {
-      "name": "KROWK_AGENT",
+      "name": "GRUNTAS_AGENT",
       "usage": "Agent name to report"
     },
     {
-      "name": "KROWK_NO_UPDATE_CHECK",
+      "name": "GRUNTAS_NO_UPDATE_CHECK",
       "usage": "1/true/yes/on — never check for or mention new releases"
     },
     {
-      "name": "KROWK_HOME",
+      "name": "GRUNTAS_HOME",
       "usage": "Where krowk keeps its files, an absolute path",
       "default": "~/.krowk"
     },
@@ -2974,7 +2974,7 @@ tty:
               "name": "older-than",
               "type": "string",
               "default": "",
-              "usage": "Idle cut-off in days (default 14, or KROWK_ARCHIVE_AFTER_DAYS)"
+              "usage": "Idle cut-off in days (default 14, or GRUNTAS_ARCHIVE_AFTER_DAYS)"
             },
             {
               "name": "weekly",
@@ -3558,7 +3558,7 @@ tty:
               "name": "name",
               "type": "string",
               "default": "",
-              "usage": "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+              "usage": "What your device list calls this machine; its host name when absent (also GRUNTAS_DEVICE_NAME)"
             }
           ],
           "hidden": false
@@ -3572,7 +3572,7 @@ tty:
               "name": "name",
               "type": "string",
               "default": "",
-              "usage": "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+              "usage": "What your device list calls this machine; its host name when absent (also GRUNTAS_DEVICE_NAME)"
             }
           ],
           "hidden": false
@@ -3626,7 +3626,7 @@ tty:
               "name": "name",
               "type": "string",
               "default": "",
-              "usage": "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
+              "usage": "What the workspace's device list calls this machine; its host name when absent (also GRUNTAS_DEVICE_NAME)"
             }
           ],
           "hidden": false
@@ -3924,7 +3924,7 @@ tty:
       "name": "workspace",
       "type": "string",
       "default": "",
-      "usage": "Use this workspace's stored key for this one command — outranks KROWK_WORKSPACE and every config file"
+      "usage": "Use this workspace's stored key for this one command — outranks GRUNTAS_WORKSPACE and every config file"
     },
     {
       "name": "dev",
@@ -4071,32 +4071,32 @@ tty:
   ],
   "environment": [
     {
-      "name": "KROWK_TOKEN",
+      "name": "GRUNTAS_TOKEN",
       "usage": "API token — wins over the credentials file"
     },
     {
-      "name": "KROWK_WORKSPACE",
+      "name": "GRUNTAS_WORKSPACE",
       "usage": "Workspace whose stored key to use, as if by --workspace — outranks the config files, loses to the flag"
     },
     {
-      "name": "KROWK_API_URL",
+      "name": "GRUNTAS_API_URL",
       "usage": "API base URL",
       "default": "https://api.krowk.com/v1"
     },
     {
-      "name": "KROWK_DEV",
+      "name": "GRUNTAS_DEV",
       "usage": "1/true/yes/on — same as --dev"
     },
     {
-      "name": "KROWK_AGENT",
+      "name": "GRUNTAS_AGENT",
       "usage": "Agent name to report"
     },
     {
-      "name": "KROWK_NO_UPDATE_CHECK",
+      "name": "GRUNTAS_NO_UPDATE_CHECK",
       "usage": "1/true/yes/on — never check for or mention new releases"
     },
     {
-      "name": "KROWK_HOME",
+      "name": "GRUNTAS_HOME",
       "usage": "Where krowk keeps its files, an absolute path",
       "default": "~/.krowk"
     },

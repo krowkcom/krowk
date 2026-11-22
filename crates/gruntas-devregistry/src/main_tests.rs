@@ -85,7 +85,7 @@ fn port_zero_serves_on_a_kernel_picked_port() {
     let port = addr.port();
     let text = banner(&addr.to_string(), "127.0.0.1:0");
     assert!(text.contains(&format!("krowk registry listening on http://localhost:{port}\n")), "{text}");
-    assert!(text.contains(&format!("KROWK_API_URL=http://localhost:{port}/v1")), "{text}");
+    assert!(text.contains(&format!("GRUNTAS_API_URL=http://localhost:{port}/v1")), "{text}");
 
     std::thread::spawn(move || serve(&mut io::sink(), ln, "127.0.0.1:0", "", 0));
     assert!(get_status(addr, "/").starts_with("HTTP/1.1 200"));
@@ -104,7 +104,7 @@ fn the_banner_warns_only_when_bound_off_box() {
     assert!(banner(":8787", ":8787").contains("on every interface"));
 
     let other = banner("127.0.0.1:9000", "127.0.0.1:9000");
-    assert!(other.contains("KROWK_API_URL=http://localhost:9000/v1"), "{other}");
+    assert!(other.contains("GRUNTAS_API_URL=http://localhost:9000/v1"), "{other}");
 }
 
 /// The banner appears only after a successful bind.

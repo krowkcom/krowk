@@ -564,12 +564,12 @@ impl Drop for World {
 }
 
 /// The relay the devices reach: the reference relay, in this process, or
-/// another at `KROWK_SYNC_RELAY` (`127.0.0.1:8787`, the hosted relay under
+/// another at `GRUNTAS_SYNC_RELAY` (`127.0.0.1:8787`, the hosted relay under
 /// `wrangler dev`, trusting the stand-in registry's ticket key), so the
 /// same scenarios hold the Worker to what the bridge and the viewer need.
 fn relay(limits: gruntas_harness::relay::Limits) -> SocketAddr {
-    if let Ok(at) = std::env::var("KROWK_SYNC_RELAY") {
-        return at.parse().expect("KROWK_SYNC_RELAY is an address, 127.0.0.1:8787");
+    if let Ok(at) = std::env::var("GRUNTAS_SYNC_RELAY") {
+        return at.parse().expect("GRUNTAS_SYNC_RELAY is an address, 127.0.0.1:8787");
     }
     let relay = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = relay.local_addr().unwrap();
@@ -3074,9 +3074,9 @@ type Built = Arc<Mutex<Vec<(String, Instant, Option<String>)>>>;
 struct AutoOpts {
     /// The first `build` panics.
     panic_first: bool,
-    /// `KROWK_SYNC_IDLE`, in whole seconds; the default window when None.
+    /// `GRUNTAS_SYNC_IDLE`, in whole seconds; the default window when None.
     idle: Option<Duration>,
-    /// The switch: off as `KROWK_SYNC_AUTO=0` says it, while unset.
+    /// The switch: off as `GRUNTAS_SYNC_AUTO=0` says it, while unset.
     on: Arc<AtomicBool>,
     /// Every `build` refuses with this `(code, message)`.
     refuse: Option<(String, String)>,
@@ -3192,8 +3192,8 @@ impl World {
                 let on = on.load(Ordering::SeqCst);
                 auto::policy(
                     &|k| match k {
-                        "KROWK_SYNC_AUTO" if !on => "0".into(),
-                        "KROWK_SYNC_IDLE" => idle.map(|d| d.as_secs().to_string()).unwrap_or_default(),
+                        "GRUNTAS_SYNC_AUTO" if !on => "0".into(),
+                        "GRUNTAS_SYNC_IDLE" => idle.map(|d| d.as_secs().to_string()).unwrap_or_default(),
                         _ => String::new(),
                     },
                     None,
@@ -3544,7 +3544,7 @@ async fn r_sync_3_a_directory_opted_out_while_bridged_stops_and_releases() {
 }
 
 /// R-SYNC-3: automatic sync turned off while two sessions are bridged
-/// (`KROWK_SYNC_AUTO=0` here): the next turn of either stops every bridge,
+/// (`GRUNTAS_SYNC_AUTO=0` here): the next turn of either stops every bridge,
 /// each giving its lease back, and no turn bridges one again while it is off.
 #[tokio::test]
 async fn r_sync_3_sync_turned_off_while_bridged_stops_every_bridge() {

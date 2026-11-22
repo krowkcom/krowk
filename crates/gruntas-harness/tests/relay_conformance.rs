@@ -7,7 +7,7 @@
 //! Durable Object under `wrangler dev` with
 //!
 //! ```sh
-//! KROWK_RELAY_URL=ws://127.0.0.1:8787 cargo test -p gruntas-harness --test relay_conformance
+//! GRUNTAS_RELAY_URL=ws://127.0.0.1:8787 cargo test -p gruntas-harness --test relay_conformance
 //! ```
 //!
 //! once that relay trusts `tests/fixtures/relay/roster.json` — the
@@ -113,26 +113,26 @@ fn fixture() -> Value {
     })
 }
 
-/// The checked-in fixture is the generated one; `KROWK_FIXTURE_UPDATE=1`
+/// The checked-in fixture is the generated one; `GRUNTAS_FIXTURE_UPDATE=1`
 /// writes it. Another relay loads the file, so it must not drift.
 #[test]
 fn the_checked_in_roster_is_the_generated_one() {
     let want = serde_json::to_string_pretty(&fixture()).unwrap() + "\n";
-    if std::env::var_os("KROWK_FIXTURE_UPDATE").is_some() {
+    if std::env::var_os("GRUNTAS_FIXTURE_UPDATE").is_some() {
         std::fs::create_dir_all(std::path::Path::new(FIXTURE_PATH).parent().unwrap()).unwrap();
         std::fs::write(FIXTURE_PATH, &want).unwrap();
         return;
     }
-    assert_eq!(FIXTURE, want, "run KROWK_FIXTURE_UPDATE=1 cargo test -p gruntas-harness --test relay_conformance");
+    assert_eq!(FIXTURE, want, "run GRUNTAS_FIXTURE_UPDATE=1 cargo test -p gruntas-harness --test relay_conformance");
 }
 
-/// The relay under test: `KROWK_RELAY_URL`, or the reference relay started
+/// The relay under test: `GRUNTAS_RELAY_URL`, or the reference relay started
 /// in this process on a loopback port with the fixture — the same
 /// `relay::run` that `krowk relay serve --ticket-keys` runs.
 fn relay_url() -> &'static str {
     static URL: OnceLock<String> = OnceLock::new();
     URL.get_or_init(|| {
-        if let Ok(url) = std::env::var("KROWK_RELAY_URL") {
+        if let Ok(url) = std::env::var("GRUNTAS_RELAY_URL") {
             return url.trim_end_matches('/').to_string();
         }
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1005,11 +1005,11 @@ fn other_loopback(sock: &tokio::net::TcpSocket, ip: &str) -> bool {
 /// The reference relay's own defence before a join, beyond the contract:
 /// connections that never finish the upgrade, from one address, cannot
 /// crowd out another's, and a connection sending past the pre-join budget
-/// is let go. Skipped against another relay unless KROWK_RELAY_REFERENCE
+/// is let go. Skipped against another relay unless GRUNTAS_RELAY_REFERENCE
 /// says it is one.
 #[tokio::test]
 async fn r_relay_1_the_reference_relay_bounds_what_comes_before_a_join() {
-    if std::env::var_os("KROWK_RELAY_URL").is_some() && std::env::var_os("KROWK_RELAY_REFERENCE").is_none() {
+    if std::env::var_os("GRUNTAS_RELAY_URL").is_some() && std::env::var_os("GRUNTAS_RELAY_REFERENCE").is_none() {
         return;
     }
     let t = "prejoin";
@@ -1077,13 +1077,13 @@ async fn r_relay_1_idle_connections_to_a_channel_cannot_lock_its_devices_out() {
     drop(idle);
 }
 
-/// R-LAG-6, slow and optional (`KROWK_RELAY_SLOW=1`): a channel idle for
+/// R-LAG-6, slow and optional (`GRUNTAS_RELAY_SLOW=1`): a channel idle for
 /// 15 seconds — long enough for a Durable Object to be evicted from memory
 /// — still serves a viewer's resume from its ring buffer. Ticket 18 runs
 /// it against `wrangler dev` and the deployed relay.
 #[tokio::test]
 async fn r_lag_6_the_ring_buffer_survives_an_idle_channel() {
-    if std::env::var_os("KROWK_RELAY_SLOW").is_none() {
+    if std::env::var_os("GRUNTAS_RELAY_SLOW").is_none() {
         return;
     }
     let t = "idle";
@@ -1342,12 +1342,12 @@ async fn join_after(t: &str, a: &As<'_>, delay: Duration) -> Value {
 /// has shown no ticket before any that has: 64 addresses holding 16 idle
 /// connections each, and 1100 more opened while the lease holder answers
 /// its challenge in 600 ms, never push the host out. Skipped against
-/// another relay unless KROWK_RELAY_REFERENCE says it is one: a Worker has
+/// another relay unless GRUNTAS_RELAY_REFERENCE says it is one: a Worker has
 /// no such pool, since it sees nothing before the upgrade.
 #[tokio::test]
 #[cfg_attr(not(target_os = "linux"), ignore = "dials from 127.0.1.x, and only Linux routes all of 127/8 to loopback; macOS holds 127.0.0.1 alone")]
 async fn r_relay_1_idle_connections_without_a_ticket_never_push_out_one_with_a_ticket() {
-    if std::env::var_os("KROWK_RELAY_URL").is_some() && std::env::var_os("KROWK_RELAY_REFERENCE").is_none() {
+    if std::env::var_os("GRUNTAS_RELAY_URL").is_some() && std::env::var_os("GRUNTAS_RELAY_REFERENCE").is_none() {
         return;
     }
     let t = "pool";
@@ -1418,7 +1418,7 @@ async fn r_relay_1_another_device_at_an_equal_fence_is_not_the_lease_holder() {
 /// 600 ms: the host joins, three times. Reference-only, as the pool is.
 #[tokio::test]
 async fn r_relay_1_a_workspaces_own_tickets_cannot_crowd_another_channels_host_out() {
-    if std::env::var_os("KROWK_RELAY_URL").is_some() && std::env::var_os("KROWK_RELAY_REFERENCE").is_none() {
+    if std::env::var_os("GRUNTAS_RELAY_URL").is_some() && std::env::var_os("GRUNTAS_RELAY_REFERENCE").is_none() {
         return;
     }
     let t = "pool2";
@@ -1479,11 +1479,11 @@ async fn r_relay_1_a_workspaces_own_tickets_cannot_crowd_another_channels_host_o
 /// host and two viewers answer in 600 ms: all three join, three times.
 /// Reference-only, as the pool is, and heavy: 4300 upgrades each verified
 /// by a relay in this process, which a debug build cannot answer in time,
-/// so it runs with `KROWK_RELAY_HEAVY=1 cargo test --release`; the same
+/// so it runs with `GRUNTAS_RELAY_HEAVY=1 cargo test --release`; the same
 /// shape at a tenth of the size runs always, in `relay_invariant.rs`.
 #[tokio::test]
 async fn r_relay_1_a_workspace_spread_over_its_own_sessions_evicts_only_itself() {
-    if (std::env::var_os("KROWK_RELAY_URL").is_some() && std::env::var_os("KROWK_RELAY_REFERENCE").is_none()) || std::env::var_os("KROWK_RELAY_HEAVY").is_none() {
+    if (std::env::var_os("GRUNTAS_RELAY_URL").is_some() && std::env::var_os("GRUNTAS_RELAY_REFERENCE").is_none()) || std::env::var_os("GRUNTAS_RELAY_HEAVY").is_none() {
         return;
     }
     let t = "pool3";

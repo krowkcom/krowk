@@ -1,5 +1,5 @@
 //! Which workspace a command uses, layered: the global config, the repo's
-//! .krowk/config.json, KROWK_WORKSPACE, then --workspace. Each layer that
+//! .krowk/config.json, GRUNTAS_WORKSPACE, then --workspace. Each layer that
 //! names one is somebody's deliberate ask, so a malformed file is an error
 //! rather than a layer quietly skipped.
 
@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 pub const SOURCE_GLOBAL: &str = "global config";
 pub const SOURCE_REPO: &str = "repo config";
-pub const SOURCE_ENV: &str = "KROWK_WORKSPACE";
+pub const SOURCE_ENV: &str = "GRUNTAS_WORKSPACE";
 pub const SOURCE_FLAG: &str = "--workspace";
 
 /// The one key there is. A list rather than a constant so the refusal for an
@@ -44,7 +44,7 @@ pub fn load(dir: &str, env: &dyn Fn(&str) -> String, flag_workspace: &str) -> Re
     if let Some(v) = repo_path(dir).map(|p| read_file(&p)).transpose()?.flatten() {
         apply(&mut c, v, SOURCE_REPO);
     }
-    apply(&mut c, env("KROWK_WORKSPACE"), SOURCE_ENV);
+    apply(&mut c, env("GRUNTAS_WORKSPACE"), SOURCE_ENV);
     apply(&mut c, flag_workspace.to_string(), SOURCE_FLAG);
     Ok(c)
 }

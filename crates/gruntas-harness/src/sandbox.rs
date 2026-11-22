@@ -1075,7 +1075,7 @@ fn toolchains(home: Option<&Path>, env: &dyn Fn(&str) -> Option<std::ffi::OsStri
 /// The environment a sandboxed command gets, and bubblewrap itself: the
 /// search path, the terminal, the locale and the user's name from krowk's
 /// own, the private home and `/tmp`. Everything else — `*_API_KEY`,
-/// `*_TOKEN`, `KROWK_*`, `AWS_*`, `SSH_AUTH_SOCK`, `GPG_AGENT_INFO` — is
+/// `*_TOKEN`, `GRUNTAS_*`, `AWS_*`, `SSH_AUTH_SOCK`, `GPG_AGENT_INFO` — is
 /// left out, allowlisted rather than denylisted, so a variable krowk has
 /// never heard of is left out too.
 pub fn env() -> Vec<(String, String)> {

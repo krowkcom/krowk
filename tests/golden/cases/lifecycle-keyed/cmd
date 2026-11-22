@@ -1,7 +1,7 @@
 # One artifact and one run through every command that takes a slug: show,
 # attach, list with a cursor, finish, delete, and the tombstone after.
 @registry
-@env KROWK_TOKEN=krowk_sk_test
+@env GRUNTAS_TOKEN=krowk_sk_test
 @file a.txt hello
 @file b.txt world
 krowk runs start --title "the work"

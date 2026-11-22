@@ -628,7 +628,7 @@ pub struct Login {
     pub workspace: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub reason: String,
-    /// KROWK_TOKEN outranks the file this login just wrote.
+    /// GRUNTAS_TOKEN outranks the file this login just wrote.
     #[serde(rename = "shadowed_by_env", skip_serializing_if = "std::ops::Not::not")]
     pub shadowed: bool,
 }
@@ -637,7 +637,7 @@ fn shadowed_crumb() -> Breadcrumb {
     crumb(
         "verify",
         "krowk whoami",
-        "KROWK_TOKEN outranks the key just stored, so this reports the one that uploads will really use — unset KROWK_TOKEN to use the stored one instead",
+        "GRUNTAS_TOKEN outranks the key just stored, so this reports the one that uploads will really use — unset GRUNTAS_TOKEN to use the stored one instead",
     )
 }
 
@@ -659,7 +659,7 @@ pub fn stored_key(l: &Login, f: Format, quiet: bool, colour: bool) -> String {
             );
         }
         if l.shadowed {
-            summary += " — but KROWK_TOKEN is set and outranks it";
+            summary += " — but GRUNTAS_TOKEN is set and outranks it";
             next = shadowed_crumb();
         }
         return ok(l, summary, vec![next]);
@@ -676,7 +676,7 @@ pub fn stored_key(l: &Login, f: Format, quiet: bool, colour: bool) -> String {
     if l.shadowed {
         lines.push(format!(
             "  {}",
-            warning(colour, "KROWK_TOKEN is set and wins over this file, so uploads use that key instead — unset it to use the one just stored")
+            warning(colour, "GRUNTAS_TOKEN is set and wins over this file, so uploads use that key instead — unset it to use the one just stored")
         ));
     }
     lines.join("\n")

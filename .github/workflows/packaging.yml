@@ -125,7 +125,7 @@ jobs:
       - name: Run both builds in Alpine
         run: |
           chmod +x dist/${{ matrix.triple }}/* dist/${{ matrix.triple }}-lean/*
-          docker run --rm -v "$PWD/dist:/d:ro" -e KROWK_NO_UPDATE_CHECK=1 -e HOME=/tmp/h alpine:3 sh -euxc '
+          docker run --rm -v "$PWD/dist:/d:ro" -e GRUNTAS_NO_UPDATE_CHECK=1 -e HOME=/tmp/h alpine:3 sh -euxc '
             mkdir -p "$HOME"
             /d/${{ matrix.triple }}/krowk --version
             /d/${{ matrix.triple }}/krowk-mcp --version
@@ -156,7 +156,7 @@ jobs:
       # sessions answers unsupported_os on Windows in v1; everything else runs.
       - name: Run both binaries
         env:
-          KROWK_NO_UPDATE_CHECK: "1"
+          GRUNTAS_NO_UPDATE_CHECK: "1"
         run: |
           set -eux
           bin=dist/x86_64-pc-windows-gnu

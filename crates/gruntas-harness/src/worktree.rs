@@ -62,7 +62,7 @@
 //!   have 4 GiB free beyond twice the size it is expected to be, or
 //!   nothing is made.
 //! - **A port slot** (`setup::port_slot`) is held by whoever uses the
-//!   worktree, for as long as they do: `KROWK_PORT_BASE` for the setup
+//!   worktree, for as long as they do: `GRUNTAS_PORT_BASE` for the setup
 //!   command and the agent's commands. `krowk worktrees add` lets go of its
 //!   slot on exit, so its setup command's base is not reserved afterwards.
 
@@ -182,7 +182,7 @@ pub struct Prepare<'a> {
     /// What the setup command runs in (`setup::sandbox`): none where this
     /// machine has no sandbox.
     pub sandbox: Option<&'a crate::sandbox::Plan>,
-    /// The worktree's `KROWK_PORT_BASE`, from the port slot its user holds
+    /// The worktree's `GRUNTAS_PORT_BASE`, from the port slot its user holds
     /// (`setup::port_slot`); none without one.
     pub port_base: Option<u16>,
     /// The build slots a heavy setup command waits for.
@@ -261,7 +261,7 @@ pub fn first_prompt(notes: &[String], prompt: &str) -> String {
 
 /// A worktree an agent works in, with what its user holds while it does:
 /// the live hold `krowk worktrees` judges it by (`manage::Held`), and a
-/// port slot for its `KROWK_PORT_BASE` (`setup::port_slot`). A subagent's
+/// port slot for its `GRUNTAS_PORT_BASE` (`setup::port_slot`). A subagent's
 /// (WT3) and a session's own (WT6) alike; both are let go by `finish`, or
 /// when it is dropped.
 pub struct InUse {
@@ -280,8 +280,8 @@ impl InUse {
     pub fn new(worktree: Worktree, held: manage::Held, runtime: PathBuf) -> (InUse, Option<String>) {
         let (port, missing) = match setup::port_slot(runtime) {
             Ok(Some(slot)) => (Some(slot), None),
-            Ok(None) => (None, Some("every port slot is held, so KROWK_PORT_BASE is not set here".to_string())),
-            Err(e) => (None, Some(format!("no port slot could be taken ({e}), so KROWK_PORT_BASE is not set here"))),
+            Ok(None) => (None, Some("every port slot is held, so GRUNTAS_PORT_BASE is not set here".to_string())),
+            Err(e) => (None, Some(format!("no port slot could be taken ({e}), so GRUNTAS_PORT_BASE is not set here"))),
         };
         let port_base = port.as_ref().map(setup::port_base);
         (InUse { worktree, port, port_base, held, agent: None }, missing)
@@ -289,7 +289,7 @@ impl InUse {
 
     /// What the agent's commands get in their environment: its port base.
     pub fn env(&self) -> Vec<(String, String)> {
-        self.port_base.map(|b| ("KROWK_PORT_BASE".to_string(), b.to_string())).into_iter().collect()
+        self.port_base.map(|b| ("GRUNTAS_PORT_BASE".to_string(), b.to_string())).into_iter().collect()
     }
 
     /// `finish`, then its port slot and its hold let go. Blocking.

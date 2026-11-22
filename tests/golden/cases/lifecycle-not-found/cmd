@@ -1,6 +1,6 @@
 # Every slug-taking command against slugs that were never minted.
 @registry
-@env KROWK_TOKEN=krowk_sk_test
+@env GRUNTAS_TOKEN=krowk_sk_test
 krowk artifacts show art_000000000000000000000000
 krowk artifacts delete art_000000000000000000000000
 krowk artifacts attach art_000000000000000000000000 --run run_000000000000000000000000

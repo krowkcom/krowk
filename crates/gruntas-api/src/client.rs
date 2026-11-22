@@ -247,7 +247,7 @@ impl Client {
         if key.key_id.is_empty() {
             return Err(malformed(
                 status,
-                "the registry answered the key lookup without naming a key — check KROWK_API_URL points at the API host, not the website",
+                "the registry answered the key lookup without naming a key — check GRUNTAS_API_URL points at the API host, not the website",
             ));
         }
         Ok(key)
@@ -266,7 +266,7 @@ impl Client {
         if auth.slug.is_empty() || auth.code.is_empty() {
             return Err(malformed(
                 status,
-                "the registry opened a browser login without naming a code to confirm or a slug to poll — check KROWK_API_URL points at the API host, not the website",
+                "the registry opened a browser login without naming a code to confirm or a slug to poll — check GRUNTAS_API_URL points at the API host, not the website",
             ));
         }
         Ok(auth)
@@ -287,7 +287,7 @@ impl Client {
                 "visibility_not_applied",
                 format!(
                     "this registry did not apply the visibility the upload asked for — declared {}, got {got}. Nothing was uploaded. \
-                     Check KROWK_API_URL points at a registry that supports private artifacts, or push it public",
+                     Check GRUNTAS_API_URL points at a registry that supports private artifacts, or push it public",
                     spec.visibility
                 ),
             ));
@@ -517,7 +517,7 @@ impl Client {
                 let (target, body) = (request_target(&url), payload.unwrap_or_default());
                 // A test build signs v1's lines when told to, so a test can
                 // see a registry refuse a krowk from before v2 (ticket 168).
-                let v1 = cfg!(debug_assertions) && std::env::var("KROWK_TEST_SIGN_V1").is_ok_and(|v| v == "1");
+                let v1 = cfg!(debug_assertions) && std::env::var("GRUNTAS_TEST_SIGN_V1").is_ok_and(|v| v == "1");
                 let lines = if v1 {
                     format!("krowk/registry/v1\n{method}\n{target}\n{at}\n{}", sha256_hex(body)).into_bytes()
                 } else {
@@ -558,7 +558,7 @@ impl Client {
                     // a rejected one is when the self-check earns its keep —
                     // except on the self-check itself.
                     let fix = if self.token.is_empty() {
-                        "this endpoint needs an API key — run `krowk login --token krowk_sk_...`, or set KROWK_TOKEN".to_string()
+                        "this endpoint needs an API key — run `krowk login --token krowk_sk_...`, or set GRUNTAS_TOKEN".to_string()
                     } else if !url.ends_with("/key") {
                         let hint = "run `krowk whoami` to see what this key is allowed to do";
                         match err.fix() {
@@ -653,7 +653,7 @@ impl Client {
             body.insert("endpoint".into(), json!(url));
             body.insert(
                 "fix".into(),
-                json!(format!("cannot reach {} — check the network, or point KROWK_API_URL at a reachable registry", self.base_url)),
+                json!(format!("cannot reach {} — check the network, or point GRUNTAS_API_URL at a reachable registry", self.base_url)),
             );
             body.insert("retryable".into(), json!(false));
         } else {
@@ -925,7 +925,7 @@ fn malformed(status: u16, fix: &str) -> Error {
 fn malformed_success(status: u16) -> Error {
     let mut e = malformed(
         status,
-        "the registry answered with a success status and a body this client could not read — check KROWK_API_URL points at the API host, not the website",
+        "the registry answered with a success status and a body this client could not read — check GRUNTAS_API_URL points at the API host, not the website",
     );
     e.body.remove("retryable");
     e
@@ -986,7 +986,7 @@ fn response_error(status: u16, payload: &[u8], retry_after: &str) -> Error {
 /// The registry's codes turned into the next thing to do.
 fn fix_for(code: &str, status: u16) -> String {
     match code {
-        "unauthorized" => "the registry rejected the key — check KROWK_TOKEN, or run `krowk login --token krowk_sk_...`",
+        "unauthorized" => "the registry rejected the key — check GRUNTAS_TOKEN, or run `krowk login --token krowk_sk_...`",
         "run_needs_key" => "attaching an upload to a run needs an API key — authenticate, or upload without --run",
         "upload_missing" => "the bytes had not landed when the upload was finalized — retry the upload",
         "checksum_mismatch" => "the file changed while it was being uploaded — retry the upload",
@@ -1003,7 +1003,7 @@ fn fix_for(code: &str, status: u16) -> String {
             "no such artifact or run in this workspace — check the slug, and that the key matches the workspace it was uploaded to"
         }
         "no_such_endpoint" => {
-            "the registry has no such endpoint — check KROWK_API_URL names the API host and version, and that the method is the one this call uses"
+            "the registry has no such endpoint — check GRUNTAS_API_URL names the API host and version, and that the method is the one this call uses"
         }
         "parameter_missing" | "invalid" | "bad_request" => "",
         // Sync's refusals (R-SYNC-1, R-SYNC-2). Everything local keeps
@@ -1035,7 +1035,7 @@ fn fix_for(code: &str, status: u16) -> String {
         "signature_version_retired" => "this krowk signs registry requests in a way the registry no longer accepts — run `krowk upgrade`",
         "signature_stale" => "the request was signed more than 5 minutes from the registry's clock — check this machine's clock",
         "too_many_requests" => "the registry is limiting these calls for a moment — wait out its Retry-After (about a minute) and try again",
-        "device_mismatch" => "the request is signed by a device other than the one it names or the one this key speaks for — a device acts only for itself: use this machine's own key (unset a KROWK_TOKEN copied from another machine, or run `krowk auth login` here)",
+        "device_mismatch" => "the request is signed by a device other than the one it names or the one this key speaks for — a device acts only for itself: use this machine's own key (unset a GRUNTAS_TOKEN copied from another machine, or run `krowk auth login` here)",
         "method_not_allowed" => {
             "the registry does not answer that HTTP method — read the Allow header on this response, if it carries one, for the methods it does"
         }
@@ -1044,7 +1044,7 @@ fn fix_for(code: &str, status: u16) -> String {
         "unexpected_error" => "the registry refused this in a way it has no specific code for — check the status, and report it if it persists",
         _ if status >= 500 => "the registry failed on its side — retry, and report it if it persists",
         _ if status == 404 => {
-            "the registry has no such endpoint — check KROWK_API_URL names the API host and version, since it routes by hostname and the wrong host answers 404"
+            "the registry has no such endpoint — check GRUNTAS_API_URL names the API host and version, since it routes by hostname and the wrong host answers 404"
         }
         _ => "",
     }
@@ -1354,7 +1354,7 @@ fn agent(base_url: &str, limits: Limits) -> ureq::Agent {
         .timeout_connect(Some(limits.connect))
         .proxy(proxy)
         .tls_config(ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build())
-        .user_agent(format!("krowk-cli/{}", option_env!("KROWK_VERSION").unwrap_or("dev")))
+        .user_agent(format!("krowk-cli/{}", option_env!("GRUNTAS_VERSION").unwrap_or("dev")))
         .build();
     let resolver = GuardResolver { guard: Arc::new(guard), inner: ureq::unversioned::resolver::DefaultResolver::default() };
     let connector = QuietConnector { inner: net::DefaultConnector::default(), quiet: limits.quiet };

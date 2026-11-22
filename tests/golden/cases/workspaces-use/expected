@@ -93,7 +93,7 @@ stdout:
     {
       "action": "check what resolves here",
       "cmd": "krowk workspaces",
-      "description": "a repo config, KROWK_WORKSPACE or --workspace still outranks the default"
+      "description": "a repo config, GRUNTAS_WORKSPACE or --workspace still outranks the default"
     }
   ]
 }

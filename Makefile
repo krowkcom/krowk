@@ -5,12 +5,12 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v/
 .PHONY: build test test-build test-run test-doc lint lint-lean lint-sessions lint-harness check check-build check-run quick-check signoff install dev mock clean dist release-check golden golden-build golden-device golden-full golden-run golden-update bin/devregistry schema codex-schema codex-schema-update lean-deps bench
 
 build: ## Build target/release/krowk (the full build) and krowk-mcp
-	KROWK_VERSION=$(VERSION) cargo build --release -p gruntas --features harness
+	GRUNTAS_VERSION=$(VERSION) cargo build --release -p gruntas --features harness
 
 # With `harness`, which implies `sessions`: every test either build runs.
 # nextest runs no doctests, so cargo test runs those. CI sets
 # NEXTEST_PROFILE=ci, which retries a flaky test instead of failing the job.
-# nextest gives each test a scratch KROWK_HOME (.config/nextest.toml); the
+# nextest gives each test a scratch GRUNTAS_HOME (.config/nextest.toml); the
 # doctests get the same one here. `check` builds the tests with everything
 # else and runs them after (`check-run`).
 NEXTEST := cargo nextest run --workspace --exclude gruntas-golden --features gruntas/harness
@@ -24,7 +24,7 @@ test-run:
 	$(NEXTEST)
 
 test-doc:
-	KROWK_HOME=$(CURDIR)/target/krowk-test-home cargo test --doc --workspace --exclude gruntas-golden --features gruntas/harness
+	GRUNTAS_HOME=$(CURDIR)/target/krowk-test-home cargo test --doc --workspace --exclude gruntas-golden --features gruntas/harness
 
 # Both builds: the agent build (no sessions) is the one a container compiles
 # from source, and a cfg that only one of them sees is a lint only one catches.
@@ -101,9 +101,9 @@ BENCH_DIR := target/bench
 BENCH_VERSION := 0.0.0-bench
 
 bench: ## Hold the release builds to the performance and size budgets
-	KROWK_VERSION=$(BENCH_VERSION) cargo build --release --locked -p gruntas --bin krowk
+	GRUNTAS_VERSION=$(BENCH_VERSION) cargo build --release --locked -p gruntas --bin krowk
 	mkdir -p $(BENCH_DIR) && rm -f $(BENCH_DIR)/krowk-lean && cp target/release/krowk $(BENCH_DIR)/krowk-lean
-	KROWK_VERSION=$(BENCH_VERSION) cargo build --release --locked -p gruntas --bin krowk --features harness
+	GRUNTAS_VERSION=$(BENCH_VERSION) cargo build --release --locked -p gruntas --bin krowk --features harness
 	rm -f $(BENCH_DIR)/krowk-full && cp target/release/krowk $(BENCH_DIR)/krowk-full
 	cargo run --profile bench-tool --locked -p gruntas-bench -- --budgets crates/gruntas-bench/budgets.toml \
 		--lean $(BENCH_DIR)/krowk-lean --full $(BENCH_DIR)/krowk-full --work $(BENCH_DIR)/work $(BENCH_FLAGS)
@@ -119,7 +119,7 @@ bench: ## Hold the release builds to the performance and size budgets
 	cargo test --release --locked -p gruntas-harness --test sync_attach r_net_3_a_flood_of_connections
 
 schema: ## Regenerate the harness protocol's JSON Schema after a type change
-	KROWK_SCHEMA_UPDATE=1 cargo test -p gruntas-harness --test schema
+	GRUNTAS_SCHEMA_UPDATE=1 cargo test -p gruntas-harness --test schema
 
 # R-BACK-3: the schema of the `codex app-server` protocol krowk drives, pinned
 # for the Codex version in crates/gruntas-harness/schema/codex/VERSION. Needs
@@ -133,7 +133,7 @@ codex-schema-update: ## Re-pin the codex app-server schema from the Codex instal
 	scripts/codex_schema.sh --update
 
 install: ## Install krowk and krowk-mcp into ~/.cargo/bin
-	KROWK_VERSION=$(VERSION) cargo install --locked --path crates/gruntas --features harness
+	GRUNTAS_VERSION=$(VERSION) cargo install --locked --path crates/gruntas --features harness
 
 # `krowk` on the PATH as a link into this checkout's target/quick, so every
 # later `make dev` (or `cargo build --profile quick -p gruntas --features
@@ -142,7 +142,7 @@ install: ## Install krowk and krowk-mcp into ~/.cargo/bin
 DEV_BIN_DIR ?= $(HOME)/.cargo/bin
 
 dev: ## Fast build, linked into ~/.cargo/bin: the latest krowk from this checkout
-	KROWK_VERSION=$(VERSION) cargo build --profile quick -p gruntas --features harness
+	GRUNTAS_VERSION=$(VERSION) cargo build --profile quick -p gruntas --features harness
 	mkdir -p "$(DEV_BIN_DIR)"
 	for b in krowk krowk-mcp; do ln -sfn "$(CURDIR)/target/quick/$$b" "$(DEV_BIN_DIR)/$$b"; done
 	@echo "$(DEV_BIN_DIR)/krowk -> $(CURDIR)/target/quick/krowk"
@@ -203,15 +203,15 @@ golden-build: golden-device golden-full
 	$(GOLDEN_TEST) --no-run
 
 golden-device: bin/devregistry
-	KROWK_VERSION=$(GOLDEN_VERSION) cargo build --profile $(GOLDEN_PROFILE) -p gruntas --features sessions
+	GRUNTAS_VERSION=$(GOLDEN_VERSION) cargo build --profile $(GOLDEN_PROFILE) -p gruntas --features sessions
 
 golden-full:
-	KROWK_VERSION=$(GOLDEN_VERSION) CARGO_TARGET_DIR=$(CURDIR)/target/golden-full cargo build --profile $(GOLDEN_PROFILE) -p gruntas --features harness
+	GRUNTAS_VERSION=$(GOLDEN_VERSION) CARGO_TARGET_DIR=$(CURDIR)/target/golden-full cargo build --profile $(GOLDEN_PROFILE) -p gruntas --features harness
 
 golden-run:
-	KROWK_BIN=$(GOLDEN_DIR)/krowk KROWK_MCP_BIN=$(GOLDEN_DIR)/krowk-mcp $(GOLDEN_TEST)
-	GOLDEN_CASES=cases-full KROWK_BIN=$(GOLDEN_FULL) KROWK_MCP_BIN=$(GOLDEN_DIR)/krowk-mcp $(GOLDEN_TEST)
+	GRUNTAS_BIN=$(GOLDEN_DIR)/krowk GRUNTAS_MCP_BIN=$(GOLDEN_DIR)/krowk-mcp $(GOLDEN_TEST)
+	GOLDEN_CASES=cases-full GRUNTAS_BIN=$(GOLDEN_FULL) GRUNTAS_MCP_BIN=$(GOLDEN_DIR)/krowk-mcp $(GOLDEN_TEST)
 
 golden-update: bin/devregistry ## Re-record tests/golden/cases after an intended output change
-	KROWK_VERSION=$(GOLDEN_VERSION) cargo build --profile $(GOLDEN_PROFILE) -p gruntas --features sessions
-	GOLDEN_UPDATE=1 KROWK_BIN=$(GOLDEN_DIR)/krowk KROWK_MCP_BIN=$(GOLDEN_DIR)/krowk-mcp cargo test -p gruntas-golden
+	GRUNTAS_VERSION=$(GOLDEN_VERSION) cargo build --profile $(GOLDEN_PROFILE) -p gruntas --features sessions
+	GOLDEN_UPDATE=1 GRUNTAS_BIN=$(GOLDEN_DIR)/krowk GRUNTAS_MCP_BIN=$(GOLDEN_DIR)/krowk-mcp cargo test -p gruntas-golden

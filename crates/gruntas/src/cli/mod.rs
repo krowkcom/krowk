@@ -64,9 +64,9 @@ use flags::Flags;
 use gruntas_api::{fail, Error};
 use std::io::Write;
 
-/// Stamped at build time from KROWK_VERSION. An unstamped build is a source
+/// Stamped at build time from GRUNTAS_VERSION. An unstamped build is a source
 /// build, and calling it `dev` keeps `upgrade` honest about it.
-pub const VERSION: &str = match option_env!("KROWK_VERSION") {
+pub const VERSION: &str = match option_env!("GRUNTAS_VERSION") {
     Some(v) => v,
     None => "dev",
 };
@@ -192,7 +192,7 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
         let _ = writeln!(io.stdout, "{VERSION}");
         return exit::OK;
     }
-    // A home krowk cannot use — a KROWK_HOME that is not absolute, a
+    // A home krowk cannot use — a GRUNTAS_HOME that is not absolute, a
     // symlink or another user's directory in its place, an older layout
     // that could not be moved in — is refused before anything runs, rather
     // than read around. One `lstat` when it is there; none is fine (a

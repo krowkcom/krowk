@@ -234,8 +234,8 @@ fn rollover_check(ctx: &Ctx) -> Value {
 fn registry_mode(ctx: &Ctx, client: &Client) -> &'static str {
     if client.base_url == gruntas_api::DEV_BASE_URL.trim_end_matches('/') {
         "local"
-    } else if !ctx.env("KROWK_API_URL").is_empty() {
-        "custom (KROWK_API_URL)"
+    } else if !ctx.env("GRUNTAS_API_URL").is_empty() {
+        "custom (GRUNTAS_API_URL)"
     } else {
         "production"
     }
@@ -273,8 +273,8 @@ fn workspace_summary(ctx: &Ctx, resolved: &Result<(String, String), gruntas_api:
         if creds::read_token(ctx.io.env, ws).is_empty() {
             return format!("{ws} ({source}) — but no key is stored for it, so every command here fails");
         }
-        if !ctx.env("KROWK_TOKEN").is_empty() {
-            return format!("{ws} ({source}) — but KROWK_TOKEN is set and wins; uploads land wherever that key acts, and `krowk whoami` names it");
+        if !ctx.env("GRUNTAS_TOKEN").is_empty() {
+            return format!("{ws} ({source}) — but GRUNTAS_TOKEN is set and wins; uploads land wherever that key acts, and `krowk whoami` names it");
         }
         return format!("{ws} ({source})");
     }

@@ -6,7 +6,7 @@
 //! The config and the keys move and work, the old secrets are deleted,
 //! and what is not moved is named once with what to do; a move a crash
 //! cut short after its rename is finished; a home that exists takes
-//! nothing; a KROWK_HOME never takes the person's own files; and a
+//! nothing; a GRUNTAS_HOME never takes the person's own files; and a
 //! malformed old key file stops the move with its line and column only.
 
 #![cfg(all(feature = "harness", unix))]
@@ -67,8 +67,8 @@ impl Sandbox {
             .env_clear()
             .env("PATH", format!("{}:/usr/bin:/bin", self.root.join("bin").display()))
             .env("HOME", self.home())
-            .env("KROWK_NO_UPDATE_CHECK", "1")
-            .env("KROWK_API_URL", "http://127.0.0.1:9/v1")
+            .env("GRUNTAS_NO_UPDATE_CHECK", "1")
+            .env("GRUNTAS_API_URL", "http://127.0.0.1:9/v1")
             .env("FAKE_CLAUDE_LOG", self.root.join("fake.log"))
             .current_dir(self.root.join("repo"))
             .stdin(Stdio::null());
@@ -119,7 +119,7 @@ impl Sandbox {
         // A real krowk.db, made in a scratch home and put where the last
         // release kept it.
         let seed = self.root.join("seed");
-        assert!(self.krowk(&["sessions", "--json"], &[("KROWK_HOME", seed.to_str().unwrap())]).status.success());
+        assert!(self.krowk(&["sessions", "--json"], &[("GRUNTAS_HOME", seed.to_str().unwrap())]).status.success());
         std::fs::rename(seed.join("sessions/krowk.db"), data.join("krowk.db")).unwrap();
     }
 
@@ -311,7 +311,7 @@ fn a_krowk_home_is_a_sandbox_and_never_takes_the_persons_own_files() {
     let b = Sandbox::new("sandboxed");
     b.old_layout();
     let own = b.root.join("sandbox-home");
-    let out = b.krowk(&["doctor", "--json"], &[("KROWK_HOME", own.to_str().unwrap())]);
+    let out = b.krowk(&["doctor", "--json"], &[("GRUNTAS_HOME", own.to_str().unwrap())]);
     assert!(reported(&out), "{}", printed(&out));
     assert!(!printed(&out).contains("moved"), "{}", printed(&out));
     assert!(b.old_config().join("credentials.json").exists() && b.old_data().join("krowk.db").exists(), "nothing moved");
