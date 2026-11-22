@@ -30,15 +30,18 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       pin: ${{ steps.find.outputs.pin }}
+      latest: ${{ steps.find.outputs.latest }}
     steps:
       - id: find
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          pin=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            --jq '[.[] | select(.draft | not) | select(.prerelease | not) | select(any(.assets[]; .name | startswith("gruntas_")))] | last | .tag_name // ""')
+          tags=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '[.[] | select(.draft | not) | select(.prerelease | not) | select(any(.assets[]; .name | startswith("gruntas_")))] | "\(last.tag_name // "") \(first.tag_name // "")"')
+          read -r pin latest <<<"$tags"
           echo "pin=$pin" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
           [[ -n "$pin" ]] || echo "::notice::no gruntas release yet, so the action smoke test is skipped"
 
   smoke:
@@ -97,8 +100,10 @@ jobs:
       # ** guard on a bash that predates globstar (macOS /bin/bash is pinned
       # to 3.2 by its GPLv3 allergy) — are exercised on the extracted step
       # scripts, which is the same code by construction.
+      # Only once the pin is not the latest: before then, installing the
+      # latest would pass it too.
       - name: A tag-pinned action installs that release
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && needs.release.outputs.pin != needs.release.outputs.latest
         env:
           PIN: ${{ needs.release.outputs.pin }}
         run: |
