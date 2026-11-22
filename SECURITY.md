@@ -1,9 +1,9 @@
 # Security
 
-krowk runs commands with your own credentials, and it carries encrypted
+gruntas runs commands with your own credentials, and it carries encrypted
 transcripts of your sessions between your machines. Both have to hold up to
 anyone reading this source. This file says how to report a problem, what
-krowk sends without being asked, and how to check that a release is the one
+gruntas sends without being asked, and how to check that a release is the one
 this repository built.
 
 ## Reporting a vulnerability
@@ -11,7 +11,7 @@ this repository built.
 Email **security@krowk.com**. Please don't open a public issue, pull request
 or discussion for a vulnerability.
 
-Include what you found, the version (`krowk --version`) and platform, and
+Include what you found, the version (`gruntas --version`) and platform, and
 the steps or a proof of concept that shows it. If you want credit, say how
 you would like to be named.
 
@@ -32,7 +32,7 @@ before going public.
 
 ## What is in scope
 
-This repository — the `krowk` and `krowk-mcp` binaries, both builds, the
+This repository — the `gruntas` and `gruntas-mcp` binaries, both builds, the
 installer (`scripts/install.sh`), the npm packages and the GitHub Action —
 and the services it talks to: the registry at `api.krowk.com`, the relay,
 and the permalinks it serves. The sharpest edges, and the ones we most want
@@ -46,7 +46,7 @@ reports about:
   workspace's data.
 - **The agent's permissions and fences**: a tool call that runs, reads or
   writes something the permission rules or the sandbox should have stopped.
-- **Uploads**: `krowk push` sending a file it should have refused
+- **Uploads**: `gruntas push` sending a file it should have refused
   (credentials, a hard link, something outside the root).
 
 Out of scope: problems in the model providers themselves, attacks that need
@@ -54,32 +54,32 @@ an attacker already running code as your user (the threat model says why),
 and missing hardening headers on marketing pages.
 
 The [threat model](docs/security/threat-model.md), with the server side
-assumed hostile, says what krowk protects, from whom, and which risks it
+assumed hostile, says what gruntas protects, from whom, and which risks it
 accepts. The [crypto design](docs/security/crypto.md) is what it rests on.
 
 ## Supported versions
 
 The latest release. A fix is a new release; older versions are not patched.
-`krowk upgrade` moves to it.
+`gruntas upgrade` moves to it.
 
 ## Telemetry
 
-krowk has **no telemetry and no crash reporting**. It records nothing about
+gruntas has **no telemetry and no crash reporting**. It records nothing about
 how you use it for anyone but you, and a panic prints to your terminal and
 nowhere else. There is nothing to opt out of, so there is no schema to
 document; if that ever changes, it will be opt-in, off by default, and its
 schema will be written here first.
 
-The network calls krowk makes on its own, without a command that asks for
+The network calls gruntas makes on its own, without a command that asks for
 the network:
 
 | When | Where | What it sends | How to stop it |
 |---|---|---|---|
-| after a command, at most once a day, on a release build | `api.github.com` (`/repos/krowkcom/krowk/releases/latest`) | a GET with `User-Agent: krowk-cli/<version>`, nothing else | `GRUNTAS_NO_UPDATE_CHECK=1`; never under `CI` or GitHub Actions |
-| `krowk sessions sync`, when prices are a day old | `models.dev/api.json` | a GET, nothing else | `krowk sessions sync --no-network` |
+| after a command, at most once a day, on a release build | `api.github.com` (`/repos/gruntas/gruntas/releases/latest`) | a GET, nothing else | `GRUNTAS_NO_UPDATE_CHECK=1`; never under `CI` or GitHub Actions |
+| `gruntas sessions sync`, when prices are a day old | `models.dev/api.json` | a GET, nothing else | `gruntas sessions sync --no-network` |
 
-Everything else goes where you point it: your model providers, your krowk
-registry and relay, with your keys. When krowk drives Claude Code for you, it
+Everything else goes where you point it: your model providers, your gruntas
+registry and relay, with your keys. When gruntas drives Claude Code for you, it
 starts it with `DISABLE_TELEMETRY=1`, which an instance can undo in its
 `env`.
 
@@ -93,29 +93,31 @@ nowhere else, and carries:
   ([Sigstore](https://www.sigstore.dev/)): it is bound to that workflow at
   that tag and logged in the public Rekor transparency log, so no signing
   key exists to steal.
-- `krowk_<version>.cdx.json` and `krowk-lean_<version>.cdx.json`, CycloneDX
+- `gruntas_<version>.cdx.json` and `gruntas-lean_<version>.cdx.json`, CycloneDX
   SBOMs of the full and lean builds, each with its own `.sigstore.json`.
 
 To check a download, with [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)
 3 or later:
 
 ```bash
-tag=v0.1.0   # the release you downloaded
+tag=vX.Y.Z   # the gruntas release you downloaded
 cosign verify-blob checksums.txt --bundle checksums.txt.sigstore.json \
-  --certificate-identity "https://github.com/krowkcom/krowk/.github/workflows/release.yml@refs/tags/$tag" \
+  --certificate-identity "https://github.com/gruntas/gruntas/.github/workflows/release.yml@refs/tags/$tag" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-github-workflow-repository krowkcom/krowk \
+  --certificate-github-workflow-repository gruntas/gruntas \
   --certificate-github-workflow-trigger push
 sha256sum --check --ignore-missing checksums.txt
 ```
 
 The first command proves the checksums came from this repository's release
 workflow, run by pushing that tag; the second that your archive is one of
-them. An SBOM verifies the same way, with its own bundle. The npm packages
+them. An SBOM verifies the same way, with its own bundle. Releases from before the
+rename were signed as `krowkcom/krowk`, with `krowk_*` archives: verify those
+with `krowkcom/krowk` in both places above. The npm packages
 are published with npm provenance (npm 9.5 or later), which `npm audit
 signatures` checks.
 
-`krowk upgrade` checks the signature itself before it reads a line of
+`gruntas upgrade` checks the signature itself before it reads a line of
 `checksums.txt`: the certificate chains to Sigstore's Fulcio root, names this
 workflow at the tag it is installing, from GitHub's OIDC issuer, in this
 repository, run by a push, and signed those bytes; and Rekor's signed entry
@@ -123,15 +125,15 @@ timestamp, inclusion proof and checkpoint (for rekor.sigstore.dev's own
 origin) verify against Rekor's key. The roots are Sigstore's
 `trusted_root.json`, embedded in the binary
 (`crates/gruntas/src/cli/upgrade/trusted_root.json`) and replaced when Sigstore
-rotates them; a krowk built before a rotation refuses a release signed after
+rotates them; a gruntas built before a rotation refuses a release signed after
 it rather than installing it unchecked. Unlike cosign it does not check the
 certificate's CT-log SCT or the RFC 3161 timestamp. The release is signed
 with the signing config in the repository (`.github/sigstore/`), which logs
-to Rekor v1, the log `krowk upgrade` reads, and the release workflow checks
-the new signature with `krowk upgrade`'s own code before it publishes.
+to Rekor v1, the log `gruntas upgrade` reads, and the release workflow checks
+the new signature with `gruntas upgrade`'s own code before it publishes.
 
-Which release is the newest, `krowk upgrade` learns from GitHub's
-`releases/latest`, which is not signed (krowk has no TUF metadata of its
+Which release is the newest, `gruntas upgrade` learns from GitHub's
+`releases/latest`, which is not signed (gruntas has no TUF metadata of its
 own). Someone who could change that answer cannot make it install anything
 the release workflow did not sign, nor go back to an older version, but can
 hold it on any signed version between this one and the newest.
@@ -162,12 +164,12 @@ the same compiler), zig 0.16.0 and cargo-zigbuild 0.23.4 (the versions in
 `mise.toml` and `.github/workflows/dist.yml`):
 
 ```bash
-git clone https://github.com/krowkcom/krowk && cd krowk && git checkout "$tag"
+git clone https://github.com/gruntas/gruntas && cd gruntas && git checkout "$tag"
 rustup target add x86_64-unknown-linux-musl
 scripts/dist.sh build x86_64-unknown-linux-musl "${tag#v}"
-curl -fsSLO "https://github.com/krowkcom/krowk/releases/download/$tag/krowk_${tag#v}_linux_amd64.tar.gz"
-tar -xzOf "krowk_${tag#v}_linux_amd64.tar.gz" krowk | sha256sum   # the release's
-sha256sum dist/x86_64-unknown-linux-musl/krowk                   # yours
+curl -fsSLO "https://github.com/gruntas/gruntas/releases/download/$tag/gruntas_${tag#v}_linux_amd64.tar.gz"
+tar -xzOf "gruntas_${tag#v}_linux_amd64.tar.gz" gruntas | sha256sum   # the release's
+sha256sum dist/x86_64-unknown-linux-musl/gruntas                      # yours
 ```
 
 The release's archive lands in the checkout's root, beside `dist/`, which

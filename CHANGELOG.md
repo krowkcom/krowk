@@ -1,6 +1,6 @@
 # Changelog
 
-What changed in each release of the krowk CLI, for the people upgrading rather
+What changed in each release of the gruntas CLI, for the people upgrading rather
 than for the people who wrote it. Newest first.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
@@ -11,6 +11,66 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Breaking change
 
+- **krowk is now gruntas.** The command, its home, its environment
+  variables, a repository's config, the packages and this repository
+  (`gruntas/gruntas`) are renamed, with no fallback to the old names: there
+  is no `krowk` command, and `KROWK_*`, `.krowk/` and (after a one-time
+  copy) `~/.krowk` are no longer read.
+  Your account, API keys (`krowk_sk_…`) and links on krowk.com are
+  unchanged. To switch:
+  - **Install gruntas fresh.** A krowk binary cannot upgrade itself into
+    gruntas. Release archives are `gruntas_<version>_<os>_<arch>` and
+    `gruntas-lean_…`, holding `gruntas` and `gruntas-mcp`; npm packages are
+    `@gruntas/cli` and `@gruntas/mcp` (MCP registry name
+    `io.github.gruntas/gruntas`); releases come from `gruntas/gruntas`, and
+    `gruntas upgrade` and the installer only accept ones its release
+    workflow signed. The installer replaces the `krowk` skill it installed
+    before with a `gruntas` one, leaving any `krowk` skill it did not write
+    alone.
+  - **Your files are copied once.** The first `gruntas` run copies all of
+    `~/.krowk` into `~/.gruntas` once, and says so, so your login, sync
+    identity, sessions and accounts carry over without signing in again
+    (`krowk.db` becomes `gruntas.db`, and accounts point at their copies).
+    A large `~/.krowk` takes as much space again. After that gruntas never
+    reads `~/.krowk`, and it is left as it was for the old krowk. No copy
+    is made when `GRUNTAS_HOME` is set.
+  - **Move the always-on service.** It is now `gruntas-host.service`
+    (macOS: `com.gruntas.host`): with always-on set, run
+    `gruntas machines always-on on` to install it, and turn the old
+    `krowk-host` one off with krowk, so the two don't run as the same
+    machine. The host's runtime directory is `$XDG_RUNTIME_DIR/gruntas`, so
+    stop a host daemon the old binary started before upgrading.
+  - **Rename your environment variables.** Every `KROWK_*` variable is now
+    `GRUNTAS_*` (`KROWK_TOKEN` is `GRUNTAS_TOKEN`, `KROWK_HOME` is
+    `GRUNTAS_HOME`, and so on, the installer's and the Action's too): rename
+    them in your shell profile and CI. Worktree setup commands get
+    `GRUNTAS_PORT_BASE`, `GRUNTAS_PROJECT_ROOT` and
+    `GRUNTAS_WORKTREE_PATH`, so update setup scripts that use the old names.
+    JSON output that names a variable (`token_source`, the API URL's source)
+    names the new one.
+  - **Rename a repository's `.krowk/`** (`git mv .krowk .gruntas`):
+    `.gruntas/config.json`, `agents/` and `no-sync` replace their `.krowk/`
+    counterparts, which are no longer read or fenced. Worktrees move to
+    `~/.local/share/gruntas/worktrees`, on `gruntas/<hex>` branches;
+    worktrees made before stay where they are and are no longer listed,
+    applied or removed by the CLI (`git worktree remove` clears them), and
+    removed ones' snapshots are kept under `refs/gruntas/snapshots/`.
+  - **Reinstall the Claude Code plugin** as `gruntas@gruntas`
+    (`/plugin marketplace add gruntas/gruntas`, then
+    `/plugin install gruntas@gruntas`), and change GitHub workflows to
+    `uses: gruntas/gruntas@v0`.
+  - **Agents see gruntas.** The MCP server is `gruntas`, its tools
+    `gruntas_push`, `gruntas_list_artifacts`, `gruntas_get_artifact`,
+    `gruntas_claim_artifact`, `gruntas_get_run` and `gruntas_verify_key`
+    (and `gruntas_delegate`, `gruntas_collect` and `gruntas_machines` in the
+    agent build); inside a session the bridge's tools are `mcp__gruntas__*`,
+    so allow rules naming `mcp__krowk__*` need renaming. The plugin runs
+    `npx -y @gruntas/mcp`, the skill is `gruntas`, the Gemini extension is
+    named gruntas, and OSC 7501 reports `app=gruntas`. The manifests now
+    document `GRUNTAS_TOKEN`, the variable the CLI actually reads. New
+    sessions record their harness as `gruntas`; sessions stored as `krowk`
+    read as the same harness, so `sessions --harness gruntas` lists both,
+    and `sessions import --from gruntas` reads gruntas's own logs.
 - **krowk no longer runs models itself, and the SuperGrok sign-in is gone.**
   Every session now runs inside Claude Code or Codex, so `krowk -p`, the host
   and delegation need a connected Claude Code or Codex account. API keys and
@@ -29,57 +89,6 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `--sandbox` with a profile, which only held krowk's own tools, is refused;
   and `--client-id`, which only SuperGrok took. It is announced and removed
   in the same release.
-- **Environment variables are now `GRUNTAS_*`.** Every `KROWK_*` variable
-  is renamed (`KROWK_TOKEN` is `GRUNTAS_TOKEN`, `KROWK_HOME` is
-  `GRUNTAS_HOME`, and so on, the installer's and the Action's too); the old
-  names are no longer read, so rename them in your shell profile and CI.
-  Worktree setup commands get `GRUNTAS_PORT_BASE`, `GRUNTAS_PROJECT_ROOT`
-  and `GRUNTAS_WORKTREE_PATH`, so update setup scripts that use the old
-  names. JSON output that names a variable (`token_source`, the API URL's
-  source) names the new one.
-- **gruntas keeps its files in `~/.gruntas`.** The first `gruntas` run copies
-  your `~/.krowk` into `~/.gruntas` once, and says so, so your login, sync
-  identity, sessions and accounts carry over without signing in again
-  (`krowk.db` becomes `gruntas.db`, and accounts point at their copies).
-  After that gruntas never reads `~/.krowk`, and it is left as it was for
-  the old krowk. No copy is made when `GRUNTAS_HOME` is set. The always-on
-  service is now `gruntas-host.service` (macOS: `com.gruntas.host`): with
-  always-on set, run `gruntas machines always-on on` to install it, and turn
-  the old `krowk-host` one off with krowk, so the two don't run as the same
-  machine.
-- **Releases, npm packages and the installer are gruntas.** Release archives
-  are `gruntas_<version>_<os>_<arch>` and `gruntas-lean_…`, holding `gruntas`
-  and `gruntas-mcp`; npm packages are `@gruntas/cli` and `@gruntas/mcp`
-  (MCP registry name `io.github.gruntas/gruntas`); releases come from
-  `gruntas/gruntas`, and `gruntas upgrade` and the installer only accept
-  ones its release workflow signed. The installer replaces the `krowk`
-  skill it installed before with a `gruntas` one, leaving any `krowk` skill
-  it did not write alone. A krowk binary cannot upgrade itself into
-  gruntas: install gruntas fresh.
-- **A repository's config moves to `.gruntas/`, and worktrees to
-  `~/.local/share/gruntas/worktrees`.** `.gruntas/config.json`, `agents/`
-  and `no-sync` replace their `.krowk/` counterparts, which are no longer
-  read or fenced: rename the directory (`git mv .krowk .gruntas`). New
-  worktrees are on `gruntas/<hex>` branches; worktrees made before stay
-  where they are and are no longer listed, applied or removed by the CLI
-  (`git worktree remove` clears them), and removed ones' snapshots are kept
-  under `refs/gruntas/snapshots/`. The host's runtime directory is
-  `$XDG_RUNTIME_DIR/gruntas`, so stop a host daemon the old binary started
-  before upgrading.
-- **What agents and integrations see is gruntas.** The MCP server is
-  `gruntas`, its tools `gruntas_push`, `gruntas_list_artifacts`,
-  `gruntas_get_artifact`, `gruntas_claim_artifact`, `gruntas_get_run` and
-  `gruntas_verify_key` (and `gruntas_delegate`, `gruntas_collect` and
-  `gruntas_machines` in the agent build); inside a session the bridge's tools are
-  `mcp__gruntas__*`, so allow rules naming `mcp__krowk__*` need renaming.
-  The Claude Code plugin reinstalls as `gruntas@gruntas` (running
-  `npx -y @gruntas/mcp`), the skill is `gruntas`, the Gemini extension and
-  the GitHub Action are named gruntas (the Action installs from
-  `gruntas/gruntas`), and OSC 7501 reports `app=gruntas`. The manifests now
-  document `GRUNTAS_TOKEN`, the variable the CLI actually reads. New
-  sessions record their harness as `gruntas`; sessions stored as `krowk`
-  read as the same harness, so `sessions --harness gruntas` lists both, and
-  `sessions import --from gruntas` reads gruntas's own logs.
 
 ### Changed
 
