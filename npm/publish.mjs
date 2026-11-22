@@ -83,7 +83,9 @@ function atLeast(version, floor) {
 
 let auth;
 if (token) {
-  auth = "token";
+  // npm still tries OIDC first and uses it for a package with a trusted
+  // publisher, so the token only covers the ones without.
+  auth = oidc ? "token (or trusted publishing, where a package has one)" : "token";
 } else if (oidc) {
   const version = npmVersion();
   if (!atLeast(version, TRUSTED_NPM)) {
