@@ -28,30 +28,31 @@
 #
 # Options, all through the environment because a piped script has no argv:
 #   GRUNTAS_BIN_DIR     Where the binaries go (default: ~/bin if it is on PATH,
-#                     else ~/.local/bin if it is; otherwise ~/bin on Windows and
-#                     ~/.local/bin everywhere else)
+#                       else ~/.local/bin if it is; otherwise ~/bin on Windows and
+#                       ~/.local/bin everywhere else)
 #   GRUNTAS_VERSION     A version to install, e.g. 0.1.0 (default: the latest release)
 #   GRUNTAS_SKIP_SKILL  1 to leave the agent skill alone
 #   GRUNTAS_LEAN        1 for the lean build, 0 for the full one (default: lean in
-#                     CI and containers, full everywhere else)
+#                       CI and containers, full everywhere else)
 #   GRUNTAS_REQUIRE_SIGNATURE
-#                     1 to refuse an install whose signature cannot be checked:
-#                     no cosign here, or a release from before 0.12.0 (default:
-#                     the signature when cosign is installed, the checksum always)
+#                       1 to refuse an install whose signature cannot be checked:
+#                       no cosign here, or a release from before 0.12.0 (default:
+#                       the signature when cosign is installed, the checksum always)
 #
 #   GRUNTAS_INSTALL_BASE_URL
-#                     Test-only. A directory holding the archives, checksums.txt
-#                     and SKILL.md, instead of the GitHub release. It exists so
-#                     scripts/install_test.sh can run this file end to end
-#                     against a local server; it is not a supported knob, and it
-#                     requires GRUNTAS_VERSION since there is no release to ask.
+#                       Test-only. A directory holding the archives, checksums.txt
+#                       and SKILL.md, instead of the GitHub release. It exists so
+#                       scripts/install_test.sh can run this file end to end
+#                       against a local server; it is not a supported knob, and it
+#                       requires GRUNTAS_VERSION since there is no release to ask.
 #   GRUNTAS_INSTALL_FS_ROOT
-#                     Test-only. Where the container markers are looked for,
-#                     instead of /, so the detection can be tested on a machine
-#                     that is, or is not, a container.
-#   GRUNTAS_INSTALL_TTY Test-only. The terminal device opened to tell whether a
-#                     person is there (default /dev/tty), so a test run with no
-#                     terminal can stand in for one that has one.
+#                       Test-only. Where the container markers are looked for,
+#                       instead of /, so the detection can be tested on a machine
+#                       that is, or is not, a container.
+#   GRUNTAS_INSTALL_TTY
+#                       Test-only. The terminal device opened to tell whether a
+#                       person is there (default /dev/tty), so a test run with no
+#                       terminal can stand in for one that has one.
 
 set -euo pipefail
 
