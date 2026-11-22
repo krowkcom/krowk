@@ -523,8 +523,8 @@ jobs:
               -f ref="refs/tags/$major" -f sha="$GITHUB_SHA" >/dev/null
           echo "\`$major\` now points at $GITHUB_REF_NAME." >> "$GITHUB_STEP_SUMMARY"
 
-      # The MCP registry entry, io.github.gruntas/gruntas, from server.json as
-      # main has it (the check job held its versions to the tag). The registry
+      # The MCP registry entry, io.github.gruntas/gruntas, from the tag's
+      # server.json (the check job held its versions to the tag). The registry
       # checks that npm carries @gruntas/mcp at that version naming this entry,
       # so it goes after npm; and last, so a registry that refuses it fails
       # this job visibly with the release, npm and the major tag already done,
@@ -562,6 +562,17 @@ jobs:
         if: ${{ !contains(needs.check.outputs.version, '-') }}
         run: |
           set -euo pipefail
+          name=$(jq -r .name server.json)
+          version=$(jq -r .version server.json)
+          # A version is published once and refused after that, so a re-run
+          # of a release that got this far skips it. Anything but a clean hit
+          # publishes and finds out.
+          seen=$(curl -s -o /dev/null -w '%{http_code}' \
+            "https://registry.modelcontextprotocol.io/v0/servers/${name/\//%2F}/versions/$version" || true)
+          if [[ "$seen" == 200 ]]; then
+            echo "::notice::$name $version is already on the MCP registry"
+            exit 0
+          fi
           "$RUNNER_TEMP/mcp-publisher" login github-oidc
           "$RUNNER_TEMP/mcp-publisher" publish
-          echo "\`io.github.gruntas/gruntas\` $(jq -r .version server.json) is on the MCP registry." >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$name\` $version is on the MCP registry." >> "$GITHUB_STEP_SUMMARY"
