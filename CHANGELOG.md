@@ -43,9 +43,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   and `gruntas-mcp`; npm packages are `@gruntas/cli` and `@gruntas/mcp`
   (MCP registry name `io.github.gruntas/gruntas`); releases come from
   `gruntas/gruntas`, and `gruntas upgrade` and the installer only accept
-  ones its release workflow signed. The installer replaces the `krowk` skill it installed before with a `gruntas` one,
-  leaving any `krowk` skill it did not write alone. A krowk binary cannot
-  upgrade itself into gruntas: install gruntas fresh.
+  ones its release workflow signed. The installer replaces the `krowk`
+  skill it installed before with a `gruntas` one, leaving any `krowk` skill
+  it did not write alone. A krowk binary cannot upgrade itself into
+  gruntas: install gruntas fresh.
 
 ### Changed
 
