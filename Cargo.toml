@@ -28,7 +28,7 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
-# krowk-bench, the tool that measures the release binaries: optimised, so the
+# gruntas-bench, the tool that measures the release binaries: optimised, so the
 # log append it times runs at release speed, but without the LTO pass that
 # makes a release build of the harness take minutes. Nothing ships with it.
 [profile.bench-tool]

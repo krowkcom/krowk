@@ -6,7 +6,7 @@
 # Prints `true` or `false` on the last line of stdout; the log goes to stderr.
 #
 # Release commits touch CHANGELOG.md (and other *.md) and the three manifests.
-# crates/krowk-bench/budgets.toml is not ignorable for either workflow: bench
+# crates/gruntas-bench/budgets.toml is not ignorable for either workflow: bench
 # holds the build to it and the unit tests include_str! it.
 set -euo pipefail
 

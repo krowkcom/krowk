@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The JSON Schema of `codex app-server`, pinned (R-BACK-3). krowk drives
 # Codex over this protocol, so the schema the pinned Codex generates is
-# checked in beside the code that speaks it — crates/krowk-harness/schema/codex/,
+# checked in beside the code that speaks it — crates/gruntas-harness/schema/codex/,
 # with the Codex version it came from in VERSION — and the backend's tests
 # validate every message against it. Experimental methods and fields are
 # included: krowk opts into them for dynamic tools.
@@ -25,7 +25,7 @@ case "$mode" in
   ;;
 esac
 root="$(cd "$(dirname "$0")/.." && pwd)"
-dir="${CODEX_SCHEMA_DIR:-$root/crates/krowk-harness/schema/codex}"
+dir="${CODEX_SCHEMA_DIR:-$root/crates/gruntas-harness/schema/codex}"
 codex="${CODEX:-codex}"
 bundle=codex_app_server_protocol.schemas.json
 

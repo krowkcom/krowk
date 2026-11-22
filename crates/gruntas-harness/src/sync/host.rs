@@ -1,0 +1,2440 @@
+//! The host's side of a synced session: a client of the host daemon that
+//! follows one session, holds its lease, streams its frames over the relay
+//! and writes its log as chunks (engineering/harness.md → Sync).
+//!
+//! It is the session's one writer at the registry (R-SYNC-2): it takes the
+//! lease, renews it every third of its TTL (20 seconds for 60) and keeps the
+//! host ticket each renewal carries for its next join. The daemon stays the
+//! one thing that runs turns: what a viewer asks — a prompt, a steer, an
+//! interrupt, an approval — the bridge executes on the daemon as any client
+//! would, and answers the viewer with an ack. It says it answers approvals,
+//! so a request reaches the viewers as it reaches the terminal, and
+//! whichever answers first decides (R-PERM-2). A request of a turn a
+//! viewer started that no viewer is left to answer is denied after
+//! `APPROVAL_WAIT`, so such a turn never waits on a device that never
+//! comes; so is one of a turn started at the host's own terminal once no
+//! other answering client follows the session either (R-HOST-1): the
+//! bridge is an answering client, so the daemon's own denial of a request
+//! nobody is left to see never fires while it follows, and a terminal that
+//! closed with a question on screen must not leave its turn waiting on it.
+//! A viewer may also interrupt one of the session's own subagents, or
+//! answer its approval, and only those its log's `subagent.started` named
+//! whose own log on this machine names the session its parent (R-SUB-12,
+//! `for_this_session`); such a child's request in a viewer's turn is
+//! denied late as the turn's own is.
+//!
+//! A subagent's lines reach the bridge on the session's stream, under the
+//! child's session id, and its logged events are written into the
+//! session's chunks with the session's own (R-SUB-6), on purpose: a viewer
+//! rebuilds the child from them — its history, behind the child view —
+//! with no key but the session's, while the session's replay walks its own
+//! branch (`log::branch`), whose parent chain never enters a child's.
+//!
+//! Losing the relay loses nothing (R-OFF-2): the turn runs on in the
+//! daemon, the chunks go on being written, and every batch sealed while the
+//! link was down is kept and sent once it is back, on the same stream,
+//! numbered on from the last sent.
+
+use super::store::{self, Index, Writer};
+use super::{Answer, Batch, In, Join, ViewerFrame, Welcome, DEAD, FRAME, PING};
+use crate::daemon::client::Client as Daemon;
+use crate::protocol::{ApprovalDecision, ApprovalRequest, Command, LiveEvent, LogBody, PermissionMode, StreamLine};
+use gruntas_api::Client;
+use gruntas_client::e2e::{self, DeviceId, SessionKey, SessionKeys, SigningKey};
+use gruntas_client::device_chain::{Chain, SignedEntry};
+use gruntas_client::session_record;
+use gruntas_client::user_key::UserKeys;
+use gruntas_client::protocol::frame::{KIND_ACK, KIND_ROUTED, HEADER};
+use gruntas_client::relay_link::{HostLink, Inbound};
+use serde_json::{json, Value};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio::sync::{mpsc, watch};
+
+/// The lease's TTL, and how often it is renewed: a third of it
+/// (harness.md → The host daemon).
+pub const LEASE_TTL: u64 = 60;
+pub fn renew_every(ttl: u64) -> Duration {
+    Duration::from_secs(ttl / 3)
+}
+
+/// How long an approval of a turn a viewer started waits, with no viewer
+/// connected, before the bridge denies it. One of a turn started at the
+/// host's own terminal is denied as late only once no other answering
+/// client (the terminal) follows the session either: while one does, its
+/// person answers it.
+pub const APPROVAL_WAIT: Duration = Duration::from_secs(300);
+
+/// Batches kept for the relay while its link is down: past this the oldest
+/// go, the bridge starts a new stream when it is back, and each viewer,
+/// told to resync, asks the host for the logged events it lacks.
+pub const KEEP: usize = 1024;
+
+pub struct Options {
+    pub relay: String,
+    pub env: String,
+    /// Signed by this device (`Client::signed_by` with an
+    /// `e2e::DeviceSigner` of `device` and `signing`): its lease, chunk,
+    /// index and relay-ticket calls act as the device, and a registry
+    /// refuses them unsigned.
+    pub api: Arc<Client>,
+    pub device: DeviceId,
+    pub signing: SigningKey,
+    /// The person's user key, by the generations this device holds: a new
+    /// session's key is sealed under the newest, an existing one opened
+    /// under the generation it names.
+    pub keys: UserKeys,
+    /// The device list as this device verified it: a session record is
+    /// taken up only when a device on it signed it, and a new session is
+    /// sealed only under the generation it names as current.
+    pub chain: Chain,
+    pub session: String,
+    pub title: String,
+    pub cwd: String,
+    /// This machine's session logs (`log::sessions_dir`): where a child a
+    /// viewer would interrupt must have a log naming the session its parent.
+    pub sessions: std::path::PathBuf,
+    pub ttl: u64,
+    /// Batches kept for the relay while its link is down (`KEEP`).
+    pub keep: usize,
+    /// Direct paths, offered beside the relay (R-NET-1); None for the
+    /// relay alone.
+    pub direct: Option<super::direct::Config>,
+    /// This machine's tailnet node, kept in the session's sealed index so
+    /// `krowk machines` finds it on the tailnet (R-NET-4); None when Tailscale
+    /// is down.
+    pub tailnet: Option<super::tailscale::Tailnet>,
+    /// The lease another host handed this one with the session (R-HAND-1):
+    /// taken up as it is rather than acquired. None for a plain take-up.
+    pub handed: Option<super::Handed>,
+    /// How long a request waits, with no viewer here, before the bridge
+    /// denies it (`APPROVAL_WAIT`; a test makes it short).
+    pub approval_wait: Duration,
+    /// Where an owner that reads the device list for many bridges writes
+    /// why this one must stop (the automatic sync's supervisor, which runs
+    /// one reader for all of them): `run` then starts no list reader of its
+    /// own, and ends with the reason at its next sweep, as with its own.
+    /// `None` — `krowk sync host` — reads the list itself every
+    /// `LIST_EVERY`.
+    pub stale: Option<Arc<Mutex<Option<String>>>>,
+    /// What an owner that lets an idle bridge go and takes it up again is
+    /// told (the automatic sync's supervisor, ticket 116); `None` — `krowk
+    /// sync host` — tells nobody.
+    pub supervised: Option<Supervised>,
+}
+
+/// The automatic sync's hold on a bridge (ticket 116): who is watching,
+/// and the relay link a bridge it stopped leaves behind.
+pub struct Supervised {
+    /// Told, within a sweep, each time a viewer comes where none was or the
+    /// last one goes: a viewer is a link that has said hello, on the relay
+    /// or a direct path, so one that can send commands.
+    pub viewers: Box<dyn Fn(bool) + Send + Sync>,
+    /// Where a bridge that ends with no error, its stream sealed and its
+    /// lease its own to give back, leaves its relay link still joined
+    /// (`Parked`), rather than closing it; never after a handoff, nor with
+    /// the lease another's. The owner keeps it only for a stop it asked for
+    /// as idle, and closes it otherwise.
+    pub park: Arc<Mutex<Option<Parked>>>,
+}
+
+/// A stopped bridge's relay link, still joined as the session's host,
+/// though the lease is given back: it sends nothing but heartbeats, and the
+/// relay tells it of each viewer that joins (`parked`).
+pub struct Parked {
+    pub ws: super::Ws,
+    /// A viewer was here as the bridge stopped: it is wanted again at once.
+    pub viewed: bool,
+}
+
+/// Why a parked link ended (`parked`).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Woke {
+    /// A viewer joined, or sent something: the session is wanted.
+    Viewer,
+    /// Its owner let it go.
+    Stopped,
+    /// The link went — closed, refused (another host took the channel), or
+    /// silent past `DEAD` — and nothing wakes the session but its next turn.
+    Gone(String),
+}
+
+/// Holds a parked link until a viewer wants the session, its owner lets it
+/// go, or it goes. It sends nothing but the relay's heartbeat, `ping`: once
+/// as it is parked, then every `PING` from `beats`, the owner's one
+/// schedule, so the links it parks are pinged on the same wake (each
+/// `pong` is read as it comes). It reads only what says the link lives or a
+/// viewer came: a viewer's join, or anything routed from one, which is
+/// dropped unread — a viewer's hello, since a viewer holds its commands
+/// until a host welcomes it, and sends them to the bridge that does.
+pub async fn parked(p: Parked, mut stop: watch::Receiver<bool>, beats: tokio::time::Instant) -> Woke {
+    let Parked { mut ws, viewed } = p;
+    let mut beat = tokio::time::interval_at(beats, PING);
+    // A beat missed (the process stopped, a laptop asleep) is let go
+    // rather than sent late, so the links stay on the one schedule.
+    beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let (mut beaten, mut heard) = (Instant::now(), Instant::now());
+    // Nothing read or sent it while the bridge stopped (its last chunk, the
+    // lease given back): a heartbeat at once, rather than at the next beat.
+    let woke = if viewed {
+        Woke::Viewer
+    } else if !super::ping(&mut ws).await {
+        Woke::Gone("a heartbeat could not be sent".into())
+    } else { loop {
+        tokio::select! {
+            _ = stop.changed() => break Woke::Stopped,
+            _ = beat.tick() => {
+                let gap = beaten.elapsed();
+                beaten = Instant::now();
+                if link_dead(gap, heard.elapsed(), 0, None) {
+                    break Woke::Gone(format!("nothing came on it for {} s", DEAD.as_secs()));
+                }
+                if !super::ping(&mut ws).await {
+                    break Woke::Gone("a heartbeat could not be sent".into());
+                }
+            }
+            m = super::recv(&mut ws) => {
+                heard = Instant::now();
+                match m {
+                    In::Closed => break Woke::Gone("the relay closed it".into()),
+                    In::Control(v) if v["type"] == "error" => break Woke::Gone(format!("the relay let it go: {}", v["code"].as_str().unwrap_or("?"))),
+                    In::Control(v) if v["type"] == "viewer" && v["event"] == "joined" => break Woke::Viewer,
+                    In::Envelope(b) if b[1] == KIND_ROUTED => break Woke::Viewer,
+                    _ => {}
+                }
+            }
+        }
+    } };
+    // Said goodbye to, so the relay tells the viewers the host went at
+    // once rather than when the connection times out.
+    let _ = tokio::time::timeout(Duration::from_secs(1), futures_util::SinkExt::close(&mut ws)).await;
+    woke
+}
+
+/// How a bridge that handed its session over ends: what `krowk sync host`
+/// says, its lease the other device's now.
+pub const HANDED_OVER: &str = "handed over";
+
+/// How a handoff to a device over its machine limit is refused
+/// (R-SYNC-17): this, the device's name, and the limit's sentence.
+pub const MOVE_REFUSED: &str = "Can't move this session to ";
+
+/// How long a bridge that handed its session over stays: a target whose
+/// link dropped as the answer went asks again, and is answered again.
+const HANDED_GRACE: Duration = Duration::from_secs(10);
+
+/// The lease as the bridge holds it: the token only the holder has, its
+/// fence, and the freshest host ticket.
+#[derive(Clone, Default)]
+struct Held {
+    token: String,
+    fence: u64,
+    ticket: String,
+}
+
+/// How a bridge that could not take the lease up ends, the registry's code
+/// after it in brackets: `(lease_held)` when another bridge holds it — a
+/// `krowk sync host`, or a host that crashed and whose lease has not
+/// lapsed yet (the automatic sync's supervisor waits, and never takes it).
+pub const NOT_GRANTED: &str = "the registry did not grant the lease";
+
+/// How a bridge whose lease another device took ends (R-SYNC-2).
+pub const LEASE_LOST: &str = "another device holds session";
+
+/// The registry's refusal of a machine over its person's limit
+/// (R-SYNC-17), as a bridge's error starts: this, the refusal's details as
+/// JSON on one line, then the sentence to say (`machine_limit`).
+const MACHINE_LIMIT: &str = "(sync_machine_limit) ";
+
+/// How a bridge refused hosting for the machine limit ends: the refusal's
+/// details, which `machine_limit` reads back, and what to say. The details
+/// lead, so a machine's name in the sentence can never read as either.
+pub(crate) fn over_limit(e: &gruntas_api::Error) -> String {
+    let details = e.body.get("details").cloned().unwrap_or(Value::Null);
+    format!("{MACHINE_LIMIT}{details}\n{}", e.fix())
+}
+
+/// A bridge's error, when it ended refused hosting for the machine limit:
+/// the sentence to say once, and the refusal's details. This machine stays
+/// a viewer, and nothing pauses (R-SYNC-17).
+pub fn machine_limit(error: &str) -> Option<(&str, Value)> {
+    let (details, said) = error.strip_prefix(MACHINE_LIMIT)?.split_once('\n')?;
+    Some((said, serde_json::from_str(details).unwrap_or(Value::Null)))
+}
+
+/// Opens (or creates) the synced session and takes its lease: the session
+/// keys, the writer at the log's end, and the lease.
+fn take(o: &Options) -> Result<(SessionKeys, Writer, Held), String> {
+    let id = &o.session;
+    let raw = crate::daemon::ws::uuid(id);
+    let (keys, wrapped, index) = match o.api.show_sync_session(id) {
+        // Any of the person's devices may take a session up again — the
+        // handoff — but only one whose record a device listed now signed: a
+        // removed device's, planted under a generation it held, is never
+        // written under (`store::open_session_key`).
+        Ok(s) => {
+            let keys = store::open_session_key(&s, id, &o.keys, &o.chain, session_record::Signer::Listed)?;
+            let index = Index { host: Some(hosted_on(o)), ..store::open_index(&keys, id, &s.sealed_index)? };
+            (keys, s.wrapped_key, index)
+        }
+        // Published only when the registry has no session under the id; a
+        // failed write leaves it with none, and the next host publishes
+        // afresh.
+        Err(e) if e.status == 404 => {
+            let keys = SessionKeys::from(SessionKey::generate());
+            let sealed_key = e2e::seal_session_keys(&keys, &raw, &o.keys, o.chain.generation()).map_err(|e| e.to_string())?;
+            let signature = session_record::sign(&raw, &sealed_key, session_record::SEAL_USER, o.keys.newest(), &o.signing).map_err(|e| e.to_string())?;
+            let wrapped = e2e::hex(&sealed_key);
+            let index = Index { title: o.title.clone(), cwd: o.cwd.clone(), host: Some(hosted_on(o)), ..Index::default() };
+            let sealed = e2e::hex(&e2e::seal_session_index(keys.current(), &raw, &serde_json::to_vec(&index).expect("json")));
+            o.api.put_sync_session(id, &wrapped, Some((&e2e::hex(&signature), &o.device.to_string())), Some(&sealed), None).map_err(|e| format!("the registry did not publish session {id} ({}): {}", e.code(), e.fix()))?;
+            (keys, wrapped, index)
+        }
+        Err(e) => return Err(format!("the registry did not say whether it holds session {id} ({e}) — nothing was published; try again")),
+    };
+    let lease = match &o.handed {
+        Some(h) => gruntas_api::sync::Lease { token: h.token.clone(), fence: h.fence, relay_ticket: h.ticket.clone(), ..Default::default() },
+        // The fix said, not only the code: a lease that stalled must say the
+        // registry stopped answering (R-REG-1), and a held one that another
+        // device holds it.
+        None => o.api.acquire_lease(id, &o.device.to_string(), o.ttl, &o.env).map_err(|e| if e.code() == "sync_machine_limit" { over_limit(&e) } else { format!("{NOT_GRANTED} ({}): {}", e.code(), e.fix()) })?,
+    };
+    if lease.relay_ticket.is_empty() {
+        return Err("the registry issued no host ticket: this device has no signing key on record — pair it again with `krowk sync join`".into());
+    }
+    let (keys, wrapped) = rotate_if_behind(o, keys, wrapped, &index, &lease.token)?;
+    let writer = Writer::take_up(o.api.clone(), keys.clone(), id, wrapped, index, lease.fence)?.with_images(o.sessions.join(id));
+    Ok((keys, writer, Held { token: lease.token, fence: lease.fence, ticket: lease.relay_ticket }))
+}
+
+/// This machine as the index names its host: what the index is next
+/// written with, so `krowk machines` lists the session under it.
+fn hosted_on(o: &Options) -> store::HostedOn {
+    store::HostedOn { device: o.device.to_string(), tailnet: o.tailnet.clone() }
+}
+
+/// A session sealed under an older user key generation than the device
+/// list's has lived through a device's removal, and that device holds its
+/// key. Before anything more is written, the host adds a key epoch: a new
+/// key, current from here on, with the old ones kept to open what came
+/// before, the ring sealed under the current generation and its record and
+/// index written again with it, in one write under the lease. A rotation
+/// the registry refuses leaves the session unhosted: nothing more is sealed
+/// under a key a removed device holds.
+fn rotate_if_behind(o: &Options, keys: SessionKeys, wrapped: String, index: &Index, token: &str) -> Result<(SessionKeys, String), String> {
+    let generation = e2e::unhex(&wrapped).ok_or("the session's wrapped key is not hex").and_then(|w| e2e::session_key_generation(&w).map_err(|_| "the session's wrapped key is not one krowk reads"))?;
+    if generation >= o.chain.generation() {
+        return Ok((keys, wrapped));
+    }
+    let raw = crate::daemon::ws::uuid(&o.session);
+    let rotated = keys.rotated().map_err(|e| e.to_string())?;
+    let sealed_key = e2e::seal_session_keys(&rotated, &raw, &o.keys, o.chain.generation()).map_err(|e| e.to_string())?;
+    let signature = session_record::sign(&raw, &sealed_key, session_record::SEAL_USER, o.keys.newest(), &o.signing).map_err(|e| e.to_string())?;
+    let wrapped = e2e::hex(&sealed_key);
+    let sealed = e2e::hex(&e2e::seal_session_index(rotated.current(), &raw, &serde_json::to_vec(index).expect("json")));
+    o.api
+        .put_sync_session(&o.session, &wrapped, Some((&e2e::hex(&signature), &o.device.to_string())), Some(&sealed), Some(token))
+        .map_err(|e| format!("session {} is sealed under user key generation {generation}, from before a device was removed, and the registry refused its new key ({e}) — nothing is written under the old one; try again", o.session))?;
+    Ok((rotated, wrapped))
+}
+
+/// Renews the lease every third of its TTL, on a thread of its own (the
+/// registry client blocks), keeping the latest ticket in `held`. A renewal
+/// that fails is tried again every two seconds; one refused because the
+/// lease lapsed takes it again when nobody else has. One that finds another
+/// device holding it sets `lost`: the bridge then writes nothing more and
+/// ends (R-SYNC-2's one writer). One refused because the workspace has no
+/// paid plan (any more) is not tried again: it says so in `stale`, and the
+/// bridge ends with it at its next sweep.
+fn renew_loop(o: Arc<Options>, held: Arc<Mutex<Held>>, stop: Arc<AtomicBool>, lost: Arc<AtomicBool>, stale: Arc<Mutex<Option<String>>>) {
+    let every = renew_every(o.ttl);
+    let mut next = Instant::now() + every;
+    while !stop.load(Ordering::Relaxed) && !lost.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(100).min(next.saturating_duration_since(Instant::now())));
+        if Instant::now() < next {
+            continue;
+        }
+        let h = held.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let device = o.device.to_string();
+        let answer = match o.api.renew_lease(&o.session, &device, &h.token, o.ttl, &o.env) {
+            // Never once halted: the halt comes before the lease is given
+            // back, so a renewal refused because it was is not taken again.
+            Err(_) if stop.load(Ordering::Relaxed) => return,
+            Err(e) if e.code().contains("lease") => o.api.acquire_lease(&o.session, &device, o.ttl, &o.env),
+            other => other,
+        };
+        match answer {
+            Ok(l) => {
+                let mut h = held.lock().unwrap_or_else(|e| e.into_inner());
+                if !l.token.is_empty() {
+                    h.token = l.token;
+                }
+                h.fence = l.fence;
+                if !l.relay_ticket.is_empty() {
+                    h.ticket = l.relay_ticket;
+                }
+                next = Instant::now() + every;
+            }
+            Err(e) if e.code() == "lease_held" => lost.store(true, Ordering::Relaxed),
+            Err(e) if e.code() == "sync_requires_paid_plan" => {
+                // The first reason to stop stands (the list thread's too).
+                stale.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| format!("the registry refused to renew the lease ({}): {}", e.code(), e.fix()));
+                return;
+            }
+            // The lease lapsed and taking it again is refused: this machine
+            // is over its limit now, and stays a viewer.
+            Err(e) if e.code() == "sync_machine_limit" => {
+                stale.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| over_limit(&e));
+                return;
+            }
+            Err(_) => next = Instant::now() + Duration::from_secs(2),
+        }
+    }
+}
+
+/// How many batches past the relay's last ack make a link that still
+/// answers its heartbeats a dead one: a relay acks at least every 8th batch
+/// a link sends it, viewers or none (relay.md → Flow control), so a tail
+/// of fewer is never waited on.
+const GHOST_UNACKED: usize = 8;
+/// How long the oldest of them must have waited first: well past the 2
+/// seconds a relay may take to hold a batch.
+const GHOST_WAIT: Duration = Duration::from_secs(10);
+
+/// Whether a link is let go at a heartbeat, to be joined again: the beat
+/// came `gap` after the last, so this process did not run in between for
+/// longer than a relay keeps a silent link; nothing has been heard on it
+/// for `heard`; or it is a ghost, `unacked` batches past the relay's last
+/// ack, the oldest `waited` ago.
+fn link_dead(gap: Duration, heard: Duration, unacked: usize, waited: Option<Duration>) -> bool {
+    gap > DEAD || heard > DEAD || (unacked >= GHOST_UNACKED && waited.is_some_and(|w| w > GHOST_WAIT))
+}
+
+/// How often a running host reads the device list again: the list it
+/// verified when it started is not the list for good, and a device removed
+/// while it runs must not go on reading what it seals.
+pub const LIST_EVERY: Duration = Duration::from_secs(60);
+
+/// What a running host ends with when the list moved on under it and a
+/// device was removed: `krowk sync host` takes the session up again, under
+/// the new list and the user key it leaves current.
+pub const LIST_MOVED: &str = "a device was removed from your device list while this host ran";
+
+/// Why the device list, read again, says a host must stop: what `ListEnd::why`
+/// says of each session it stops.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListEnd {
+    /// This device is no longer on the list (or the registry says it was
+    /// revoked).
+    Removed,
+    /// The registry refused this machine's key.
+    KeyRefused,
+    /// The list ends before the head held, or holds another entry there.
+    StartedOver,
+    /// Entries that do not verify onto the list held, and why.
+    Refused(String),
+    /// Another device was removed: the user key moved on (`LIST_MOVED`).
+    Moved,
+}
+
+impl ListEnd {
+    /// What a host of `session` ends with. A move starts with `LIST_MOVED`,
+    /// which is how `krowk sync host` and the automatic sync's supervisor
+    /// know to take the session up again under the new list.
+    pub fn why(&self, session: &str) -> String {
+        match self {
+            ListEnd::Removed => format!("this device was removed from your device list; it stopped hosting session {session}"),
+            // A removal revokes the device's keys, so this may be one; the
+            // key refused is all that is known, and all that is said.
+            ListEnd::KeyRefused => format!("the registry refused this machine's key — it may have been removed from your devices, or signed out; it stopped hosting session {session}"),
+            ListEnd::StartedOver => format!("your device list was started over; it stopped hosting session {session}"),
+            ListEnd::Refused(e) => format!("your device list changed in a way this host does not follow ({e}); it stopped hosting session {session} — host it again"),
+            ListEnd::Moved => format!("{LIST_MOVED}; session {session} is hosted again under the new list"),
+        }
+    }
+}
+
+/// The list read again, by `api` as `device`, past the head `chain` holds
+/// and verified onto it: `None` when nothing came, or the registry could
+/// not be reached (asked again later), the longer chain when it only added
+/// devices, and why a host must stop otherwise — a removal, this device's
+/// own, or entries that do not verify. One read answers for every session
+/// the device hosts: blocking, on a thread of the caller's.
+pub fn list_news(api: &Client, device: DeviceId, chain: &Chain) -> Result<Option<Chain>, ListEnd> {
+    let refused = |e: String| ListEnd::Refused(e);
+    let mut next = chain.clone();
+    let mut after = chain.head().seq;
+    loop {
+        let served = match api.device_list(Some(after)) {
+            Ok(s) => s,
+            Err(e) if e.code() == "device_revoked" => return Err(ListEnd::Removed),
+            Err(e) if e.status == 401 => return Err(ListEnd::KeyRefused),
+            Err(_) => return Ok(None),
+        };
+        // A list that ends before the head held, or holds another entry
+        // there, is a new one: a start-over.
+        if let Some(h) = &served.head
+            && (h.seq < chain.head().seq || (h.seq == chain.head().seq && e2e::unhex(&h.hash).as_deref() != Some(&chain.head().hash[..])))
+        {
+            return Err(ListEnd::StartedOver);
+        }
+        let from = next.head().seq;
+        for e in served.entries.iter().filter(|e| e.seq > from) {
+            let entry = e2e::unhex(&e.entry).zip(e2e::unhex(&e.signatures)).ok_or_else(|| refused("an entry is not hex".into()))?;
+            let signed = SignedEntry::from_parts(entry.0, &entry.1).map_err(|e| refused(e.0))?;
+            next = next.extend(&signed).map_err(|e| refused(e.0))?;
+        }
+        match served.next {
+            Some(n) if n > after && !served.entries.is_empty() => after = n,
+            _ => break,
+        }
+    }
+    if next.head() == chain.head() {
+        return Ok(None);
+    }
+    if !next.devices().iter().any(|d| d.id() == device) {
+        return Err(ListEnd::Removed);
+    }
+    if next.generation() > chain.generation() {
+        return Err(ListEnd::Moved);
+    }
+    Ok(Some(next))
+}
+
+/// Reads the device list again every `LIST_EVERY`, on a thread of its own
+/// so a slow read never holds up the lease's renewal, until the bridge
+/// stops or the list says it must (`stale`). A bridge whose owner reads
+/// the list for it (`Options::stale`) runs none.
+fn list_loop(o: Arc<Options>, stop: Arc<AtomicBool>, stale: Arc<Mutex<Option<String>>>) {
+    let mut chain = o.chain.clone();
+    let mut next = Instant::now() + LIST_EVERY;
+    while !stop.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(100).min(next.saturating_duration_since(Instant::now())));
+        if Instant::now() < next {
+            continue;
+        }
+        next = Instant::now() + LIST_EVERY;
+        match list_news(&o.api, o.device, &chain) {
+            Ok(Some(longer)) => chain = longer,
+            Ok(None) => {}
+            Err(end) => {
+                stale.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(end.why(&o.session));
+                return;
+            }
+        }
+    }
+}
+
+/// What the writer thread is asked to do, in order.
+enum Write {
+    Event(Value),
+    Flush,
+    Checkpoint(Option<String>),
+    /// A checkpoint before a handoff, answered once it is stored or not.
+    Handoff(Option<String>, std::sync::mpsc::Sender<Result<(), String>>),
+    /// A flush, answered once everything before it is stored or not.
+    Flushed(std::sync::mpsc::Sender<Result<(), String>>),
+}
+
+/// How often a write the registry refused is tried again.
+const RETRY: Duration = Duration::from_secs(2);
+
+/// How long the writer leaves the registry alone once it refuses a write as
+/// one too many (`too_many_requests`, its per-key ceiling on creates): the
+/// minute its Retry-After asks for. Fifty sessions taken up together and
+/// ending their turns in the same minute pass the ceiling (ticket 98), and
+/// fifty writers each trying again every `RETRY` would ask it some thirty
+/// times more than it said to. What is owed is kept, and put after.
+const LIMITED: Duration = Duration::from_secs(60);
+
+/// Whether a write's error is the registry's ceiling on creates.
+fn limited(e: &str) -> bool {
+    e.contains("too_many_requests")
+}
+
+/// When this process last said the registry is limiting its writes: one
+/// key, so fifty writers refused together say it once a wait, not fifty
+/// times.
+static LIMITED_SAID: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn say_limited(e: &str) {
+    let mut said = LIMITED_SAID.lock().unwrap_or_else(|e| e.into_inner());
+    if said.is_none_or(|at| at.elapsed() >= LIMITED) {
+        *said = Some(Instant::now());
+        eprintln!("krowk: the registry is limiting this machine's writes for a moment ({e}); the sessions' chunks are kept and put again in {} s", LIMITED.as_secs());
+    }
+}
+
+fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Receiver<Write>, heads: mpsc::UnboundedSender<store::Head>, lost: Arc<AtomicBool>) {
+    // Until when the registry asked to be left alone (`LIMITED`), and
+    // whether a flush was put off meanwhile: owed as a staged chunk is.
+    let mut quiet: Option<Instant> = None;
+    let mut put_off = false;
+    // When a write last went to the registry.
+    let mut tried = Instant::now();
+    loop {
+        let job = match rx.recv_timeout(RETRY) {
+            Ok(j) => Some(j),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        // A lease another device holds now: nothing more is written.
+        if lost.load(Ordering::Relaxed) {
+            continue;
+        }
+        let h = held.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let waiting = quiet.is_some_and(|until| Instant::now() < until);
+        // What was owed, or put off, is put again every `RETRY` however busy
+        // the session is — not only once it falls quiet — unless the
+        // registry asked to be left alone.
+        let due = !waiting && (w.owes() || put_off) && tried.elapsed() >= RETRY;
+        let done = match job {
+            // Kept in order, whatever the registry says: the fence is looked
+            // at when something is written.
+            Some(Write::Event(e)) if !due => {
+                w.push(e);
+                Ok(())
+            }
+            // Kept, and put once the registry takes writes again: a
+            // checkpoint and a handoff's are still asked for, being rare
+            // and, the second, waited on.
+            Some(Write::Flush) if waiting => {
+                put_off = true;
+                Ok(())
+            }
+            None if !due => Ok(()),
+            job => {
+                tried = Instant::now();
+                if let Some(Write::Event(e)) = &job {
+                    w.push(e.clone());
+                }
+                match (w.refence(h.fence), job) {
+                    // The lease's new fence could not be taken up: the events
+                    // are kept and a flush is owed still, and a handoff hears
+                    // why. A checkpoint asked for then is not cut (the next
+                    // take-up cuts one).
+                    (Err(e), Some(Write::Handoff(_, done) | Write::Flushed(done))) => {
+                        let _ = done.send(Err(e.clone()));
+                        Err(e)
+                    }
+                    (Err(e), _) => {
+                        put_off = true;
+                        Err(e)
+                    }
+                    // Each of these flushes first: through, nothing put off
+                    // is left. What was owed is put again, the same chunk
+                    // under the same index.
+                    (Ok(()), Some(Write::Checkpoint(tree))) => w.checkpoint(tree, &h.token).inspect(|()| put_off = false),
+                    (Ok(()), Some(Write::Handoff(tree, done))) => {
+                        let r = w.checkpoint(tree, &h.token).inspect(|()| put_off = false);
+                        let _ = done.send(r.clone());
+                        r
+                    }
+                    (Ok(()), Some(Write::Flushed(done))) => {
+                        let r = w.flush(&h.token).inspect(|()| put_off = false);
+                        let _ = done.send(r.clone());
+                        r
+                    }
+                    (Ok(()), _) => w.flush(&h.token).inspect(|()| put_off = false),
+                }
+            }
+        };
+        match done {
+            Err(e) if limited(&e) => {
+                say_limited(&e);
+                quiet = Some(Instant::now() + LIMITED);
+            }
+            Err(e) => eprintln!("krowk: a chunk of the session could not be written yet ({e}); it is kept and put again"),
+            Ok(()) => {}
+        }
+        if let Some(head) = w.head() {
+            let _ = heads.send(head);
+        }
+    }
+    // Stopping: what is owed gets a last few tries — one, while the
+    // registry asks to be left alone, so a stop is not held up waiting on
+    // it. What is still not stored the next bridge of the session writes,
+    // from the daemon's log, when its next turn takes it up.
+    let tries = if quiet.is_some_and(|until| Instant::now() < until) { 1 } else { 3 };
+    for _ in 0..tries {
+        if !(w.owes() || put_off) || lost.load(Ordering::Relaxed) {
+            break;
+        }
+        put_off = false;
+        let h = held.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        match w.flush(&h.token) {
+            Ok(()) => {}
+            Err(e) if limited(&e) => break,
+            Err(_) => std::thread::sleep(RETRY),
+        }
+    }
+}
+
+/// What a viewer may ask of the host: its session's prompt, steer,
+/// interrupt, approval and model switch, and an interrupt or an approval's answer for
+/// one of its own children (R-SUB-12), and nothing else. A viewer holds
+/// this session's key and no other, so a command naming another session —
+/// or none, which would start one in the host's directory — is refused,
+/// never run. `is_child` says what the session's own log named and this
+/// machine's logs bear out (`child_of`, `parent_here`), never what the
+/// viewer says: an id it knows or guesses reaches nothing the key does not.
+/// A child's approval is the session's to answer: a Claude Code agent's
+/// asked under the session's own id until its child session was made its
+/// (R-SUB-9), and a viewer answering it keeps that, and gains nothing. A
+/// child is steered or prompted by nobody but the host.
+fn for_this_session(c: &Command, session: &str, is_child: impl Fn(&str) -> bool) -> bool {
+    match c {
+        Command::Prompt { session_id, .. } | Command::PutImage { session_id, .. } => session_id.as_deref() == Some(session),
+        Command::Interrupt { session_id } | Command::Approve { session_id, .. } => session_id == session || is_child(session_id),
+        Command::Steer { session_id, .. } => session_id == session,
+        Command::SwitchModel { session_id, .. } => session_id.as_deref() == Some(session),
+        _ => false,
+    }
+}
+
+/// How long `deny_late` waits on the daemon's status before taking it
+/// that another client answers.
+const STATUS_WAIT: Duration = Duration::from_secs(2);
+
+/// How soon `deny_late` asks the daemon again after it said another
+/// client answers the session's approvals.
+const OTHERS_AGAIN: Duration = Duration::from_secs(10);
+
+/// Whether, by the daemon's `status`, a client other than the bridge
+/// answers approvals on `session` (`HostSession::answering`, the bridge one
+/// of them). No status, a session not listed, or a count that leaves out
+/// the bridge itself — a daemon that does not count — is taken as yes: the
+/// bridge never denies on a guess.
+fn others_in(status: Option<&crate::protocol::HostStatus>, session: &str) -> bool {
+    status.and_then(|s| s.sessions.iter().find(|s| s.session_id == session)).is_none_or(|s| s.answering != 1)
+}
+
+/// The requests the bridge denies by itself (`deny_late`): of a turn a
+/// viewer started (`turns`), or of a child that turn started (`children`,
+/// each child by the turn its `subagent.started` was logged in) while that
+/// turn is still the session's `current` one — a background agent asking
+/// in a later turn, begun at the host's terminal, is that turn's to wait
+/// on — once nobody has been here to answer for `approval_wait` (`alone`),
+/// and the request has waited as long (`waited`). With no client but the
+/// bridge answering the session's approvals (`!others`) — the terminal
+/// that started a turn went away — every such request is denied, whoever
+/// started its turn: nobody is left to answer it.
+fn late<'a>(approvals: &'a BTreeMap<String, (ApprovalRequest, Instant)>, turns: &HashSet<String>, (children, current): (&HashMap<String, String>, Option<&str>), alone: bool, others: bool, waited: impl Fn(Instant) -> bool) -> Vec<&'a ApprovalRequest> {
+    let remote = |r: &ApprovalRequest| turns.contains(&r.turn_id) || children.get(&r.session_id).is_some_and(|t| turns.contains(t) && current == Some(t.as_str()));
+    approvals.values().filter(|(r, t)| alone && waited(*t) && (remote(r) || !others)).map(|(r, _)| r).collect()
+}
+
+/// The child an event names as `session`'s own: its `subagent.started`,
+/// logged by the session itself. One a child logs — a grandchild, riding
+/// the same stream — names nothing of `session`'s. Only a candidate: after
+/// a handoff the session's log holds what another device wrote, which
+/// could name any session on this machine, so `parent_here` has the last
+/// word.
+fn child_of<'a>(e: &'a crate::protocol::LogEvent, session: &str) -> Option<&'a str> {
+    match &e.body {
+        LogBody::SubagentStarted { subagent_session_id, .. } if e.session_id == session => Some(subagent_session_id),
+        _ => None,
+    }
+}
+
+/// Whether `child`'s own log on this machine, under `sessions`, begins
+/// with a `session.started` naming `session` its parent: what makes a
+/// session a child, written by this machine's host as it started it, and
+/// which a forged `subagent.started` in a synced log cannot make true of
+/// an unrelated session. No log, an id that names no log, or another
+/// parent, is no child. Read when a viewer asks, which is rarely: one line.
+fn parent_here(sessions: &std::path::Path, child: &str, session: &str) -> bool {
+    use std::io::BufRead;
+    if !crate::log::valid_id(child) {
+        return false;
+    }
+    let Ok(f) = std::fs::File::open(sessions.join(child).join(crate::log::EVENTS_FILE)) else { return false };
+    let Some(Ok(first)) = std::io::BufReader::new(f).lines().next() else { return false };
+    match serde_json::from_str::<crate::protocol::LogEvent>(&first) {
+        Ok(e) => e.session_id == child && matches!(e.body, LogBody::SessionStarted { parent_session_id: Some(ref p), .. } if p == session),
+        Err(_) => false,
+    }
+}
+
+/// A viewer's prompt runs under the session's own settings, never its own:
+/// its instance's default effort, the configured toolset and no budget of
+/// the viewer's choosing. A model it names is kept: the daemon
+/// checks it against this host's own instances and credentials as it
+/// checks a local switch, and refuses one that cannot run (R-SWITCH-4,
+/// R-CRED-1). Its permission mode is the one
+/// the session's last turn ran in, capped at `default`: a mode that asks
+/// less (`acceptEdits`, `bypassPermissions`, `unhinged`) is the host
+/// person's choice for their own turns, and a remote turn never runs looser
+/// than `default`. `plan`, which asks more, is kept.
+fn under_session_settings(c: Command, mode: PermissionMode) -> Command {
+    let mode = if mode == PermissionMode::Plan { PermissionMode::Plan } else { PermissionMode::Default };
+    match c {
+        Command::Prompt { session_id, text, images, model, .. } => Command::Prompt { session_id, text, images, model, permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None },
+        other => other,
+    }
+}
+
+fn worktree(cwd: &str) -> Option<String> {
+    let out = gruntas_api::git::query(std::path::Path::new(cwd)).ok()?.args(["rev-parse", "HEAD"]).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// A handle on a running bridge: `checkpoint` cuts one on demand, `stop`
+/// ends the stream with its final sealed batch and lets the lease go.
+pub struct Bridge {
+    pub stop: watch::Sender<bool>,
+    pub checkpoint: mpsc::UnboundedSender<()>,
+}
+
+/// Commands run, by their viewer's id, with the ack each was answered:
+/// bounded, the oldest let go first.
+const REMEMBERED: usize = 4096;
+
+/// Logged events a catch-up page holds.
+const PAGE: usize = 256;
+
+/// Runs the bridge until `stop`. `daemon` is a client of the daemon that
+/// says it answers approvals.
+pub async fn run(o: Options, daemon: Arc<Daemon>, stop: watch::Receiver<bool>, on_demand: mpsc::UnboundedReceiver<()>) -> Result<(), String> {
+    let o = Arc::new(o);
+    // Stopped before it began (the automatic sync's supervisor lets a
+    // starting bridge go when its directory opts out): nothing is sent.
+    if *stop.borrow() {
+        return Ok(());
+    }
+    // The take-up's checkpoint names the worktree's commit, read here too:
+    // `git rev-parse` is a process, and the runtime may be one many bridges
+    // share (the automatic sync's), where one slow repository would hold up
+    // every other session's stream.
+    let taken = {
+        let o = o.clone();
+        tokio::task::spawn_blocking(move || take(&o).map(|t| (t, worktree(&o.cwd)))).await.map_err(|e| e.to_string())??
+    };
+    let ((key, writer, held), commit) = taken;
+    let held = Arc::new(Mutex::new(held));
+    let halt = Arc::new(AtomicBool::new(false));
+    // However `run` ends — an error before its loop, a panic, its future
+    // dropped with its runtime — the lease and list threads end with it,
+    // rather than renewing a lease nothing uses for as long as the process
+    // lives (the automatic sync's supervisor runs in the daemon's).
+    let _halting = Halting(halt.clone());
+    let lost = Arc::new(AtomicBool::new(false));
+    // Set when the device list moved on under the host, or the registry
+    // refused the lease for want of a paid plan: why it stops.
+    // An owner that reads the list for it writes there; otherwise the
+    // bridge reads it itself.
+    let stale = o.stale.clone().unwrap_or_default();
+    {
+        let (o, held, halt, lost, stale) = (o.clone(), held.clone(), halt.clone(), lost.clone(), stale.clone());
+        std::thread::spawn(move || renew_loop(o, held, halt, lost, stale));
+    }
+    if o.stale.is_none() {
+        let (o, halt, stale) = (o.clone(), halt.clone(), stale.clone());
+        std::thread::spawn(move || list_loop(o, halt, stale));
+    }
+    let (heads_tx, heads) = mpsc::unbounded_channel();
+    let head = writer.head();
+    let stored = writer.stored_ids();
+    let (jobs, jobs_rx) = std::sync::mpsc::channel();
+    let writing = {
+        let (held, lost) = (held.clone(), lost.clone());
+        std::thread::spawn(move || writer_loop(writer, held, jobs_rx, heads_tx, lost))
+    };
+    // Stopped while it took the lease up: nothing is written, and the
+    // lease goes back at once.
+    if *stop.borrow() {
+        drop(jobs);
+        give_back(o.clone(), held, lost, &halt, writing).await;
+        return Ok(());
+    }
+    // A checkpoint as the bridge takes the session up, so a device
+    // attaching reads one chunk and the tail, not the whole log.
+    let _ = jobs.send(Write::Checkpoint(commit));
+
+    let (lines_tx, lines) = mpsc::channel(4096);
+    if let Err(e) = daemon.attach(&o.session, None, lines_tx.clone()).await {
+        // Nothing follows: the writer puts the checkpoint, and the lease goes
+        // back, as a stopped bridge's does.
+        drop(jobs);
+        give_back(o.clone(), held, lost, &halt, writing).await;
+        return Err(e.to_string());
+    }
+    let raw = crate::daemon::ws::uuid(&o.session);
+    let link = HostLink::new(key.current(), raw);
+    // Off the runtime too: it asks tailscaled and binds listeners.
+    let listening = {
+        let o = o.clone();
+        tokio::task::spawn_blocking(move || listen_direct(&o)).await.ok().flatten()
+    };
+    let candidates = listening.as_ref().map(|l| l.candidates.clone()).unwrap_or_default();
+    let (answers_tx, answers) = mpsc::unbounded_channel::<(u64, Answer)>();
+    let mut h = Hosting {
+        o: o.clone(),
+        daemon,
+        key,
+        raw,
+        link,
+        held: held.clone(),
+        lost: lost.clone(),
+        stale,
+        jobs,
+        lines_tx,
+        answers_tx,
+        head,
+        kept: VecDeque::new(),
+        unacked_since: None,
+        waiting: Vec::new(),
+        approvals: BTreeMap::new(),
+        log: Vec::new(),
+        logged: HashSet::new(),
+        stored,
+        children: HashSet::new(),
+        child_turns: HashMap::new(),
+        current_turn: None,
+        turn_running: false,
+        handing: false,
+        packing: None,
+        handoff: None,
+        handed_at: None,
+        refused_moving: HashSet::new(),
+        link_devices: HashMap::new(),
+        moved: Arc::default(),
+        mode: PermissionMode::Default,
+        remote_turns: Arc::default(),
+        done: HashMap::new(),
+        done_order: VecDeque::new(),
+        running: HashMap::new(),
+        alone_since: Some(Instant::now()),
+        present: None,
+        dpresent: None,
+        ws: None,
+        heard: Instant::now(),
+        retry: Instant::now(),
+        rejoin_rng: std::hash::BuildHasher::hash_one(&std::collections::hash_map::RandomState::new(), &o.session),
+        unjoined: None,
+        listening,
+        candidates,
+        unreached: Default::default(),
+        dws: None,
+        dheard: Instant::now(),
+        dretry: Instant::now(),
+        daemon_gone: false,
+        others_asked: None,
+        nobody_since: None,
+        viewed: false,
+    };
+    // The loop's end, however it comes, stops the bridge the one way.
+    let ended = h.serve(Inbox { lines, heads, answers, on_demand, stop }).await;
+    // Stopped as its owner asked, with its lease its own to give back: the
+    // owner may park its relay link (ticket 116).
+    let park = (ended.is_ok() && !lost.load(Ordering::Relaxed)).then(|| o.supervised.as_ref().map(|s| s.park.clone())).flatten();
+    if let Some((ws, viewed)) = h.stop(&halt, writing).await
+        && let Some(slot) = park
+    {
+        *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(Parked { ws, viewed });
+    }
+    ended
+}
+
+/// The direct listener, when tailscaled gives this machine an address:
+/// a second uplink, sent every batch the relay is, never in its place.
+fn listen_direct(o: &Options) -> Option<super::direct::Listening> {
+    match o.direct.as_ref().map(|c| super::direct::listen(c, crate::daemon::ws::uuid(&o.session), o.device)) {
+        Some(Ok(l)) => Some(l),
+        Some(Err(e)) => {
+            eprintln!("krowk: no direct path ({e}); the session goes by the relay");
+            None
+        }
+        None => None,
+    }
+}
+
+/// The next message on either uplink: whether it came on the direct one,
+/// and what it was.
+async fn recv_either(ws: &mut Option<super::Ws>, dws: &mut Option<super::Ws>) -> (bool, In) {
+    tokio::select! {
+        m = async { match ws.as_mut() { Some(w) => super::recv(w).await, None => std::future::pending().await } } => (false, m),
+        m = async { match dws.as_mut() { Some(w) => super::recv(w).await, None => std::future::pending().await } } => (true, m),
+    }
+}
+
+/// The bridge as it runs: the session's lines sealed into batches for the
+/// relay and, when there is one, the direct path, and its viewers'
+/// frames answered.
+struct Hosting {
+    o: Arc<Options>,
+    daemon: Arc<Daemon>,
+    key: SessionKeys,
+    raw: [u8; 16],
+    link: HostLink,
+    held: Arc<Mutex<Held>>,
+    lost: Arc<AtomicBool>,
+    /// Set when the device list moved on under the host, or the registry
+    /// refused the lease's renewal for want of a paid plan: why it stops.
+    stale: Arc<Mutex<Option<String>>>,
+    jobs: std::sync::mpsc::Sender<Write>,
+    lines_tx: mpsc::Sender<StreamLine>,
+    answers_tx: mpsc::UnboundedSender<(u64, Answer)>,
+    head: Option<store::Head>,
+    kept: VecDeque<(u64, Vec<u8>)>,
+    /// Since when the relay has acked none of what `kept` holds.
+    unacked_since: Option<Instant>,
+    waiting: Vec<StreamLine>,
+    approvals: BTreeMap<String, (ApprovalRequest, Instant)>,
+    /// Every event logged since the bridge followed the session, in order:
+    /// what a viewer's catch-up is answered from.
+    log: Vec<crate::protocol::LogEvent>,
+    logged: HashSet<String>,
+    /// The events the registry's log held when the bridge took the session
+    /// up: the daemon replays them, and they are not written again.
+    stored: HashSet<String>,
+    /// The session's own children, by the `subagent.started` events its
+    /// log holds: the ids a viewer may interrupt besides the session's,
+    /// once this machine's log of each names the session its parent.
+    children: HashSet<String>,
+    /// The turn each of those was started in: a viewer's turn's children's
+    /// requests are denied late as the turn's own are.
+    child_turns: HashMap<String, String>,
+    /// The session's own turn running now: a child counts as a viewer's
+    /// turn's only while that turn runs.
+    current_turn: Option<String>,
+    /// Whether a turn is running, which a handoff waits out.
+    turn_running: bool,
+    /// A handoff under way: another is refused meanwhile, and so is every
+    /// command, so nothing runs here once the work is packed.
+    handing: bool,
+    /// A task child's result being packed and stored (`task_result`), on a
+    /// blocking thread: the `task.result` event it ends with. The bridge
+    /// does not stop before it is logged.
+    packing: Option<tokio::sync::oneshot::Receiver<Packed>>,
+    /// The handoff asked for, by its id: the link to answer, which a viewer
+    /// that joins again moves, and the answer once there is one, sent again
+    /// to a viewer that asks again.
+    handoff: Option<(String, u64, Option<Answer>, DeviceId)>,
+    /// When the lease went with a handoff's answer: the bridge ends
+    /// `HANDED_GRACE` after.
+    handed_at: Option<Instant>,
+    /// Commands refused because the session is moving: their refusal is not
+    /// the ack a command sent again is answered with.
+    refused_moving: HashSet<String>,
+    /// The device each viewer link joined as, by the relay's word.
+    link_devices: HashMap<u64, DeviceId>,
+    /// What the bridge ends with once a handoff's answer has gone: set by
+    /// the handoff as it hands the lease over.
+    moved: Arc<Mutex<Option<String>>>,
+    mode: PermissionMode,
+    /// Turns a viewer's prompt started: the only ones whose approvals the
+    /// bridge denies by itself while another answering client follows the
+    /// session.
+    remote_turns: Arc<Mutex<HashSet<String>>>,
+    done: HashMap<String, Answer>,
+    done_order: VecDeque<String>,
+    /// Commands being taken, by id, with the link that last sent each: a
+    /// viewer that moved between the relay and a direct path while one ran
+    /// is answered where it is now, not on the link it left.
+    running: HashMap<String, u64>,
+    /// Since when no viewer has been here to answer.
+    alone_since: Option<Instant>,
+    /// Links the relay said are present since the host last joined; chains
+    /// of any other link are forgotten a second after the join.
+    present: Option<(HashSet<u64>, Instant)>,
+    /// The same for the direct listener, which speaks for its own links.
+    dpresent: Option<(HashSet<u64>, Instant)>,
+    ws: Option<super::Ws>,
+    heard: Instant,
+    retry: Instant,
+    /// This bridge's own draws of `rejoin_wait`, seeded apart from every
+    /// other bridge's.
+    rejoin_rng: u64,
+    /// The last reason the relay could not be joined, said once on stderr
+    /// when it first comes or changes, not every second: a host that never
+    /// reaches the relay otherwise looks exactly like one nobody watches.
+    unjoined: Option<String>,
+    listening: Option<super::direct::Listening>,
+    candidates: Vec<super::direct::Candidate>,
+    /// Viewers offered the direct addresses that never reached them.
+    unreached: super::direct::Unreached,
+    dws: Option<super::Ws>,
+    dheard: Instant,
+    dretry: Instant,
+    /// A sweep saw the daemon's connection closed: the next one ends it.
+    daemon_gone: bool,
+    /// When `deny_late` last heard another client answers the session's
+    /// approvals: asked again only a while later, not every second.
+    others_asked: Option<Instant>,
+    /// Since when every answer the daemon gave said no other client
+    /// answers: one is not enough, since a terminal reconnecting is left
+    /// out until it follows again.
+    nobody_since: Option<Instant>,
+    /// Whether a viewer was here at the last sweep, as `Supervised::viewers`
+    /// was last told.
+    viewed: bool,
+}
+
+impl Hosting {
+    /// A line of the session's, for the next batch; a logged one is
+    /// written to the store and kept for catch-up.
+    fn line(&mut self, line: StreamLine) {
+        if let StreamLine::Log(e) = &line {
+            // A line both followed and executed arrives once in the log.
+            if !self.logged.insert(e.id.clone()) {
+                return;
+            }
+            let stored = self.stored.contains(&e.id);
+            if !stored {
+                let _ = self.jobs.send(Write::Event(serde_json::to_value(e).expect("json")));
+            }
+            if let Some(child) = child_of(e, &self.o.session) {
+                self.children.insert(child.to_string());
+                if let LogBody::SubagentStarted { turn_id, .. } = &e.body {
+                    self.child_turns.insert(child.to_string(), turn_id.clone());
+                }
+            }
+            // A child's lines ride the session's stream and are written
+            // with it (R-SUB-6), but its turn is not the session's: a
+            // child ending is no end of the turn a handoff waits out.
+            let own = e.session_id == self.o.session;
+            match &e.body {
+                LogBody::TurnCompleted { turn_id, .. } => {
+                    self.turn_running &= !own;
+                    if own && self.current_turn.as_ref() == Some(turn_id) {
+                        self.current_turn = None;
+                    }
+                    let _ = self.jobs.send(Write::Flush);
+                    if own && !stored && self.packing.is_none() && !self.log.iter().any(|l| matches!(&l.body, LogBody::TaskResult { turn_id: t, .. } if t == turn_id)) {
+                        self.pack_result(e);
+                    }
+                }
+                LogBody::TurnStarted { permission_mode, turn_id, .. } if own => {
+                    self.mode = *permission_mode;
+                    self.current_turn = (!stored).then(|| turn_id.clone());
+                    // A turn the log already held, with no end, ended with
+                    // the host it ran on: not one running here.
+                    self.turn_running = !stored;
+                }
+                _ => {}
+            }
+            self.log.push(e.clone());
+        }
+        match &line {
+            StreamLine::Live(LiveEvent::ApprovalRequested(r)) => {
+                self.approvals.insert(r.request_id.clone(), (r.clone(), Instant::now()));
+            }
+            StreamLine::Live(LiveEvent::ApprovalResolved { request_id, .. }) => {
+                self.approvals.remove(request_id);
+            }
+            _ => {}
+        }
+        self.waiting.push(line);
+    }
+
+    /// A task child's one turn is over (R-ALLOC-6): its changes are packed
+    /// against the job's snapshot, stored sealed under this session and
+    /// named in a `task.result` event, on a blocking thread; the worktree
+    /// goes once they are stored. A session that is no task's child has
+    /// nothing to do here.
+    fn pack_result(&mut self, completed: &crate::protocol::LogEvent) {
+        if super::commands::read_task(&self.o.sessions, &self.o.session).is_none() {
+            return;
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.packing = Some(rx);
+        let (o, held, completed) = (self.o.clone(), self.held.clone(), completed.clone());
+        tokio::task::spawn_blocking(move || {
+            if let Some(p) = task_result(&o, &held, &completed) {
+                let _ = tx.send(p);
+            }
+        });
+    }
+
+    /// The `task.result` a packing thread ended with, logged and flushed to
+    /// the registry; only then is the worktree removed (when the child's
+    /// turn completed and its changes are stored), on a thread that waits
+    /// for the flush, so a result never named is never the only copy gone.
+    fn packed(&mut self, p: Packed) {
+        self.line(StreamLine::Log(p.event));
+        let (done, stored) = std::sync::mpsc::channel();
+        if self.jobs.send(Write::Flushed(done)).is_err() {
+            return;
+        }
+        if let Some(path) = p.discard {
+            tokio::task::spawn_blocking(move || {
+                if stored.recv_timeout(Duration::from_secs(120)).is_ok_and(|r| r.is_ok()) && let Some(root) = gruntas_api::home::worktrees_root(&gruntas_api::home::process_env) {
+                    discard_worktree(&root, &path);
+                }
+            });
+        }
+    }
+
+    /// The lines waiting, sealed as one batch and sent up both uplinks.
+    async fn send_batch(&mut self) -> Result<(), String> {
+        let body = serde_json::to_vec(&Batch { lines: std::mem::take(&mut self.waiting), head: self.head }).expect("json");
+        let sealed = self.link.batch(&body, false).map_err(|e| e.to_string())?;
+        self.kept.push_back((self.link.last_seq(), sealed.clone()));
+        if self.kept.len() > self.o.keep.max(1) { self.kept.pop_front(); }
+        self.unacked_since.get_or_insert_with(Instant::now);
+        if let Some(w) = self.dws.as_mut() && !super::send(w, sealed.clone()).await { self.dws = None; self.dretry = Instant::now() + Duration::from_secs(1); }
+        if let Some(w) = self.ws.as_mut() && !super::send(w, sealed).await { self.let_go(false); }
+        Ok(())
+    }
+
+    /// An answer for the viewer on link `to`, remembered when it acks a
+    /// command, and sent where that viewer is now.
+    async fn answer(&mut self, mut to: u64, a: Answer) {
+        if let Answer::Handoff { id, handed, .. } = &a
+            && let Some((asked, link, done, _)) = self.handoff.as_mut()
+            && asked == id
+        {
+            to = *link;
+            if self.handing {
+                self.handing = false;
+                if handed.is_some() {
+                    // The lease is the other device's from here: nothing more
+                    // is written, and it is not given back on the way out.
+                    self.lost.store(true, Ordering::Relaxed);
+                    *done = Some(a.clone());
+                    self.handed_at = Some(Instant::now());
+                } else {
+                    self.handoff = None;
+                }
+            }
+        }
+        if let Answer::Ack { id, .. } = &a && !id.is_empty() && !self.refused_moving.remove(id) {
+            if let Some(now) = self.running.remove(id) { to = now; }
+            self.remember(id, &a);
+        }
+        let sock = if to >= super::direct::FIRST_LINK { &mut self.dws } else { &mut self.ws };
+        if let Some(w) = sock.as_mut() && let Ok(b) = self.link.to_viewer(to, &serde_json::to_vec(&a).expect("json"), false) && !super::send(w, b).await { *sock = None; }
+    }
+
+    /// A command's ack, for a command sent again: bounded, the oldest let
+    /// go first.
+    fn remember(&mut self, id: &str, a: &Answer) {
+        if self.done.insert(id.to_string(), a.clone()).is_none() {
+            self.done_order.push_back(id.to_string());
+            if self.done_order.len() > REMEMBERED && let Some(old) = self.done_order.pop_front() { self.done.remove(&old); }
+        }
+    }
+
+    /// The bridge's second: an error once the lease is another device's;
+    /// otherwise viewers gone are forgotten, and a remote turn's approval
+    /// nobody is here to answer is denied.
+    async fn sweep(&mut self) -> Result<(), String> {
+        // A handoff hands the lease over before it answers: the lease
+        // moving then is its own doing, and the bridge ends once its answer
+        // has gone.
+        if let Some(at) = self.handed_at
+            && at.elapsed() > HANDED_GRACE
+        {
+            return Err(self.moved.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_else(|| format!("{HANDED_OVER} session {}", self.o.session)));
+        }
+        if self.lost.load(Ordering::Relaxed) && !self.handing && self.handed_at.is_none() {
+            return Err(format!("{LEASE_LOST} {}'s lease now; this machine stopped syncing it", self.o.session));
+        }
+        // The daemon let this client go (it exited, or dropped a client
+        // that read nothing): nothing more of the session reaches the bridge,
+        // which ends rather than holding the lease over a frozen stream —
+        // a sweep later, so the lines it had already read go out first, and
+        // never across a handoff, which needs no daemon and ends its own way.
+        if self.daemon.closed() && !self.handing && self.handed_at.is_none() {
+            if self.daemon_gone {
+                return Err(format!("the host daemon closed its connection; this machine stopped syncing session {}", self.o.session));
+            }
+            self.daemon_gone = true;
+        }
+        if let Some(why) = self.stale.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            return Err(why);
+        }
+        // Each uplink speaks for its own links only: a viewer on the
+        // direct path is not one the relay could have named, nor the
+        // other way round.
+        if let Some((here, since)) = &self.present && since.elapsed() > Duration::from_secs(1) {
+            for l in self.link.links() { if l < super::direct::FIRST_LINK && !here.contains(&l) { self.link.forget(l); } }
+            self.present = None;
+        }
+        if let Some((here, since)) = &self.dpresent && since.elapsed() > Duration::from_secs(1) {
+            for l in self.link.links() { if l >= super::direct::FIRST_LINK && !here.contains(&l) { self.link.forget(l); } }
+            self.dpresent = None;
+        }
+        if self.link.viewers().is_empty() { self.alone_since.get_or_insert_with(Instant::now); } else { self.alone_since = None; }
+        self.report_viewers();
+        // However the host's link to its listener went, nothing is said
+        // until it is back (`join_direct`).
+        if self.dws.is_none() { self.unreached.direct_down(); }
+        let same_user = self.o.direct.as_ref().is_some_and(|c| c.same_user);
+        // Nor while the relay link is down: a viewer that left meanwhile
+        // is known only once the relay's replay leaves it out.
+        let due = if self.ws.is_some() { self.unreached.due(Instant::now()) } else { Vec::new() };
+        for d in due {
+            eprintln!("{}", super::direct::unreached_line(&self.o.session, &d, &self.listening.as_ref().map_or_else(|| self.candidates.clone(), |l| l.candidates_now()), same_user));
+        }
+        self.deny_late().await;
+        Ok(())
+    }
+
+    /// Only once no viewer has been here to answer for the whole wait, and
+    /// the request has waited as long: a request of a turn a viewer
+    /// started, or of a child it started; or any, once no client but the
+    /// bridge answers the session's approvals. The person at the host's own
+    /// terminal is never overruled while it follows the session.
+    async fn deny_late(&mut self) {
+        let wait = self.o.approval_wait;
+        let alone = self.alone_since.is_some_and(|a| a.elapsed() > wait);
+        // The daemon is asked only when there is something to deny, never
+        // on every sweep.
+        if !alone || !self.approvals.values().any(|(_, t)| t.elapsed() > wait) {
+            self.nobody_since = None;
+            return;
+        }
+        // Another answering client was there a moment ago: it is taken
+        // to be there still, and asked after again only once that moment
+        // has passed. Nobody else is believed only once the daemon has
+        // said so for as long. A viewer's turn's request is denied
+        // meanwhile all the same.
+        let again = wait.min(OTHERS_AGAIN);
+        let others = if self.others_asked.is_some_and(|at| at.elapsed() < again) {
+            true
+        } else if self.others().await {
+            (self.others_asked, self.nobody_since) = (Some(Instant::now()), None);
+            true
+        } else {
+            self.others_asked = None;
+            self.nobody_since.get_or_insert_with(Instant::now).elapsed() < again
+        };
+        let turns = self.remote_turns.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let late: Vec<ApprovalRequest> = late(&self.approvals, &turns, (&self.child_turns, self.current_turn.as_deref()), alone, others, |t| t.elapsed() > wait).into_iter().cloned().collect();
+        for r in late {
+            self.approvals.remove(&r.request_id);
+            let (tx, _) = mpsc::channel(1);
+            let _ = self.daemon.execute(Command::Approve { session_id: r.session_id, request_id: r.request_id, decision: ApprovalDecision::Deny, answers: Vec::new() }, tx).await;
+        }
+    }
+
+    /// Tells the owner whether a viewer is here, when that has changed
+    /// since it was last told: at a hello, and at each sweep, which sees
+    /// the last one go.
+    fn report_viewers(&mut self) {
+        let viewed = !self.link.viewers().is_empty();
+        if viewed != self.viewed {
+            self.viewed = viewed;
+            if let Some(s) = &self.o.supervised { (s.viewers)(viewed); }
+        }
+    }
+
+    /// Whether a client other than the bridge answers approvals on the
+    /// session (`others_in`). A failed status, or one that does not come
+    /// in `STATUS_WAIT`, counts as yes, rather than holding up the bridge.
+    async fn others(&self) -> bool {
+        let status = tokio::time::timeout(STATUS_WAIT, self.daemon.status()).await;
+        others_in(status.ok().and_then(Result::ok).as_ref(), &self.o.session)
+    }
+
+    /// A beat far later than `PING`: this process did not run in
+    /// between (stopped, suspended, a laptop asleep) for longer than a
+    /// relay keeps a silent link. What it holds may be a link the relay
+    /// let go, or one it no longer counts as the host, with a viewer's
+    /// command lost on it: joined again, and the viewers, told the
+    /// host is present, send again what was never acknowledged.
+    ///
+    /// And a link that answers its heartbeats while the relay acks
+    /// none of what the host sends (`link_dead`): a ghost, which
+    /// neither an error nor a close will ever end.
+    async fn beat(&mut self, beaten: &mut Instant) {
+        let gap = beaten.elapsed();
+        *beaten = Instant::now();
+        let waited = self.unacked_since.map(|t| t.elapsed());
+        if let Some(w) = self.ws.as_mut() && (link_dead(gap, self.heard.elapsed(), self.kept.len(), waited) || !super::ping(w).await) { self.let_go(false); }
+        if let Some(w) = self.dws.as_mut() && (link_dead(gap, self.dheard.elapsed(), 0, None) || !super::ping(w).await) { self.dws = None; }
+    }
+
+    /// Joins the direct listener again.
+    async fn join_direct(&mut self) {
+        // The listener's viewers went with the host's link to it,
+        // however it was lost: none of them is here to answer, so a
+        // remote turn's approval is denied after `APPROVAL_WAIT`
+        // rather than waiting on a chain nobody holds.
+        for l in self.link.links() { if l >= super::direct::FIRST_LINK { self.link.forget(l); } }
+        self.dpresent = None;
+        // The direct listener, joined as the relay is: the same
+        // ticket, the same stream. What the relay has not yet
+        // acknowledged seeds it, so a viewer moving over resumes
+        // from its cursor there.
+        let ticket = self.held.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let dial = self.listening.as_ref().expect("listening").dial.clone();
+        let o = &self.o;
+        let j = Join { relay: &dial, session: &o.session, env: &o.env, ticket: &ticket.ticket, device: o.device, signing: &o.signing, role: e2e::RELAY_ROLE_HOST, extra: json!({"fence": ticket.fence, "stream": e2e::hex(&self.link.stream())}) };
+        self.dretry = Instant::now() + Duration::from_secs(2);
+        if let Ok((mut w, joined)) = super::join(j).await && self.link.continues_after(joined["seq"].as_u64().unwrap_or(0)) {
+            let at = joined["seq"].as_u64().unwrap_or(0);
+            if self.resend(&mut w, at).await { self.dws = Some(w); self.dheard = Instant::now(); self.dpresent = Some((HashSet::new(), Instant::now())); self.unreached.direct_up(Instant::now()); }
+        }
+    }
+
+    /// Joins the relay again.
+    async fn join_relay(&mut self) {
+        let ticket = self.held.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let o = &self.o;
+        let j = Join { relay: &o.relay, session: &o.session, env: &o.env, ticket: &ticket.ticket, device: o.device, signing: &o.signing, role: e2e::RELAY_ROLE_HOST, extra: json!({"fence": ticket.fence, "stream": e2e::hex(&self.link.stream())}) };
+        match super::join(j).await {
+            Ok((mut w, joined)) => {
+                let at = joined["seq"].as_u64().unwrap_or(0);
+                // A relay holding more of this stream than it was sent, or
+                // less than the oldest batch still kept (a cut outlasted
+                // what is kept): this stream cannot follow on there, so
+                // start another. Nothing is lost with the old one's
+                // batches: every viewer is told `resync`, joins again,
+                // and asks the host for the logged events it lacks.
+                if !self.link.continues_after(at) || (at > 0 && self.kept.front().is_some_and(|(s, _)| *s > at + 1)) {
+                    self.link = HostLink::new(self.key.current(), self.raw);
+                    self.kept.clear();
+                    drop(w);
+                    self.retry = Instant::now();
+                    return;
+                }
+                if self.resend(&mut w, at).await {
+                    self.unjoined = None;
+                    self.ws = Some(w);
+                    self.heard = Instant::now();
+                    // What the relay says it holds is as good as acked:
+                    // what `kept` still counts is only what went out on
+                    // this link, which the relay's ack count starts from.
+                    while self.kept.front().is_some_and(|(s, _)| *s <= at) { self.kept.pop_front(); }
+                    self.unacked_since = (!self.kept.is_empty()).then(Instant::now);
+                    self.present = Some((HashSet::new(), Instant::now()));
+                    // Who is on the relay is said again by its replay; a
+                    // viewer that left while this link was down is not.
+                    self.unreached.relay_lost();
+                } else {
+                    self.retry = Instant::now() + rejoin_wait(&mut self.rejoin_rng);
+                }
+            }
+            Err(e) => {
+                if self.unjoined.as_deref() != Some(e.as_str()) {
+                    eprintln!("krowk: session {} is not on the relay {}: {e}; trying again every second or two", self.o.session, self.o.relay);
+                    self.unjoined = Some(e);
+                }
+                self.retry = Instant::now() + rejoin_wait(&mut self.rejoin_rng);
+            }
+        }
+    }
+
+    /// Sends a link just joined the batches kept after `at`; false when
+    /// one could not be sent.
+    async fn resend(&self, w: &mut super::Ws, at: u64) -> bool {
+        for (_, b) in self.kept.iter().filter(|(s, _)| *s > at) {
+            if !super::send(w, b.clone()).await { return false; }
+        }
+        true
+    }
+
+    /// Lets an uplink go, to be joined again in a second, the relay's in
+    /// one or two (`rejoin_wait`).
+    fn let_go(&mut self, direct: bool) {
+        if direct { self.dws = None; self.dretry = Instant::now() + Duration::from_secs(1); } else { self.ws = None; self.retry = Instant::now() + rejoin_wait(&mut self.rejoin_rng); }
+    }
+
+    /// What came on an uplink.
+    async fn inbound(&mut self, direct: bool, m: In) {
+        if direct { self.dheard = Instant::now(); } else { self.heard = Instant::now(); }
+        match m {
+            In::Closed => self.let_go(direct),
+            In::Alive => {}
+            // A refusal comes before the relay closes the link — `replaced`,
+            // `link_overflow`, `rate_limited` — and the close itself may never
+            // arrive, while the edge goes on answering this link's heartbeats:
+            // the link is let go here, and joined again, rather than kept as a
+            // host connection the relay no longer counts.
+            In::Control(v) if v["type"] == "error" => {
+                let why = format!("the relay let this host's link go: {} — {}; joining again", v["code"].as_str().unwrap_or("?"), v["message"].as_str().unwrap_or(""));
+                if self.unjoined.as_deref() != Some(why.as_str()) {
+                    eprintln!("krowk: session {}: {why}", self.o.session);
+                    self.unjoined = Some(why);
+                }
+                self.let_go(direct);
+            }
+            In::Control(v) => {
+                if v["type"] == "viewer" && let Some(l) = v["link"].as_u64() {
+                    if v["event"] == "left" { self.link.forget(l); self.link_devices.remove(&l); }
+                    if v["event"] == "joined" && let Some(d) = v["device"].as_str().and_then(DeviceId::parse) { self.link_devices.insert(l, d); }
+                    if v["event"] == "joined" && let Some((here, _)) = if direct { self.dpresent.as_mut() } else { self.present.as_mut() } { here.insert(l); }
+                    // The relay names the device; anything that is not an
+                    // id is no device to say anything of.
+                    if let Some(d) = v["device"].as_str().and_then(DeviceId::parse) {
+                        match (v["event"].as_str(), direct) {
+                            (Some("joined"), false) if !self.candidates.is_empty() => self.unreached.relay_joined(l, d, Instant::now()),
+                            (Some("left"), false) => self.unreached.relay_left(l),
+                            (Some("joined"), true) => self.unreached.direct_joined(d),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            // The direct listener's acks free nothing: what is kept
+            // is kept for the relay.
+            In::Envelope(b) if b[1] == KIND_ACK && !direct => {
+                let upto = u64::from_be_bytes(b[20..28].try_into().expect("eight bytes"));
+                while self.kept.front().is_some_and(|(s, _)| *s <= upto) { self.kept.pop_front(); }
+                self.unacked_since = (!self.kept.is_empty()).then(Instant::now);
+            }
+            In::Envelope(b) if b[1] == KIND_ROUTED => self.routed(direct, &b).await,
+            In::Envelope(_) => {}
+        }
+    }
+
+    /// A viewer's envelope, routed to this host.
+    async fn routed(&mut self, direct: bool, b: &[u8]) {
+        let from = u64::from_be_bytes(b[20..28].try_into().expect("eight bytes"));
+        match self.link.open(from, &b[HEADER..]) {
+            Ok(Inbound::Hello { .. }) => {
+                let body = serde_json::to_vec(&Welcome { head: self.head, approvals: self.approvals.values().map(|(r, _)| r.clone()).collect(), candidates: self.listening.as_ref().map_or_else(|| self.candidates.clone(), |l| l.candidates_now()) }).expect("json");
+                let sealed = self.link.welcome(from, &body);
+                // Welcomed, the link counts as a viewer: said before the
+                // welcome goes, so the owner knows of the viewer by the time
+                // the viewer knows of the host.
+                self.report_viewers();
+                let sock = if direct { &mut self.dws } else { &mut self.ws };
+                if let (Some(w), Ok(sealed)) = (sock.as_mut(), sealed) && !super::send(w, sealed).await { *sock = None; }
+            }
+            Ok(Inbound::Frame { body, .. }) => self.frame(from, &body),
+            // What does not open is dropped: the relay or a stranger sent it.
+            Err(_) => {}
+        }
+    }
+
+    /// A viewer's frame, from link `from`.
+    fn frame(&mut self, from: u64, body: &[u8]) {
+        match serde_json::from_slice::<ViewerFrame>(body) {
+            Ok(ViewerFrame::CatchUp { after }) => self.catch_up(from, after),
+            Ok(ViewerFrame::Handoff { id, device }) => self.handoff(from, id, device),
+            // Run once: a command sent again (its ack lost, the
+            // viewer reconnected) is answered with the ack it
+            // had, or nothing while it is still being taken.
+            Ok(ViewerFrame::Command(r)) if self.done.contains_key(&r.id) => {
+                let _ = self.answers_tx.send((from, self.done[&r.id].clone()));
+            }
+            Ok(ViewerFrame::Command(r)) if self.running.contains_key(&r.id) => { self.running.insert(r.id, from); }
+            Ok(ViewerFrame::Command(r)) if self.handing || self.handed_at.is_some() => {
+                self.refused_moving.insert(r.id.clone());
+                let _ = self.answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("session {} is moving to another machine; send it there once it has moved", self.o.session)) }));
+            }
+            Ok(ViewerFrame::Command(r)) if !for_this_session(&r.command, &self.o.session, |id| self.children.contains(id) && parent_here(&self.o.sessions, id, &self.o.session)) => {
+                let _ = self.answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("a viewer of session {} may prompt, steer, interrupt, switch the model of or answer an approval of that session, or interrupt or answer an approval of one of its own subagents, and nothing else", self.o.session)) }));
+            }
+            // A rule for the whole project is written into the
+            // host's repository settings: made at the host, not
+            // from a viewer, which allows once or for the session.
+            Ok(ViewerFrame::Command(r)) if matches!(r.command, Command::Approve { decision: ApprovalDecision::AllowProject, .. }) => {
+                let _ = self.answers_tx.send((from, Answer::Ack { id: r.id, error: Some("a viewer allows a call once or for the session; a rule for the project is made on the host".into()) }));
+            }
+            Ok(ViewerFrame::Command(r)) => self.execute(from, r),
+            Err(e) => { let _ = self.answers_tx.send((from, Answer::Ack { id: String::new(), error: Some(format!("not a frame this host reads: {e}")) })); }
+        }
+    }
+
+    /// Hands the session to `device` (R-HAND-1, R-HAND-2): refused while a
+    /// turn runs or another handoff is under way, and for a device not on
+    /// the verified list. Otherwise, off the loop: a checkpoint stored, the
+    /// bundle packed and stored sealed as a transport artifact, and the
+    /// lease handed over. Only once the registry has given the lease to
+    /// `device` does this bridge stop writing; anything that fails before
+    /// leaves the session here, as it was.
+    fn handoff(&mut self, from: u64, id: String, device: String) {
+        // The same handoff asked again, by a viewer that joined again: its
+        // answer goes where that viewer is now.
+        if let Some((asked, link, done, asker)) = self.handoff.as_mut()
+            && *asked == id
+        {
+            // From the device that asked first, and no other.
+            if self.link_devices.get(&from) != Some(asker) {
+                return;
+            }
+            *link = from;
+            if let Some(a) = done.clone() {
+                let _ = self.answers_tx.send((from, a));
+            }
+            return;
+        }
+        let refuse = |error: String| (from, Answer::Handoff { id: id.clone(), handed: None, error: Some(error) });
+        let to = DeviceId::parse(&device).filter(|d| *d != self.o.device && self.o.chain.devices().iter().any(|l| l.id() == *d));
+        let refused = match () {
+            _ if to.is_none() => Some(format!("{device} is not another device on your device list")),
+            // Only to the device asking, as the relay names it.
+            _ if self.link_devices.get(&from) != to.as_ref() => Some(format!("a session is handed to the device that asks for it, and this one is not {device}")),
+            _ if self.handing || self.handoff.is_some() => Some("a handoff of this session is under way already".to_string()),
+            _ if self.turn_running || !self.running.is_empty() => Some(format!("session {} is running a turn; take it once the turn ends, or interrupt it first", self.o.session)),
+            _ => None,
+        };
+        if let Some(why) = refused {
+            let _ = self.answers_tx.send(refuse(why));
+            return;
+        }
+        self.handing = true;
+        self.handoff = Some((id.clone(), from, None, to.expect("checked")));
+        let since = self.log.first().map_or(0, |e| e.time_ms);
+        let backend = {
+            let events: Vec<Value> = self.log.iter().filter_map(|e| serde_json::to_value(e).ok()).collect();
+            super::handoff::last_backend(&events)
+        };
+        let (o, held, jobs, tx, moved_to) = (self.o.clone(), self.held.clone(), self.jobs.clone(), self.answers_tx.clone(), self.moved.clone());
+        tokio::task::spawn_blocking(move || {
+            let run = || -> Result<(super::Handed, String), String> {
+                let (done, wait) = std::sync::mpsc::channel();
+                jobs.send(Write::Handoff(worktree(&o.cwd), done)).map_err(|_| "the session's writer has stopped".to_string())?;
+                wait.recv_timeout(Duration::from_secs(60)).map_err(|_| "the checkpoint was not stored in a minute".to_string())?.map_err(|e| format!("the checkpoint could not be stored ({e})"))?;
+                let transcript = backend.as_ref().map(|(b, id, path)| (b.as_str(), id.as_str(), std::path::Path::new(path.as_str())));
+                let bundle = super::handoff::pack(std::path::Path::new(&o.cwd), &o.session, since, transcript)?;
+                let key: [u8; 32] = e2e::random();
+                let sealed = e2e::seal_transport(&key, &crate::daemon::ws::uuid(&o.session), &bundle.encode());
+                let token = held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
+                let t = o.api.put_transport(&o.session, &sealed, &token).map_err(|e| format!("the bundle could not be stored ({}): {}", e.code(), e.fix()))?;
+                let name = o.chain.devices().iter().find(|d| d.id().to_string() == device).map_or(device.clone(), |d| d.name.clone());
+                let lease = o.api.renew_lease(&o.session, &device, &token, o.ttl, &o.env).map_err(|e| {
+                    if e.code() == "sync_machine_limit" {
+                        // The target is over its limit (R-SYNC-17): said
+                        // here, in the host's log, and to the device that
+                        // asked; the session stays here.
+                        let said = format!("{MOVE_REFUSED}{name}: {}", e.fix());
+                        eprintln!("krowk: {said}");
+                        said
+                    } else {
+                        format!("the registry did not hand the lease over ({}): {}", e.code(), e.fix())
+                    }
+                })?;
+                let handed = super::Handed { transport: t.slug, key: super::handoff::key_hex(&key), token: lease.token, fence: lease.fence, ticket: lease.relay_ticket, from_device: o.device.to_string() };
+                Ok((handed, format!("{HANDED_OVER} session {} to {name}; it runs there now", o.session)))
+            };
+            let _ = tx.send(match run() {
+                Ok((handed, moved)) => {
+                    *moved_to.lock().unwrap_or_else(|e| e.into_inner()) = Some(moved);
+                    (from, Answer::Handoff { id, handed: Some(handed), error: None })
+                }
+                Err(e) if e.starts_with(MOVE_REFUSED) => (from, Answer::Handoff { id, handed: None, error: Some(e) }),
+                Err(e) => (from, Answer::Handoff { id, handed: None, error: Some(format!("{e} — the session stays here")) }),
+            });
+        });
+    }
+
+    /// The logged events after `after`, a page at a time.
+    fn catch_up(&self, from: u64, after: Option<String>) {
+        let from_here = after.and_then(|a| self.log.iter().position(|e| e.id == a)).map_or(0, |i| i + 1);
+        let rest = &self.log[from_here..];
+        let pages: Vec<_> = rest.chunks(PAGE).collect();
+        if pages.is_empty() {
+            let _ = self.answers_tx.send((from, Answer::CatchUp { events: Vec::new(), more: false }));
+        }
+        for (i, p) in pages.iter().enumerate() {
+            let _ = self.answers_tx.send((from, Answer::CatchUp { events: p.to_vec(), more: i + 1 < pages.len() }));
+        }
+    }
+
+    /// Runs a viewer's command on the daemon, under the session's settings.
+    fn execute(&mut self, from: u64, r: super::Remote) {
+        self.running.insert(r.id.clone(), from);
+        let command = under_session_settings(r.command, self.mode);
+        let (daemon, answers, tx, turns) = (self.daemon.clone(), self.answers_tx.clone(), self.lines_tx.clone(), self.remote_turns.clone());
+        tokio::spawn(async move {
+            let streaming = matches!(command, Command::Prompt { .. });
+            let (mine, mut rx) = mpsc::channel(1024);
+            let (started_tx, started) = tokio::sync::oneshot::channel();
+            // The turn's lines go where every other line
+            // goes, the turn remembered as a viewer's.
+            tokio::spawn(async move {
+                let mut started_tx = Some(started_tx);
+                while let Some(l) = rx.recv().await {
+                    if let StreamLine::Log(e) = &l && let LogBody::TurnStarted { turn_id, .. } = &e.body {
+                        turns.lock().unwrap_or_else(|e| e.into_inner()).insert(turn_id.clone());
+                        if let Some(s) = started_tx.take() { let _ = s.send(()); }
+                    }
+                    if tx.send(l).await.is_err() { return; }
+                }
+            });
+            let run = daemon.execute(command, mine);
+            if streaming {
+                // A prompt is acknowledged as taken — once its turn has
+                // started, not when it ends — or with why the daemon
+                // refused it before it started (an untrusted directory, a
+                // session busy): never as taken when no turn will come.
+                tokio::pin!(run);
+                // A turn that started and then failed is the turn's to
+                // report, not a refusal: started wins when both are ready.
+                let refused = tokio::select! {
+                    biased;
+                    Ok(()) = started => None,
+                    r = &mut run => Some(r.err().map(|e| e.to_string())),
+                };
+                match refused {
+                    Some(error) => { let _ = answers.send((from, Answer::Ack { id: r.id, error })); }
+                    None => {
+                        let _ = answers.send((from, Answer::Ack { id: r.id, error: None }));
+                        let _ = run.await;
+                    }
+                }
+            } else {
+                let error = run.await.err().map(|e| e.to_string());
+                let _ = answers.send((from, Answer::Ack { id: r.id, error }));
+            }
+        });
+    }
+
+    /// Bridges until stopped, the daemon's lines end, or a batch or a
+    /// sweep fails: the error `run` ends with.
+    async fn serve(&mut self, mut i: Inbox) -> Result<(), String> {
+        let mut tick = tokio::time::interval(FRAME);
+        let mut beat = tokio::time::interval(PING);
+        let mut beaten = Instant::now();
+        let mut sweep = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            tokio::select! {
+                line = i.lines.recv() => {
+                    let Some(line) = line else { return Ok(()) };
+                    self.line(line);
+                }
+                Some(p) = packed(&mut self.packing) => self.packed(p),
+                _ = tick.tick(), if !self.waiting.is_empty() => self.send_batch().await?,
+                Some(head) = i.heads.recv() => self.head = Some(head),
+                Some((to, a)) = i.answers.recv() => self.answer(to, a).await,
+                _ = i.on_demand.recv() => { let _ = self.jobs.send(Write::Checkpoint(worktree(&self.o.cwd))); }
+                _ = sweep.tick() => self.sweep().await?,
+                _ = beat.tick() => self.beat(&mut beaten).await,
+                _ = tokio::time::sleep_until(self.dretry.into()), if self.dws.is_none() && self.listening.is_some() => self.join_direct().await,
+                _ = tokio::time::sleep_until(self.retry.into()), if self.ws.is_none() => self.join_relay().await,
+                (direct, m) = recv_either(&mut self.ws, &mut self.dws) => self.inbound(direct, m).await,
+                _ = i.stop.changed() => {
+                    // A turn's last lines may be waiting beside the stop: a
+                    // task's turn that ended must still be packed.
+                    while let Ok(line) = i.lines.try_recv() {
+                        self.line(line);
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    /// Stops the bridge: the stream ended, the listener closed, and the
+    /// lease given back once the writer is done. Its relay link, while it
+    /// is up and no handoff took the session, and whether a viewer was here.
+    async fn stop(mut self, halt: &AtomicBool, writing: std::thread::JoinHandle<()>) -> Option<(super::Ws, bool)> {
+        // A result being stored is waited for, so the log names it.
+        if let Some(rx) = self.packing.take() && let Ok(Ok(p)) = tokio::time::timeout(PACK_WAIT, rx).await {
+            self.packed(p);
+        }
+        self.seal().await;
+        drop(self.listening.take());
+        drop(self.dws.take());
+        let _ = self.jobs.send(Write::Flush);
+        drop(self.jobs);
+        let viewed = !self.link.viewers().is_empty();
+        let ws = self.ws.take().filter(|_| !self.handing && self.handed_at.is_none());
+        give_back(self.o, self.held, self.lost, halt, writing).await;
+        ws.map(|w| (w, viewed))
+    }
+
+    /// The stream's end, sealed: a viewer that sees the link stop without
+    /// it knows it was cut short.
+    async fn seal(&mut self) {
+        if let Ok(end) = self.link.batch(&serde_json::to_vec(&Batch { lines: std::mem::take(&mut self.waiting), head: self.head }).expect("json"), true) {
+            if let Some(w) = self.dws.as_mut() {
+                let _ = super::send(w, end.clone()).await;
+            }
+            if let Some(w) = self.ws.as_mut() {
+                let _ = super::send(w, end).await;
+            }
+        }
+    }
+}
+
+/// How long a stopping bridge waits for a task's result to be stored.
+const PACK_WAIT: Duration = Duration::from_secs(120);
+
+/// A task's result, logged, and the worktree to remove once it is stored.
+struct Packed {
+    event: crate::protocol::LogEvent,
+    discard: Option<String>,
+}
+
+/// The result being packed, once it is: none, forever, when there is none.
+async fn packed(p: &mut Option<tokio::sync::oneshot::Receiver<Packed>>) -> Option<Packed> {
+    match p {
+        Some(rx) => {
+            let r = rx.await.ok();
+            *p = None;
+            r
+        }
+        None => std::future::pending().await,
+    }
+}
+
+/// A task child's result (R-ALLOC-6, R-ALLOC-14): the worktree's changes
+/// against the job's snapshot, sealed under a fresh key and stored under
+/// the session with its lease, and the `task.result` event that names them,
+/// after `completed`, whatever status the turn ended in. A child that
+/// changed nothing stores nothing and names no transport. When packing or
+/// storing fails the event says why (`error`) and names no transport, and
+/// the worktree stays. The worktree is to go only for a turn that
+/// completed, once the event is stored (`Hosting::packed`). None when the
+/// session has no task record.
+fn task_result(o: &Options, held: &Mutex<Held>, completed: &crate::protocol::LogEvent) -> Option<Packed> {
+    let task = super::commands::read_task(&o.sessions, &o.session)?;
+    let LogBody::TurnCompleted { turn_id, status, .. } = &completed.body else { return None };
+    let stored = || -> Result<(Option<String>, Option<String>), String> {
+        // Said whole when it is one of the result's own refusals; else what
+        // failed is named, as the supervisor shows it as the task's failure.
+        let bundle = super::handoff::pack_result(std::path::Path::new(&task.worktree), &task.snapshot, &o.session).map_err(|e| if e == super::handoff::RESULT_TOO_BIG || e == super::handoff::RESULT_CONFIG { e } else { format!("the result could not be packed: {e}") })?;
+        if bundle.diff.is_empty() && bundle.untracked.is_empty() {
+            return Ok((None, None));
+        }
+        let key: [u8; 32] = e2e::random();
+        let sealed = e2e::seal_transport(&key, &crate::daemon::ws::uuid(&o.session), &bundle.encode());
+        let token = held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
+        let t = o.api.put_transport(&o.session, &sealed, &token).map_err(|e| format!("the result could not be stored ({}): {}", e.code(), e.fix()))?;
+        Ok((Some(t.slug), Some(super::handoff::key_hex(&key))))
+    }();
+    let (transport, key, error) = match stored {
+        Ok((t, k)) => (t, k, None),
+        Err(e) => {
+            eprintln!("krowk: the result of task session {} was not stored: {e}", o.session);
+            (None, None, Some(e.chars().take(500).collect::<String>()))
+        }
+    };
+    let discard = (error.is_none() && *status == crate::protocol::TurnStatus::Completed).then(|| task.worktree.clone());
+    let body = LogBody::TaskResult { turn_id: turn_id.clone(), transport, key, against: task.snapshot, denied: task.denied, error };
+    Some(Packed { event: crate::protocol::LogEvent { id: gruntas_store::new_id(), parent_id: Some(completed.id.clone()), session_id: o.session.clone(), time_ms: gruntas_store::now_ms(), body }, discard })
+}
+
+/// The worktree at `path`, if it is one krowk made under `root`, removed
+/// with its branch; one that cannot be is left for `krowk worktrees`.
+fn discard_worktree(root: &std::path::Path, path: &str) {
+    if let Ok(listed) = crate::worktree::manage::find(root, path) && let Some(w) = listed.worktree() {
+        let _ = crate::worktree::discard(&w);
+    }
+}
+
+/// What a running bridge is told: the daemon's lines, the writer's heads,
+/// the answers to viewers its tasks give, checkpoints asked for, and stop.
+struct Inbox {
+    lines: mpsc::Receiver<StreamLine>,
+    heads: mpsc::UnboundedReceiver<store::Head>,
+    answers: mpsc::UnboundedReceiver<(u64, Answer)>,
+    on_demand: mpsc::UnboundedReceiver<()>,
+    stop: watch::Receiver<bool>,
+}
+
+/// Sets its flag when dropped: `run`'s threads' halt, however it ends.
+struct Halting(Arc<AtomicBool>);
+
+impl Drop for Halting {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// The lease and list threads halted, and the lease given back so the next
+/// host takes it at once rather than after its TTL — once the writer, its
+/// jobs' sender dropped, has put its last chunk, and unless the lease is
+/// another device's already.
+async fn give_back(o: Arc<Options>, held: Arc<Mutex<Held>>, lost: Arc<AtomicBool>, halt: &AtomicBool, writing: std::thread::JoinHandle<()>) {
+    halt.store(true, Ordering::Relaxed);
+    let _ = tokio::task::spawn_blocking(move || {
+        let _ = writing.join();
+        // Read once the writer is done rather than at the halt: a renewal
+        // that took a lapsed lease again just before it holds a new token,
+        // and the old one would release nothing. (One refused after the
+        // halt takes nothing again: `renew_loop`.)
+        let token = held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
+        if !lost.load(Ordering::Relaxed) {
+            let _ = o.api.release_lease(&o.session, &token);
+        }
+    })
+    .await;
+}
+
+/// Waits for Ctrl-C or SIGTERM: `krowk sync host` then ends the stream with
+/// its final sealed batch and lets the lease go, rather than leaving
+/// viewers to find the stream cut short and the lease to lapse.
+pub async fn interrupted() {
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
+    let t = async {
+        match term.as_mut() {
+            Some(s) => {
+                s.recv().await;
+            }
+            None => std::future::pending().await,
+        }
+    };
+    tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = t => {} }
+}
+
+/// How long the bridge waits before it tries the relay again: a second and
+/// up to another, drawn afresh each time from `rng` (splitmix64). A host
+/// bridging fifty sessions that all lost the relay at once then comes back
+/// spread over a second, not as one burst against the relay's caps on
+/// connections not yet joined.
+fn rejoin_wait(rng: &mut u64) -> Duration {
+    *rng = rng.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    let mut z = *rng;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    Duration::from_millis(1_000 + (z ^ (z >> 31)) % 1_001)
+}
+
+#[cfg(test)]
+mod tests {
+
+    /// R-ALLOC-6: a finished task's worktree is removed once its result is
+    /// stored, and a path that is none of krowk's is left alone.
+    #[test]
+    fn alloc_06_a_stored_tasks_worktree_is_removed() {
+        let root = std::env::temp_dir().join(format!("krowk-alloc-06-discard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"]).args(args).current_dir(&repo).output().unwrap().status.success());
+        git(&["init", "-q"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+        let head = String::from_utf8(std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&repo).output().unwrap().stdout).unwrap().trim().to_string();
+        let (wt, held) = crate::worktree::create_at(&repo, &root.join("worktrees"), "s", &head).unwrap();
+        drop(held);
+        std::fs::write(wt.path.join("child.txt"), "x").unwrap();
+        discard_worktree(&root.join("worktrees"), &repo.display().to_string());
+        assert!(repo.exists() && wt.path.exists(), "a path that is no worktree of krowk's stays");
+        discard_worktree(&root.join("worktrees"), &wt.path.display().to_string());
+        assert!(!wt.path.exists(), "the worktree is gone");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    use super::*;
+
+    /// Fifty bridges, each seeded by its session, draw their rejoins
+    /// spread over the second past the first: they share a 10 ms window
+    /// about as often as chance has them (C(50, 2) / 100, about 12 pairs),
+    /// where in lockstep all 1225 pairs would.
+    #[test]
+    fn fifty_bridges_rejoin_spread_over_a_second() {
+        let seeded = std::hash::BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default();
+        let mut rngs: Vec<u64> = (0..50).map(|i| std::hash::BuildHasher::hash_one(&seeded, format!("0190c0de-0000-7000-8000-{i:012x}"))).collect();
+        for _ in 0..20 {
+            let waits: Vec<Duration> = rngs.iter_mut().map(rejoin_wait).collect();
+            assert!(waits.iter().all(|w| (Duration::from_secs(1)..=Duration::from_secs(2)).contains(w)), "{waits:?}");
+            let mut windows = [0usize; 101];
+            for w in &waits {
+                windows[(w.as_millis() as usize - 1_000) / 10] += 1;
+            }
+            let pairs: usize = windows.iter().map(|n| n * n.saturating_sub(1) / 2).sum();
+            assert!(pairs <= 30, "{pairs} pairs of the 50 rejoin within the same 10 ms: {waits:?}");
+        }
+    }
+
+    fn prompt(mode: PermissionMode) -> Command {
+        Command::Prompt { session_id: Some("s".into()), text: "t".into(), images: Vec::new(), model: None, permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None }
+    }
+
+    /// R-PERM-2: a remote prompt never runs looser than `default`, whatever
+    /// it asks for and whatever the session last ran in.
+    #[test]
+    fn r_perm_2_a_remote_prompt_runs_no_looser_than_default() {
+        for session in [PermissionMode::Default, PermissionMode::AcceptEdits, PermissionMode::BypassPermissions, PermissionMode::Unhinged] {
+            for asked in [PermissionMode::Unhinged, PermissionMode::BypassPermissions, PermissionMode::Default] {
+                let Command::Prompt { permission_mode, .. } = under_session_settings(prompt(asked), session) else { unreachable!() };
+                assert_eq!(permission_mode, PermissionMode::Default, "session {session:?}, asked {asked:?}");
+            }
+        }
+        let Command::Prompt { permission_mode, .. } = under_session_settings(prompt(PermissionMode::Unhinged), PermissionMode::Plan) else { unreachable!() };
+        assert_eq!(permission_mode, PermissionMode::Plan, "plan asks more, and stays");
+    }
+
+    /// R-SWITCH-4, R-CRED-1: a remote prompt's model reaches the daemon's
+    /// own checks; its toolset, effort and budget stay the host's.
+    #[test]
+    fn r_switch_4_a_remote_prompt_keeps_its_model_and_nothing_else() {
+        let model = crate::protocol::ModelRef { instance: "mock".into(), model: "m".into() };
+        let asked = Command::Prompt { session_id: Some("s".into()), text: "t".into(), images: Vec::new(), model: Some(model.clone()), permission_mode: PermissionMode::Unhinged, toolset: Some("all".into()), effort: Some(crate::protocol::Effort::Max), rollover: None, budget: Some(crate::protocol::BudgetLimits { max_usd: Some(100.0), max_tokens: None }) };
+        let Command::Prompt { model: kept, permission_mode, toolset, effort, budget, .. } = under_session_settings(asked, PermissionMode::Unhinged) else { unreachable!() };
+        assert_eq!(kept, Some(model));
+        assert_eq!(permission_mode, PermissionMode::Default);
+        assert!(toolset.is_none() && effort.is_none() && budget.is_none());
+    }
+
+    /// R-SUB-12: the children a viewer may interrupt are the ones the
+    /// session's own `subagent.started` names. A grandchild's start, logged
+    /// by a child, names none; nothing but an interrupt widens; and an id
+    /// the log never named — another session's, or one made up — is refused.
+    #[test]
+    fn r_sub_12_a_viewer_interrupts_or_answers_only_the_children_the_sessions_own_log_names() {
+        let started = |by: &str, child: &str| crate::protocol::LogEvent {
+            id: format!("e-{child}"),
+            parent_id: None,
+            session_id: by.into(),
+            time_ms: 1,
+            body: LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c".into(), subagent_session_id: child.into(), description: "look".into(), agent: None, model: crate::protocol::ModelRef { instance: "anthropic".into(), model: "claude-haiku-4-5".into() }, ran_by: Default::default(), backend_id: None },
+        };
+        let children: HashSet<String> = [started("s", "kid"), started("kid", "grandkid"), started("other", "theirs")].iter().filter_map(|e| child_of(e, "s")).map(String::from).collect();
+        assert_eq!(children, HashSet::from(["kid".to_string()]), "the session's own start, and no other");
+
+        let is_child = |id: &str| children.contains(id);
+        let interrupt = |id: &str| Command::Interrupt { session_id: id.into() };
+        assert!(for_this_session(&interrupt("s"), "s", is_child), "the session itself");
+        assert!(for_this_session(&interrupt("kid"), "s", is_child), "its own child");
+        for refused in ["grandkid", "theirs", "other", "made-up"] {
+            assert!(!for_this_session(&interrupt(refused), "s", is_child), "{refused}");
+        }
+        let steer = Command::Steer { session_id: "kid".into(), text: "t".into(), images: Vec::new() };
+        let approve = Command::Approve { session_id: "kid".into(), request_id: "r".into(), decision: ApprovalDecision::Allow, answers: Vec::new() };
+        let prompt = Command::Prompt { session_id: Some("kid".into()), text: "t".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
+        assert!(for_this_session(&approve, "s", is_child), "its own child's approval is the session's to answer");
+        for refused in ["grandkid", "theirs", "other", "made-up"] {
+            let approve = Command::Approve { session_id: refused.into(), request_id: "r".into(), decision: ApprovalDecision::Allow, answers: Vec::new() };
+            assert!(!for_this_session(&approve, "s", is_child), "{refused}");
+        }
+        let switch = |id: Option<&str>| Command::SwitchModel { session_id: id.map(String::from), model: crate::protocol::ModelRef { instance: "mock".into(), model: "m".into() } };
+        assert!(for_this_session(&switch(Some("s")), "s", is_child), "the session's own model switch");
+        assert!(!for_this_session(&switch(None), "s", is_child), "a switch naming no session is only a check");
+        for c in [steer, prompt, switch(Some("kid"))] {
+            assert!(!for_this_session(&c, "s", is_child), "only an interrupt or an approval reaches a child: {c:?}");
+        }
+    }
+
+    /// R-SUB-12, R-PERM-2: what the bridge denies by itself once nobody is
+    /// here: a request of a viewer's turn, and of a child that turn
+    /// started — a Claude Code agent's, asked under its own session — but
+    /// never one of a turn or a child started at the host's terminal, nor
+    /// while someone is here, nor before it has waited.
+    #[test]
+    fn r_sub_12_a_viewers_turns_childs_request_is_denied_late_as_the_turns_own() {
+        let req = |id: &str, session: &str, turn: &str| ApprovalRequest { session_id: session.into(), turn_id: turn.into(), request_id: id.into(), tool: "Bash".into(), input: serde_json::json!({}), summary: "Bash `x`".into(), reason: String::new(), remember: Vec::new(), questions: Vec::new() };
+        let at = Instant::now();
+        let approvals: BTreeMap<String, (ApprovalRequest, Instant)> = [req("own", "s", "remote"), req("kid", "k1", "k1-turn"), req("local-kid", "k2", "k2-turn"), req("local", "s", "terminal")].into_iter().map(|r| (r.request_id.clone(), (r, at))).collect();
+        let turns = HashSet::from(["remote".to_string()]);
+        let children = HashMap::from([("k1".to_string(), "remote".to_string()), ("k2".to_string(), "terminal".to_string())]);
+        // The terminal still follows the session (`others`).
+        let ids = |current: Option<&str>, alone: bool, waited: bool| late(&approvals, &turns, (&children, current), alone, true, |_| waited).iter().map(|r| r.request_id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(Some("remote"), true, true), ["kid", "own"], "the viewer's turn's, and its child's while that turn runs");
+        assert!(ids(Some("remote"), false, true).is_empty() && ids(Some("remote"), true, false).is_empty());
+        // A background agent of the viewer's turn asking in a later turn
+        // begun at the host's terminal, or between turns: the person there
+        // is not overruled.
+        assert_eq!(ids(Some("terminal"), true, true), ["own"]);
+        assert_eq!(ids(None, true, true), ["own"]);
+    }
+
+    /// R-HOST-1: a terminal that closed with a question on screen leaves
+    /// the bridge the session's one answering client. With no other
+    /// (`!others`), a request of a turn begun at the terminal is denied
+    /// once nobody has been here for the wait and it has waited as long —
+    /// never while another answering client follows, nor while a viewer
+    /// is here, nor before it has waited.
+    #[test]
+    fn r_host_1_a_terminal_turns_request_is_denied_late_once_no_other_client_answers() {
+        let req = |id: &str, session: &str, turn: &str| ApprovalRequest { session_id: session.into(), turn_id: turn.into(), request_id: id.into(), tool: "Bash".into(), input: serde_json::json!({}), summary: "Bash `x`".into(), reason: String::new(), remember: Vec::new(), questions: Vec::new() };
+        let at = Instant::now();
+        let approvals: BTreeMap<String, (ApprovalRequest, Instant)> = [req("local", "s", "terminal"), req("local-kid", "k2", "k2-turn"), req("own", "s", "remote")].into_iter().map(|r| (r.request_id.clone(), (r, at))).collect();
+        let turns = HashSet::from(["remote".to_string()]);
+        let children = HashMap::from([("k2".to_string(), "terminal".to_string())]);
+        let ids = |alone: bool, others: bool, waited: bool| late(&approvals, &turns, (&children, Some("terminal")), alone, others, |_| waited).iter().map(|r| r.request_id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(true, false, true), ["local", "local-kid", "own"], "nobody but the bridge answers: every waiting request");
+        assert_eq!(ids(true, true, true), ["own"], "the terminal still follows: only the viewer's turn's");
+        assert!(ids(false, false, true).is_empty(), "a viewer is here to answer");
+        assert!(ids(true, false, false).is_empty(), "not waited yet");
+    }
+
+    /// R-HOST-1: only the daemon saying the bridge is the session's one
+    /// answering client counts as nobody else; anything else is a guess,
+    /// and the bridge denies nothing on a guess.
+    #[test]
+    fn r_host_1_nobody_else_answers_only_when_the_daemon_counts_the_bridge_alone() {
+        let of = |session: serde_json::Value| serde_json::from_value::<crate::protocol::HostStatus>(serde_json::json!({"pid": 1, "krowkVersion": "t", "protocolVersion": 1, "socket": "s", "uptimeMs": 1, "clients": 1, "sessions": [session]})).unwrap();
+        let status = |answering: u32| of(serde_json::json!({"sessionId": "s", "running": true, "clients": 2, "answering": answering}));
+        assert!(!others_in(Some(&status(1)), "s"), "the bridge alone");
+        assert!(others_in(Some(&status(2)), "s"), "the terminal too");
+        assert!(others_in(Some(&status(0)), "s"), "a count that leaves out the bridge");
+        assert!(others_in(Some(&of(serde_json::json!({"sessionId": "s", "running": true, "clients": 2}))), "s"), "a daemon that does not count");
+        assert!(others_in(Some(&status(1)), "another"), "the session not listed");
+        assert!(others_in(None, "s"), "no status");
+    }
+
+    /// R-SUB-12: a `subagent.started` is only a candidate. After a handoff
+    /// the session's log holds what another device wrote, and a forged one
+    /// could name any session on this machine: a child is one whose own log
+    /// here begins with a `session.started` naming the session its parent.
+    /// One naming another parent, or none, or with no log here, or an id
+    /// that is no session id, is refused.
+    #[test]
+    fn r_sub_12_a_child_is_one_whose_own_log_here_names_the_session_its_parent() {
+        let sessions = std::env::temp_dir().join(format!("krowk-sub12-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&sessions);
+        let (parent, kid, unrelated, orphan, absent) = ("01a0ec7b-0000-7000-8000-0000000000a1", "01a0ec7b-0000-7000-8000-0000000000a2", "01a0ec7b-0000-7000-8000-0000000000a3", "01a0ec7b-0000-7000-8000-0000000000a4", "01a0ec7b-0000-7000-8000-0000000000a5");
+        let root = |id: &str, of: Option<&str>| {
+            let e = crate::protocol::LogEvent { id: id.into(), parent_id: None, session_id: id.into(), time_ms: 1, body: LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: of.map(String::from), agent: None } };
+            std::fs::create_dir_all(sessions.join(id)).unwrap();
+            std::fs::write(sessions.join(id).join(crate::log::EVENTS_FILE), format!("{}\n", serde_json::to_string(&e).unwrap())).unwrap();
+        };
+        root(kid, Some(parent));
+        root(unrelated, Some("01a0ec7b-0000-7000-8000-0000000000ff"));
+        root(orphan, None);
+        assert!(parent_here(&sessions, kid, parent), "its own child");
+        for (refused, why) in [(unrelated, "another session's child"), (orphan, "a session of its own"), (absent, "no log here"), ("../x", "no session id"), (parent, "the parent itself, which no parent names")] {
+            assert!(!parent_here(&sessions, refused, parent), "{why}");
+        }
+        // A forged start in the session's own log names the unrelated one:
+        // a candidate, and still refused.
+        let forged: HashSet<String> = HashSet::from([unrelated.to_string(), kid.to_string()]);
+        let is_child = |id: &str| forged.contains(id) && parent_here(&sessions, id, parent);
+        assert!(!for_this_session(&Command::Interrupt { session_id: unrelated.into() }, parent, is_child), "a forged subagent.started stops nothing");
+        assert!(for_this_session(&Command::Interrupt { session_id: kid.into() }, parent, is_child));
+        let _ = std::fs::remove_dir_all(&sessions);
+    }
+
+    /// A link is let go at a beat after a pause past `DEAD`, after silence
+    /// past it, or as a ghost: eight batches the relay has not acked, the
+    /// oldest past `GHOST_WAIT`. Fewer, or not waited on as long, is a
+    /// relay still holding them.
+    #[test]
+    fn a_paused_silent_or_ghost_link_is_let_go() {
+        let (s, now) = (Duration::from_secs, Duration::ZERO);
+        assert!(!link_dead(PING, now, 0, None), "a live link");
+        assert!(link_dead(DEAD + s(1), now, 0, None), "a beat after a pause, the laptop asleep");
+        assert!(link_dead(PING, DEAD + s(1), 0, None), "nothing heard");
+        assert!(link_dead(PING, now, GHOST_UNACKED, Some(GHOST_WAIT + s(1))), "a ghost: heartbeats answered, nothing acked");
+        assert!(!link_dead(PING, now, GHOST_UNACKED - 1, Some(s(60))), "fewer unacked");
+        assert!(!link_dead(PING, now, GHOST_UNACKED, Some(s(2))), "not waited on long");
+    }
+
+    use gruntas_client::device_chain::{Change, Kind, Subject};
+    use gruntas_client::user_key::UserKey;
+
+    const T0: u64 = 1_790_000_000;
+    /// The person's key, which each device holds one of (`tok#…`).
+    const TOKEN: &str = "krowk_sk_sync_host_take_000000000000";
+
+    struct Dev {
+        key: e2e::DeviceKey,
+        signing: SigningKey,
+        /// The key it holds, which speaks for it.
+        token: String,
+    }
+
+    impl Dev {
+        fn new() -> Dev {
+            let key = e2e::DeviceKey::generate();
+            let token = format!("{TOKEN}#{}", key.id());
+            Dev { key, signing: SigningKey::generate(), token }
+        }
+        fn subject(&self, name: &str) -> Subject {
+            Subject { kind: Kind::Device, name: name.into(), os: "linux".into(), device: self.key.public(), signing: self.signing.public() }
+        }
+        fn signing(&self) -> SigningKey {
+            SigningKey::from_secret(&*self.signing.secret_bytes()).unwrap()
+        }
+    }
+
+    /// A device list post of `b`, as the chain made it.
+    fn post(b: &gruntas_client::device_chain::Batch) -> gruntas_api::sync::ListPost {
+        gruntas_api::sync::ListPost {
+            entries: b.entries.iter().map(|e| (e2e::hex(&e.bytes), e2e::hex(&e.signatures_bytes()))).collect(),
+            links: b.links.iter().map(|l| e2e::hex(l)).collect(),
+            wraps: b.wraps.iter().map(|(d, w)| (d.to_string(), e2e::hex(w))).collect(),
+            start_over: false,
+        }
+    }
+
+    /// A laptop and a desktop on one person's list, generation 1, in the
+    /// registry at `url` too: the laptop starts it, which binds its key,
+    /// adds the desktop, and the desktop's key claims it.
+    fn list(url: &str, laptop: &Dev, desktop: &Dev) -> (Chain, UserKey) {
+        let (chain, start) = Chain::start(laptop.subject("laptop"), &laptop.signing, None, T0).unwrap();
+        let (chain, add) = chain.batch(&start.newest, vec![Change::Add(desktop.subject("desktop"))], laptop.key.id(), &laptop.signing, T0 + 1).unwrap();
+        let as_laptop = client(url, laptop);
+        as_laptop.init_device_list(&post(&start)).unwrap();
+        as_laptop.append_device_list(&post(&add)).unwrap();
+        client(url, desktop).claim_key_device().unwrap();
+        (chain, start.newest)
+    }
+
+    /// The stand-in registry at `url` as `d`: on its own key, signed by it.
+    fn client(url: &str, d: &Dev) -> Client {
+        Client::new(url, &d.token).signed_by(e2e::DeviceSigner::new(d.key.id(), d.signing()).shared())
+    }
+
+    /// `d` on the stand-in registry at `url`, hosting `session`.
+    fn options(url: &str, d: &Dev, keys: UserKeys, chain: Chain, session: &str) -> Options {
+        let api = Arc::new(client(url, d));
+        Options { relay: String::new(), env: "development".into(), api, device: d.key.id(), signing: d.signing(), keys, chain, session: session.into(), title: "t".into(), cwd: String::new(), sessions: std::path::PathBuf::new(), ttl: LEASE_TTL, keep: KEEP, direct: None, tailnet: None, handed: None, approval_wait: APPROVAL_WAIT, stale: None, supervised: None }
+    }
+
+    fn registry() -> (gruntas_devregistry::Running, String) {
+        let reg = gruntas_devregistry::start(std::net::TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
+        let url = format!("{}/v1", reg.url());
+        (reg, url)
+    }
+
+    /// D5 mB: a running host reads the list again. Nothing new, or a device
+    /// added, it goes on; a removal moves the key on, and it stops for
+    /// `krowk sync host` to take the session up again under the new list;
+    /// its own removal stops it for good.
+    #[test]
+    fn d5_a_running_host_learns_of_a_removal_from_the_list() {
+        let (_reg, url) = registry();
+        let (laptop, desktop, phone) = (Dev::new(), Dev::new(), Dev::new());
+        let id = "01a0ec7b-3333-7000-8000-0000000000da";
+        let (chain, start) = Chain::start(laptop.subject("laptop"), &laptop.signing, None, T0).unwrap();
+        let o = options(&url, &laptop, UserKeys::new(start.newest.clone(), []).unwrap(), chain.clone(), id);
+        o.api.init_device_list(&post(&start)).unwrap();
+        // What the host's own reader (`list_loop`, as `krowk sync host`
+        // runs it with no `stale` given) ends the bridge with.
+        let list_news = |o: &Options, chain: &Chain| list_news(&o.api, o.device, chain).map_err(|e| e.why(&o.session));
+        assert!(list_news(&o, &chain).unwrap().is_none(), "nothing new");
+
+        let (two, add) = chain.batch(&start.newest, vec![Change::Add(desktop.subject("desktop")), Change::Add(phone.subject("phone"))], laptop.key.id(), &laptop.signing, T0 + 1).unwrap();
+        o.api.append_device_list(&post(&add)).unwrap();
+        assert_eq!(list_news(&o, &chain).unwrap().unwrap().head(), two.head(), "an add: it goes on, with the longer list");
+
+        let (three, removed) = two.batch(&start.newest, vec![Change::Remove(phone.subject("phone"))], laptop.key.id(), &laptop.signing, T0 + 2).unwrap();
+        o.api.append_device_list(&post(&removed)).unwrap();
+        assert!(list_news(&o, &two).unwrap_err().starts_with(LIST_MOVED));
+
+        // The desktop's own key: one person's, bound to its own device.
+        let signer = e2e::DeviceSigner::new(desktop.key.id(), desktop.signing()).shared();
+        let d = Client::new(&url, "krowk_sk_sync_host_take_000000000000#desktop").signed_by(signer);
+        let (_, gone) = three.batch(&removed.newest, vec![Change::Remove(laptop.subject("laptop"))], desktop.key.id(), &desktop.signing, T0 + 3).unwrap();
+        d.append_device_list(&post(&gone)).unwrap();
+        // Its keys revoked with it, the read is refused, and the host says so.
+        assert!(list_news(&o, &three).unwrap_err().contains("refused this machine's key"));
+    }
+
+    /// D8b: a session the laptop published is taken up again on the
+    /// desktop — the handoff, with no local record of it there — because a
+    /// device on the list signed its record.
+    #[test]
+    fn d8b_another_listed_device_takes_up_a_session_the_first_published() {
+        let (_reg, url) = registry();
+        let (laptop, desktop) = (Dev::new(), Dev::new());
+        let (chain, user) = list(&url, &laptop, &desktop);
+        let id = "01a0ec7b-3333-7000-8000-0000000000d1";
+        let keys = || UserKeys::new(user.clone(), []).unwrap();
+        let o = options(&url, &laptop, keys(), chain.clone(), id);
+        let (key, _, held) = take(&o).unwrap();
+        let s = o.api.show_sync_session(id).unwrap();
+        assert_eq!(s.signer, laptop.key.id().to_string(), "the record names its publisher");
+        o.api.release_lease(id, &held.token).unwrap();
+        let (again, _, _) = take(&options(&url, &desktop, keys(), chain, id)).unwrap();
+        assert_eq!(key.current().as_bytes(), again.current().as_bytes());
+    }
+
+    /// D8b (and M1 of #200's review): a record the registry holds unsigned,
+    /// or signed by a device not on the list, is never taken up — a removed
+    /// device's key planted under a generation it held is the residual the
+    /// per-session key epochs ticket closes.
+    #[test]
+    fn d8b_the_host_never_takes_up_a_record_no_listed_device_signed() {
+        let (_reg, url) = registry();
+        let (laptop, desktop) = (Dev::new(), Dev::new());
+        let (chain, user) = list(&url, &laptop, &desktop);
+        let o = |id: &str| options(&url, &laptop, UserKeys::new(user.clone(), []).unwrap(), chain.clone(), id);
+        let raw = |id: &str| crate::daemon::ws::uuid(id);
+        let planted = |id: &str| e2e::wrap_session_key(&SessionKey::generate(), &raw(id), &user);
+
+        let unsigned = "01a0ec7b-3333-7000-8000-0000000000d2";
+        let host = o(unsigned);
+        host.api.put_sync_session(unsigned, &e2e::hex(&planted(unsigned)), None, None, None).unwrap();
+        assert!(take(&host).err().unwrap().contains("names no signer"));
+
+        let foreign = "01a0ec7b-3333-7000-8000-0000000000d3";
+        let stranger = Dev::new();
+        let w = planted(foreign);
+        let sig = session_record::sign(&raw(foreign), &w, session_record::SEAL_USER, &user, &stranger.signing).unwrap();
+        let host = o(foreign);
+        host.api.put_sync_session(foreign, &e2e::hex(&w), Some((&e2e::hex(&sig), &stranger.key.id().to_string())), None, None).unwrap();
+        assert!(take(&host).err().unwrap().contains("never held"));
+
+        // Signed by a listed device's key, but named as another's.
+        let misnamed = "01a0ec7b-3333-7000-8000-0000000000d4";
+        let w = planted(misnamed);
+        let sig = session_record::sign(&raw(misnamed), &w, session_record::SEAL_USER, &user, &stranger.signing).unwrap();
+        let host = o(misnamed);
+        host.api.put_sync_session(misnamed, &e2e::hex(&w), Some((&e2e::hex(&sig), &desktop.key.id().to_string())), None, None).unwrap();
+        assert!(take(&host).err().unwrap().contains("does not verify"));
+    }
+
+    /// D8b (a minor of #200's review): a publish the registry refused
+    /// leaves nothing behind that stops the next host publishing again —
+    /// there is no record of it but the registry's own.
+    #[test]
+    fn d8b_a_refused_publish_is_published_again() {
+        let config = gruntas_devregistry::Config { max_sessions: 1, ..Default::default() };
+        let _reg = gruntas_devregistry::start(std::net::TcpListener::bind("127.0.0.1:0").unwrap(), config).unwrap();
+        let url = format!("{}/v1", _reg.url());
+        let (laptop, desktop) = (Dev::new(), Dev::new());
+        let (chain, user) = list(&url, &laptop, &desktop);
+        let o = |id: &str| options(&url, &laptop, UserKeys::new(user.clone(), []).unwrap(), chain.clone(), id);
+        take(&o("01a0ec7b-3333-7000-8000-0000000000d5")).unwrap();
+        let second = o("01a0ec7b-3333-7000-8000-0000000000d6");
+        for _ in 0..2 {
+            let refused = take(&second).err().expect("the registry is full");
+            assert!(refused.contains("session_limit_reached"), "each host tries the publish afresh: {refused}");
+            assert_eq!(second.api.show_sync_session(&second.session).unwrap_err().status, 404);
+        }
+    }
+
+    /// D8b (M1 of #206's review, #200's M1 restored): thief T, on the list
+    /// at generation 1, is removed and the key rotates to 2. The registry
+    /// serves, for the id the laptop hosts, T's session key wrapped under
+    /// generation 1 — which the laptop opens down the chain — signed by T.
+    /// The host does not take it up: nothing is sealed under a key T holds.
+    #[test]
+    fn d8b_the_host_never_takes_up_a_removed_devices_planted_record() {
+        let (_reg, url) = registry();
+        let (laptop, thief) = (Dev::new(), Dev::new());
+        let (chain, g1) = list(&url, &laptop, &thief);
+        let (chain, removed) = chain.batch(&g1, vec![Change::Remove(thief.subject("desktop"))], laptop.key.id(), &laptop.signing, T0 + 2).unwrap();
+        let g2 = removed.newest;
+        let keys = UserKeys::new(g2.clone(), [g2.wrap_previous(&g1).unwrap()]).unwrap();
+        let id = "01a0ec7b-3333-7000-8000-0000000000d7";
+        let raw = crate::daemon::ws::uuid(id);
+        let thiefs = SessionKey::generate();
+        let planted = e2e::wrap_session_key(&thiefs, &raw, &g1);
+        let sig = session_record::sign(&raw, &planted, session_record::SEAL_USER, &g1, &thief.signing).unwrap();
+        let o = options(&url, &laptop, keys, chain, id);
+        o.api.put_sync_session(id, &e2e::hex(&planted), Some((&e2e::hex(&sig), &thief.key.id().to_string())), None, None).unwrap();
+        assert!(e2e::unwrap_session_key(&planted, &raw, &o.keys).is_ok(), "the planted key opens down the chain");
+        let refused = take(&o).err().expect("a removed device's record is not taken up");
+        assert!(refused.contains("no longer on your device list"), "{refused}");
+        assert_eq!(o.api.show_sync_session(id).unwrap().wrapped_key, e2e::hex(&planted), "nothing was written over it");
+    }
+
+    /// Key epochs (#200's M1 residual): a session published at generation
+    /// 1, when a device since removed held its key, is taken up again at
+    /// generation 2. The host adds a key epoch before it writes: the ring is
+    /// sealed under 2, which the removed device does not hold, and what is
+    /// written from then on is under the new key — while the log still reads
+    /// whole, from chunk 0. Taken up again at 2, it does not rotate twice.
+    #[test]
+    fn epochs_a_session_from_before_a_removal_is_rotated_when_taken_up() {
+        let (_reg, url) = registry();
+        let (laptop, thief) = (Dev::new(), Dev::new());
+        let (chain, g1) = list(&url, &laptop, &thief);
+        let id = "01a0ec7b-3333-7000-8000-0000000000d9";
+        let raw = crate::daemon::ws::uuid(id);
+        let before = options(&url, &laptop, UserKeys::new(g1.clone(), []).unwrap(), chain.clone(), id);
+        let (old, mut w, held) = take(&before).unwrap();
+        w.push(serde_json::json!({"id": "01a0ec7b-0000-7000-8000-000000000001", "type": "item.completed"}));
+        w.flush(&held.token).unwrap();
+        before.api.release_lease(id, &held.token).unwrap();
+        let thiefs = UserKeys::new(g1.clone(), []).unwrap();
+        assert!(e2e::unwrap_session_keys(&e2e::unhex(&before.api.show_sync_session(id).unwrap().wrapped_key).unwrap(), &raw, &thiefs).is_ok(), "the thief holds the key so far");
+
+        let (chain, removed) = chain.batch(&g1, vec![Change::Remove(thief.subject("desktop"))], laptop.key.id(), &laptop.signing, T0 + 2).unwrap();
+        let g2 = removed.newest;
+        let after = Options { keys: UserKeys::new(g2.clone(), [g2.wrap_previous(&g1).unwrap()]).unwrap(), chain, ..before };
+        let (keys, mut w, held) = take(&after).unwrap();
+        assert_eq!((keys.epoch(), keys.at(0).unwrap().as_bytes()), (1, old.current().as_bytes()), "a key added, the old one kept");
+        w.push(serde_json::json!({"id": "01a0ec7b-0000-7000-8000-000000000002", "type": "item.completed"}));
+        w.flush(&held.token).unwrap();
+        let s = after.api.show_sync_session(id).unwrap();
+        let wrapped = e2e::unhex(&s.wrapped_key).unwrap();
+        assert_eq!((e2e::session_key_generation(&wrapped).unwrap(), s.signer.as_str()), (2, laptop.key.id().to_string().as_str()));
+        assert!(e2e::unwrap_session_keys(&wrapped, &raw, &thiefs).unwrap_err().0.contains("generation 2"), "the removed device opens nothing new");
+        let listed = after.api.list_chunks(id, None, 10).unwrap();
+        assert_eq!(after.api.read_chunk(&listed.chunks[1]).unwrap()[0], e2e::CHUNK_V2, "written under the new key");
+        let index = store::open_index(&keys, id, &s.sealed_index).unwrap();
+        assert_eq!(store::attach(&after.api, &keys, id, index, None).unwrap().events.len(), 2, "the log reads across the rotation");
+        after.api.release_lease(id, &held.token).unwrap();
+
+        let (again, _, _) = take(&after).unwrap();
+        assert_eq!(again.epoch(), 1, "rotated once");
+    }
+
+    /// A proxy in front of the registry at `to` that takes the first read
+    /// of a stored object and answers it with nothing, its connection held
+    /// open; everything else passes, a connection a request. Counts the
+    /// object reads.
+    fn quiet_once(to: std::net::SocketAddr) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let reads = Arc::new(AtomicUsize::new(0));
+        let seen = reads.clone();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for mut c in l.incoming().flatten() {
+                let mut req = Vec::new();
+                let mut buf = [0u8; 16384];
+                let whole = loop {
+                    if let Some(end) = req.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&req[..end]).to_ascii_lowercase();
+                        let len: usize = head.lines().find_map(|l| l.strip_prefix("content-length:")).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+                        if req.len() >= end + 4 + len {
+                            break true;
+                        }
+                    }
+                    match c.read(&mut buf) {
+                        Ok(0) | Err(_) => break false,
+                        Ok(n) => req.extend_from_slice(&buf[..n]),
+                    }
+                };
+                if !whole {
+                    continue;
+                }
+                if req.starts_with(b"GET /_storage/") && seen.fetch_add(1, Ordering::SeqCst) == 0 {
+                    held.push(c);
+                    continue;
+                }
+                let line = req.windows(2).position(|w| w == b"\r\n").unwrap();
+                let req = [&req[..line + 2], b"Connection: close\r\n", &req[line + 2..]].concat();
+                std::thread::spawn(move || {
+                    let Ok(mut up) = std::net::TcpStream::connect(to) else { return };
+                    let mut resp = Vec::new();
+                    if up.write_all(&req).is_ok() && up.read_to_end(&mut resp).is_ok() {
+                        let _ = c.write_all(&resp);
+                    }
+                });
+            }
+        });
+        (format!("http://{addr}/v1"), reads)
+    }
+
+    /// R-REG-1: attaching to a session whose first chunk read storage
+    /// answers with nothing gives that read up after the quiet limit and
+    /// makes it again, and the attach reads the whole log — where the read
+    /// once held the attach for the five-minute ceiling.
+    #[test]
+    fn r_reg_1_an_attach_whose_chunk_read_goes_quiet_reads_the_log_whole_on_the_retry() {
+        let (reg, url) = registry();
+        let (laptop, desktop) = (Dev::new(), Dev::new());
+        let (chain, g1) = list(&url, &laptop, &desktop);
+        let id = "01a0ec7b-3333-7000-8000-0000000000db";
+        let o = options(&url, &laptop, UserKeys::new(g1, []).unwrap(), chain, id);
+        let (keys, mut w, held) = take(&o).unwrap();
+        for n in 1..=2 {
+            w.push(serde_json::json!({"id": format!("01a0ec7b-0000-7000-8000-00000000000{n}"), "type": "item.completed"}));
+            w.flush(&held.token).unwrap();
+        }
+        o.api.release_lease(id, &held.token).unwrap();
+
+        let quiet = std::time::Duration::from_millis(300);
+        let (via, reads) = quiet_once(reg.url().trim_start_matches("http://").parse().unwrap());
+        let api = client(&via, &desktop).quiet_after(quiet);
+        let index = store::open_index(&keys, id, &api.show_sync_session(id).unwrap().sealed_index).unwrap();
+        let started = std::time::Instant::now();
+        let attached = store::attach(&api, &keys, id, index, None).unwrap();
+        assert_eq!(attached.events.len(), 2, "the whole log");
+        assert!(started.elapsed() < quiet + std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 3, "two chunks, the first read twice");
+    }
+
+    /// D8 (M2 of #200's review): a host behind the generation the list
+    /// names publishes nothing.
+    #[test]
+    fn d8_a_host_behind_the_chains_generation_publishes_nothing() {
+        let (_reg, url) = registry();
+        let (laptop, desktop) = (Dev::new(), Dev::new());
+        let (chain, user) = list(&url, &laptop, &desktop);
+        let (chain, _) = chain.batch(&user, vec![Change::Remove(desktop.subject("desktop"))], laptop.key.id(), &laptop.signing, T0 + 2).unwrap();
+        let id = "01a0ec7b-4444-7000-8000-0000000000d8";
+        let o = options(&url, &laptop, UserKeys::new(user, []).unwrap(), chain, id);
+        let refused = take(&o).err().expect("generation 1 seals nothing when the list names 2");
+        assert!(refused.contains("names generation 2"), "{refused}");
+        assert_eq!(o.api.show_sync_session(id).unwrap_err().status, 404, "nothing reached the registry");
+    }
+}

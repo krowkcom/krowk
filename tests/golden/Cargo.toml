@@ -1,5 +1,5 @@
 [package]
-name = "krowk-golden"
+name = "gruntas-golden"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

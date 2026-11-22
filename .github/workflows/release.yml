@@ -101,7 +101,7 @@ jobs:
       # release ships. It is a superset of what a binary links — the tool
       # resolves the workspace's features together — so it may name a crate
       # one build leaves out, never the other way round; the exact list for
-      # the lean build is crates/krowk/lean-deps.txt. The timestamp is the
+      # the lean build is crates/gruntas/lean-deps.txt. The timestamp is the
       # tagged commit's, so a rerun writes the same file.
       - name: SBOM
         env:
@@ -114,11 +114,11 @@ jobs:
           for build in full lean; do
             features=()
             [[ "$build" == full ]] && features=(--features harness)
-            cargo cyclonedx --manifest-path crates/krowk/Cargo.toml --format json --spec-version 1.5 \
+            cargo cyclonedx --manifest-path crates/gruntas/Cargo.toml --format json --spec-version 1.5 \
               --target all --no-build-deps "${features[@]}" --override-filename sbom
             name="krowk"
             [[ "$build" == lean ]] && name="krowk-lean"
-            mv crates/krowk/sbom.json "sbom/${name}_${VERSION}.cdx.json"
+            mv crates/gruntas/sbom.json "sbom/${name}_${VERSION}.cdx.json"
           done
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -256,7 +256,7 @@ jobs:
       - name: Build krowk's unit tests
         run: |
           set -euo pipefail
-          bin=$(cargo test --locked -p krowk --lib --no-run --message-format=json \
+          bin=$(cargo test --locked -p gruntas --lib --no-run --message-format=json \
             | jq -r 'select(.reason == "compiler-artifact" and .profile.test and .target.name == "krowk" and (.target.kind | index("lib"))) | .executable')
           [[ -x "$bin" ]] || { echo "::error::no krowk unit-test binary was built" >&2; exit 1; }
           mkdir -p verifier && cp "$bin" verifier/krowk-unit-tests
@@ -427,7 +427,7 @@ jobs:
             | tar -xz -C /usr/local/bin krowk krowk-mcp
 
           # From source
-          cargo install --locked --git https://github.com/$GITHUB_REPOSITORY --tag $tag --features harness krowk
+          cargo install --locked --git https://github.com/$GITHUB_REPOSITORY --tag $tag --features harness gruntas
           \`\`\`
 
           \`checksums.txt\` covers every archive on this release, and
