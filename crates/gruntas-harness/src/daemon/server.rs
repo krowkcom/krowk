@@ -21,7 +21,7 @@
 //! One `Host` serves each working directory clients connect from, and
 //! whether the client answers approval requests (`hello.answersApprovals`):
 //! a new session starts where its client is, a resumed one keeps its own
-//! directory, as it does in-process, and a `krowk -p` client's turns refuse
+//! directory, as it does in-process, and a `gruntas -p` client's turns refuse
 //! what would be asked exactly as in-process `-p` does. A request of an
 //! answering client's turn that no answering client is left to see — the
 //! last one went away — is denied, so no turn waits on nobody. Everything runs on one thread, as the
@@ -315,7 +315,7 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         opts,
         wake: wake.clone(),
     }));
-    eprintln!("krowk host {} listening on {} (pid {}, idle exit {})", state.borrow().opts.krowk_version, socket.display(), std::process::id(), idle.map_or("never".into(), |d| format!("{d:?}")));
+    eprintln!("gruntas host {} listening on {} (pid {}, idle exit {})", state.borrow().opts.krowk_version, socket.display(), std::process::id(), idle.map_or("never".into(), |d| format!("{d:?}")));
     // The TLS configuration every engine shares, built off the thread
     // before any turn needs it, and never on it: an engine made here takes
     // what `warm` built, or fails with why there is none.
@@ -347,7 +347,7 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         });
     }
     if let Some((listener, _)) = websocket {
-        eprintln!("krowk host WebSocket listening on ws://{}", listener.local_addr().map_err(|e| e.to_string())?);
+        eprintln!("gruntas host WebSocket listening on ws://{}", listener.local_addr().map_err(|e| e.to_string())?);
         tokio::task::spawn_local(super::ws::accept(listener, state.clone()));
     }
     {
@@ -425,7 +425,7 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
             h.shutdown().await;
         }
         // The turns' syncs, still on the blocking pool: a runtime dropped
-        // with them queued drops them unrun, and a `krowk host stop`
+        // with them queued drops them unrun, and a `gruntas host stop`
         // straight after a turn would leave that turn in the page cache
         // alone. Bounded like the engines' shutdown: a sync stuck on a dead
         // mount must not keep the daemon from exiting.
@@ -534,8 +534,8 @@ pub(super) fn welcome(state: &Shared, hello: Option<ClientFrame>, token: Option<
             let pid = std::process::id();
             return Err(refuse(
                 "protocol_mismatch",
-                format!("this krowk speaks protocol {protocol_version}, and the host daemon (pid {pid}, krowk {}) speaks {PROTOCOL_VERSION}", state.borrow().opts.krowk_version),
-                format!("stop the daemon with `kill {pid}` once its sessions are done — the next krowk starts one of its own version"),
+                format!("this gruntas speaks protocol {protocol_version}, and the host daemon (pid {pid}, gruntas {}) speaks {PROTOCOL_VERSION}", state.borrow().opts.krowk_version),
+                format!("stop the daemon with `kill {pid}` once its sessions are done — the next gruntas starts one of its own version"),
             ));
         }
         _ => return Err(refuse("bad_hello", "the first frame was not a hello".into(), "send {\"type\":\"hello\",\"protocolVersion\":1,\"cwd\":\"…\"} first".into())),
@@ -764,14 +764,14 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
             let error = if s.working > 0 {
                 Some(ErrorInfo {
                     code: "host_busy".into(),
-                    message: format!("the host daemon is running {} turn(s) — let them finish (`krowk host status` lists them), then try again", s.working),
+                    message: format!("the host daemon is running {} turn(s) — let them finish (`gruntas host status` lists them), then try again", s.working),
                     http_status: None,
                     resets_at_ms: None,
                 })
             } else if others > 0 && !force {
                 Some(ErrorInfo {
                     code: "host_in_use".into(),
-                    message: format!("{others} other client(s) are connected to the host daemon (an open krowk, say) — close them, or `krowk host stop --force`: each reconnects to the next daemon"),
+                    message: format!("{others} other client(s) are connected to the host daemon (an open gruntas, say) — close them, or `gruntas host stop --force`: each reconnects to the next daemon"),
                     http_status: None,
                     resets_at_ms: None,
                 })
@@ -1482,7 +1482,7 @@ async fn page(state: &Shared, client: u64, session: &str, cursor: outbox::Cursor
                 tokio::time::sleep(READ_GAP).await;
                 continue;
             }
-            _ => return Err(EngineError::new("no_session", format!("there is no session {session} — `krowk sessions` lists them"))),
+            _ => return Err(EngineError::new("no_session", format!("there is no session {session} — `gruntas sessions` lists them"))),
         };
         if decide(state, client, session, &host, start, events, tries, &cursor) {
             return Ok(());

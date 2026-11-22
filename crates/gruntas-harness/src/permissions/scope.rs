@@ -53,12 +53,12 @@ pub struct Scope {
     /// approved this call.
     pub open: bool,
     /// More directories no edit may reach unless they are open, beside
-    /// `.git`, `.claude`, `.codex` and `.gruntas`: krowk's own config
+    /// `.git`, `.claude`, `.codex` and `.gruntas`: gruntas's own config
     /// directory, Claude Code's, a backend instance's (`CLAUDE_CONFIG_DIR`,
     /// `CODEX_HOME`), whose settings and hooks decide what runs next.
     pub protected: Vec<PathBuf>,
     /// Directories no tool reads, searches or changes without a person's
-    /// say, wherever they sit: krowk's home, as named and as it leads — its
+    /// say, wherever they sit: gruntas's home, as named and as it leads — its
     /// keys, logins, sessions and settings.
     pub secrets: Vec<PathBuf>,
     pub hidden: Hidden,
@@ -120,7 +120,7 @@ impl Scope {
         }
         let inside = roots.iter().any(|r| real.starts_with(r));
         if self.secret(p) {
-            return Reach::Fenced(format!("{} is inside krowk's home, which holds its keys, logins and sessions: the tools read, search or change it only with a person's say", p.display()));
+            return Reach::Fenced(format!("{} is inside gruntas's home, which holds its keys, logins and sessions: the tools read, search or change it only with a person's say", p.display()));
         }
         if edit && let Some(why) = self.fence(p, &real, &root) {
             return Reach::Fenced(why);
@@ -137,7 +137,7 @@ impl Scope {
     /// spelled or as it leads, or inside a `protected` one. git runs what
     /// its config names (`core.fsmonitor`, hooks), Claude Code what its
     /// settings, hooks and agents name, Codex what its project config, rules
-    /// and hooks name, krowk what its own settings and hooks name — so a
+    /// and hooks name, gruntas what its own settings and hooks name — so a
     /// model that could write `.git/config` or `.claude/settings.json`
     /// could run any command without the bash permission. Codex keeps
     /// `.git` read-only for the same reason.
@@ -153,7 +153,7 @@ impl Scope {
                 ".git" => "git runs what its config and hooks name, so it is left to git itself",
                 ".claude" => "Claude Code runs what its settings, hooks and agents name",
                 ".codex" => "Codex runs what its project config, rules and hooks name",
-                _ => "krowk runs what its project config's hooks name, and its rules decide what else runs",
+                _ => "gruntas runs what its project config's hooks name, and its rules decide what else runs",
             };
             return Some(format!("{} is inside a {dir} directory, which the file tools change only with a person's say: {runs}", p.display()));
         }
@@ -166,7 +166,7 @@ impl Scope {
             q.starts_with(lower(d)) || q.starts_with(lower(&d.canonicalize().unwrap_or_else(|_| d.to_path_buf())))
         };
         self.protected.iter().find(|d| within(real, d) || within(p, d)).map(|d| {
-            format!("{} is inside {}, a directory whose settings decide what runs (krowk's, or a backend's own), which the file tools change only with a person's say", p.display(), d.display())
+            format!("{} is inside {}, a directory whose settings decide what runs (gruntas's, or a backend's own), which the file tools change only with a person's say", p.display(), d.display())
         })
     }
 
@@ -202,13 +202,13 @@ impl Scope {
         if let Some(plan) = &self.sandbox {
             let real = real_path(&p, 0).map_err(|e| format!("{} cannot be resolved: {e}", p.display()))?;
             if plan.hides(&real) {
-                return Err(format!("{} is hidden by the {} sandbox, which keeps credentials, the home outside the workspace and krowk's home out of reach: nothing opens it while krowk runs sandboxed", p.display(), plan.profile.name()));
+                return Err(format!("{} is hidden by the {} sandbox, which keeps credentials, the home outside the workspace and gruntas's home out of reach: nothing opens it while gruntas runs sandboxed", p.display(), plan.profile.name()));
             }
             return match self.outside {
                 true => Ok(real),
                 false => match self.reach(&real, false) {
                     Reach::Inside | Reach::Fenced(_) => Ok(real),
-                    Reach::Outside(why) => Err(format!("{why}: the file tools reach only inside the working directory and the directories the settings add, unless a person allows it, an allow rule covers it, or krowk runs with `--permission-mode bypassPermissions`")),
+                    Reach::Outside(why) => Err(format!("{why}: the file tools reach only inside the working directory and the directories the settings add, unless a person allows it, an allow rule covers it, or gruntas runs with `--permission-mode bypassPermissions`")),
                 },
             };
         }
@@ -217,7 +217,7 @@ impl Scope {
         }
         match self.reach(&p, false) {
             Reach::Inside | Reach::Fenced(_) => Ok(p),
-            Reach::Outside(why) => Err(format!("{why}: the file tools reach only inside the working directory and the directories the settings add, unless a person allows it, an allow rule covers it, or krowk runs with `--permission-mode bypassPermissions`")),
+            Reach::Outside(why) => Err(format!("{why}: the file tools reach only inside the working directory and the directories the settings add, unless a person allows it, an allow rule covers it, or gruntas runs with `--permission-mode bypassPermissions`")),
         }
     }
 
@@ -242,14 +242,14 @@ impl Scope {
                 Reach::Inside => return Ok(real),
                 Reach::Fenced(why) | Reach::Outside(why) => why,
             };
-            return Err(format!("{why} — krowk runs in the {} sandbox, which no rule, person or mode opens (R-PERM-3)", plan.profile.name()));
+            return Err(format!("{why} — gruntas runs in the {} sandbox, which no rule, person or mode opens (R-PERM-3)", plan.profile.name()));
         }
         match self.reach(&p, true) {
             Reach::Inside => Ok(p),
             Reach::Fenced(_) if self.open => Ok(p),
             Reach::Outside(_) if self.outside => Ok(p),
             Reach::Fenced(why) => Err(format!("{why} — ask the person, or rerun with `--permission-mode bypassPermissions`")),
-            Reach::Outside(why) => Err(format!("{why}: the file tools reach only inside the working directory and the directories the settings add, unless a person allows it, an allow rule covers it, or krowk runs with `--permission-mode bypassPermissions`")),
+            Reach::Outside(why) => Err(format!("{why}: the file tools reach only inside the working directory and the directories the settings add, unless a person allows it, an allow rule covers it, or gruntas runs with `--permission-mode bypassPermissions`")),
         }
     }
 }

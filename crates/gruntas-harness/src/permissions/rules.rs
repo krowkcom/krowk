@@ -14,7 +14,7 @@
 //! | any other name, e.g. `WebSearch`, `Skill(name)` | the tool of that name (and, with a specifier, its subject) |
 //!
 //! `Edit` rules cover every tool that changes a file (`Write`, `MultiEdit`,
-//! `NotebookEdit` and krowk's own edit tools), as in Claude Code; `Read`
+//! `NotebookEdit` and gruntas's own edit tools), as in Claude Code; `Read`
 //! rules cover `Grep`, `Glob` and `LS`.
 //!
 //! **A command is judged as the shell will run it.** It is split into its
@@ -36,7 +36,7 @@
 //! `>>`, `>|`, `&>`, `<>`), and git only in forms known to run nothing:
 //! git is judged fail-closed (see `uncoverable`) — its global options, and
 //! the options of every subcommand that can run a program or install hooks,
-//! must be on a known-safe list, so an option krowk does not know, however
+//! must be on a known-safe list, so an option gruntas does not know, however
 //! abbreviated or bundled, keeps an allow rule from covering it. A
 //! login shell around one command line (`bash -lc '…'`, as Codex runs
 //! commands) is judged by that line. A deny rule denies the line when it
@@ -84,7 +84,7 @@ pub struct Rule {
 }
 
 /// Claude Code's name for a tool, whichever way a rule or a call spells it:
-/// krowk's own tools (`bash`, `read`, `str_replace`, …) and Claude's names
+/// gruntas's own tools (`bash`, `read`, `str_replace`, …) and Claude's names
 /// in any case.
 pub fn canonical(tool: &str) -> String {
     let lower = tool.to_ascii_lowercase();
@@ -154,10 +154,10 @@ pub fn parse(text: &str, source: &str, root: &Path) -> Result<Rule, String> {
 /// Claude Code reads a `/path` rule relative to the settings file it came
 /// from, which a command-line rule has none of, so a project-root rule is
 /// handed over anchored absolutely (`//<root>/path`). What Claude Code has
-/// no tool for — krowk's own `Publish` (Claude Code's is
-/// `mcp__gruntas__publish`, judged in krowk's bridge whatever Claude Code
-/// decides) and "every MCP tool", which would take krowk's own tools with
-/// it — is left out: krowk holds those itself.
+/// no tool for — gruntas's own `Publish` (Claude Code's is
+/// `mcp__gruntas__publish`, judged in gruntas's bridge whatever Claude Code
+/// decides) and "every MCP tool", which would take gruntas's own tools with
+/// it — is left out: gruntas holds those itself.
 pub fn claude_spelling(r: &Rule) -> Option<String> {
     if r.tool == "Publish" || r.tool == "mcp__*" || r.tool.starts_with("mcp__gruntas") {
         return None;
@@ -187,10 +187,10 @@ pub enum Access {
     /// Calls this MCP tool.
     Mcp { server: String, tool: String },
     /// Loads a skill's instructions (the `subject` is its name) from its
-    /// `SKILL.md`, when krowk knows where that is: `Skill(name)` rules
+    /// `SKILL.md`, when gruntas knows where that is: `Skill(name)` rules
     /// judge it by name, and a `Read` deny rule by the file.
     Skill(Option<PathBuf>),
-    /// Needs no permission at all: krowk's own bridged tools.
+    /// Needs no permission at all: gruntas's own bridged tools.
     Free,
     /// One of the session's own tools — Claude Code's `AskUserQuestion`,
     /// `TodoWrite`, an agent (`Task`, its agent the subject): no mode
@@ -281,7 +281,7 @@ fn mcp_matches(rule_tool: &str, server: &str, tool: &str) -> bool {
     }
     // Matched whole against the call's own parts rather than split at the
     // first `__`, since a tool's name may hold `__` itself; server names
-    // krowk starts hold none and neither start nor end with `_` (see
+    // gruntas starts hold none and neither start nor end with `_` (see
     // `crate::mcp`), so a rule reads one way.
     rest == server || rest == format!("{server}__*") || rest == format!("{server}__{tool}")
 }
@@ -440,13 +440,13 @@ pub struct Simple {
     pub words: Vec<String>,
     /// Parallel to `words`: the word had an unquoted `$`, a substitution, a
     /// brace or a glob character in it, so what the shell runs is not the
-    /// text krowk read.
+    /// text gruntas read.
     pub dynamic: Vec<bool>,
     pub writes: bool,
 }
 
 /// A command line, split the way the shell would run it: every simple
-/// command, the ones inside substitutions included. `opaque` when krowk
+/// command, the ones inside substitutions included. `opaque` when gruntas
 /// cannot say what it runs: a quote that never closes, an escape it does
 /// not model, or a program name the shell would expand.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -460,7 +460,7 @@ pub fn split(cmd: &str) -> Parsed {
     let mut out = Parsed::default();
     lex(cmd, &mut out, 0);
     // A program whose name the shell computes — `$X`, `$(printf rm)`,
-    // `r{m,}`, `/bin/r?` — is not the program krowk read, so no rule can
+    // `r{m,}`, `/bin/r?` — is not the program gruntas read, so no rule can
     // judge the line.
     for c in &out.commands {
         let mut forms = Vec::new();
@@ -498,7 +498,7 @@ struct Word {
 
 /// Bash's `$'…'` (ANSI-C quoting) from just after the opening quote: its
 /// text with the escapes decoded, and the index after the closing quote.
-/// None when it never closes or uses an escape krowk does not model — the
+/// None when it never closes or uses an escape gruntas does not model — the
 /// caller makes the line opaque rather than guess where it ends.
 fn ansi_c(chars: &[char], mut i: usize) -> Option<(String, usize)> {
     let mut s = String::new();
@@ -983,7 +983,7 @@ fn spec_matches(spec: Option<&str>, words: &[String]) -> bool {
 }
 
 /// The simple commands an allow rule has to cover, or none when no allow
-/// rule may cover the line: one krowk could not follow, a command writing a
+/// rule may cover the line: one gruntas could not follow, a command writing a
 /// file through a redirection, or a git that is told what to run on the
 /// command line. A login shell wrapped around one command line — what Codex
 /// asks about, `bash -lc 'git status'` — is its command line, read by the
@@ -1009,7 +1009,7 @@ fn allow_units(cmd: &str, depth: usize, cwd: &Path) -> Option<Vec<Simple>> {
             out.push(c);
         }
     }
-    // A git after a `cd` runs somewhere krowk did not judge: the line's
+    // A git after a `cd` runs somewhere gruntas did not judge: the line's
     // directories are not followed, so the pair is not covered.
     let prog = |c: &Simple| c.words.iter().find(|w| !(w.contains('=') && !w.starts_with('='))).map(|w| basename(w).to_string()).unwrap_or_default();
     if out.iter().any(|c| matches!(prog(c).as_str(), "cd" | "pushd" | "popd")) && out.iter().any(|c| prog(c) == "git") {
@@ -1022,12 +1022,12 @@ fn allow_units(cmd: &str, depth: usize, cwd: &Path) -> Option<Vec<Simple>> {
 /// judged **fail-closed**: git has many ways to be told to run a program —
 /// config on its command line, a remote-side program, an exec step, a
 /// pager, a template directory of hooks — and new ones arrive with new
-/// versions, so rather than list the dangerous forms, krowk lists the safe
+/// versions, so rather than list the dangerous forms, gruntas lists the safe
 /// ones. `Bash(git:*)` covers a git line only when
 ///
 /// - every global option before the subcommand is one git defines as
 ///   harmless (`-C <dir>`, `--no-pager`, `--git-dir=…`, …) — so `-c`,
-///   `--config-env`, `--exec-path` and anything krowk does not know are not;
+///   `--config-env`, `--exec-path` and anything gruntas does not know are not;
 /// - for a subcommand that can run a program or install hooks (`clone`,
 ///   `init`, `fetch`, `pull`, `push`, `ls-remote`, `archive`, `rebase`,
 ///   `grep`, `difftool`, `mergetool`, `config`, `am`, `bisect`, `submodule`,
@@ -1097,7 +1097,7 @@ fn uncoverable(words: &[String], cwd: &Path) -> bool {
         "bisect" => BISECT,
         "submodule" => SUBMODULE,
         "help" => HELP,
-        // Everything else runs no program krowk's model could name.
+        // Everything else runs no program gruntas's model could name.
         _ => return false,
     };
     let Some(positional) = options(rest, opts) else { return true };
@@ -1323,7 +1323,7 @@ mod tests {
     fn r_perm_1_rules_parse_in_claude_codes_syntax() {
         let r = rule("Bash(git:*)");
         assert_eq!((r.tool.as_str(), r.spec.as_deref()), ("Bash", Some("git:*")));
-        assert_eq!(rule("bash").tool, "Bash", "krowk's tool names are Claude's");
+        assert_eq!(rule("bash").tool, "Bash", "gruntas's tool names are Claude's");
         assert_eq!(rule("Bash(*)").spec, None, "the bare tool");
         assert_eq!(rule("Mcp(github:create_issue)").tool, "mcp__github__create_issue");
         assert_eq!(rule("Mcp(github)").tool, "mcp__github");
@@ -1458,7 +1458,7 @@ mod tests {
         assert_eq!(units(r"echo $'\x41\101\u0041'")[0][1], "AAA", "escapes decoded as bash decodes them");
         assert_eq!(units(r"$'\x72m' -rf x")[0][0], "rm", "a name spelled in escapes is still the name");
         assert!(bash("Bash(rm:*)", r"$'\x72m' -rf x", false));
-        // An escape krowk does not model, or a string that never closes: opaque.
+        // An escape gruntas does not model, or a string that never closes: opaque.
         assert!(split(r"echo $'\cA'; rm x").opaque && split(r"echo $'open").opaque);
     }
 
@@ -1466,7 +1466,7 @@ mod tests {
     fn r_perm_1_a_program_name_the_shell_computes_makes_the_line_opaque() {
         for cmd in ["$(printf rm) -rf x", "`echo rm` x", "$CMD x", "r$IFS'm' x", "${X}rm x", "r{m,} x", "/bin/r? x", "/bin/r[m] x", "/bin/r* x", "sudo $X y", "bash -c \"$CMD\"", "eval $CMD", "env FOO=1 $X", "find . -exec $X {} \\;"] {
             assert!(split(cmd).opaque, "{cmd:?} should be opaque");
-            assert!(!bash("Bash", cmd, true), "{cmd:?}: no allow rule covers what krowk cannot read");
+            assert!(!bash("Bash", cmd, true), "{cmd:?}: no allow rule covers what gruntas cannot read");
         }
         for cmd in ["ls *.rs", "echo $HOME", "rm -- \"$f\"", "[ -f x ] && echo y", "if [[ -n $x ]]; then ls; fi", "find . -exec rm {} \\;", "{ ls; }"] {
             assert!(!split(cmd).opaque, "{cmd:?}: expansions in arguments, and test brackets, are fine");

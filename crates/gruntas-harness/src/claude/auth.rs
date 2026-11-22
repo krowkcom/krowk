@@ -1,4 +1,4 @@
-//! A Claude Code instance's login, asked of Claude Code (R-INST-2). krowk
+//! A Claude Code instance's login, asked of Claude Code (R-INST-2). gruntas
 //! never runs a Claude OAuth flow and never reads Claude's credentials — the
 //! keychain entry or `.credentials.json` (R-BACK-2): `claude auth login`
 //! signs in, in Anthropic's own flow on the person's own terminal, and
@@ -10,7 +10,7 @@ use serde_json::Value;
 use std::process::{Command, ExitStatus, Stdio};
 
 /// What `claude auth status` reports, less anything personal: the email it
-/// prints is never read into krowk.
+/// prints is never read into gruntas.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Status {
     pub logged_in: bool,
@@ -67,9 +67,9 @@ pub fn status(b: &Backend, probe: &crate::readiness::Probe) -> Result<Status, St
 }
 
 /// `claude auth login`, on the person's own terminal: its prompts, its
-/// browser, its answer. krowk sees only how it exited. What it prints goes
-/// to stderr, the terminal either way, so krowk's own answer on stdout stays
-/// one JSON document. It starts in `dir` — krowk's own directory, as a
+/// browser, its answer. gruntas sees only how it exited. What it prints goes
+/// to stderr, the terminal either way, so gruntas's own answer on stdout stays
+/// one JSON document. It starts in `dir` — gruntas's own directory, as a
 /// status check does — never in a repository whose `.claude/settings.json`
 /// nobody trusted.
 pub fn login(b: &Backend, dir: &std::path::Path) -> Result<ExitStatus, String> {
@@ -80,7 +80,7 @@ pub fn login(b: &Backend, dir: &std::path::Path) -> Result<ExitStatus, String> {
 /// Code's own sign-out, which asks nothing. Run where and as long as a
 /// status check is (`probe`), its output kept from the terminal, so a
 /// front end that owns the screen (an interactive client) need not give it up. Whether
-/// it exited cleanly is all krowk reads of it.
+/// it exited cleanly is all gruntas reads of it.
 pub fn logout(b: &Backend, probe: &crate::readiness::Probe) -> Result<ExitStatus, String> {
     let out = crate::readiness::output_within(&mut command(b, &["auth", "logout"]), probe)
         .map_err(|e| not_found(b, e))?

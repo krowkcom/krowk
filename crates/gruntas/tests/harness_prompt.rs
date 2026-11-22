@@ -1,6 +1,6 @@
-//! `krowk -p`, the built binary, against the fake `claude` (Claude Code) on
+//! `gruntas -p`, the built binary, against the fake `claude` (Claude Code) on
 //! PATH: its flags, the record it leaves on a terminal (R-PRES-6), images
-//! sent with the prompt, rollover across two accounts, and bare `krowk` on
+//! sent with the prompt, rollover across two accounts, and bare `gruntas` on
 //! a terminal.
 
 #![cfg(feature = "harness")]
@@ -29,7 +29,7 @@ impl Sandbox {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
-        std::fs::write(root.join("repo/README.md"), "# krowk\n\nPermalinks for agent output.\n").unwrap();
+        std::fs::write(root.join("repo/README.md"), "# gruntas\n\nPermalinks for agent output.\n").unwrap();
         std::fs::create_dir_all(root.join("bin")).unwrap();
         for (dir, bin) in [("claude", "fake-claude"), ("codex", "fake-codex")] {
             let from = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../gruntas-harness/tests/fixtures").join(dir).join(bin);
@@ -63,7 +63,7 @@ impl Sandbox {
         format!("{}:{}", self.root.join("bin").display(), std::env::var("PATH").unwrap_or_default())
     }
 
-    fn krowk(&self, args: &[&str]) -> Output {
+    fn gruntas(&self, args: &[&str]) -> Output {
         self.command(args).output().unwrap()
     }
 
@@ -86,9 +86,9 @@ impl Sandbox {
 
     #[cfg(unix)]
     fn ok(&self, args: &[&str]) -> String {
-        let out = self.krowk(args);
+        let out = self.gruntas(args);
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-        assert!(out.status.success(), "krowk {args:?}: {stdout}{}", String::from_utf8_lossy(&out.stderr));
+        assert!(out.status.success(), "gruntas {args:?}: {stdout}{}", String::from_utf8_lossy(&out.stderr));
         stdout
     }
 
@@ -98,7 +98,7 @@ impl Sandbox {
         std::fs::read_to_string(self.root.join("fake.log")).unwrap_or_default()
     }
 
-    /// The prompts Claude Code was sent: each `user` line krowk wrote it.
+    /// The prompts Claude Code was sent: each `user` line gruntas wrote it.
     #[cfg(unix)]
     fn prompts(&self) -> Vec<Value> {
         self.fake_log().lines().filter_map(|l| l.strip_prefix("in ")).filter(|l| l.starts_with(r#"{"type":"user""#)).map(|l| serde_json::from_str(l).unwrap()).collect()
@@ -114,27 +114,27 @@ impl Drop for Sandbox {
 #[test]
 fn p_flags_are_refused_elsewhere_and_bad_values_are_named() {
     let b = Sandbox::new("flags");
-    let out = b.krowk(&["sessions", "--model", "x"]);
+    let out = b.gruntas(&["sessions", "--model", "x"]);
     assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("only a flag of `krowk -p`"));
-    let out = b.krowk(&["-p", "hi", "--permission-mode", "yolo"]);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("only a flag of `gruntas -p`"));
+    let out = b.gruntas(&["-p", "hi", "--permission-mode", "yolo"]);
     assert!(String::from_utf8_lossy(&out.stderr).contains("bypassPermissions"));
-    let out = b.krowk(&["-p", "hi", "--output-format", "xml"]);
+    let out = b.gruntas(&["-p", "hi", "--output-format", "xml"]);
     assert!(String::from_utf8_lossy(&out.stderr).contains("stream-json"));
-    let out = b.krowk(&["-p"]);
+    let out = b.gruntas(&["-p"]);
     assert!(String::from_utf8_lossy(&out.stderr).contains("needs a prompt"));
     // No account: refused before a session exists, exit 3, with D4's line.
-    let out = b.krowk(&["-p", "hi"]);
+    let out = b.gruntas(&["-p", "hi"]);
     assert_eq!(out.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&out.stderr).contains("connect a Claude Code or Codex account"));
     assert!(!b.root.join("home/.gruntas/sessions").exists(), "a refused prompt leaves no session behind");
 }
 
-// ---- R-PRES-6: the record `krowk -p` leaves on the terminal --------------
+// ---- R-PRES-6: the record `gruntas -p` leaves on the terminal --------------
 
 /// What the fake model answers a summary with.
 #[cfg(unix)]
-const SUMMARY: &str = "krowk turns agent output — screenshots, logs, diffs — into permalinks you can paste anywhere.";
+const SUMMARY: &str = "gruntas turns agent output — screenshots, logs, diffs — into permalinks you can paste anywhere.";
 
 /// The OSC 7501 reports in `out`, whole, in the order written.
 #[cfg(unix)]
@@ -147,14 +147,14 @@ fn root(state: gruntas::osc7501::State, msg: &str) -> String {
     gruntas::osc7501::encode(&gruntas::osc7501::Report { state, msg, ..Default::default() }).unwrap()
 }
 
-/// `krowk -p` with its stderr on a terminal and its stdout piped: the
+/// `gruntas -p` with its stderr on a terminal and its stdout piped: the
 /// reports the terminal got, stdout, and the exit.
 #[cfg(unix)]
 fn on_a_terminal(b: &Sandbox, args: &[&str]) -> (String, Vec<u8>, std::process::ExitStatus) {
     let mut c = b.command(args);
     c.stdout(Stdio::piped());
     let mut t = pty::Pty::spawn_stderr(c, 80, 24);
-    // Read on a thread of its own, so a krowk that never exits fails the
+    // Read on a thread of its own, so a gruntas that never exits fails the
     // wait below rather than hanging the test.
     let mut pipe = t.child.stdout.take().unwrap();
     let stdout = std::thread::spawn(move || {
@@ -162,11 +162,11 @@ fn on_a_terminal(b: &Sandbox, args: &[&str]) -> (String, Vec<u8>, std::process::
         let _ = std::io::Read::read_to_end(&mut pipe, &mut out);
         out
     });
-    let st = t.wait(std::time::Duration::from_secs(30)).expect("krowk -p exits");
+    let st = t.wait(std::time::Duration::from_secs(30)).expect("gruntas -p exits");
     (t.text(), stdout.join().unwrap(), st)
 }
 
-/// R-PRES-6: on a terminal, `krowk -p` reports working with the prompt's
+/// R-PRES-6: on a terminal, `gruntas -p` reports working with the prompt's
 /// first line (a blank one before it skipped), then done once it answers; a failed turn ends in error with
 /// the failure's first line. The record is the root's, and nothing reaches
 /// stdout but the answer.
@@ -188,7 +188,7 @@ fn r_pres_6_krowk_p_on_a_terminal_reports_working_then_done_or_error() {
     b.claude(Some(r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"prompt is too long\nby a mile","session_id":"{{SESSION}}"}"#));
     let (err, stdout, st) = on_a_terminal(&b, &["-p", "hi", "--model", "claude/sonnet"]);
     assert!(!st.success(), "{err}");
-    // The failure's first line: its headline, what krowk prints first for
+    // The failure's first line: its headline, what gruntas prints first for
     // it on a terminal, cut where Claude Code's message broke the line.
     let failed = "Claude Code could not finish the turn: prompt is too long";
     assert_eq!(reports(&err), [root(State::Working, "hi"), root(State::Error, failed)], "{err:?}");
@@ -274,14 +274,14 @@ fn r_pres_6_ctrl_c_during_the_turn_reports_idle_before_exit() {
     }
     assert!(b.fake_log().contains("1\\n2\\n3\\n"), "the turn never began: {:?}", t.text());
     t.write(b"\x03");
-    let st = t.wait(std::time::Duration::from_secs(10)).expect("krowk -p exits on Ctrl-C");
+    let st = t.wait(std::time::Duration::from_secs(10)).expect("gruntas -p exits on Ctrl-C");
     let err = t.text();
     assert!(!st.success() && err.contains("interrupted") && err.contains("--resume"), "{st}: {err:?}");
     assert!(b.fake_log().contains("\ninterrupt\n"), "the interrupt went to Claude Code");
     assert_eq!(reports(&err), [root(State::Working, "wait forever"), root(State::Idle, "wait forever")], "{err:?}");
 }
 
-/// `krowk -p --image a --image b "…"` gives Claude Code both images, named
+/// `gruntas -p --image a --image b "…"` gives Claude Code both images, named
 /// `[Image #1]` and `[Image #2]` in the prompt; a big one is shrunk to fit;
 /// a missing or non-image file is refused naming it, before any turn.
 #[cfg(unix)]
@@ -339,7 +339,7 @@ fn krowk_p_image_sends_each_file_with_the_prompt_and_refuses_a_bad_one_first() {
     let (a, big, notes) = (a.to_str().unwrap(), big.to_str().unwrap(), notes.to_str().unwrap());
 
     for bad in [notes, "/nonexistent/x.png"] {
-        let out = b.krowk(&["-p", "look", "--image", a, "--image", bad, "--model", "claude/sonnet"]);
+        let out = b.gruntas(&["-p", "look", "--image", a, "--image", bad, "--model", "claude/sonnet"]);
         assert_eq!(out.status.code(), Some(1), "{bad}");
         assert!(String::from_utf8_lossy(&out.stderr).contains(bad), "names the file: {}", String::from_utf8_lossy(&out.stderr));
     }
@@ -385,7 +385,7 @@ fn seed_usage(home: &std::path::Path, instance: &str, used: f64) {
     usage.record_limit(instance, &limit, now).unwrap();
 }
 
-/// R-ROLL-11, D16: `krowk -p` with `offer` ends a turn that left too little
+/// R-ROLL-11, D16: `gruntas -p` with `offer` ends a turn that left too little
 /// by offering the next account in its JSON result, marked early, and
 /// says how to continue there on stderr; the turn itself succeeded.
 #[cfg(unix)]
@@ -396,15 +396,15 @@ fn r_roll_11_krowk_p_shows_an_early_offer_in_json_and_hints_on_stderr() {
     two_claude_accounts(&b, "low.jsonl", None);
     seed_usage(&b.root.join("home"), "claude:a", 90.0);
     seed_usage(&b.root.join("home"), "claude:b", 20.0);
-    let out = b.krowk(&["-p", "hi", "--model", "claude:a/haiku", "--trust", "--output-format", "json"]);
+    let out = b.gruntas(&["-p", "hi", "--model", "claude:a/haiku", "--trust", "--output-format", "json"]);
     let (stdout, err) = (String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned());
     assert!(out.status.success(), "{stdout}{err}");
     let v: Value = serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout}{err}"));
     assert_eq!((v["switchOffer"]["early"].as_bool(), v["switchOffer"]["to"]["instance"].as_str()), (Some(true), Some("claude:b")), "{stdout}");
     let id = v["sessionId"].as_str().unwrap();
-    assert!(err.contains("continue on claude:b/haiku (80% left as of ") && err.contains(&format!("with `krowk -p --resume {id} --model claude:b/haiku`")), "{err}");
+    assert!(err.contains("continue on claude:b/haiku (80% left as of ") && err.contains(&format!("with `gruntas -p --resume {id} --model claude:b/haiku`")), "{err}");
     // Off: no offer, no hint.
-    let out = b.krowk(&["-p", "hi", "--model", "claude:a/haiku", "--trust", "--output-format", "json", "--rollover", "off"]);
+    let out = b.gruntas(&["-p", "hi", "--model", "claude:a/haiku", "--trust", "--output-format", "json", "--rollover", "off"]);
     let v: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stderr)));
     assert!(v["switchOffer"].is_null() && !String::from_utf8_lossy(&out.stderr).contains("continue on"), "{v}");
 }
@@ -426,7 +426,7 @@ fn r_roll_5_krowk_p_resolves_rollover_per_session_repo_and_global() {
     // Whether the limited turn was offered a way on, and its session. The
     // repository is trusted only when `--trust` is given.
     let offered = |extra: &[&str]| -> (bool, String) {
-        let out = b.krowk(&[&["-p", "hi", "--model", "claude:a/haiku", "--output-format", "json"], extra].concat());
+        let out = b.gruntas(&[&["-p", "hi", "--model", "claude:a/haiku", "--output-format", "json"], extra].concat());
         let (stdout, err) = (String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned());
         let v: Value = serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout}{err}"));
         assert_eq!(v["error"]["code"].as_str(), Some("rate_limited"), "{stdout}");
@@ -453,16 +453,16 @@ fn r_roll_5_krowk_p_resolves_rollover_per_session_repo_and_global() {
     assert!(resumed(&["--rollover", "offer"]));
     assert!(resumed(&[]), "and the new one is recorded");
 
-    let out = b.krowk(&["-p", "hi", "--rollover", "sometimes"]);
+    let out = b.gruntas(&["-p", "hi", "--rollover", "sometimes"]);
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success() && err.contains("bad_flag") && err.contains("auto, offer, off"), "{err}");
     global(Some("sometimes"));
-    let out = b.krowk(&["-p", "hi"]);
+    let out = b.gruntas(&["-p", "hi"]);
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success() && err.contains("bad_config") && err.contains("auto, offer, off"), "{err}");
 }
 
-/// R-CUT-8, D9: bare `krowk` on a terminal prints the overview it prints without
+/// R-CUT-8, D9: bare `gruntas` on a terminal prints the overview it prints without
 /// one; a flag that once opened an interactive client, given with no command and no `-p`,
 /// is refused with the way to `-p`, and `--resume` with no value is refused
 /// whatever else is given; the commands that own those flags still take them.
@@ -471,14 +471,14 @@ fn r_roll_5_krowk_p_resolves_rollover_per_session_repo_and_global() {
 fn r_cut_8_bare_krowk_on_a_terminal_prints_the_overview_and_the_old_tui_flags_point_to_p() {
     let b = Sandbox::new("bare-tty");
     // A Claude Code account on an API key, ready here without a login, so
-    // bare `krowk` has no first-machine setup to ask.
+    // bare `gruntas` has no first-machine setup to ask.
     std::fs::create_dir_all(b.root.join("home/.gruntas")).unwrap();
     std::fs::write(b.root.join("home/.gruntas/config.json"), serde_json::json!({"instances": {"claude:console": {"kind": "claude-code", "apiKeyEnv": "ANTHROPIC_API_KEY"}}}).to_string()).unwrap();
     let on_a_tty = |args: &[&str]| {
         let mut c = b.command(args);
         c.env("NO_COLOR", "1").env("TERM", "xterm-256color").env("ANTHROPIC_API_KEY", "sk-test");
         let mut t = pty::Pty::spawn(c, 120, 40);
-        let st = t.wait(std::time::Duration::from_secs(20)).expect("krowk exits at once");
+        let st = t.wait(std::time::Duration::from_secs(20)).expect("gruntas exits at once");
         (t.text().replace("\r\n", "\n"), st)
     };
     let mut piped = b.command(&[]);
@@ -498,13 +498,13 @@ fn r_cut_8_bare_krowk_on_a_terminal_prints_the_overview_and_the_old_tui_flags_po
         assert!(!st.success() && said.contains("--resume needs a value"), "-p {with_p}: {said}");
     }
     // Help is still help, and a refusal in JSON is a JSON refusal.
-    assert!(b.krowk(&["--help", "--model", "x"]).status.success());
-    let out = b.krowk(&["--json", "--model", "x"]);
+    assert!(b.gruntas(&["--help", "--model", "x"]).status.success());
+    let out = b.gruntas(&["--json", "--model", "x"]);
     let said: Value = serde_json::from_slice(&out.stderr).expect("a JSON refusal");
     assert!(!out.status.success() && said["error"]["error"] == "bad_flag", "{said}");
     // The commands that own the flags are unchanged.
-    let out = b.krowk(&["sessions", "--worktree", "/nowhere", "--json"]);
+    let out = b.gruntas(&["sessions", "--worktree", "/nowhere", "--json"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let out = b.krowk(&["sessions", "budget", "--max-usd", "1", "--json"]);
+    let out = b.gruntas(&["sessions", "budget", "--max-usd", "1", "--json"]);
     assert!(!String::from_utf8_lossy(&out.stderr).contains("only a flag"), "{}", String::from_utf8_lossy(&out.stderr));
 }

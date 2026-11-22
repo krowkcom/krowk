@@ -1,15 +1,15 @@
-$ krowk --version
+$ gruntas --version
 stdout:
 0.0.0-golden
 exit: 0
 
-$ krowk version
+$ gruntas version
 stderr:
 {
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "`version` is not a krowk command — run `krowk --help`",
+    "fix": "`version` is not a gruntas command — run `gruntas --help`",
     "retryable": false
   }
 }

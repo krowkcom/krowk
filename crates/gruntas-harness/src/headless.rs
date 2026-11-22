@@ -1,4 +1,4 @@
-//! `krowk -p`: one prompt, run headless through the in-process protocol.
+//! `gruntas -p`: one prompt, run headless through the in-process protocol.
 //! The runner is a client like any other — it sends `Command::Prompt`,
 //! reads `StreamLine`s, and on Ctrl-C sends `Command::Interrupt` — so what
 //! it prints is exactly what the protocol says.
@@ -49,7 +49,7 @@ pub struct Options {
     pub permission_mode: PermissionMode,
     /// `--toolset`: the preset for this prompt, instead of the model's.
     pub toolset: Option<String>,
-    /// `--effort`: the reasoning effort for this prompt, on krowk's ladder.
+    /// `--effort`: the reasoning effort for this prompt, on gruntas's ladder.
     pub effort: Option<crate::protocol::Effort>,
     /// `--rollover`: what a limit does for this session, replacing the one it
     /// recorded.
@@ -74,7 +74,7 @@ pub struct Outcome {
     pub worktree: Option<(crate::worktree::Worktree, Result<crate::worktree::Finished, crate::worktree::Error>)>,
 }
 
-/// Runs the prompt to its end on a runtime of its own: the rest of krowk is
+/// Runs the prompt to its end on a runtime of its own: the rest of gruntas is
 /// blocking, and this is the one place it waits on async work.
 pub fn run(cfg: HostConfig, opts: Options, stdout: &mut dyn Write) -> Outcome {
     let rt = match runtime() {
@@ -88,7 +88,7 @@ fn runtime() -> Result<tokio::runtime::Runtime, EngineError> {
     tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| EngineError::new("runtime_unavailable", format!("the async runtime could not start: {e}")))
 }
 
-/// `krowk -p --daemon`: the same run, sent to the host daemon — started
+/// `gruntas -p --daemon`: the same run, sent to the host daemon — started
 /// first when none is up (`daemon::ensure`, with `spawn`) — so the turn is
 /// the daemon's and survives this process. What it prints is what the
 /// in-process run prints.
@@ -104,7 +104,7 @@ pub fn run_on_daemon(env: &dyn Fn(&str) -> String, cwd: &std::path::Path, versio
         match crate::daemon::ensure(env, cwd, version, false, spawn).await {
             Ok(client) => {
                 if client.krowk_version != version {
-                    let _ = writeln!(std::io::stderr(), "! the host daemon (pid {}) runs krowk {}, and this is {version} — its turns run on the old binary until it exits; `kill {}` once its sessions are done", client.pid, client.krowk_version, client.pid);
+                    let _ = writeln!(std::io::stderr(), "! the host daemon (pid {}) runs gruntas {}, and this is {version} — its turns run on the old binary until it exits; `kill {}` once its sessions are done", client.pid, client.krowk_version, client.pid);
                 }
                 drive(&client, opts, stdout).await
             }
@@ -121,7 +121,7 @@ pub trait Transport {
     /// Lets the transport's backend processes go: the in-process host's.
     /// The daemon's are the daemon's, and stay.
     fn shutdown(&self) -> impl std::future::Future<Output = ()>;
-    /// The host's krowk version and protocol when it is another process:
+    /// The host's gruntas version and protocol when it is another process:
     /// its prompt's images go ahead as `put_image` (`upload`). None for the
     /// in-process host, which saves them by sha256 as they come.
     fn remote(&self) -> Option<(String, u32)> {
@@ -216,7 +216,7 @@ async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> 
                 // made; a second one does not wait.
                 if interrupts > 1 {
                     // Not waited on, but not left running either: every
-                    // backend's process group goes with krowk.
+                    // backend's process group goes with gruntas.
                     crate::group::kill_all();
                     if let Some(w) = worktree.take() {
                         finish_before_exit(w);
@@ -241,10 +241,10 @@ async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> 
     if !agents.is_empty() {
         let names: Vec<String> = agents.iter().map(|a: &crate::protocol::BackendAgent| format!("“{}”", a.description.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>())).collect();
         let (what, verbs) = if agents.len() == 1 { ("background agent", "is still running, and stops") } else { ("background agents", "are still running, and stop") };
-        let _ = writeln!(std::io::stderr(), "! Claude Code's {what} {} {verbs} with this run: krowk -p does not wait for background agents", names.join(", "));
+        let _ = writeln!(std::io::stderr(), "! Claude Code's {what} {} {verbs} with this run: gruntas -p does not wait for background agents", names.join(", "));
     }
     // A backend's process is let go before the answer is reported, so its
-    // transcript is whole when krowk exits.
+    // transcript is whole when gruntas exits.
     host.shutdown().await;
     // The session is over: its worktree is finished before the result is
     // printed, so a kept one is named in it.
@@ -340,7 +340,7 @@ const FINISH_ON_EXIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// The worktree of a run left at once (a second Ctrl-C), finished on the
 /// way out as far as `FINISH_ON_EXIT` allows, so an unchanged one is not
 /// left behind and a kept one is named. Best effort: one not finished in
-/// time is left as it is, which `krowk worktrees` lists.
+/// time is left as it is, which `gruntas worktrees` lists.
 fn finish_before_exit(w: crate::worktree::InUse) {
     let wt = w.worktree.clone();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -353,7 +353,7 @@ fn finish_before_exit(w: crate::worktree::InUse) {
             let _ = writeln!(std::io::stderr(), "{}", crate::worktree::kept_line(&wt));
         }
         _ => {
-            let _ = writeln!(std::io::stderr(), "! the worktree {} (branch {}) was left as it is — `krowk worktrees` lists it", wt.path.display(), wt.branch());
+            let _ = writeln!(std::io::stderr(), "! the worktree {} (branch {}) was left as it is — `gruntas worktrees` lists it", wt.path.display(), wt.branch());
         }
     }
 }

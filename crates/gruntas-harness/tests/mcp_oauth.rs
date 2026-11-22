@@ -1,4 +1,4 @@
-//! `krowk mcp login` (R-MCP-6 to 9, 12, 13) against a fake MCP server and a
+//! `gruntas mcp login` (R-MCP-6 to 9, 12, 13) against a fake MCP server and a
 //! fake authorization server on another port, shaped like Mobbin's: a
 //! path-suffixed resource_metadata, an issuer with a path whose metadata is
 //! served only at the path-inserted location, registration, PKCE S256.
@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 fn creds(name: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("krowk-mcp-oauth-{name}-{}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("gruntas-mcp-oauth-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d.join("credentials.json")

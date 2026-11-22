@@ -211,7 +211,7 @@ impl Client {
         }
         let id = self.verify_key()?.user_id;
         if id.is_empty() {
-            return Err(fail("service_key", "this key names no person, and sync is a person's — sign in with `krowk auth login`"));
+            return Err(fail("service_key", "this key names no person, and sync is a person's — sign in with `gruntas auth login`"));
         }
         let _ = self.user.set(id.clone());
         Ok(format!("/users/{}", slug_path(&id)))
@@ -418,7 +418,7 @@ impl Client {
 
     pub(crate) fn device_signer(&self) -> Result<&dyn RequestSigner, Error> {
         self.signer.as_deref().ok_or_else(|| {
-            fail("device_signature_missing", "this call acts as this machine's device and needs its signing key — set sync up on this machine first: `krowk sync init`, `krowk sync join` or `krowk sync recover`")
+            fail("device_signature_missing", "this call acts as this machine's device and needs its signing key — set sync up on this machine first: `gruntas sync init`, `gruntas sync join` or `gruntas sync recover`")
         })
     }
 
@@ -516,7 +516,7 @@ impl Client {
                 let origin = api_origin(&self.base_url);
                 let (target, body) = (request_target(&url), payload.unwrap_or_default());
                 // A test build signs v1's lines when told to, so a test can
-                // see a registry refuse a krowk from before v2 (ticket 168).
+                // see a registry refuse a gruntas from before v2 (ticket 168).
                 let v1 = cfg!(debug_assertions) && std::env::var("GRUNTAS_TEST_SIGN_V1").is_ok_and(|v| v == "1");
                 let lines = if v1 {
                     format!("krowk/registry/v1\n{method}\n{target}\n{at}\n{}", sha256_hex(body)).into_bytes()
@@ -558,9 +558,9 @@ impl Client {
                     // a rejected one is when the self-check earns its keep —
                     // except on the self-check itself.
                     let fix = if self.token.is_empty() {
-                        "this endpoint needs an API key — run `krowk login --token krowk_sk_...`, or set GRUNTAS_TOKEN".to_string()
+                        "this endpoint needs an API key — run `gruntas login --token krowk_sk_...`, or set GRUNTAS_TOKEN".to_string()
                     } else if !url.ends_with("/key") {
-                        let hint = "run `krowk whoami` to see what this key is allowed to do";
+                        let hint = "run `gruntas whoami` to see what this key is allowed to do";
                         match err.fix() {
                             f if f.is_empty() => hint.into(),
                             f => format!("{f} — {hint}"),
@@ -986,7 +986,7 @@ fn response_error(status: u16, payload: &[u8], retry_after: &str) -> Error {
 /// The registry's codes turned into the next thing to do.
 fn fix_for(code: &str, status: u16) -> String {
     match code {
-        "unauthorized" => "the registry rejected the key — check GRUNTAS_TOKEN, or run `krowk login --token krowk_sk_...`",
+        "unauthorized" => "the registry rejected the key — check GRUNTAS_TOKEN, or run `gruntas login --token krowk_sk_...`",
         "run_needs_key" => "attaching an upload to a run needs an API key — authenticate, or upload without --run",
         "upload_missing" => "the bytes had not landed when the upload was finalized — retry the upload",
         "checksum_mismatch" => "the file changed while it was being uploaded — retry the upload",
@@ -1010,32 +1010,32 @@ fn fix_for(code: &str, status: u16) -> String {
         // working without an account; what the free plan does not get is
         // sessions leaving the machine.
         "sync_requires_paid_plan" => {
-            "syncing sessions between devices needs a paid plan — run `krowk billing` to choose one for this workspace; everything else krowk does keeps working locally without it"
+            "syncing sessions between devices needs a paid plan — run `gruntas billing` to choose one for this workspace; everything else gruntas does keeps working locally without it"
         }
         // Never "join with the id in this error": a hostile registry could
         // name a key it holds, and joining with it would hand it every
         // session this machine syncs. The id to trust is on a machine the
         // person already syncs from.
         "account_key_mismatch" => {
-            "the registry says this workspace syncs under another account key — if this key came from `krowk sync recover`, a word of the phrase is wrong: run it again with the right one. Compare with `krowk machines` on a machine you already sync from, never with an id in an error message; if you have no such machine, do not join this workspace, and its owner can reset sync in the dashboard's settings"
+            "the registry says this workspace syncs under another account key — if this key came from `gruntas sync recover`, a word of the phrase is wrong: run it again with the right one. Compare with `gruntas machines` on a machine you already sync from, never with an id in an error message; if you have no such machine, do not join this workspace, and its owner can reset sync in the dashboard's settings"
         }
         // Never "write the next index": a gap is a log no reader gets past.
         "chunk_exists" => "this session already has that chunk, and its log is append-only — list the session's chunks and continue from the last ready index + 1, chained onto that chunk",
         "chunk_limit_reached" => "this session's log holds as many chunks as one may — start a new session",
         "session_limit_reached" => "this workspace holds as many synced sessions as one may — report it if you need more",
-        "approval_expired" => "the new device's request lapsed before it was approved — run `krowk sync join` on it again",
-        "already_approved" => "this device has already been approved — run `krowk sync join` on it to collect its key, if it has not",
+        "approval_expired" => "the new device's request lapsed before it was approved — run `gruntas sync join` on it again",
+        "already_approved" => "this device has already been approved — run `gruntas sync join` on it to collect its key, if it has not",
         // Registering the same device key again is refused until the owner
         // resets sync, which clears the slate for every device it revoked;
         // `recover` alone keeps the revoked key and cannot help.
-        "device_revoked" => "this device was revoked or removed from your device list — pair it again with `krowk sync join` from a device on the list",
+        "device_revoked" => "this device was revoked or removed from your device list — pair it again with `gruntas sync join` from a device on the list",
         "lease_held" => "another device holds this session's lease — send it commands through that device, or wait for the lease to lapse",
         "lease_stale" => "this device does not hold the session's lease — another device took it, it lapsed, or the token is not the holder's; acquire it again before writing",
-        "key_has_no_device" => "this key speaks for no device yet — set sync up on this machine first: `krowk sync init`, `krowk sync join` or `krowk sync recover`",
-        "signature_version_retired" => "this krowk signs registry requests in a way the registry no longer accepts — run `krowk upgrade`",
+        "key_has_no_device" => "this key speaks for no device yet — set sync up on this machine first: `gruntas sync init`, `gruntas sync join` or `gruntas sync recover`",
+        "signature_version_retired" => "this gruntas signs registry requests in a way the registry no longer accepts — run `gruntas upgrade`",
         "signature_stale" => "the request was signed more than 5 minutes from the registry's clock — check this machine's clock",
         "too_many_requests" => "the registry is limiting these calls for a moment — wait out its Retry-After (about a minute) and try again",
-        "device_mismatch" => "the request is signed by a device other than the one it names or the one this key speaks for — a device acts only for itself: use this machine's own key (unset a GRUNTAS_TOKEN copied from another machine, or run `krowk auth login` here)",
+        "device_mismatch" => "the request is signed by a device other than the one it names or the one this key speaks for — a device acts only for itself: use this machine's own key (unset a GRUNTAS_TOKEN copied from another machine, or run `gruntas auth login` here)",
         "method_not_allowed" => {
             "the registry does not answer that HTTP method — read the Allow header on this response, if it carries one, for the methods it does"
         }
@@ -1477,7 +1477,7 @@ mod tests {
     fn the_account_key_mismatch_fix_never_points_at_join() {
         let fix = fix_for("account_key_mismatch", 409);
         assert!(!fix.contains("sync join"), "{fix}");
-        assert!(fix.contains("krowk machines") && fix.contains("never with an id in an error message"), "{fix}");
+        assert!(fix.contains("gruntas machines") && fix.contains("never with an id in an error message"), "{fix}");
     }
 
     #[test]

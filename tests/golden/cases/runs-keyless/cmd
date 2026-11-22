@@ -1,5 +1,5 @@
 @registry
-krowk runs start --title x
-krowk runs list
-krowk runs show run_000000000000000000000000
-krowk runs finish run_000000000000000000000000
+gruntas runs start --title x
+gruntas runs list
+gruntas runs show run_000000000000000000000000
+gruntas runs finish run_000000000000000000000000

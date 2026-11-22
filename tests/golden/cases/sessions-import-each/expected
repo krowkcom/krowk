@@ -1,4 +1,4 @@
-$ krowk sessions import --from claude
+$ gruntas sessions import --from claude
 stdout:
 {
   "ok": true,
@@ -34,7 +34,7 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions import --from cursor
+$ gruntas sessions import --from cursor
 stdout:
 {
   "ok": true,
@@ -68,7 +68,7 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions import --from opencode
+$ gruntas sessions import --from opencode
 stdout:
 {
   "ok": true,
@@ -102,31 +102,31 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions import --from nope
+$ gruntas sessions import --from nope
 stderr:
 {
   "ok": false,
   "error": {
     "error": "bad_flag",
-    "fix": "--from nope is not a source krowk can read — one of claude|cursor|opencode|ledger|all",
+    "fix": "--from nope is not a source gruntas can read — one of claude|cursor|opencode|ledger|all",
     "retryable": false
   }
 }
 exit: 1
 
-$ krowk sessions import
+$ gruntas sessions import
 stderr:
 {
   "ok": false,
   "error": {
     "error": "bad_flag",
-    "fix": "`krowk sessions import` needs --from <claude|cursor|opencode|ledger|all> — it says which agent's transcripts to read",
+    "fix": "`gruntas sessions import` needs --from <claude|cursor|opencode|ledger|all> — it says which agent's transcripts to read",
     "retryable": false
   }
 }
 exit: 1
 
-$ krowk sessions import --from claude --limit 1
+$ gruntas sessions import --from claude --limit 1
 stdout:
 {
   "ok": true,

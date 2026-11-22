@@ -1,7 +1,7 @@
 //! What an open-source security tool owes the people who read its source
 //! (spec D18), held where a test can hold it: a public threat model and
 //! crypto design, no telemetry crate in either build, a disclosure policy
-//! that says where to report, no vendor's name on anything krowk ships
+//! that says where to report, no vendor's name on anything gruntas ships
 //! under its own name, and a `cargo deny` policy that cannot be loosened
 //! quietly.
 //!
@@ -60,16 +60,16 @@ fn r_oss_1_the_threat_model_and_crypto_design_are_public() {
 /// attribute keys — but none of its exporters may be linked.
 const REPORTERS: &[&str] = &["sentry", "posthog", "segment", "rudderstack", "mixpanel", "amplitude", "bugsnag", "rollbar", "honeycomb", "datadog", "newrelic", "opentelemetry-otlp", "opentelemetry-http", "opentelemetry_sdk", "crash-handler", "minidump", "breakpad"];
 
-/// R-OSS-4: krowk has no telemetry and no crash reporting, so there is
+/// R-OSS-4: gruntas has no telemetry and no crash reporting, so there is
 /// nothing to opt in to, and SECURITY.md says so. This keeps it true: no
 /// crate that reports anywhere is in either build's graph, on any target.
 #[test]
 fn r_oss_4_no_telemetry_or_crash_reporter_is_linked() {
     let meta = metadata();
     let linked: Vec<&str> = meta["packages"].as_array().unwrap().iter().filter_map(|p| p["name"].as_str()).filter(|n| REPORTERS.iter().any(|r| n == r || n.starts_with(&format!("{r}-")) || n.starts_with(&format!("{r}_")))).collect();
-    assert!(linked.is_empty(), "a telemetry or crash-reporting crate is in the graph: {linked:?}. krowk sends nothing unasked (SECURITY.md → Telemetry); an opt-in one needs its schema documented there first");
+    assert!(linked.is_empty(), "a telemetry or crash-reporting crate is in the graph: {linked:?}. gruntas sends nothing unasked (SECURITY.md → Telemetry); an opt-in one needs its schema documented there first");
     let security = read("SECURITY.md");
-    assert!(security.contains("## Telemetry"), "SECURITY.md documents what krowk sends unasked");
+    assert!(security.contains("## Telemetry"), "SECURITY.md documents what gruntas sends unasked");
 }
 
 /// R-OSS-5: a disclosure policy, with a private address to report to.
@@ -88,10 +88,10 @@ fn vendor_in(name: &str) -> Option<&'static str> {
     VENDORS.iter().copied().find(|v| lower.split(|c: char| !c.is_ascii_alphanumeric()).any(|word| word == *v))
 }
 
-/// R-OSS-6: nothing krowk ships under its own name — a crate, a binary, a
+/// R-OSS-6: nothing gruntas ships under its own name — a crate, a binary, a
 /// cargo feature, an npm package — carries a vendor's name. Code that
 /// drives a vendor's tool may say whose tool it is (`claude/mod.rs` drives
-/// Claude Code); what a person installs, enables or runs is krowk's.
+/// Claude Code); what a person installs, enables or runs is gruntas's.
 #[test]
 fn r_oss_6_no_vendor_name_in_a_crate_binary_feature_or_package() {
     let meta = metadata();
@@ -118,7 +118,7 @@ fn r_oss_6_no_vendor_name_in_a_crate_binary_feature_or_package() {
     }
     assert!(names.iter().any(|n| n == "binary gruntas"), "the walk found gruntas's own binary: {names:?}");
     let offending: Vec<String> = names.iter().filter_map(|n| vendor_in(n).map(|v| format!("{n} ({v})"))).collect();
-    assert!(offending.is_empty(), "a name krowk ships under carries a vendor's: {offending:?}");
+    assert!(offending.is_empty(), "a name gruntas ships under carries a vendor's: {offending:?}");
 }
 
 /// R-OSS-3: the `cargo deny` policy CI runs cannot be loosened by an edit
@@ -214,6 +214,6 @@ fn r_oss_3_releases_are_logged_where_krowk_upgrade_can_check_them_and_checked_be
     let logs = config["rekorTlogUrls"].as_array().unwrap();
     assert!(
         !logs.is_empty() && logs.iter().all(|l| l["url"] == "https://rekor.sigstore.dev" && l["majorApiVersion"] == 1),
-        "only Rekor v1, the log whose entries krowk upgrade reads: {logs:?}"
+        "only Rekor v1, the log whose entries gruntas upgrade reads: {logs:?}"
     );
 }

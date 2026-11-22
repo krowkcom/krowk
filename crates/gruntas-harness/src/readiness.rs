@@ -1,5 +1,5 @@
 //! Whether an instance can run a turn here, asked one way everywhere:
-//! `krowk status`, `krowk doctor`, `krowk providers list`, and the host
+//! `gruntas status`, `gruntas doctor`, `gruntas providers list`, and the host
 //! before it moves a session or starts a turn (`check_model`, `settle`,
 //! rollover candidates). Before this, `providers list` spawned each vendor
 //! CLI in turn, the host checked only keys and binaries, and a SuperGrok
@@ -7,12 +7,12 @@
 //!
 //! The answer is a `Readiness` and, around it, a `Report`: where the
 //! credential comes from (`source` — an environment variable's name, a
-//! vendor's own login, krowk's OAuth file; never the secret) and one line
-//! that fixes it. A key is checked in the environment krowk resolved at
-//! start, or — stored — in krowk's provider credentials file, whose
+//! vendor's own login, gruntas's OAuth file; never the secret) and one line
+//! that fixes it. A key is checked in the environment gruntas resolved at
+//! start, or — stored — in gruntas's provider credentials file, whose
 //! `!command` is the one command `check` runs besides a vendor's (see
-//! `crate::keys`), an OAuth login in krowk's provider credentials file (an expired
-//! access token with no refresh token is `Expired`: nothing krowk can do
+//! `crate::keys`), an OAuth login in gruntas's provider credentials file (an expired
+//! access token with no refresh token is `Expired`: nothing gruntas can do
 //! renews it), and a vendor login by asking the vendor — `claude auth status
 //! --json`, Codex's `account/read` over `codex app-server` with `codex login
 //! status` as the fallback — never by reading its files (R-BACK-2, R-BACK-3).
@@ -25,16 +25,16 @@
 //! the directory: before a turn, the session's own working directory,
 //! once its repository is trusted — where the turn starts the vendor, and
 //! so the answer the turn will get (Claude Code reads the settings of that
-//! directory alone, not its parents') — and for `krowk status`, `providers
+//! directory alone, not its parents') — and for `gruntas status`, `providers
 //! list`, `doctor` and a rollover offer, where no repository has been
-//! trusted, krowk's own `0700` directory (`neutral_dir`), which holds
+//! trusted, gruntas's own `0700` directory (`neutral_dir`), which holds
 //! nothing and which nobody else can write into — never the shared
 //! temporary directory, where anyone could plant a `.claude/settings.json`.
 //!
 //! Vendor checks spawn a process, so `check_all` runs them in parallel,
 //! each bounded by one deadline (`VENDOR_TIMEOUT`) and killed with its
 //! whole process group when it passes (unix; on Windows only the process
-//! krowk started, see `probing`), and a long-lived host (an interactive client) does
+//! gruntas started, see `probing`), and a long-lived host (an interactive client) does
 //! not re-ask for every switch: a vendor's "signed in" is kept for
 //! `CACHE_FOR`. Only "signed in" is kept. A person who is told to sign in
 //! does so in another terminal and tries again at once, and a remembered
@@ -81,8 +81,8 @@ impl Probe {
     }
 }
 
-/// krowk's own directory for asking a vendor outside any repository:
-/// `readiness/` in krowk's home, made `0700` and kept that way, and refused
+/// gruntas's own directory for asking a vendor outside any repository:
+/// `readiness/` in gruntas's home, made `0700` and kept that way, and refused
 /// when it is anything but a directory of its own (a symlink planted there
 /// would lead the check somewhere else) — the home's own rules
 /// (`gruntas_api::home::own`). It holds nothing, so a vendor started in it
@@ -100,14 +100,14 @@ pub enum Readiness {
     Ready { source: String },
     /// An API key is read from `var`, and `var` is not set.
     KeyNotSet { var: String },
-    /// No login: the vendor says so, or krowk's OAuth file has none.
+    /// No login: the vendor says so, or gruntas's OAuth file has none.
     NotSignedIn,
     /// A login whose access token has expired and cannot be refreshed.
     Expired,
     /// The vendor binary is not there.
     NotInstalled,
     /// The check itself failed: a vendor that did not answer in time, or
-    /// answered in a way krowk does not read. Not a refusal: the turn is
+    /// answered in a way gruntas does not read. Not a refusal: the turn is
     /// left to fail, or not, on its own.
     Unknown { reason: String },
 }
@@ -117,7 +117,7 @@ impl Readiness {
         matches!(self, Readiness::Ready { .. })
     }
 
-    /// The `state` field of `krowk status --json`: stable, snake_case.
+    /// The `state` field of `gruntas status --json`: stable, snake_case.
     pub fn state(&self) -> &'static str {
         match self {
             Readiness::Ready { .. } => "ready",
@@ -142,7 +142,7 @@ impl Readiness {
     }
 }
 
-/// One instance's row: what `krowk status` prints, and what a refusal is
+/// One instance's row: what `gruntas status` prints, and what a refusal is
 /// made of.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
@@ -159,7 +159,7 @@ pub struct Report {
 }
 
 impl Report {
-    /// A row of `krowk status --json` (and `providers list`, `doctor`).
+    /// A row of `gruntas status --json` (and `providers list`, `doctor`).
     /// Every key is always there, `null` when it has no value, so a script
     /// reads the same shape whatever the state.
     pub fn json(&self) -> Value {
@@ -208,7 +208,7 @@ impl Resolved {
         Some(match &self.stored {
             // A stored reference owns the instance: its variable, not the
             // definition's, is the one to set.
-            Stored::Env(v) => format!("no API key for the {} instance — its stored key is ${v}, which is not set; set {v}, or store another with `{store}` (krowk does not fall back to ${} for it)", self.name, self.api_key_env),
+            Stored::Env(v) => format!("no API key for the {} instance — its stored key is ${v}, which is not set; set {v}, or store another with `{store}` (gruntas does not fall back to ${} for it)", self.name, self.api_key_env),
             Stored::Command { .. } | Stored::Unreadable(_) => format!("the {} instance's stored key has not been read", self.name),
             Stored::Literal => format!("the {} instance's stored key is empty — store another with `{store}`", self.name),
             // A backend's key is the environment's alone.
@@ -243,14 +243,14 @@ pub fn local(inst: &Resolved, credentials: &Path) -> Option<Readiness> {
         Auth::ApiKey => Some(Readiness::Ready { source: expected_source(inst, credentials) }),
         Auth::Keyless => Some(Readiness::Ready { source: "no key".into() }),
         Auth::OAuth { .. } => Some(oauth_login(inst, credentials)),
-        // A keyed backend runs on its key, which is krowk's to check, not a
+        // A keyed backend runs on its key, which is gruntas's to check, not a
         // login the vendor holds.
         Auth::Vendor if !inst.api_key_env.is_empty() => Some(Readiness::Ready { source: expected_source(inst, credentials) }),
         Auth::Vendor => None,
     }
 }
 
-/// An OAuth login, as krowk's own credentials file holds it. Nothing of
+/// An OAuth login, as gruntas's own credentials file holds it. Nothing of
 /// the tokens leaves this function but whether they can still be used.
 fn oauth_login(inst: &Resolved, credentials: &Path) -> Readiness {
     match oauth::Store::new(credentials.to_path_buf()).load(&inst.name) {
@@ -333,7 +333,7 @@ pub async fn check_async(inst: &Resolved, credentials: &Path, probe: &Probe) -> 
 /// none at all when the first preferred instance (the session's, else the
 /// default's) is ready by its key. `probe` is where the vendors are asked, by this module's rules:
 /// the session's own directory only once its repository is trusted, else
-/// krowk's own (`neutral_dir`) — routing never asks a trust question.
+/// gruntas's own (`neutral_dir`) — routing never asks a trust question.
 pub fn route(
     reg: &Registry,
     asked: Option<&Asked>,
@@ -433,7 +433,7 @@ pub fn route(
                 .iter()
                 .map(|i| {
                     let m = reg.model_on(i, bare, listed).unwrap_or_else(|_| "<model>".into());
-                    let unchecked = if unknown.iter().any(|u| u.name == i.name) { " (could not be checked — see `krowk status`)" } else { "" };
+                    let unchecked = if unknown.iter().any(|u| u.name == i.name) { " (could not be checked — see `gruntas status`)" } else { "" };
                     format!("  {}, {}: --model {}/{m}{unchecked}", i.name, account_label(i), i.name)
                 })
                 .collect();
@@ -441,7 +441,7 @@ pub fn route(
             Err(EngineError::new(
                 "ambiguous_model",
                 format!(
-                    "{} connected instances could run {asked}, and krowk does not choose between them for you — pick one with --model <instance>/<id>:\n{}\nor make one the default with `krowk connect <vendor> --default`{example}",
+                    "{} connected instances could run {asked}, and gruntas does not choose between them for you — pick one with --model <instance>/<id>:\n{}\nor make one the default with `gruntas connect <vendor> --default`{example}",
                     several.len(),
                     picks.join("\n")
                 ),
@@ -495,14 +495,14 @@ fn fix(inst: &Resolved, r: &Readiness) -> Option<String> {
         }
         Readiness::NotInstalled if codex => format!("install Codex (https://developers.openai.com/codex), or name the binary with `{} --binary <path>`", connect::connect_command(&inst.name, inst.kind)),
         Readiness::NotInstalled => format!("install Claude Code (https://claude.com/claude-code), or name the binary with `{} --binary <path>`", connect::connect_command(&inst.name, inst.kind)),
-        Readiness::Unknown { .. } => "see the reason, then run `krowk status` again".into(),
+        Readiness::Unknown { .. } => "see the reason, then run `gruntas status` again".into(),
     })
 }
 
 /// The command routing suggests for an instance — `connect::connect_command`,
-/// the one every fix line uses — for a kind `krowk connect` sets up by a
+/// the one every fix line uses — for a kind `gruntas connect` sets up by a
 /// vendor's own method. None for a router or a compatible server, whose
-/// models krowk cannot tell: routing only ever names those; none for
+/// models gruntas cannot tell: routing only ever names those; none for
 /// SuperGrok, which no longer connects (D6).
 fn suggested(i: &Resolved) -> Option<String> {
     (!matches!(i.kind, "openrouter-api" | "openai-compatible" | "xai-oauth")).then(|| connect::connect_command(&i.name, i.kind))
@@ -557,15 +557,15 @@ fn vendor(inst: &Resolved, b: &Backend, probe: &Probe) -> Readiness {
 }
 
 /// A vendor process for a check: started in `probe.dir` — never wherever
-/// krowk happens to run, whose project settings nobody may have trusted —
+/// gruntas happens to run, whose project settings nobody may have trusted —
 /// in a process group of its own, so the whole of it can be stopped. The
-/// group is unix's: on Windows only the process krowk started is stopped,
+/// group is unix's: on Windows only the process gruntas started is stopped,
 /// and one it started in turn (`claude.cmd`'s Node) can outlive the check
 /// until it exits by itself — a Job object would close that, and is not
 /// worth a new dependency for a status check.
 ///
 /// The group is registered (`group::register`) until the check lets it
-/// go, so a krowk that leaves while a check is still running — an interactive client
+/// go, so a gruntas that leaves while a check is still running — an interactive client
 /// quit while it routes — kills it on the way out (`group::kill_all`)
 /// rather than leaving it to its deadline, whose thread is gone with the
 /// process.

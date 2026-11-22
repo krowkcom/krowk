@@ -1,4 +1,4 @@
-//! `krowk status`, `krowk providers list` and `krowk doctor` — the one
+//! `gruntas status`, `gruntas providers list` and `gruntas doctor` — the one
 //! readiness check — the built binary against fake `claude` and `codex`
 //! binaries on PATH (no real login anywhere) and a stand-in environment:
 //! the two implicit Claude Code and Codex accounts with no config, each in the state its
@@ -16,7 +16,7 @@ fn fixture(vendor: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../gruntas-harness/tests/fixtures").join(vendor).join(format!("fake-{vendor}"))
 }
 
-/// Values that must never appear in anything krowk prints.
+/// Values that must never appear in anything gruntas prints.
 const KEY_SENTINEL: &str = "sk-ant-SENTINEL-4f1d9c";
 const ROUTER_SENTINEL: &str = "sk-or-SENTINEL-77ab02";
 const TOKEN_SENTINEL: &str = "xai-at-SENTINEL-e3c8";
@@ -54,9 +54,9 @@ impl Sandbox {
         }
     }
 
-    /// krowk with only the sandbox's binaries and the system's on PATH — never
+    /// gruntas with only the sandbox's binaries and the system's on PATH — never
     /// a real `claude` or `codex` of the machine running the tests.
-    fn krowk(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
+    fn gruntas(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
         c.args(args)
             .env_clear()
@@ -80,7 +80,7 @@ impl Sandbox {
         std::fs::write(dir.join("config.json"), v.to_string()).unwrap();
     }
 
-    /// krowk's provider credentials file, with logins as `providers add
+    /// gruntas's provider credentials file, with logins as `providers add
     /// supergrok` would have left them.
     fn write_logins(&self, logins: Value) {
         let dir = self.home().join(".gruntas");
@@ -122,12 +122,12 @@ fn status_with_no_config_lists_the_two_implicit_accounts_in_their_states() {
     b.install_fakes();
     // Claude Code signed in (the fake's marker in its default ~/.claude),
     // Codex not; an Anthropic key and a SuperGrok login, neither of which
-    // is an account krowk runs (D4, D6): neither is listed.
+    // is an account gruntas runs (D4, D6): neither is listed.
     std::fs::create_dir_all(b.home().join(".claude")).unwrap();
     std::fs::write(b.home().join(".claude/fake-login"), "").unwrap();
     b.write_logins(json!({"supergrok": login(TOKEN_SENTINEL, None, 1_000)}));
 
-    let out = b.krowk(&["status", "--json"], &[("ANTHROPIC_API_KEY", KEY_SENTINEL)]);
+    let out = b.gruntas(&["status", "--json"], &[("ANTHROPIC_API_KEY", KEY_SENTINEL)]);
     assert_eq!(out.status.code(), Some(0), "one instance is ready: {}", String::from_utf8_lossy(&out.stderr));
     let v = stdout_json(&out);
     let rows = instances(&v["data"]);
@@ -144,12 +144,12 @@ fn status_with_no_config_lists_the_two_implicit_accounts_in_their_states() {
         assert_eq!(r["fix"].is_null(), r["state"] == "ready", "a fix exactly when it is not ready: {r}");
     }
     assert_eq!(row(&rows, "claude")["source"], format!("Claude Code's own login in {} (signed in with a Claude max subscription)", b.home().join(".claude").display()));
-    assert_eq!(row(&rows, "codex")["fix"], "sign in with `krowk connect openai --method subscription`, which runs Codex's own login");
+    assert_eq!(row(&rows, "codex")["fix"], "sign in with `gruntas connect openai --method subscription`, which runs Codex's own login");
     let printed = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(!printed.contains(KEY_SENTINEL) && !printed.contains(TOKEN_SENTINEL), "no secret is printed: {printed}");
 
     // The table says the same, and why each one is not ready.
-    let out = b.krowk(&["status", "--format", "human"], &[("ANTHROPIC_API_KEY", KEY_SENTINEL)]);
+    let out = b.gruntas(&["status", "--format", "human"], &[("ANTHROPIC_API_KEY", KEY_SENTINEL)]);
     assert_eq!(out.status.code(), Some(0));
     let table = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(!table.contains("supergrok") && !table.contains("anthropic "), "{table}");
@@ -160,13 +160,13 @@ fn status_with_no_config_lists_the_two_implicit_accounts_in_their_states() {
     // the failure's details.
     std::fs::remove_file(b.home().join(".claude/fake-login")).unwrap();
     std::fs::remove_file(b.root.join("bin/codex")).unwrap();
-    let out = b.krowk(&["status", "--json"], &[]);
+    let out = b.gruntas(&["status", "--json"], &[]);
     assert_eq!(out.status.code(), Some(3));
     let err: Value = serde_json::from_str(String::from_utf8_lossy(&out.stderr).trim()).unwrap();
     assert_eq!(err["error"]["error"], "none_ready", "{err}");
     let details = instances(&err["error"]["details"]);
     assert_eq!((details.len(), row(&details, "codex")["state"].as_str(), row(&details, "claude")["state"].as_str()), (2, Some("not_installed"), Some("not_signed_in")));
-    let out = b.krowk(&["status", "--format", "human"], &[]);
+    let out = b.gruntas(&["status", "--format", "human"], &[]);
     assert_eq!(out.status.code(), Some(3));
     assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 2, "the table, before the failure");
 }
@@ -181,7 +181,7 @@ fn vendor_checks_run_in_parallel_so_two_slow_vendors_take_as_long_as_one() {
         "#!/bin/bash\n[ \"$1\" = app-server ] || exit 2\nsleep 5\nwhile read -r l; do case \"$l\" in *'\"method\":\"account/read\"'*) printf '{\"id\":2,\"result\":{\"account\":{\"type\":\"chatgpt\"},\"requiresOpenaiAuth\":true}}\\n' ;; esac; done\n",
     );
     let started = Instant::now();
-    let out = b.krowk(&["status", "--json"], &[]);
+    let out = b.gruntas(&["status", "--json"], &[]);
     let took = started.elapsed();
     let rows = instances(&stdout_json(&out)["data"]);
     assert_eq!((row(&rows, "claude")["state"].as_str(), row(&rows, "codex")["state"].as_str()), (Some("ready"), Some("ready")), "{rows:?}");
@@ -194,10 +194,10 @@ fn r_roll_14_doctor_names_the_rollover_order_entries_rollover_ignores() {
     b.install_fakes();
     // `auto` with an empty order is a valid config: doctor passes it.
     b.write_config(json!({"rollover": "auto"}));
-    let d = stdout_json(&b.krowk(&["doctor", "--json"], &[]));
+    let d = stdout_json(&b.gruntas(&["doctor", "--json"], &[]));
     assert_eq!(d["rollover"]["status"], "pass", "{d}");
     b.write_config(json!({"rollover": "auto", "rolloverOrder": ["claude", "claude/sonnet", "anthropic"]}));
-    let d = stdout_json(&b.krowk(&["doctor", "--json"], &[]));
+    let d = stdout_json(&b.gruntas(&["doctor", "--json"], &[]));
     let said = d["rollover"]["message"].as_str().unwrap_or_default();
     assert_eq!(d["rollover"]["status"], "warn", "{d}");
     assert!(said.contains("\"claude/sonnet\": the model") && said.contains("\"anthropic\": a "), "{said}");
@@ -213,19 +213,19 @@ fn doctor_checks_everything_names_the_fix_and_exits_non_zero_exactly_when_a_chec
     let check = |d: &Value, name: &str| d["checks"].as_array().unwrap().iter().find(|c| c["name"] == name).cloned().unwrap_or_else(|| panic!("no {name} in {d}"));
 
     // No account, and not chosen to go without: it fails, and says how to sign in.
-    let out = b.krowk(&["doctor", "--json"], &[]);
+    let out = b.gruntas(&["doctor", "--json"], &[]);
     let d = stdout_json(&out);
     assert_eq!(names(&d), ["account", "machine", "always_on", "providers", "trust", "recovery_kit", "plan", "store", "pricing", "rollover"], "{d}");
-    assert_eq!((check(&d, "account")["status"].as_str(), check(&d, "account")["fix"].as_str()), (Some("fail"), Some("krowk login")), "{d}");
+    assert_eq!((check(&d, "account")["status"].as_str(), check(&d, "account")["fix"].as_str()), (Some("fail"), Some("gruntas login")), "{d}");
     assert!(!out.status.success(), "a failed check is a non-zero exit");
-    let human = b.krowk(&["doctor", "--format", "human"], &[]);
-    assert!(String::from_utf8_lossy(&human.stdout).contains("✗ Not signed in to krowk — krowk login"), "{}", String::from_utf8_lossy(&human.stdout));
+    let human = b.gruntas(&["doctor", "--format", "human"], &[]);
+    assert!(String::from_utf8_lossy(&human.stdout).contains("✗ Not signed in to gruntas — gruntas login"), "{}", String::from_utf8_lossy(&human.stdout));
     assert!(!human.status.success());
 
-    // Using krowk locally: the account step is skipped, nothing needs fixing.
+    // Using gruntas locally: the account step is skipped, nothing needs fixing.
     std::fs::create_dir_all(b.home().join(".gruntas")).unwrap();
     std::fs::write(b.home().join(".gruntas/first-run.json"), "{\"local\": true}\n").unwrap();
-    let out = b.krowk(&["doctor", "--json"], &[]);
+    let out = b.gruntas(&["doctor", "--json"], &[]);
     let d = stdout_json(&out);
     assert!(d["checks"].as_array().unwrap().iter().all(|c| c["status"] != "fail"), "{d}");
     assert_eq!(check(&d, "account")["status"], "skip", "{d}");
@@ -233,7 +233,7 @@ fn doctor_checks_everything_names_the_fix_and_exits_non_zero_exactly_when_a_chec
 
     // A key in GRUNTAS_TOKEN (CI, an agent): signed in, and no machine of the
     // person's, so nothing about registration or the service is asked.
-    let out = b.krowk(&["doctor", "--json"], &[("GRUNTAS_TOKEN", "krowk_sk_ci#a")]);
+    let out = b.gruntas(&["doctor", "--json"], &[("GRUNTAS_TOKEN", "krowk_sk_ci#a")]);
     let d = stdout_json(&out);
     assert_eq!((check(&d, "account")["status"].as_str(), check(&d, "machine")["status"].as_str(), check(&d, "always_on")["status"].as_str()), (Some("pass"), Some("skip"), Some("skip")), "{d}");
     assert!(out.status.success(), "{d}");
@@ -241,10 +241,10 @@ fn doctor_checks_everything_names_the_fix_and_exits_non_zero_exactly_when_a_chec
     // Signed in with a key, on a machine never registered: that fails with
     // its fix, and the service has no machine to keep on.
     std::fs::write(b.home().join(".gruntas/credentials.json"), json!({"version": 1, "default": "ws_t", "workspaces": {"ws_t": {"token": "krowk_sk_doctor#a", "key_id": "key_t", "workspace": "ws_t"}}}).to_string()).unwrap();
-    let out = b.krowk(&["doctor", "--json"], &[("GRUNTAS_API_URL", "http://127.0.0.1:9")]);
+    let out = b.gruntas(&["doctor", "--json"], &[("GRUNTAS_API_URL", "http://127.0.0.1:9")]);
     let d = stdout_json(&out);
     assert_eq!(check(&d, "account")["status"], "pass", "{d}");
-    assert_eq!((check(&d, "machine")["status"].as_str(), check(&d, "machine")["fix"].as_str()), (Some("fail"), Some("krowk login")), "{d}");
+    assert_eq!((check(&d, "machine")["status"].as_str(), check(&d, "machine")["fix"].as_str()), (Some("fail"), Some("gruntas login")), "{d}");
     assert_eq!(check(&d, "always_on")["status"], "skip", "{d}");
     assert!(!out.status.success());
 }
@@ -263,7 +263,7 @@ fn no_secret_reaches_status_list_or_doctor() {
     b.write_logins(json!({"supergrok:team": login(TOKEN_SENTINEL, Some(REFRESH_SENTINEL), 1_000)}));
     let env = [("ANTHROPIC_API_KEY", KEY_SENTINEL), ("WORK_KEY", KEY_SENTINEL), ("OR_KEY", ROUTER_SENTINEL)];
 
-    let status = b.krowk(&["status", "--json"], &env);
+    let status = b.gruntas(&["status", "--json"], &env);
     let rows = instances(&stdout_json(&status)["data"]);
     assert_eq!(rows.len(), 5, "the two implicit accounts and the three configured; SuperGrok runs nothing (D4)");
     assert!(!rows.iter().any(|r| r["instance"] == "supergrok:team"));
@@ -274,19 +274,19 @@ fn no_secret_reaches_status_list_or_doctor() {
     let labels: Vec<&str> = ["claude", "claude:router", "codex:router", "anthropic:work"].iter().map(|n| rows.iter().find(|r| r["instance"] == *n).unwrap()["label"].as_str().unwrap()).collect();
     assert_eq!(labels, ["Claude subscription", "Claude Code, API key", "Codex, API key", "Claude Code, API key"]);
 
-    let list = b.krowk(&["providers", "list", "--json"], &env);
+    let list = b.gruntas(&["providers", "list", "--json"], &env);
     let listed = instances(&stdout_json(&list)["data"]);
     for r in &rows {
         let l = row(&listed, r["instance"].as_str().unwrap());
         assert_eq!((&l["state"], &l["source"], &l["fix"]), (&r["state"], &r["source"], &r["fix"]), "providers list and status agree");
     }
     // The harness build's doctor names each instance's state.
-    let doctor = b.krowk(&["doctor", "--json"], &env);
+    let doctor = b.gruntas(&["doctor", "--json"], &env);
     let d = stdout_json(&doctor);
     assert_eq!(d["providers"]["status"], "pass", "{d}");
     assert_eq!(d["providers"]["instances"]["codex"], "not_signed_in");
 
-    for out in [&status, &list, &doctor, &b.krowk(&["status", "--format", "human"], &env), &b.krowk(&["providers", "list", "--format", "human"], &env), &b.krowk(&["doctor", "--format", "human"], &env)] {
+    for out in [&status, &list, &doctor, &b.gruntas(&["status", "--format", "human"], &env), &b.gruntas(&["providers", "list", "--format", "human"], &env), &b.gruntas(&["doctor", "--format", "human"], &env)] {
         let printed = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
         for secret in [KEY_SENTINEL, ROUTER_SENTINEL, TOKEN_SENTINEL, REFRESH_SENTINEL] {
             assert!(!printed.contains(secret), "{secret} printed: {printed}");
@@ -299,7 +299,7 @@ fn codex_status_falls_back_to_login_status_when_app_server_cannot_be_asked() {
     let b = Sandbox::new("codex-fallback");
     // An older Codex: no app-server to ask, only `codex login status`'s words.
     b.install("codex", "#!/bin/bash\ncase \"$1 $2\" in\n'login status') echo 'Logged in using ChatGPT' >&2; exit 0 ;;\n*) echo \"unknown command $1\" >&2; exit 2 ;;\nesac\n");
-    let out = b.krowk(&["status", "--json"], &[]);
+    let out = b.gruntas(&["status", "--json"], &[]);
     let rows = instances(&stdout_json(&out)["data"]);
     assert_eq!((row(&rows, "codex")["state"].as_str(), row(&rows, "codex")["source"].as_str()), (Some("ready"), Some(format!("Codex's own login in {} (signed in with ChatGPT)", b.home().join(".codex").display()).as_str())));
 }
@@ -310,18 +310,18 @@ fn status_asks_vendors_in_krowks_own_directory_so_planted_settings_change_nothin
     // Signed in only where its working directory's project settings say so.
     b.install("claude", "#!/bin/bash\nif [ -f \"$PWD/.claude/settings.json\" ]; then echo '{\"loggedIn\":true,\"authMethod\":\"bedrock\"}'; exit 0; fi\necho '{\"loggedIn\":false}'; exit 1\n");
     // Settings planted in a shared temporary directory, and in the
-    // repository krowk runs in, which nobody trusted.
+    // repository gruntas runs in, which nobody trusted.
     let tmp = b.root.join("tmp");
     for d in [&tmp, &b.root.join("repo")] {
         std::fs::create_dir_all(d.join(".claude")).unwrap();
         std::fs::write(d.join(".claude/settings.json"), r#"{"apiKeyHelper":"echo planted"}"#).unwrap();
     }
-    let out = b.krowk(&["status", "--json"], &[("TMPDIR", tmp.to_str().unwrap())]);
+    let out = b.gruntas(&["status", "--json"], &[("TMPDIR", tmp.to_str().unwrap())]);
     assert_eq!(out.status.code(), Some(3), "nothing is ready: {}", String::from_utf8_lossy(&out.stderr));
     let err: Value = serde_json::from_str(String::from_utf8_lossy(&out.stderr).trim()).unwrap();
     let rows = instances(&err["error"]["details"]);
     assert_eq!(row(&rows, "claude")["state"], "not_signed_in", "{rows:?}");
     let own = b.home().join(".gruntas/readiness");
     use std::os::unix::fs::PermissionsExt;
-    assert_eq!(std::fs::metadata(&own).unwrap().permissions().mode() & 0o777, 0o700, "krowk's own directory, closed to others");
+    assert_eq!(std::fs::metadata(&own).unwrap().permissions().mode() & 0o777, 0o700, "gruntas's own directory, closed to others");
 }

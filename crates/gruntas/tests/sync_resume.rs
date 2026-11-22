@@ -1,4 +1,4 @@
-//! `krowk --resume <id>` on a machine that does not hold the session's log
+//! `gruntas --resume <id>` on a machine that does not hold the session's log
 //! but syncs the workspace: it attaches the synced session rather than
 //! saying there is no such session, so the command an artifact card copies
 //! (ticket 21) works on any of the workspace's machines. Against the

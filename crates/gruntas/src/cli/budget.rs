@@ -1,4 +1,4 @@
-//! `krowk sessions budget`: whether a session is still inside a spend limit,
+//! `gruntas sessions budget`: whether a session is still inside a spend limit,
 //! judged by what the provider metered — never by what a request asked for.
 //!
 //! A request's `max_tokens` is a wish, not a meter: on 2026-09-10 two
@@ -16,11 +16,11 @@
 //! own session — nothing ties it to the run that sent it — so budget the
 //! ledger session to hold a provider's metered total to a limit.
 //!
-//! krowk runs no model, so it cancels nothing: tripping exits 4 with
+//! gruntas runs no model, so it cancels nothing: tripping exits 4 with
 //! `budget_exceeded`, and whatever called the guard (a hook, a wrapper, a
 //! CI step) is what stops the run. Priced costs stay unrounded from the
 //! turn to the comparison; a cost the source reported is stored to the
-//! micro-dollar, finer than any provider bills. A cost krowk cannot price
+//! micro-dollar, finer than any provider bills. A cost gruntas cannot price
 //! trips a `--max-usd` guard rather than passing it: an unknown spend is
 //! not a spend inside the limit.
 
@@ -180,13 +180,13 @@ fn current_session(ctx: &Ctx, args: &[String]) -> Result<(String, Refresh), Erro
 fn limits(ctx: &Ctx) -> Result<Limits, Error> {
     let l = given_limits(ctx)?;
     if l.usd.is_none() && l.tokens.is_none() {
-        return Err(fail("bad_flag", "`krowk sessions budget` needs a limit: --max-usd <dollars>, --max-tokens <count>, or both"));
+        return Err(fail("bad_flag", "`gruntas sessions budget` needs a limit: --max-usd <dollars>, --max-tokens <count>, or both"));
     }
     Ok(l)
 }
 
 /// `--max-usd` and `--max-tokens` as given, either or both absent: what
-/// `krowk sessions budget` checks a session against, and what `krowk -p`
+/// `gruntas sessions budget` checks a session against, and what `gruntas -p`
 /// holds one to before each turn and as each call is metered.
 pub(super) fn given_limits(ctx: &Ctx) -> Result<Limits, Error> {
     // A limit given blank — `--max-usd "$UNSET"` — is a mistake to name, not
@@ -254,7 +254,7 @@ pub fn budget(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         let mut err = fail(
             "budget_exceeded",
             format!(
-                "session {} is over budget: {} — stop the run; krowk cancels nothing, and the provider keeps billing whatever is still running",
+                "session {} is over budget: {} — stop the run; gruntas cancels nothing, and the provider keeps billing whatever is still running",
                 s.id,
                 why.join("; ")
             ),

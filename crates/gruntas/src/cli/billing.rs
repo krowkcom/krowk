@@ -1,7 +1,7 @@
 //! `billing`: the workspace's plan, bought or managed in the dashboard. On
 //! Free it opens the plan chooser; on a paid plan the billing route, which
 //! hands an owner or admin to Polar's customer portal. A member is told who
-//! to ask. krowk never talks to Polar itself: it only opens the page.
+//! to ask. gruntas never talks to Polar itself: it only opens the page.
 
 use super::agent::new_client;
 use super::auth::{headless, open_browser};
@@ -12,11 +12,11 @@ use serde_json::json;
 
 pub(crate) fn billing(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if let Some(first) = args.first() {
-        return Err(fail("unexpected_argument", format!("`krowk billing` takes no arguments, and got `{first}`")));
+        return Err(fail("unexpected_argument", format!("`gruntas billing` takes no arguments, and got `{first}`")));
     }
     let client = new_client(ctx)?;
     if !client.authenticated() {
-        return Err(fail("not_authenticated", "billing is a workspace's — run `krowk login` first"));
+        return Err(fail("not_authenticated", "billing is a workspace's — run `gruntas login` first"));
     }
     let key = client.verify_key()?;
     if key.can_manage_billing != Some(true) {

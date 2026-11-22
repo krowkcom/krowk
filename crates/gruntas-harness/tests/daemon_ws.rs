@@ -430,8 +430,8 @@ fn r_img_1_three_images_past_the_message_cap_reach_the_model_each_as_its_own_mes
     daemon.join().unwrap().unwrap();
 }
 
-/// R-LAG-1: while the model types, nothing under krowk's home is written —
-/// neither the log nor krowk.db nor anything else: the deltas go from the
+/// R-LAG-1: while the model types, nothing under gruntas's home is written —
+/// neither the log nor gruntas.db nor anything else: the deltas go from the
 /// model's stream to the socket through memory alone, and only the
 /// finished item is logged. The stream is held open after its last word
 /// for two seconds after its last word, so the finished item's write cannot

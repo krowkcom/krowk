@@ -1,4 +1,4 @@
-//! Text krowk frames around words it did not write — reasoning another
+//! Text gruntas frames around words it did not write — reasoning another
 //! model produced, a handoff's transcript — made unable to close that frame.
 
 /// Reasoning another provider (or another wire API) produced, as it
@@ -17,7 +17,7 @@
 /// `/`, `／`, whitespace and zero-width characters, then the word
 /// `reasoning` in any case, zero-width characters inside it or not, ending
 /// where a name ends — so `Vec<ReasoningItem>` is left as it was. The text reads the same to
-/// a model, and only krowk's frame is a tag.
+/// a model, and only gruntas's frame is a tag.
 pub fn downgraded(text: &str) -> Option<String> {
     let text = text.trim();
     if text.is_empty() {
@@ -28,7 +28,7 @@ pub fn downgraded(text: &str) -> Option<String> {
 
 /// `text` with every opening or closing tag named `name` a model could
 /// read in it — by the rule `downgraded` describes — made harmless by
-/// replacing its bracket with `‹`: what keeps a frame krowk puts around
+/// replacing its bracket with `‹`: what keeps a frame gruntas puts around
 /// text it did not write (reasoning, a handoff) from being closed by that
 /// text. Everything else is left as it was.
 pub fn neutralised(text: &str, name: &str) -> String {

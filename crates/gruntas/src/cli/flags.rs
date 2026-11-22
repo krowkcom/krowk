@@ -1,5 +1,5 @@
 //! One flag set serves every command, which is what lets flags follow
-//! positionals the way agents write them: `krowk push a.png --title x b.png`.
+//! positionals the way agents write them: `gruntas push a.png --title x b.png`.
 //! Which flags exist, and their types, come from the catalog.
 
 use super::catalog::{self, Flag};
@@ -42,7 +42,7 @@ pub struct Flags {
     pub worktree: String,
     pub all: bool,
     pub thinking: bool,
-    /// `krowk sessions archive`: the idle cut-off in days, and whether to
+    /// `gruntas sessions archive`: the idle cut-off in days, and whether to
     /// run only when a week has passed.
     pub older_than: String,
     pub weekly: bool,
@@ -57,7 +57,7 @@ pub struct Flags {
     pub model: String,
     #[cfg(feature = "harness")]
     pub resume: String,
-    /// `--worktree` anywhere but `krowk sessions`, whose `--worktree <path>`
+    /// `--worktree` anywhere but `gruntas sessions`, whose `--worktree <path>`
     /// is `worktree`: start the session in a worktree of its own (WT6).
     #[cfg(feature = "harness")]
     pub own_worktree: bool,
@@ -186,7 +186,7 @@ pub fn parse(args: &[String]) -> (Flags, Vec<String>, Result<(), String>) {
                 continue;
             };
             if body.starts_with('-') || body.starts_with('=') {
-                return Err(format!("`{arg}` is not a flag krowk can read"));
+                return Err(format!("`{arg}` is not a flag gruntas can read"));
             }
             let (name, inline) = match body.split_once('=') {
                 Some((n, v)) => (n, Some(v.to_string())),

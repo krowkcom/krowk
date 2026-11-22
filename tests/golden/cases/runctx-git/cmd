@@ -12,16 +12,16 @@
 @sh git init -q -b feature/golden && git remote add origin git@github.com:krowkcom/golden.git
 @file a.txt hello
 @sh git add a.txt && git commit -q -m first
-krowk push a.txt --jq '.data.artifacts[0].metadata'
-krowk push a.txt --jq '.data.run.metadata'
+gruntas push a.txt --jq '.data.artifacts[0].metadata'
+gruntas push a.txt --jq '.data.run.metadata'
 @file b.txt dirty
-krowk push a.txt --jq '.data.artifacts[0].metadata'
+gruntas push a.txt --jq '.data.artifacts[0].metadata'
 @sh git remote set-url origin https://gitlab.example.com/group/sub/proj.git
-krowk push a.txt --jq '.data.artifacts[0].metadata'
+gruntas push a.txt --jq '.data.artifacts[0].metadata'
 @sh git remote set-url origin https://user:secret@github.com/krowkcom/golden.git
-krowk push a.txt --jq '.data.artifacts[0].metadata'
+gruntas push a.txt --jq '.data.artifacts[0].metadata'
 @sh git checkout -q --detach
-krowk push a.txt --jq '.data.artifacts[0].metadata'
-krowk push a.txt --repo o/override --commit abc --agent codex --jq '.data.artifacts[0].metadata'
-@tty krowk push a.txt
-krowk doctor
+gruntas push a.txt --jq '.data.artifacts[0].metadata'
+gruntas push a.txt --repo o/override --commit abc --agent codex --jq '.data.artifacts[0].metadata'
+@tty gruntas push a.txt
+gruntas doctor

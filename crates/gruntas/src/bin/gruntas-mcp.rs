@@ -1,4 +1,4 @@
-//! krowk over MCP stdio. Reads its key the way the CLI does — GRUNTAS_TOKEN,
+//! gruntas over MCP stdio. Reads its key the way the CLI does — GRUNTAS_TOKEN,
 //! then the workspace the root's config names — and serves without one when
 //! that key cannot be had: reads still work, writes are refused rather than
 //! landing in the anonymous workspace the config was written to avoid.
@@ -6,7 +6,7 @@
 use gruntas::mcp::Server;
 use std::io::Write;
 
-const USAGE: &str = "Usage of krowk-mcp:
+const USAGE: &str = "Usage of gruntas-mcp:
   -root string
     \tonly upload files under this directory (default: the working directory)
   -version
@@ -41,7 +41,7 @@ fn main() {
         root = env("GRUNTAS_MCP_ROOT");
     }
 
-    // A home krowk cannot use is no key, and says why, rather than a key
+    // A home gruntas cannot use is no key, and says why, rather than a key
     // read from around it.
     let unusable = gruntas_api::home::dir(&env).err().filter(|e| e.code() != "no_home");
     let (token, workspace_err) = match unusable.map(Err).unwrap_or_else(|| gruntas::config::load(&root, &env, "").map_err(|e| gruntas_api::fail("bad_config", e))) {
@@ -53,7 +53,7 @@ fn main() {
     };
     if let Some(e) = &workspace_err {
         let reason = if e.fix().is_empty() { e.code() } else { format!("{} — {}", e.code(), e.fix()) };
-        eprintln!("krowk-mcp: {reason} — serving without a key: reads still work, uploads and claims are refused");
+        eprintln!("gruntas-mcp: {reason} — serving without a key: reads still work, uploads and claims are refused");
     }
     let server = Server {
         client: gruntas_api::Client::new(&gruntas_api::base_url_for(false, &env), &token),
@@ -66,7 +66,7 @@ fn main() {
     let mut stdout = std::io::stdout().lock();
     if let Err(e) = server.serve(stdin.lock(), &mut stdout) {
         let _ = stdout.flush();
-        eprintln!("krowk-mcp: {e}");
+        eprintln!("gruntas-mcp: {e}");
         std::process::exit(1);
     }
 }

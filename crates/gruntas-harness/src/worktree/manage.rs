@@ -1,12 +1,12 @@
-//! Kept worktrees (WT9): every krowk worktree across repositories listed,
+//! Kept worktrees (WT9): every gruntas worktree across repositories listed,
 //! one removed without losing work, and what a person's `rm -rf` left of
 //! others pruned. Kept worktrees pile up — every agent that changed
 //! something leaves one — and a directory deleted by hand strands git's
-//! record of it. `krowk worktrees` is the command line around these; a
+//! record of it. `gruntas worktrees` is the command line around these; a
 //! session of its own in a worktree (WT6) and applying one's changes back
 //! (WT13) build on them.
 //!
-//! What krowk records of a worktree when it makes one (`super::create_held`),
+//! What gruntas records of a worktree when it makes one (`super::create_held`),
 //! in the repository's directory under the root, `<root>/<repo-id>/`, which
 //! no sandbox can write (the worktree's own admin directory is the agent's
 //! to write, WT4):
@@ -35,7 +35,7 @@
 //!   forced, while it has uncommitted changes or commits ahead of its base.
 //!   A forced removal of one with uncommitted changes saves them first:
 //!   every change, untracked files included, staged into an index of
-//!   krowk's (never the worktree's own), `git stash create`d, and kept as
+//!   gruntas's (never the worktree's own), `git stash create`d, and kept as
 //!   `refs/gruntas/snapshots/<hex>`. Its branch is always kept, so its
 //!   commits are too, and a HEAD its branch does not hold (an agent that
 //!   detached it, or switched branch, and committed) is kept as
@@ -46,7 +46,7 @@
 //!   its branch when they apply, kept when they do not.
 //! - **`prune`**: per repository, and only while its git directory is
 //!   where it was recorded (a repository moved, or on a drive not mounted,
-//!   is left alone and reported): git's record of each krowk worktree
+//!   is left alone and reported): git's record of each gruntas worktree
 //!   whose directory is gone and which no live session holds is cleared —
 //!   its one admin directory, never a blanket `git worktree prune`, which
 //!   would clear the person's own worktrees on a drive not mounted, their
@@ -83,7 +83,7 @@ pub const STAMP_FILE: &str = ".pruned";
 /// How often `prune_daily` prunes.
 const DAILY: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// What krowk keeps of a worktree it made, `<root>/<repo-id>/<hex>.json`.
+/// What gruntas keeps of a worktree it made, `<root>/<repo-id>/<hex>.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Record {
     /// The commit it was made at (`Worktree::base`).
@@ -117,7 +117,7 @@ pub(super) fn write_record(wt: &Worktree, owner: &str) -> Result<(), Error> {
 }
 
 /// What was recorded of the worktree `hex` in the repository's directory
-/// `dir`: none for one made before krowk recorded them, or a record that
+/// `dir`: none for one made before gruntas recorded them, or a record that
 /// does not read.
 pub fn read_record(dir: &Path, hex: &str) -> Option<Record> {
     serde_json::from_slice(&std::fs::read(record_path(dir, hex)).ok()?).ok()
@@ -168,7 +168,7 @@ pub fn hold_again(wt: &Worktree) -> Result<Option<Held>, Error> {
     match claim(wt.repo_dir(), &wt.hex) {
         Claim::Live => Ok(None),
         Claim::Free(Some(held)) => Ok(Some(held)),
-        // No `.live` yet: one made before krowk held them.
+        // No `.live` yet: one made before gruntas held them.
         Claim::Free(None) => hold(wt).map(Some),
     }
 }
@@ -205,7 +205,7 @@ fn claim(dir: &Path, hex: &str) -> Claim {
     Claim::Live
 }
 
-/// One krowk worktree, as `list` finds it.
+/// One gruntas worktree, as `list` finds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listed {
     /// Its directory, `<root>/<repo-id>/<hex>`; it may be gone (`missing`).
@@ -221,7 +221,7 @@ pub struct Listed {
     /// The commit checked out there.
     pub head: Option<String>,
     /// The commit it was made at, as recorded: none for one made before
-    /// krowk recorded it.
+    /// gruntas recorded it.
     pub base: Option<String>,
     /// Commits from `base` to `head`: none when either is unknown.
     pub ahead: Option<usize>,
@@ -260,7 +260,7 @@ impl Listed {
     }
 }
 
-/// One repository krowk made worktrees of: its directory under the root,
+/// One repository gruntas made worktrees of: its directory under the root,
 /// and its common git directory when it can be found.
 struct Repo {
     id: String,
@@ -370,7 +370,7 @@ fn ours<'a>(repo: &Repo, all: &'a [Entry]) -> Vec<(String, &'a Entry)> {
         .collect()
 }
 
-/// Every krowk worktree under `root`, by repository then age. `judge` for
+/// Every gruntas worktree under `root`, by repository then age. `judge` for
 /// what takes a git call in each (`ahead`, `dirty`); without it those are
 /// none. A repository git cannot read is left out: its worktrees are
 /// `prune`'s.
@@ -391,7 +391,7 @@ fn listed(root: &Path, judge: bool) -> Vec<Listed> {
     out
 }
 
-/// One worktree of `repo` as git lists it (`e`), with what krowk recorded.
+/// One worktree of `repo` as git lists it (`e`), with what gruntas recorded.
 fn describe(repo: &Repo, common: &Path, main: &Path, hex: &str, e: &Entry, judge: bool) -> Listed {
     let path = repo.dir.join(hex);
     let record = read_record(&repo.dir, hex);
@@ -435,7 +435,7 @@ fn judged(l: &mut Listed) {
 /// Why `remove` (or another change to one worktree) did not happen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
-    /// No krowk worktree is the one named.
+    /// No gruntas worktree is the one named.
     NotFound(String),
     /// More than one is: their directories.
     Ambiguous(Vec<PathBuf>),
@@ -558,7 +558,7 @@ pub fn remove(root: &Path, key: &str, force: bool) -> Result<Removed, Refusal> {
 /// (`super::apply::apply`), changes inside fenced directories included, as
 /// a person asked: it, as found, and what came of it. Refused
 /// while a live session holds it, when its directory is gone, and when
-/// krowk has no record of its base, which its changes are judged against.
+/// gruntas has no record of its base, which its changes are judged against.
 /// Blocking.
 pub fn apply(root: &Path, key: &str, to: Option<&Path>) -> Result<(Listed, super::apply::Applied), Refusal> {
     let found = find(root, key)?;
@@ -572,7 +572,7 @@ pub fn apply(root: &Path, key: &str, to: Option<&Path>) -> Result<(Listed, super
         return Err(Refusal::Failed(Error::Failed(format!("{} is gone, so there is nothing to apply — its branch {} holds its commits", found.path.display(), found.own_branch()))));
     }
     let Some(wt) = found.worktree() else {
-        return Err(Refusal::Failed(Error::Failed(format!("krowk has no record of the commit {} was made from, so it cannot tell its changes — merge its branch {} instead", found.path.display(), found.own_branch()))));
+        return Err(Refusal::Failed(Error::Failed(format!("gruntas has no record of the commit {} was made from, so it cannot tell its changes — merge its branch {} instead", found.path.display(), found.own_branch()))));
     };
     let to = to.map_or_else(|| found.main.clone(), Path::to_path_buf);
     // A person's own command: fenced files are theirs to apply.
@@ -580,10 +580,10 @@ pub fn apply(root: &Path, key: &str, to: Option<&Path>) -> Result<(Listed, super
     Ok((found, applied))
 }
 
-/// Keeps `head`, a krowk worktree's HEAD, as `refs/gruntas/snapshots/<hex>-head`
+/// Keeps `head`, a gruntas worktree's HEAD, as `refs/gruntas/snapshots/<hex>-head`
 /// when its branch `gruntas/<hex>` does not hold it — an agent that detached
 /// HEAD, or switched branch, and committed — and names that ref: what is
-/// kept is a commit of krowk's made now, whose parent is `head` and whose
+/// kept is a commit of gruntas's made now, whose parent is `head` and whose
 /// tree is `head`'s, so it expires 30 days from now like any snapshot
 /// whatever `head`'s own date. None when the branch holds it, or there is
 /// no HEAD.
@@ -594,10 +594,10 @@ fn keep_head(common: &Path, hex: &str, head: Option<&str>) -> Result<Option<Stri
     if held {
         return Ok(None);
     }
-    let message = format!("krowk: HEAD of worktree {hex} when it was removed");
+    let message = format!("gruntas: HEAD of worktree {hex} when it was removed");
     let tree = format!("{head}^{{tree}}");
     let commit = |identity: &[&str]| read(git(common)?.args(identity).args(["commit-tree", &tree, "-p", head, "-m", &message]), "commit-tree");
-    let kept = commit(&[]).or_else(|_| commit(&["-c", "user.name=krowk", "-c", "user.email=krowk@localhost"]))?;
+    let kept = commit(&[]).or_else(|_| commit(&["-c", "user.name=gruntas", "-c", "user.email=gruntas@localhost"]))?;
     let name = format!("{SNAPSHOTS}{hex}-head");
     read(git(common)?.args(["update-ref", "-m", &message, &name, &kept]), "update-ref")?;
     Ok(Some(name))
@@ -658,10 +658,10 @@ fn snapshot(l: &Listed, dir: &Path) -> Result<String, Error> {
         Err(e) => return Err(Error::Failed(format!("copy {}: {e}", own.display()))),
     }
     read(staged()?.args(["add", "--all", "--", ":/"]), "add")?;
-    let message = format!("krowk: snapshot of {} before it was removed", l.hex);
-    // The person's identity when git has one, krowk's when it has none.
+    let message = format!("gruntas: snapshot of {} before it was removed", l.hex);
+    // The person's identity when git has one, gruntas's when it has none.
     let create = |identity: &[&str]| read(staged()?.args(identity).args(["stash", "create", &message]), "stash create");
-    let commit = create(&[]).or_else(|_| create(&["-c", "user.name=krowk", "-c", "user.email=krowk@localhost"]))?;
+    let commit = create(&[]).or_else(|_| create(&["-c", "user.name=gruntas", "-c", "user.email=gruntas@localhost"]))?;
     if commit.is_empty() {
         return Err(Error::Failed(format!("git found nothing to save in {}, though its status shows changes; nothing was removed", l.path.display())));
     }
@@ -705,8 +705,8 @@ fn prune_repo(repo: &Repo, now: SystemTime, done: &mut Pruned) -> Result<(), Err
         return Ok(());
     };
     let _locked = lock(common)?;
-    // krowk's own records whose directory is gone, and which no live
-    // session holds: on its `gruntas/<hex>` branch, or locked by krowk.
+    // gruntas's own records whose directory is gone, and which no live
+    // session holds: on its `gruntas/<hex>` branch, or locked by gruntas.
     for (hex, e) in ours(repo, &entries(common)?) {
         let gone = repo.dir.join(&hex).symlink_metadata().is_err();
         let krowks = e.branch.as_deref() == Some(&format!("{BRANCH_PREFIX}{hex}")) || e.locked.as_deref().is_some_and(|r| r.starts_with(LOCK_REASON));
@@ -735,7 +735,7 @@ fn prune_repo(repo: &Repo, now: SystemTime, done: &mut Pruned) -> Result<(), Err
                 continue;
             }
             Err(e) => {
-                done.failures.push(format!("{}: left in place, as krowk could not tell whether it holds changes: {e}", path.display()));
+                done.failures.push(format!("{}: left in place, as gruntas could not tell whether it holds changes: {e}", path.display()));
                 continue;
             }
         }
@@ -763,7 +763,7 @@ fn prune_repo(repo: &Repo, now: SystemTime, done: &mut Pruned) -> Result<(), Err
 
 /// Whether the worktree directory `path`, which git no longer knows, holds
 /// exactly what its branch `gruntas/<hex>` (else its recorded base) does:
-/// read through a scratch index of krowk's with the repository's git
+/// read through a scratch index of gruntas's with the repository's git
 /// directory, so no modified or untracked file is deleted with it. Ignored
 /// files (build output, `.worktreeinclude` copies) are not judged.
 fn unchanged(repo: &Repo, common: &Path, hex: &str, path: &Path) -> Result<bool, Error> {
@@ -823,7 +823,7 @@ pub fn prune_if_due(root: &Path, now: SystemTime) -> Option<Pruned> {
     }
     let at = root.join(STAMP_FILE);
     let mut file = std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&at).ok()?;
-    // Waited for, not tried: another krowk judging it holds it only to
+    // Waited for, not tried: another gruntas judging it holds it only to
     // write the time (and a process forked meanwhile, for a moment), and
     // then this one finds it not due.
     file.lock().ok()?;
@@ -1103,7 +1103,7 @@ mod tests {
     }
 
     /// The person's own worktree, outside the root, its directory away:
-    /// its record is not krowk's to clear. A krowk directory git no longer
+    /// its record is not gruntas's to clear. A gruntas directory git no longer
     /// knows is deleted only when its files are its branch's and no live
     /// session holds it.
     #[test]

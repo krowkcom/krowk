@@ -1,4 +1,4 @@
-//! `krowk doctor`: describes a broken setup rather than being stopped by one,
+//! `gruntas doctor`: describes a broken setup rather than being stopped by one,
 //! so the workspace is resolved by hand and every check reports what it found.
 
 use super::health::{self, Check, Lookup};
@@ -177,7 +177,7 @@ fn pricing_check(ctx: &Ctx) -> Value {
     };
     let mut v = json!({ "name": "pricing", "status": status, "message": fresh.describe(now) });
     if status == "warn" {
-        v["hint"] = json!("run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day");
+        v["hint"] = json!("run `gruntas pricing refresh`, or `gruntas sessions sync`, which refreshes prices once a day");
     }
     if let Some(d) = fresh.age_days(now) {
         v["age_days"] = json!(d);
@@ -191,7 +191,7 @@ fn pricing_check(_: &Ctx) -> Value {
 }
 
 /// Whether any provider instance can run a turn here, by the readiness
-/// check `krowk status` prints — each instance's state, and the command
+/// check `gruntas status` prints — each instance's state, and the command
 /// with the sources and fixes. A warning, not a failure, when none is: a
 /// machine that only pushes evidence needs no provider.
 #[cfg(feature = "harness")]
@@ -207,7 +207,7 @@ fn providers_check(ctx: &Ctx) -> Value {
     };
     let states: Map<String, Value> = reports.iter().map(|r| (r.instance.clone(), json!(r.readiness.state()))).collect();
     let mut v = json!({ "name": "providers", "status": if ready.is_empty() { "warn" } else { "pass" }, "message": message, "instances": states });
-    v["hint"] = json!("run `krowk connect` to add one, or `krowk status` for where each key or login comes from");
+    v["hint"] = json!("run `gruntas connect` to add one, or `gruntas status` for where each key or login comes from");
     v
 }
 
@@ -245,7 +245,7 @@ fn registry_mode(ctx: &Ctx, client: &Client) -> &'static str {
 /// so a URL pointing at the website is caught too.
 fn probe(client: &Client) -> String {
     match client.root() {
-        Ok(s) if s.service.is_empty() => "reachable, but not a krowk registry".into(),
+        Ok(s) if s.service.is_empty() => "reachable, but not a gruntas registry".into(),
         Ok(s) => format!("reachable ({}, {})", s.service, s.versions.join(" ")),
         Err(e) if e.status != 0 => format!("reachable (HTTP {}) — {}", e.status, e.code()),
         Err(e) => match e.body.get("detail").and_then(Value::as_str).filter(|d| !d.is_empty()) {
@@ -274,7 +274,7 @@ fn workspace_summary(ctx: &Ctx, resolved: &Result<(String, String), gruntas_api:
             return format!("{ws} ({source}) — but no key is stored for it, so every command here fails");
         }
         if !ctx.env("GRUNTAS_TOKEN").is_empty() {
-            return format!("{ws} ({source}) — but GRUNTAS_TOKEN is set and wins; uploads land wherever that key acts, and `krowk whoami` names it");
+            return format!("{ws} ({source}) — but GRUNTAS_TOKEN is set and wins; uploads land wherever that key acts, and `gruntas whoami` names it");
         }
         return format!("{ws} ({source})");
     }
@@ -284,7 +284,7 @@ fn workspace_summary(ctx: &Ctx, resolved: &Result<(String, String), gruntas_api:
     if creds::token_source(ctx.io.env, "") == TOKEN_SOURCE_NONE {
         return "none — uploads will be anonymous".into();
     }
-    "unknown — not recorded at login; `krowk whoami` asks the registry".into()
+    "unknown — not recorded at login; `gruntas whoami` asks the registry".into()
 }
 
 fn config_summary() -> String {

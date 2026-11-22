@@ -1,4 +1,4 @@
-//! The HTTP client krowk makes its requests with: MCP servers and their
+//! The HTTP client gruntas makes its requests with: MCP servers and their
 //! sign-ins, and sync.
 //!
 //! Redirects are never followed. A request carries a key or a token, and a
@@ -14,7 +14,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// rustls on ring with the platform verifier: the same trust decisions the
-/// rest of krowk makes through ureq.
+/// rest of gruntas makes through ureq.
 ///
 /// The TLS configuration is built once a process and shared: building it
 /// reads and parses the platform's roots, tens of milliseconds a turn on

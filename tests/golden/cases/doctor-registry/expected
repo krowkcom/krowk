@@ -1,4 +1,4 @@
-$ krowk doctor
+$ gruntas doctor
 stdout:
 {
   "version": "0.0.0-golden",
@@ -9,7 +9,7 @@ stdout:
   "authenticated": true,
   "token_source": "GRUNTAS_TOKEN",
   "key": "<key_1> (<ws_1>) local",
-  "workspace": "unknown — not recorded at login; `krowk whoami` asks the registry",
+  "workspace": "unknown — not recorded at login; `gruntas whoami` asks the registry",
   "runs_available": true,
   "credentials": "<scratch>/home/.gruntas/credentials.json",
   "config": "global <scratch>/home/.gruntas/config.json (absent)",
@@ -22,7 +22,7 @@ stdout:
     "name": "pricing",
     "status": "warn",
     "message": "no price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build",
-    "hint": "run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day"
+    "hint": "run `gruntas pricing refresh`, or `gruntas sessions sync`, which refreshes prices once a day"
   },
   "providers": {
     "name": "providers",
@@ -75,8 +75,8 @@ stdout:
       "name": "pricing",
       "status": "warn",
       "message": "no price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build",
-      "hint": "run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day",
-      "fix": "run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day"
+      "hint": "run `gruntas pricing refresh`, or `gruntas sessions sync`, which refreshes prices once a day",
+      "fix": "run `gruntas pricing refresh`, or `gruntas sessions sync`, which refreshes prices once a day"
     }
   ]
 }

@@ -1,7 +1,7 @@
-//! What krowk-mcp's delegation tools (R-ALLOC-11) need of the command line:
+//! What gruntas-mcp's delegation tools (R-ALLOC-11) need of the command line:
 //! the `Placer` its tasks are placed by (`synced::source`), and
-//! `krowk machines --json` read back. A
-//! task that stays on this machine runs as `krowk -p --worktree` does, in a
+//! `gruntas machines --json` read back. A
+//! task that stays on this machine runs as `gruntas -p --worktree` does, in a
 //! worktree of its own, and lands as a remote one does.
 
 use super::{Io, VERSION};
@@ -20,14 +20,14 @@ pub fn placer() -> Option<Arc<Placer>> {
     SOURCE.get_or_init(|| super::synced::source(&super::flags::Flags::default(), true))()
 }
 
-/// `krowk machines --json`, run in this process, as a value; why not when
+/// `gruntas machines --json`, run in this process, as a value; why not when
 /// it fails.
 pub fn machines() -> Result<Value, String> {
     let (code, out, err) = run(&["machines", "--json"]);
     if code != 0 {
-        return Err(first_line(&err).unwrap_or_else(|| "krowk machines failed".into()));
+        return Err(first_line(&err).unwrap_or_else(|| "gruntas machines failed".into()));
     }
-    serde_json::from_str(out.trim()).map_err(|e| format!("krowk machines did not print JSON: {e}"))
+    serde_json::from_str(out.trim()).map_err(|e| format!("gruntas machines did not print JSON: {e}"))
 }
 
 /// One invocation of the command line, with this process's environment:
@@ -49,7 +49,7 @@ fn first_line(text: &str) -> Option<String> {
 
 /// The model a call names, made whole: an `<instance>/<model>`, an instance
 /// alone (its default model), a bare model id (routed to an instance ready
-/// here), or nothing, which `krowk -p`'s default routing picks.
+/// here), or nothing, which `gruntas -p`'s default routing picks.
 pub fn resolver(registry: Registry, f: super::flags::Flags) -> Resolver {
     Box::new(move |c| {
         let asked = match (&c.instance, &c.model) {
@@ -73,7 +73,7 @@ fn named(registry: &Registry, name: &str) -> Result<ModelRef, String> {
     default_model_of(kind).map(|m| ModelRef { instance: name.to_string(), model: m.to_string() }).ok_or_else(|| format!("name a model for {name}: {name}/<model>"))
 }
 
-/// How a task that stays on this machine runs: one `krowk -p --worktree`
+/// How a task that stays on this machine runs: one `gruntas -p --worktree`
 /// turn on the model, in the server's directory. Its changes are in the
 /// worktree it keeps; a task that changed nothing keeps none. It is trusted
 /// as a person's own run in the repository is, never more.
@@ -100,13 +100,13 @@ pub fn run_local() -> RunLocal {
             // Its stderr, which says what stopped it and, when it left edits
             // behind, the worktree they are kept in.
             let said: String = err.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ").chars().take(600).collect();
-            return Err(if said.is_empty() { first_line(&out).unwrap_or_else(|| format!("krowk {VERSION} stopped with code {code}")) } else { said });
+            return Err(if said.is_empty() { first_line(&out).unwrap_or_else(|| format!("gruntas {VERSION} stopped with code {code}")) } else { said });
         };
         let worktree = match &result.worktree {
             None => None,
             Some(kept) => {
                 let env = |k: &str| std::env::var(k).unwrap_or_default();
-                let root = gruntas_api::home::worktrees_root(&env).ok_or("krowk found no home directory to find its worktrees under")?;
+                let root = gruntas_api::home::worktrees_root(&env).ok_or("gruntas found no home directory to find its worktrees under")?;
                 let found = gruntas_harness::worktree::manage::find(&root, &kept.path).map_err(|e| format!("the child's worktree {} could not be found: {e:?}", kept.path))?;
                 Some(found.worktree().ok_or_else(|| format!("the child's worktree {} has no known base", kept.path))?)
             }

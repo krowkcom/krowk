@@ -1,6 +1,6 @@
-//! `krowk mcp add|remove|list`, the built binary: servers written to
+//! `gruntas mcp add|remove|list`, the built binary: servers written to
 //! config.json, refused when duplicated or badly named, listed from every
-//! source without connecting, and removed only where krowk owns them.
+//! source without connecting, and removed only where gruntas owns them.
 
 #![cfg(feature = "harness")]
 
@@ -14,14 +14,14 @@ struct Sandbox {
 
 impl Sandbox {
     fn new(name: &str) -> Sandbox {
-        let root = std::env::temp_dir().join(format!("krowk-mcp-cli-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-mcp-cli-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
         Sandbox { root: root.canonicalize().unwrap() }
     }
 
-    fn krowk(&self, args: &[&str]) -> Output {
+    fn gruntas(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_gruntas"))
             .args(args)
             .env_clear()
@@ -35,7 +35,7 @@ impl Sandbox {
     }
 
     fn list(&self) -> Vec<Value> {
-        let out = self.krowk(&["mcp", "list", "--json"]);
+        let out = self.gruntas(&["mcp", "list", "--json"]);
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         let v: Value = serde_json::from_slice(&out.stdout).unwrap();
         v["data"]["servers"].as_array().unwrap().clone()
@@ -49,8 +49,8 @@ fn text(o: &Output) -> String {
 #[test]
 fn add_list_and_remove_round_trip_through_config_json() {
     let s = Sandbox::new("round");
-    assert!(s.krowk(&["mcp", "add", "mobbin", "https://api.mobbin.com/mcp", "--header", "X-Key: ${KEY}", "--header", "A: b"]).status.success());
-    let out = s.krowk(&["mcp", "add", "files", "--env", "K=V", "--", "npx", "-y", "srv", "--flag"]);
+    assert!(s.gruntas(&["mcp", "add", "mobbin", "https://api.mobbin.com/mcp", "--header", "X-Key: ${KEY}", "--header", "A: b"]).status.success());
+    let out = s.gruntas(&["mcp", "add", "files", "--env", "K=V", "--", "npx", "-y", "srv", "--flag"]);
     assert!(out.status.success(), "{}", text(&out));
     let config: Value = serde_json::from_slice(&std::fs::read(s.root.join("home/.gruntas/config.json")).unwrap()).unwrap();
     assert_eq!(config["mcpServers"]["mobbin"], json!({"type": "http", "url": "https://api.mobbin.com/mcp", "headers": {"X-Key": "${KEY}", "A": "b"}}));
@@ -58,14 +58,14 @@ fn add_list_and_remove_round_trip_through_config_json() {
 
     let rows = s.list();
     let mobbin = rows.iter().find(|r| r["name"] == "mobbin").unwrap();
-    assert_eq!((mobbin["transport"].as_str(), mobbin["source"].as_str()), (Some("http"), Some("krowk's config.json")));
+    assert_eq!((mobbin["transport"].as_str(), mobbin["source"].as_str()), (Some("http"), Some("gruntas's config.json")));
     assert_eq!(rows.iter().find(|r| r["name"] == "files").unwrap()["transport"], "stdio");
 
     // A duplicate is refused, then replaced with --force; a bad name is refused with the rule.
-    let dup = s.krowk(&["mcp", "add", "mobbin", "https://other.example/mcp"]);
+    let dup = s.gruntas(&["mcp", "add", "mobbin", "https://other.example/mcp"]);
     assert!(!dup.status.success() && text(&dup).contains("--force"), "{}", text(&dup));
-    assert!(s.krowk(&["mcp", "add", "mobbin", "https://other.example/mcp", "--force"]).status.success());
-    let bad = s.krowk(&["mcp", "add", "a__b", "https://x.example/mcp"]);
+    assert!(s.gruntas(&["mcp", "add", "mobbin", "https://other.example/mcp", "--force"]).status.success());
+    let bad = s.gruntas(&["mcp", "add", "a__b", "https://x.example/mcp"]);
     assert!(!bad.status.success() && text(&bad).contains("no __"), "{}", text(&bad));
 
     assert_eq!(s.list().iter().find(|r| r["name"] == "mobbin").unwrap()["sign_in"], "not signed in");
@@ -74,7 +74,7 @@ fn add_list_and_remove_round_trip_through_config_json() {
     let entry = |url: &str| json!({"url": url, "issuer": "i", "clientId": "c", "tokenEndpoint": "t", "accessToken": "a", "obtainedAtMs": 1});
     std::fs::write(&creds, json!({"mcp": {"mobbin": entry("https://other.example/mcp"), "keep": entry("https://k.example/mcp")}, "other": 1}).to_string()).unwrap();
     assert_eq!(s.list().iter().find(|r| r["name"] == "mobbin").unwrap()["sign_in"], "signed in");
-    let out = s.krowk(&["mcp", "remove", "mobbin"]);
+    let out = s.gruntas(&["mcp", "remove", "mobbin"]);
     assert!(out.status.success(), "{}", text(&out));
     let after: Value = serde_json::from_slice(&std::fs::read(&creds).unwrap()).unwrap();
     assert_eq!(after, json!({"mcp": {"keep": entry("https://k.example/mcp")}, "other": 1}));
@@ -91,11 +91,11 @@ fn other_sources_are_listed_and_not_removed() {
     assert_eq!((proj["untrusted"].as_bool(), proj["source"].as_str()), (Some(true), Some(".mcp.json")));
     assert_eq!(rows.iter().find(|r| r["name"] == "mine").unwrap()["source"], "~/.claude.json");
     for name in ["proj", "mine"] {
-        let out = s.krowk(&["mcp", "remove", name]);
+        let out = s.gruntas(&["mcp", "remove", name]);
         assert!(!out.status.success() && text(&out).contains("does not edit"), "{}", text(&out));
     }
     // Nothing was written, and a server nobody has is not found.
     assert!(!s.root.join("home/.gruntas/config.json").exists());
-    assert!(text(&s.krowk(&["mcp", "remove", "ghost"])).contains("no MCP server named ghost"));
-    assert!(text(&s.krowk(&["help", "--all"])).contains("mcp add"));
+    assert!(text(&s.gruntas(&["mcp", "remove", "ghost"])).contains("no MCP server named ghost"));
+    assert!(text(&s.gruntas(&["help", "--all"])).contains("mcp add"));
 }

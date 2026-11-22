@@ -16,7 +16,7 @@ pub fn fix_lines(fix: &str) -> Vec<FixLine> {
 }
 
 /// One clause: what to know, what follows from it after an em dash, and the
-/// backticked krowk command in it, which gets a line of its own. Words are
+/// backticked gruntas command in it, which gets a line of its own. Words are
 /// taken out only where nothing is lost: the lead-in that introduced the
 /// command ("run", "try", a colon), and the command itself when all that
 /// follows it is another way out (", or …", ", then …"), which is kept. A
@@ -24,7 +24,7 @@ pub fn fix_lines(fix: &str) -> Vec<FixLine> {
 /// the command opens is about the command, so offers nothing to try.
 fn fix_line(clause: &str) -> FixLine {
     static DANGLING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:(?:^|\s+)(?:run|try|use|with|pass|did you mean))?\s*[,:—]?\s*$").unwrap());
-    static COMMAND: LazyLock<Regex> = LazyLock::new(|| Regex::new("`(krowk [^`]+)`").unwrap());
+    static COMMAND: LazyLock<Regex> = LazyLock::new(|| Regex::new("`(gruntas [^`]+)`").unwrap());
     let trimmed = clause.trim();
     let (say, then) = trimmed.split_once(" — ").unwrap_or((trimmed, ""));
     let whole = |cmd: String| FixLine { say: sentence(say), then: sentence(then), cmd };
@@ -70,29 +70,29 @@ mod tests {
 
     #[test]
     fn a_command_in_a_clause_gets_its_own_line() {
-        let lines = fix_lines("no key to verify — run `krowk login --token krowk_sk_...`, or upload anonymously");
+        let lines = fix_lines("no key to verify — run `gruntas login --token krowk_sk_...`, or upload anonymously");
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].say, "No key to verify.");
-        assert_eq!(lines[0].cmd, "krowk login --token krowk_sk_...");
+        assert_eq!(lines[0].cmd, "gruntas login --token krowk_sk_...");
         assert_eq!(lines[0].then, "Or upload anonymously.");
-        let mid = fix_lines("-p needs a prompt: `krowk -p \"hi\"`, or pipe one in");
+        let mid = fix_lines("-p needs a prompt: `gruntas -p \"hi\"`, or pipe one in");
         assert_eq!((mid[0].say.as_str(), mid[0].then.as_str()), ("-p needs a prompt.", "Or pipe one in."));
-        let lead = fix_lines("run `krowk login`, or upload anonymously");
-        assert_eq!((lead[0].say.as_str(), lead[0].cmd.as_str()), ("", "krowk login"));
-        let alone = fix_lines("unknown flag --nope; run `krowk help push`");
-        assert_eq!((alone[1].say.as_str(), alone[1].cmd.as_str()), ("", "krowk help push"));
-        let two = fix_lines("first thing; then run `krowk runs finish run_x`");
-        assert_eq!((two[0].say.as_str(), two[1].say.as_str(), two[1].cmd.as_str()), ("First thing.", "Then.", "krowk runs finish run_x"));
+        let lead = fix_lines("run `gruntas login`, or upload anonymously");
+        assert_eq!((lead[0].say.as_str(), lead[0].cmd.as_str()), ("", "gruntas login"));
+        let alone = fix_lines("unknown flag --nope; run `gruntas help push`");
+        assert_eq!((alone[1].say.as_str(), alone[1].cmd.as_str()), ("", "gruntas help push"));
+        let two = fix_lines("first thing; then run `gruntas runs finish run_x`");
+        assert_eq!((two[0].say.as_str(), two[1].say.as_str(), two[1].cmd.as_str()), ("First thing.", "Then.", "gruntas runs finish run_x"));
         // The command as the subject: the sentence stays, with nothing to try.
-        let subject = fix_lines("`krowk login` takes no arguments — the key goes behind --token");
-        assert_eq!(subject[0], FixLine { say: "`krowk login` takes no arguments.".into(), then: "The key goes behind --token.".into(), cmd: String::new() });
+        let subject = fix_lines("`gruntas login` takes no arguments — the key goes behind --token");
+        assert_eq!(subject[0], FixLine { say: "`gruntas login` takes no arguments.".into(), then: "The key goes behind --token.".into(), cmd: String::new() });
         // More said after the command than a way out: the sentence stays whole.
-        let more = fix_lines("no default — run `krowk workspaces use <name>` to point it at a key, or `krowk login`");
-        assert_eq!((more[0].say.as_str(), more[0].cmd.as_str()), ("No default.", "krowk workspaces use <name>"));
-        let guess = fix_lines("`pussh` is not a krowk command — did you mean `krowk push`?");
-        assert_eq!((guess[0].then.as_str(), guess[0].cmd.as_str()), ("", "krowk push"));
-        let ci = fix_lines("needs a person — pass `krowk login --token krowk_sk_...`, or add --no-browser");
-        assert_eq!((ci[0].then.as_str(), ci[0].cmd.as_str()), ("Or add --no-browser.", "krowk login --token krowk_sk_..."));
-        assert_eq!(more[0].then, "Run `krowk workspaces use <name>` to point it at a key, or `krowk login`.");
+        let more = fix_lines("no default — run `gruntas workspaces use <name>` to point it at a key, or `gruntas login`");
+        assert_eq!((more[0].say.as_str(), more[0].cmd.as_str()), ("No default.", "gruntas workspaces use <name>"));
+        let guess = fix_lines("`pussh` is not a gruntas command — did you mean `gruntas push`?");
+        assert_eq!((guess[0].then.as_str(), guess[0].cmd.as_str()), ("", "gruntas push"));
+        let ci = fix_lines("needs a person — pass `gruntas login --token krowk_sk_...`, or add --no-browser");
+        assert_eq!((ci[0].then.as_str(), ci[0].cmd.as_str()), ("Or add --no-browser.", "gruntas login --token krowk_sk_..."));
+        assert_eq!(more[0].then, "Run `gruntas workspaces use <name>` to point it at a key, or `gruntas login`.");
     }
 }

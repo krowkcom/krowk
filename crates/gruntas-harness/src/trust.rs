@@ -4,7 +4,7 @@
 //! dialog under `-p`; Codex what its project config layers (a `.codex/`
 //! anywhere from the working directory up to the repository root) name — so
 //! a repository someone else wrote can run code the moment a backend starts
-//! in it. Before a backend is spawned, krowk asks its own question, and
+//! in it. Before a backend is spawned, gruntas asks its own question, and
 //! remembers the answer here.
 //!
 //! The unit of trust is the repository: the nearest ancestor of the working
@@ -14,7 +14,7 @@
 //! own, since its hooks are someone else's. The home directory and `/` are
 //! never recorded: trusting either would trust every directory without a
 //! `.git` of its own under it (a home kept in git for its dotfiles is the
-//! usual way to get there). The list lives in krowk's home as
+//! usual way to get there). The list lives in gruntas's home as
 //! `trusted.json`, `0600`, replaced by rename; it is a host's own record and
 //! never syncs. A record carries a fingerprint of every file of the
 //! repository that can run code (`FINGERPRINTED`): one added or changed
@@ -54,7 +54,7 @@ pub fn root(cwd: &Path) -> PathBuf {
 /// when it is trusted: what Claude Code reads from a project (settings and
 /// their hooks, hook scripts kept under `.claude/hooks`, commands, agents,
 /// skills), what Codex layers from `.codex` (config, rules, hooks), and
-/// krowk's own agent definitions and `.gruntas/config.json` (hooks, allow rules
+/// gruntas's own agent definitions and `.gruntas/config.json` (hooks, allow rules
 /// and the worktree setup command). A directory is every file under it. The
 /// project settings, hooks, `.codex` and `.gruntas/config.json` of every
 /// directory below the root count too (`roots_of_prints`). Not covered: a
@@ -76,7 +76,7 @@ pub fn what_runs(root: &Path) -> Vec<String> {
         (".claude/commands", "its commands"),
         (".claude/agents", "its agents"),
         (".claude/skills", "its skills"),
-        (".gruntas/agents", "krowk agent definitions"),
+        (".gruntas/agents", "gruntas agent definitions"),
         (".codex", "Codex's project config, rules and hooks"),
     ] {
         if root.join(file).symlink_metadata().is_ok() {
@@ -779,7 +779,7 @@ mod tests {
         for f in [".claude/settings.json", ".codex/config.toml"] {
             std::fs::File::options().write(true).open(repo.join(f)).unwrap().set_modified(old).unwrap();
         }
-        // The record as an older krowk wrote it: no `files`.
+        // The record as an older gruntas wrote it: no `files`.
         let legacy = || {
             std::fs::create_dir_all(base.join("config")).unwrap();
             std::fs::write(base.join("config/trusted.json"), serde_json::json!({"directories": [repo]}).to_string()).unwrap();

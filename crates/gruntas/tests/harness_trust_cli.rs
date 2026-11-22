@@ -1,4 +1,4 @@
-//! `krowk trust`, the built binary against a stand-in home: grant, list and
+//! `gruntas trust`, the built binary against a stand-in home: grant, list and
 //! revoke the repositories the engine reads its trust from, with no
 //! terminal, in JSON and in words.
 
@@ -49,13 +49,13 @@ impl Sandbox {
             .unwrap()
     }
 
-    fn krowk(&self, args: &[&str]) -> Output {
+    fn gruntas(&self, args: &[&str]) -> Output {
         self.krowk_in(&self.repo(), args)
     }
 
     fn json(&self, args: &[&str]) -> Value {
-        let o = self.krowk(args);
-        assert!(o.status.success(), "krowk {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        let o = self.gruntas(args);
+        assert!(o.status.success(), "gruntas {args:?}: {}", String::from_utf8_lossy(&o.stderr));
         serde_json::from_slice(&o.stdout).unwrap()
     }
 
@@ -90,7 +90,7 @@ fn trust_grant_then_list_shows_the_repository_and_revoke_removes_it() {
     b.json(&["trust", &other, "--json"]);
     assert_eq!(b.listed(), json!([other, repo]));
     // Human output works without a terminal too.
-    let human = b.krowk(&["trust", "--list", "--format", "human"]);
+    let human = b.gruntas(&["trust", "--list", "--format", "human"]);
     assert_eq!(String::from_utf8_lossy(&human.stdout), format!("{other}\n{repo}\n"));
 
     let revoked = b.json(&["trust", "--revoke", "--json"]);
@@ -127,17 +127,17 @@ fn trust_revoke_drops_the_recorded_mcp_digest() {
 #[test]
 fn trust_refuses_root_and_the_home_directory_with_the_stores_message() {
     let b = Sandbox::new("refused");
-    let out = b.krowk(&["trust", "/", "--json"]);
+    let out = b.gruntas(&["trust", "/", "--json"]);
     assert!(!out.status.success());
     let said = text(&out);
     assert!(said.contains("/ is not remembered as trusted: / is every directory on the machine"), "{said}");
     let home = b.root.join("home").display().to_string();
-    let out = b.krowk(&["trust", &home, "--json"]);
+    let out = b.gruntas(&["trust", &home, "--json"]);
     assert!(!out.status.success() && text(&out).contains("is your home directory"), "{}", text(&out));
     assert_eq!(b.listed(), json!([]));
 }
 
-/// A krowk worktree is trusted as its main repository.
+/// A gruntas worktree is trusted as its main repository.
 #[test]
 fn trust_of_a_krowk_worktree_records_the_main_repository() {
     let b = Sandbox::new("worktree");
@@ -158,9 +158,9 @@ fn trust_of_a_krowk_worktree_records_the_main_repository() {
 #[test]
 fn trust_flags_are_checked() {
     let b = Sandbox::new("flags");
-    assert!(text(&b.krowk(&["trust", "--list", "--revoke"])).contains("pass one"));
-    assert!(text(&b.krowk(&["trust", "--list", "x"])).contains("takes no path"));
-    assert!(text(&b.krowk(&["trust", "a", "b"])).contains("takes one directory"));
-    assert!(text(&b.krowk(&["trust", "/no/such/dir"])).contains("is not a directory"));
-    assert!(text(&b.krowk(&["status", "--revoke"])).contains("only a flag of `krowk trust`"));
+    assert!(text(&b.gruntas(&["trust", "--list", "--revoke"])).contains("pass one"));
+    assert!(text(&b.gruntas(&["trust", "--list", "x"])).contains("takes no path"));
+    assert!(text(&b.gruntas(&["trust", "a", "b"])).contains("takes one directory"));
+    assert!(text(&b.gruntas(&["trust", "/no/such/dir"])).contains("is not a directory"));
+    assert!(text(&b.gruntas(&["status", "--revoke"])).contains("only a flag of `gruntas trust`"));
 }

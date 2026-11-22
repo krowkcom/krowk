@@ -1,19 +1,19 @@
-$ krowk help --jq '.name'
+$ gruntas help --jq '.name'
 stdout:
-krowk
+gruntas
 exit: 0
 
-$ krowk help --jq '[.commands[].name] | @csv'
+$ gruntas help --jq '[.commands[].name] | @csv'
 stdout:
 "push","artifacts","runs","claim","login","logout","whoami","billing","auth","workspaces","config","doctor","sessions","pricing","upgrade","help"
 exit: 0
 
-$ krowk help --jq '[.commands[].name] | @tsv'
+$ gruntas help --jq '[.commands[].name] | @tsv'
 stdout:
 push	artifacts	runs	claim	login	logout	whoami	billing	auth	workspaces	config	doctor	sessions	pricing	upgrade	help
 exit: 0
 
-$ krowk help --jq '[.global_flags[] | [.name, .type]] | .[] | @csv'
+$ gruntas help --jq '[.global_flags[] | [.name, .type]] | .[] | @csv'
 stdout:
 "workspace","string"
 "dev","bool"
@@ -25,77 +25,77 @@ stdout:
 "version","bool"
 exit: 0
 
-$ krowk help --jq '.environment[0] | to_entries[0].key'
+$ gruntas help --jq '.environment[0] | to_entries[0].key'
 stdout:
 name
 exit: 0
 
-$ krowk help --jq '.environment[0] | keys'
+$ gruntas help --jq '.environment[0] | keys'
 stdout:
 ["name","usage"]
 exit: 0
 
-$ krowk help --jq '.environment[0] | [.[] | type]'
+$ gruntas help --jq '.environment[0] | [.[] | type]'
 stdout:
 ["string","string"]
 exit: 0
 
-$ krowk help --jq '[.environment[0] | paths]'
+$ gruntas help --jq '[.environment[0] | paths]'
 stdout:
 [["name"],["usage"]]
 exit: 0
 
-$ krowk help --jq '.environment[0] | tojson'
+$ gruntas help --jq '.environment[0] | tojson'
 stdout:
 {"name":"GRUNTAS_TOKEN","usage":"API token — wins over the credentials file"}
 exit: 0
 
-$ krowk help --jq '[.commands[0].args[0] | tostream]'
+$ gruntas help --jq '[.commands[0].args[0] | tostream]'
 stdout:
 [[["name"],"file"],[["repeated"],true],[["required"],true],[["summary"],"Path to upload"],[["summary"]]]
 exit: 0
 
-$ krowk help --jq '[nan, infinite, -infinite, 1.5e300 * 1e10]'
+$ gruntas help --jq '[nan, infinite, -infinite, 1.5e300 * 1e10]'
 stdout:
 [null,1.7976931348623157e+308,-1.7976931348623157e+308,1.7976931348623157e+308]
 exit: 0
 
-$ krowk help --jq '.commands | length'
+$ gruntas help --jq '.commands | length'
 stdout:
 16
 exit: 0
 
-$ krowk help --jq '[.commands[] | select(.subcommands) | .name]'
+$ gruntas help --jq '[.commands[] | select(.subcommands) | .name]'
 stdout:
 ["artifacts","runs","auth","workspaces","config","sessions","pricing"]
 exit: 0
 
-$ krowk help --jq '.commands[0].name | ascii_upcase'
+$ gruntas help --jq '.commands[0].name | ascii_upcase'
 stdout:
 PUSH
 exit: 0
 
-$ krowk help --jq '.commands[0].name | test("pu")'
+$ gruntas help --jq '.commands[0].name | test("pu")'
 stdout:
 true
 exit: 0
 
-$ krowk help --jq '.name | @base64'
+$ gruntas help --jq '.name | @base64'
 stdout:
-a3Jvd2s=
+Z3J1bnRhcw==
 exit: 0
 
-$ krowk help --jq '[limit(2; .commands[].name)]'
+$ gruntas help --jq '[limit(2; .commands[].name)]'
 stdout:
 ["push","artifacts"]
 exit: 0
 
-$ krowk help --jq '.commands[0] | has("usage")'
+$ gruntas help --jq '.commands[0] | has("usage")'
 stdout:
 true
 exit: 0
 
-$ krowk help --jq '.name | tonumber'
+$ gruntas help --jq '.name | tonumber'
 stderr:
 {
   "ok": false,
@@ -107,40 +107,40 @@ stderr:
 }
 exit: 1
 
-$ krowk help push --jq '.flags | map(.name) | join(",")'
+$ gruntas help push --jq '.flags | map(.name) | join(",")'
 stdout:
 run,caption,destination,private,pull-request,link,link-title,link-rel,reference,session,title,repo,commit,agent,metadata
 exit: 0
 
-$ krowk help --jq 'halt_error'
+$ gruntas help --jq 'halt_error'
 stderr:
 {
   "ok": false,
   "error": {
     "error": "jq_failed",
-    "fix": "--jq: halt and halt_error are not honoured — in jq they choose the process's exit code, and krowk's exit codes are what happened to the artifact. The command itself succeeded — this is the reading of its result failing, so running it again repeats whatever it did",
+    "fix": "--jq: halt and halt_error are not honoured — in jq they choose the process's exit code, and gruntas's exit codes are what happened to the artifact. The command itself succeeded — this is the reading of its result failing, so running it again repeats whatever it did",
     "retryable": false
   }
 }
 exit: 1
 
-$ krowk help --jq '(.commands | length) / 2'
+$ gruntas help --jq '(.commands | length) / 2'
 stdout:
 8
 exit: 0
 
-$ krowk help --jq '[10/2, 5*1.0, 1e17, 0.5, 1e21, 1e-7]'
+$ gruntas help --jq '[10/2, 5*1.0, 1e17, 0.5, 1e21, 1e-7]'
 stdout:
 [5,5,100000000000000000,0.5,1e+21,1e-7]
 exit: 0
 
-$ krowk help --jq '"\([.commands[0].name, 1] | @csv)"'
+$ gruntas help --jq '"\([.commands[0].name, 1] | @csv)"'
 stdout:
 "push",1
 exit: 0
 
-$ krowk help --jq '.commands[0] | @csv "row: \([.name, .usage])"'
+$ gruntas help --jq '.commands[0] | @csv "row: \([.name, .usage])"'
 stdout:
-row: "push","krowk push <file...> [flags]"
+row: "push","gruntas push <file...> [flags]"
 exit: 0
 

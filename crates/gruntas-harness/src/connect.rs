@@ -1,5 +1,5 @@
 //! Connecting a model source, and disconnecting it — one way for every front
-//! end: `krowk connect`, `krowk disconnect` and `krowk providers add|remove`
+//! end: `gruntas connect`, `gruntas disconnect` and `gruntas providers add|remove`
 //! on the command line, and any other front end. Before
 //! this the sign-in lived in the CLI's `providers add`, where nothing else
 //! could reach it.
@@ -11,11 +11,11 @@
 //! login`, or `codex login --device-auth`) or an API key; xAI, OpenRouter
 //! and an OpenAI-compatible server by an API key. `METHODS` is that table,
 //! and each row names the provider its instances are called after — the
-//! word `krowk providers add` takes.
+//! word `gruntas providers add` takes.
 //!
-//! **krowk never signs in to a subscription itself.** A Claude or ChatGPT
+//! **gruntas never signs in to a subscription itself.** A Claude or ChatGPT
 //! login is made by the vendor's own CLI on the person's own terminal and
-//! asked about by that CLI; krowk never reads its files (R-BACK-2,
+//! asked about by that CLI; gruntas never reads its files (R-BACK-2,
 //! R-BACK-3). Those methods say they need the real terminal
 //! (`MethodInfo::terminal`), and run inside `AuthInteraction::terminal`, so a
 //! front end that owns the screen gives it up for them and takes it back.
@@ -34,14 +34,14 @@
 //! once before anything is written: one that fails stores nothing.
 //!
 //! **An API key or a gateway is a Claude Code or Codex account** (D3,
-//! R-NAT-2): krowk no longer runs models itself. An Anthropic key is a
+//! R-NAT-2): gruntas no longer runs models itself. An Anthropic key is a
 //! Claude Code account, a gateway's base URL in its env; an OpenAI, xAI,
 //! OpenRouter or OpenAI-compatible key a Codex account on a model provider
 //! of its own (`-c model_providers.krowk-<vendor>…`, on the Responses wire
 //! API, its default model with it). The instance keeps the name it would have had, and its key
 //! stays where it was — in the credentials file or the variable the
 //! definition names — handed to the harness at launch; the account's
-//! directory holds no key. One that config.json defines for krowk to run
+//! directory holds no key. One that config.json defines for gruntas to run
 //! itself is converted on first use (`convert_native`), and so is a key's
 //! Codex account on the chat wire API, which Codex refuses. SuperGrok is
 //! refused: `NO_DIRECT_MODELS`.
@@ -61,9 +61,9 @@ use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 
-/// What a way in krowk no longer runs — SuperGrok, or any instance that is
+/// What a way in gruntas no longer runs — SuperGrok, or any instance that is
 /// not a Claude Code or Codex account — is refused with (D4).
-pub const NO_DIRECT_MODELS: &str = "krowk no longer runs models directly; connect a Claude Code or Codex account.";
+pub const NO_DIRECT_MODELS: &str = "gruntas no longer runs models directly; connect a Claude Code or Codex account.";
 
 pub fn no_direct_models() -> EngineError {
     EngineError::new("removed_provider", NO_DIRECT_MODELS)
@@ -82,7 +82,7 @@ pub enum Vendor {
 impl Vendor {
     pub const ALL: [Vendor; 5] = [Vendor::Anthropic, Vendor::Openai, Vendor::Xai, Vendor::Openrouter, Vendor::OpenaiCompatible];
 
-    /// As `krowk connect` takes it.
+    /// As `gruntas connect` takes it.
     pub fn id(self) -> &'static str {
         match self {
             Vendor::Anthropic => "anthropic",
@@ -151,7 +151,7 @@ pub struct MethodInfo {
     pub vendor: Vendor,
     pub method: Method,
     /// The provider its instances are named after — `claude`, `claude:work`
-    /// — and the word `krowk providers add` takes for it.
+    /// — and the word `gruntas providers add` takes for it.
     pub provider: &'static str,
     /// The `kind` of the definitions it makes.
     pub kind: &'static str,
@@ -179,7 +179,7 @@ pub const METHODS: &[MethodInfo] = &[
     way(Vendor::OpenaiCompatible, Method::ApiKey, "openai-compatible", "openai-compatible", "Its base URL, and the variable its key is in if it takes one", false),
 ];
 
-/// `krowk providers add <provider>`'s provider as a way in: `--device`
+/// `gruntas providers add <provider>`'s provider as a way in: `--device`
 /// picks the device variant where there is one.
 pub fn by_provider(provider: &str, device: bool) -> Option<&'static MethodInfo> {
     let of = |m: &&MethodInfo| m.provider == provider;
@@ -224,7 +224,7 @@ pub(crate) fn key_account(r: &Resolved) -> bool {
     r.backend.is_some() && way_of(r).is_some_and(|w| w.method == Method::ApiKey)
 }
 
-/// D3: the account an API key or a gateway krowk ran itself becomes, in
+/// D3: the account an API key or a gateway gruntas ran itself becomes, in
 /// `dir`, a directory of its own: an Anthropic key a Claude Code account,
 /// a gateway's base URL in its env; the rest a Codex account on a model
 /// provider of its own, its base URL, wire API and the variable it reads
@@ -232,7 +232,7 @@ pub(crate) fn key_account(r: &Resolved) -> bool {
 /// native one resolved, with its stored key: the variable it reads is the
 /// account's — the one the key was in, never another vendor's — and a
 /// server with only a stored key (or `stores`, one about to be) gets one
-/// of krowk's own, made from its name. The base URL is the one the native
+/// of gruntas's own, made from its name. The base URL is the one the native
 /// one sent to, a variable's too (`ANTHROPIC_BASE_URL` beside
 /// `ANTHROPIC_API_KEY`), so its key goes on going there and nowhere else.
 /// No key is written: the definition names the variable, and the key stays
@@ -338,20 +338,20 @@ fn dir_of(def: &InstanceKind) -> Option<String> {
 }
 
 /// The command that connects an instance, or renews its login, for a fix
-/// line: `krowk connect <vendor> [--method M] [--name N]` — the method
+/// line: `gruntas connect <vendor> [--method M] [--name N]` — the method
 /// only when the vendor has more than one (`instances::kind_connect`) — or
-/// `krowk connect <instance>` for one whose name no `--name` spells (a
+/// `gruntas connect <instance>` for one whose name no `--name` spells (a
 /// hand-written `grok:team`).
 pub fn connect_command(instance: &str, kind: &str) -> String {
-    let (Some(m), Some((vendor, method))) = (by_kind(kind), instances::kind_connect(kind)) else { return format!("krowk connect {instance}") };
+    let (Some(m), Some((vendor, method))) = (by_kind(kind), instances::kind_connect(kind)) else { return format!("gruntas connect {instance}") };
     let method = if m.vendor.methods().len() > 1 { format!(" --method {method}") } else { String::new() };
     let name = match instance.strip_prefix(m.provider).and_then(|r| r.strip_prefix(':')) {
         _ if instance == m.provider => String::new(),
         Some(n) if !n.contains(':') => format!(" --name {n}"),
         _ if m.provider == "openai-compatible" && !instance.contains(':') => format!(" --name {instance}"),
-        _ => return format!("krowk connect {instance}"),
+        _ => return format!("gruntas connect {instance}"),
     };
-    format!("krowk connect {vendor}{method}{name}")
+    format!("gruntas connect {vendor}{method}{name}")
 }
 
 /// A new instance's whole name from `--name`: `<provider>:<name>`, or the
@@ -387,11 +387,11 @@ pub fn default_model(kind: &str) -> Option<&'static str> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MakeDefault {
     /// Only when config.json names no `defaultModel` yet: the first
-    /// connection is what a bare `krowk` runs on.
+    /// connection is what a bare `gruntas` runs on.
     IfUnset,
-    /// Whatever it names (`krowk connect --default`).
+    /// Whatever it names (`gruntas connect --default`).
     Always,
-    /// Never (`krowk providers add`, which only writes a definition).
+    /// Never (`gruntas providers add`, which only writes a definition).
     Never,
 }
 
@@ -535,8 +535,8 @@ impl Connected {
     }
 }
 
-/// A connection in words, one way for `krowk connect` and a client's
-/// `krowk connect`: what it is and where its key or login comes from (`facts`,
+/// A connection in words, one way for `gruntas connect` and a client's
+/// `gruntas connect`: what it is and where its key or login comes from (`facts`,
 /// one dimmed line), and what is still the person's to do (`notes`).
 pub struct Summary {
     pub facts: Vec<String>,
@@ -547,7 +547,7 @@ pub struct Summary {
 }
 
 impl Connected {
-    /// `added` for `krowk providers add`, which only writes a definition.
+    /// `added` for `gruntas providers add`, which only writes a definition.
     /// Never the key: where it is kept, or the variable it is read from.
     pub fn summary(&self, added: bool) -> Summary {
         let r = &self.resolved;
@@ -564,7 +564,7 @@ impl Connected {
             // A stored key, and where: never the key.
             _ if r.stored.source().is_some() => {
                 let already = if self.stored_key.is_some() { "" } else { "was already " };
-                facts.push(format!("key {already}{} in krowk's credentials file (0600), used before any variable", r.stored.source().unwrap_or_default()));
+                facts.push(format!("key {already}{} in gruntas's credentials file (0600), used before any variable", r.stored.source().unwrap_or_default()));
                 if let (crate::keys::Stored::Env(v), true) = (&r.stored, r.api_key.is_empty()) {
                     notes.push(format!("${v} is not set here — export it before running a prompt"));
                 }
@@ -599,11 +599,11 @@ impl Connected {
 /// What `disconnect` did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SignedOut {
-    /// krowk's own OAuth tokens, deleted; `had` whether there were any.
+    /// gruntas's own OAuth tokens, deleted; `had` whether there were any.
     Tokens { had: bool },
     /// The vendor's own sign-out ran for the account's directory.
     Vendor { command: &'static str, home: Option<PathBuf> },
-    /// A key krowk only reads from `var`: unsetting it is the person's.
+    /// A key gruntas only reads from `var`: unsetting it is the person's.
     Key { var: String },
     /// A stored key, deleted from the credentials file; `var` the variable
     /// the definition names, read from now on, and whether it is set.
@@ -621,7 +621,7 @@ pub struct Disconnected {
     pub cleared_default: Option<String>,
 }
 
-/// What `remove` (`krowk providers remove`) took away.
+/// What `remove` (`gruntas providers remove`) took away.
 pub struct Removed {
     pub definition: bool,
     pub login: bool,
@@ -630,7 +630,7 @@ pub struct Removed {
     pub kept: Option<(String, bool)>,
 }
 
-/// What `rename` (`krowk providers rename`) did.
+/// What `rename` (`gruntas providers rename`) did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Renamed {
     pub from: String,
@@ -647,7 +647,7 @@ pub struct Renamed {
 
 impl Renamed {
     /// What it moved, and what it left the person to do — the same words
-    /// for `krowk providers rename`.
+    /// for `gruntas providers rename`.
     pub fn notes(&self) -> Vec<String> {
         let mut notes = Vec::new();
         if self.login {
@@ -664,8 +664,8 @@ impl Renamed {
     }
 }
 
-/// Connecting and disconnecting, against krowk's config (`config.json`)
-/// and provider credentials file, in the environment krowk resolved.
+/// Connecting and disconnecting, against gruntas's config (`config.json`)
+/// and provider credentials file, in the environment gruntas resolved.
 pub struct ProviderAuth<'a> {
     pub config: PathBuf,
     pub credentials: PathBuf,
@@ -773,8 +773,8 @@ impl ProviderAuth<'_> {
         gruntas_api::home::dir(self.env).map_err(|e| EngineError::new(&e.code(), e.fix()))
     }
 
-    /// Where a vendor is asked: krowk's own directory, as `krowk status`
-    /// asks, never the one krowk runs in.
+    /// Where a vendor is asked: gruntas's own directory, as `gruntas status`
+    /// asks, never the one gruntas runs in.
     fn probe(&self) -> Result<Probe, EngineError> {
         readiness::neutral_dir(&self.home()?).map(Probe::at).map_err(|e| EngineError::new("data_dir_unwritable", e))
     }
@@ -826,7 +826,7 @@ impl ProviderAuth<'_> {
         Ok(readiness::check(r, &self.credentials, &self.probe()?))
     }
 
-    /// What `krowk connect [target]` connects: a vendor, its method given or
+    /// What `gruntas connect [target]` connects: a vendor, its method given or
     /// asked; an instance that exists — defined or built in — renewed the
     /// way it was connected; or `<provider>:<name>`, a new one. With no
     /// target, the vendor is asked too.
@@ -837,7 +837,7 @@ impl ProviderAuth<'_> {
         }
     }
 
-    /// `request`, as `krowk connect` asks it: beside the accounts of the way in
+    /// `request`, as `gruntas connect` asks it: beside the accounts of the way in
     /// picked is renaming one of them, when one has a name of its own.
     pub fn request_or_rename(&self, target: Option<&str>, ui: &mut dyn AuthInteraction) -> Result<Chosen, EngineError> {
         self.choice(target, None, Options::default(), true, ui)
@@ -848,7 +848,7 @@ impl ProviderAuth<'_> {
         let vendor = match target {
             None => {
                 let labels: Vec<&str> = Vendor::ALL.iter().map(|v| v.label()).collect();
-                Some(Vendor::ALL[choose(ui, "Connect which provider?", &labels, "a vendor: `krowk connect anthropic --method subscription` (or openai, xai, openrouter, openai-compatible)")?])
+                Some(Vendor::ALL[choose(ui, "Connect which provider?", &labels, "a vendor: `gruntas connect anthropic --method subscription` (or openai, xai, openrouter, openai-compatible)")?])
             }
             Some(t) => Vendor::parse(t),
         };
@@ -875,18 +875,18 @@ impl ProviderAuth<'_> {
         let Some((way, instance)) = found else {
             return Err(EngineError::new(
                 "bad_argument",
-                format!("{t:?} is not a provider or an instance — connect one of {}, or an instance `krowk status` lists", Vendor::ALL.map(Vendor::id).join(", ")),
+                format!("{t:?} is not a provider or an instance — connect one of {}, or an instance `gruntas status` lists", Vendor::ALL.map(Vendor::id).join(", ")),
             ));
         };
         if options.name.is_some() {
-            return Err(bad_flag(format!("{instance} is already the instance's whole name — drop --name, or add an account: `krowk connect {} --method {} --name <new>`", way.vendor.id(), way.method.id())));
+            return Err(bad_flag(format!("{instance} is already the instance's whole name — drop --name, or add an account: `gruntas connect {} --method {} --name <new>`", way.vendor.id(), way.method.id())));
         }
         // The device code is the one other way into the same account.
         let way = match method {
             None => way,
             Some(m) if m == way.method => way,
             Some(m) => way.vendor.methods().into_iter().find(|o| o.method == m && o.provider == way.provider).ok_or_else(|| {
-                bad_flag(format!("{instance} connects by {} — --method {} would be another instance: `krowk connect {} --method {}`", way.method.id(), m.id(), way.vendor.id(), m.id()))
+                bad_flag(format!("{instance} connects by {} — --method {} would be another instance: `gruntas connect {} --method {}`", way.method.id(), m.id(), way.vendor.id(), m.id()))
             })?,
         };
         Ok(Chosen::Connect(Request { method: way, instance: Some(instance), options, default: MakeDefault::IfUnset }))
@@ -935,7 +935,7 @@ impl ProviderAuth<'_> {
         Ok(Picked::Account(Some(instance)))
     }
 
-    /// The instance `krowk disconnect` signs out: the one named, else one
+    /// The instance `gruntas disconnect` signs out: the one named, else one
     /// picked. Never a guess: with nobody to ask, the instances are listed.
     pub fn disconnect_target(&self, target: Option<&str>, ui: &mut dyn AuthInteraction) -> Result<String, EngineError> {
         if let Some(t) = target.map(str::trim).filter(|t| !t.is_empty()) {
@@ -944,11 +944,11 @@ impl ProviderAuth<'_> {
         let reg = Registry::resolve(&self.definitions()?, self.env);
         let names: Vec<&str> = reg.instances.keys().map(String::as_str).collect();
         if !ui.interactive() {
-            return Err(EngineError::new("bad_argument", format!("nobody is at a terminal to pick which instance to disconnect, and this host has {} — name one: `krowk disconnect <instance>`", names.join(", "))));
+            return Err(EngineError::new("bad_argument", format!("nobody is at a terminal to pick which instance to disconnect, and this host has {} — name one: `gruntas disconnect <instance>`", names.join(", "))));
         }
         let labels: Vec<String> = reg.instances.values().map(|r| format!("{} ({})", r.name, self.label(r))).collect();
         let options: Vec<&str> = labels.iter().map(String::as_str).collect();
-        Ok(names[choose(ui, "Disconnect which instance?", &options, "the instance, e.g. `krowk disconnect claude:work`")?].to_string())
+        Ok(names[choose(ui, "Disconnect which instance?", &options, "the instance, e.g. `gruntas disconnect claude:work`")?].to_string())
     }
 
     /// Whether `from` can be renamed: the instances as they are, and its
@@ -962,7 +962,7 @@ impl ProviderAuth<'_> {
         let Some(def) = defs.instances.get(from).cloned() else {
             let why = match old_name_of(&known, from, "") {
                 Some(now) => format!("{from} was renamed to {now} already"),
-                None => format!("no instance named {from} is defined — `krowk providers list` shows them"),
+                None => format!("no instance named {from} is defined — `gruntas providers list` shows them"),
             };
             return Err(EngineError::new("no_instance", why));
         };
@@ -984,11 +984,11 @@ impl ProviderAuth<'_> {
                 let reg = Registry::resolve(&defs, self.env);
                 let mine = renamable_in(&defs, &reg.instances.values().collect::<Vec<_>>());
                 if mine.is_empty() {
-                    return Err(EngineError::new("no_instance", "no account here has a name of its own to change — a built-in one (claude, codex, anthropic…) keeps its name; `krowk connect <vendor> --name <name>` adds a named one"));
+                    return Err(EngineError::new("no_instance", "no account here has a name of its own to change — a built-in one (claude, codex, anthropic…) keeps its name; `gruntas connect <vendor> --name <name>` adds a named one"));
                 }
                 let names: Vec<&str> = mine.iter().map(|r| r.name.as_str()).collect();
                 if !ui.interactive() {
-                    return Err(EngineError::new("bad_argument", format!("nobody is at a terminal to pick which instance to rename — name one of {}: `krowk providers rename <instance> <new-name>`", names.join(", "))));
+                    return Err(EngineError::new("bad_argument", format!("nobody is at a terminal to pick which instance to rename — name one of {}: `gruntas providers rename <instance> <new-name>`", names.join(", "))));
                 }
                 self.pick_to_rename(&mine, "Rename which instance?", ui)?.name.clone()
             }
@@ -1004,7 +1004,7 @@ impl ProviderAuth<'_> {
     fn pick_to_rename<'r>(&self, among: &[&'r Resolved], message: &str, ui: &mut dyn AuthInteraction) -> Result<&'r Resolved, EngineError> {
         let labels: Vec<String> = among.iter().map(|r| format!("{} ({})", r.name, self.label(r))).collect();
         let options: Vec<&str> = labels.iter().map(String::as_str).collect();
-        Ok(among[choose(ui, message, &options, "the instance, e.g. `krowk providers rename claude:work claude:personal`")?])
+        Ok(among[choose(ui, message, &options, "the instance, e.g. `gruntas providers rename claude:work claude:personal`")?])
     }
 
     /// Renames an instance: its definition, its login and stored key in the
@@ -1119,7 +1119,7 @@ impl ProviderAuth<'_> {
     /// D3: the Claude Code or Codex account a key's native definition is,
     /// in a directory of its own — the one it has, or `accounts/<name>`.
     /// Any other definition (no `harness`) as it is.
-    /// One there already keeps what krowk does not make of a key: a
+    /// One there already keeps what gruntas does not make of a key: a
     /// `binary`, more `env`, `-c` args of its own.
     fn as_account(&self, instance: &str, native: InstanceKind, harness: Option<&str>, had: Option<&InstanceKind>, stores: bool) -> Result<InstanceKind, EngineError> {
         if harness.is_none() {
@@ -1134,7 +1134,7 @@ impl ProviderAuth<'_> {
         let Some(had) = had else { return Ok(made) };
         let mut merged = serde_json::to_value(had).expect("a definition serializes");
         let (Some(m), Value::Object(new)) = (merged.as_object_mut(), serde_json::to_value(&made).expect("a definition serializes")) else { return Ok(made) };
-        // krowk's own `-c` pairs and gateway are made again; the person's
+        // gruntas's own `-c` pairs and gateway are made again; the person's
         // args, in their order, and other variables are kept.
         let own = |a: &Value| a.as_str().is_some_and(|a| a.starts_with("model_providers.krowk-") || a.starts_with("model_provider=") || a.starts_with("model="));
         let mut kept: Vec<Value> = Vec::new();
@@ -1191,7 +1191,7 @@ impl ProviderAuth<'_> {
         };
         check_name(&instance)?;
         let backend = matches!(provider, "claude" | "codex");
-        // A directory given relative to where krowk runs is kept as the
+        // A directory given relative to where gruntas runs is kept as the
         // absolute one it means: the vendor's login runs elsewhere, and a
         // turn resolves a definition's path against its own project.
         // A `~` the shell left alone (`--config-dir=~/acct`, a quoted one) is
@@ -1205,15 +1205,15 @@ impl ProviderAuth<'_> {
                     h => format!("{h}{rest}"),
                 }),
             },
-            // `~user` and the like are the shell's to expand, not krowk's.
-            Some(_) => Err(bad_flag(format!("--config-dir {d}: krowk expands only a leading `~/` — give the whole path"))),
+            // `~user` and the like are the shell's to expand, not gruntas's.
+            Some(_) => Err(bad_flag(format!("--config-dir {d}: gruntas expands only a leading `~/` — give the whole path"))),
             None => Ok(d),
         }) {
             Some(d) => Some(normalised(&std::path::absolute(&d?).map_err(|e| bad_flag(format!("--config-dir: {e}")))?).display().to_string()),
             None => None,
         };
         if !backend && (o.binary.is_some() || o.config_dir.is_some()) {
-            return Err(bad_flag("`--binary` and `--config-dir` describe a Claude Code or Codex account — `krowk connect anthropic --method subscription --name work --config-dir …`, or openai"));
+            return Err(bad_flag("`--binary` and `--config-dir` describe a Claude Code or Codex account — `gruntas connect anthropic --method subscription --name work --config-dir …`, or openai"));
         }
         let existing = self.definitions()?;
         let renewed = existing.instances.contains_key(&instance);
@@ -1229,7 +1229,7 @@ impl ProviderAuth<'_> {
             Some(_) => {}
             None => {
                 if req.instance.is_some() {
-                    // `krowk connect claude:work` of one not made yet.
+                    // `gruntas connect claude:work` of one not made yet.
                     let rest = instance.strip_prefix(provider).and_then(|r| r.strip_prefix(':')).unwrap_or(&instance);
                     new_instance(provider, rest)?;
                 }
@@ -1284,9 +1284,9 @@ impl ProviderAuth<'_> {
             },
             // A router in front of Claude Code: the base URL it sends to goes
             // in the instance's env, and the key is named by --api-key-env —
-            // krowk reads that variable and hands the key to the process
+            // gruntas reads that variable and hands the key to the process
             // (ANTHROPIC_AUTH_TOKEN with a base URL, ANTHROPIC_API_KEY
-            // without). Claude Code inherits neither from krowk's own
+            // without). Claude Code inherits neither from gruntas's own
             // environment.
             "claude" => InstanceKind::ClaudeCode {
                 binary: clean(&o.binary),
@@ -1298,7 +1298,7 @@ impl ProviderAuth<'_> {
             },
             // A router in front of Codex is a model provider in its args; the
             // base URL goes in its env as OPENAI_BASE_URL, and the key is
-            // named by --api-key-env — krowk reads that variable and hands
+            // named by --api-key-env — gruntas reads that variable and hands
             // the key to the process under the same name.
             "codex" => InstanceKind::CodexAppServer {
                 binary: clean(&o.binary),
@@ -1317,7 +1317,7 @@ impl ProviderAuth<'_> {
         // the rest — an issuer, a pinned wire API — are kept.
         let kind = match old.as_ref() {
             Some(old) if old.tag() != kind.tag() => {
-                return Err(EngineError::new("instance_exists", format!("{instance} is already defined as {} — disconnect it first with `krowk disconnect {instance} --remove`", old.tag())));
+                return Err(EngineError::new("instance_exists", format!("{instance} is already defined as {} — disconnect it first with `gruntas disconnect {instance} --remove`", old.tag())));
             }
             Some(old) => {
                 let mut merged = serde_json::to_value(old).expect("a definition serializes");
@@ -1346,7 +1346,7 @@ impl ProviderAuth<'_> {
 
         let kind = self.as_account(&instance, kind, harness, existing.instances.get(&instance), stored_key.is_some())?;
 
-        // A new named account gets a directory of its own in krowk's home,
+        // A new named account gets a directory of its own in gruntas's home,
         // `accounts/<name>`; the unnamed one is the vendor as the person
         // already uses it.
         let account = || -> Result<Option<String>, EngineError> {
@@ -1422,7 +1422,7 @@ impl ProviderAuth<'_> {
         // A stored key is used before any variable: naming one while it is
         // there would print success and change nothing.
         if api && o.key.is_none() && o.api_key_env.is_some() && self.resolve(instance, kind)?.stored != crate::keys::Stored::No {
-            return Err(bad_flag(format!("{instance} has a stored key, which is used before any variable — `krowk disconnect {instance}` first, then connect it with --api-key-env")));
+            return Err(bad_flag(format!("{instance} has a stored key, which is used before any variable — `gruntas disconnect {instance}` first, then connect it with --api-key-env")));
         }
         let key = match &o.key {
             Some(_) if !api => return Err(bad_flag("--key-stdin and --key-ref store an API key — a subscription signs in by its own login")),
@@ -1490,7 +1490,7 @@ impl ProviderAuth<'_> {
     /// asked, and when it says no, `claude auth login` runs on the real
     /// terminal in Anthropic's own flow; then status is asked again. A keyed
     /// instance — a router (a base URL in its env) or a Console key — runs
-    /// on that key, which krowk reads and hands the process, so no login is
+    /// on that key, which gruntas reads and hands the process, so no login is
     /// run for it. A failure removes a directory this made.
     fn sign_in_claude(&self, instance: &str, kind: &InstanceKind, ui: &mut dyn AuthInteraction) -> Result<VendorLogin, EngineError> {
         let backend = self.resolve(instance, kind)?.backend.expect("a claude-code instance has a backend");
@@ -1531,7 +1531,7 @@ impl ProviderAuth<'_> {
         let probe = self.probe()?;
         let made = made_dir(backend.config_dir.as_deref())?;
         // A home that was there is linked like any other — Codex is asked
-        // with the person's own config, as a turn and `krowk status` ask it —
+        // with the person's own config, as a turn and `gruntas status` ask it —
         // and a failed sign-in takes away the links it added, and only those.
         let before = backend.config_dir.as_deref().filter(|_| made.is_none()).map(entries);
         let undo = |e: EngineError| {
@@ -1560,14 +1560,14 @@ impl ProviderAuth<'_> {
     }
 
     /// Signs an instance out, the way its kind is signed in: SuperGrok's
-    /// tokens are deleted from krowk's credentials file; a Claude Code or
+    /// tokens are deleted from gruntas's credentials file; a Claude Code or
     /// Codex account runs the vendor's own sign-out (`claude auth logout`,
     /// `codex logout`) with its own directory; an API key is the
-    /// environment's, which krowk only reads, so the variable is named. The
+    /// environment's, which gruntas only reads, so the variable is named. The
     /// definition stays unless `remove`, and is taken away only once the
     /// sign-out worked.
     ///
-    /// **The person's own vendor login is not krowk's to sign out of
+    /// **The person's own vendor login is not gruntas's to sign out of
     /// quietly.** The built-in `claude` and `codex` run on `~/.claude` and
     /// `~/.codex`, which Claude Code and Codex themselves, and every other
     /// tool on the machine, use: signing them out there signs the person
@@ -1577,7 +1577,7 @@ impl ProviderAuth<'_> {
     pub fn disconnect(&self, instance: &str, remove: bool, own_login: bool, ui: &mut dyn AuthInteraction) -> Result<Disconnected, EngineError> {
         let defs = self.definitions()?;
         let reg = Registry::resolve(&defs, self.env);
-        let r = reg.instances.get(instance).ok_or_else(|| EngineError::new("no_instance", format!("no instance named {instance} — `krowk status` lists them")))?;
+        let r = reg.instances.get(instance).ok_or_else(|| EngineError::new("no_instance", format!("no instance named {instance} — `gruntas status` lists them")))?;
         let signed_out = match (&r.auth, &r.backend) {
             (Auth::OAuth { .. }, _) => SignedOut::Tokens { had: Store::new(self.credentials.clone()).remove(instance).map_err(|e| EngineError::new("credentials_unwritable", e.message))? },
             // A stored key is deleted — a key's Claude Code or Codex
@@ -1601,7 +1601,7 @@ impl ProviderAuth<'_> {
                     let who = if codex { "Codex" } else { "Claude Code" };
                     let warning = format!("disconnecting {instance} signs you out of {who} itself, in {}, for every tool that uses it", home.display());
                     if !ui.interactive() {
-                        return Err(EngineError::new("confirmation_required", format!("{warning} — to do that, run `krowk disconnect {instance} --sign-out-vendor`")));
+                        return Err(EngineError::new("confirmation_required", format!("{warning} — to do that, run `gruntas disconnect {instance} --sign-out-vendor`")));
                     }
                     let options = ["No — keep that login", "Yes — sign me out of it"];
                     if choose(ui, &format!("{}. Go on?", capitalised(&warning)), &options, "--sign-out-vendor")? != 1 {
@@ -1639,7 +1639,7 @@ impl ProviderAuth<'_> {
         Ok(Disconnected { instance: instance.into(), kind: r.kind, signed_out, removed_definition, cleared_default })
     }
 
-    /// Takes a definition, and krowk's own login for it, away — `krowk
+    /// Takes a definition, and gruntas's own login for it, away — `gruntas
     /// providers remove`. A Claude Code or Codex account's directory holds
     /// the vendor's own login, which is the vendor's to sign out of
     /// (`disconnect`): it is kept.
@@ -1651,7 +1651,7 @@ impl ProviderAuth<'_> {
         }
         let login = Store::new(self.credentials.clone()).remove(instance).map_err(|e| EngineError::new("credentials_unwritable", e.message))?;
         if !definition && !login {
-            let why = if built_in(instance) { format!("{instance} is built in and has no definition or login to remove") } else { format!("no instance named {instance} is defined — `krowk providers list` shows them") };
+            let why = if built_in(instance) { format!("{instance} is built in and has no definition or login to remove") } else { format!("no instance named {instance} is defined — `gruntas providers list` shows them") };
             return Err(EngineError::new("no_instance", why));
         }
         readiness::forget(instance);
@@ -1666,12 +1666,12 @@ impl ProviderAuth<'_> {
         Ok(Removed { definition, login, kept })
     }
 
-    /// R-NAT-2: every API key and gateway config.json defines for krowk to
+    /// R-NAT-2: every API key and gateway config.json defines for gruntas to
     /// run itself, turned into the Claude Code or Codex account `connect`
     /// makes of one now (`to_harness`): the same name, so a default model
     /// and sessions on it carry on; its key where it was, in the
     /// credentials file or the variable it names; and a directory of its
-    /// own in krowk's home, made `0700`. Run on first use: a line for each
+    /// own in gruntas's home, made `0700`. Run on first use: a line for each
     /// one converted, and none once there are none left. One that cannot be
     /// converted — its directory another account's, a config.json that
     /// cannot be written — is said and left as it was: the run goes on.
@@ -1699,7 +1699,7 @@ impl ProviderAuth<'_> {
                 (Ok(m), Some(kind)) => made.push((name.clone(), kind, m)),
                 (Err(why), _) => {
                     let harness = if harness == "codex-app-server" { "Codex" } else { "Claude Code" };
-                    said.push(format!("{name} could not become a {harness} account ({why}) — krowk refuses it until it is connected again with `krowk connect`"));
+                    said.push(format!("{name} could not become a {harness} account ({why}) — gruntas refuses it until it is connected again with `gruntas connect`"));
                 }
                 (Ok(m), None) => {
                     let _ = undo(&m, EngineError::new("", ""));
@@ -1722,10 +1722,10 @@ impl ProviderAuth<'_> {
                 let _ = undo(m, EngineError::new("", ""));
             }
             if !made.is_empty() {
-                said.push(format!("{} could not become Claude Code or Codex accounts ({}) — krowk refuses them until they are connected again with `krowk connect`", made.iter().map(|(n, ..)| n.as_str()).collect::<Vec<_>>().join(", "), e.message));
+                said.push(format!("{} could not become Claude Code or Codex accounts ({}) — gruntas refuses them until they are connected again with `gruntas connect`", made.iter().map(|(n, ..)| n.as_str()).collect::<Vec<_>>().join(", "), e.message));
             }
             if !rewired.is_empty() {
-                said.push(format!("{} could not be moved to the Responses API ({}) — Codex refuses them until they are connected again with `krowk connect`", rewired.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "), e.message));
+                said.push(format!("{} could not be moved to the Responses API ({}) — Codex refuses them until they are connected again with `gruntas connect`", rewired.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "), e.message));
             }
             return said;
         }
@@ -1747,7 +1747,7 @@ impl ProviderAuth<'_> {
                     _ => ("Claude Code", true),
                 };
                 let on = if keyed { "key" } else { "server" };
-                format!("{name} now runs in {harness}, on the same {on}{from_env} — krowk no longer runs models directly")
+                format!("{name} now runs in {harness}, on the same {on}{from_env} — gruntas no longer runs models directly")
             }));
         said
     }
@@ -1785,7 +1785,7 @@ fn renamable_in<'r>(defs: &InstancesConfig, among: &[&'r Resolved]) -> Vec<&'r R
 /// already: what is typed after it is the rest of the name, as shown.
 fn ask_new_name(ui: &mut dyn AuthInteraction, from: &str, kind: &str) -> Result<String, EngineError> {
     let prefix = prefix_of(kind).map(|p| format!("{p}:")).unwrap_or_default();
-    ask_text_from(ui, &format!("New name for {from}"), "the whole new name, e.g. `krowk providers rename claude:work claude:personal`", &prefix)
+    ask_text_from(ui, &format!("New name for {from}"), "the whole new name, e.g. `gruntas providers rename claude:work claude:personal`", &prefix)
 }
 
 /// One of the instances every host has (`instances::implicit`).
@@ -1846,7 +1846,7 @@ fn unlink_new(dir: &Path, before: &std::collections::HashSet<PathBuf>) {
     }
 }
 
-/// A vendor's login and sign-out run in krowk's own directory, so a
+/// A vendor's login and sign-out run in gruntas's own directory, so a
 /// hand-written relative directory would be one there, not the one turns
 /// use: refused, with what to write instead.
 fn absolute_home(instance: &str, b: &instances::Backend) -> Result<(), EngineError> {
@@ -1893,11 +1893,11 @@ pub fn read_config(path: &Path) -> Result<Map<String, Value>, String> {
     }
 }
 
-/// Writes config.json whole, by rename, never in place: how `krowk connect`
-/// writes its definitions and `krowk config set` what it sets. The
+/// Writes config.json whole, by rename, never in place: how `gruntas connect`
+/// writes its definitions and `gruntas config set` what it sets. The
 /// file's mode is kept (0644 for a new one) but never writable by anyone
 /// else: config.json says what runs unasked. Each write has its own
-/// temporary file, so a `krowk connect` and a `krowk config set` never
+/// temporary file, so a `gruntas connect` and a `gruntas config set` never
 /// share one.
 pub fn write_config(path: &Path, raw: &Map<String, Value>) -> std::io::Result<()> {
     static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1914,7 +1914,7 @@ pub fn write_config(path: &Path, raw: &Map<String, Value>) -> std::io::Result<()
         open.write(true).create_new(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
-        // One a killed krowk of the same pid left is taken away first.
+        // One a killed gruntas of the same pid left is taken away first.
         let _ = std::fs::remove_file(&tmp);
         let mut f = open.open(&tmp)?;
         f.write_all(data.as_bytes())?;
@@ -2016,15 +2016,15 @@ mod tests {
     #[test]
     fn a_fix_line_connects_the_instance_it_names() {
         for (instance, kind, want) in [
-            ("claude", "claude-code", "krowk connect anthropic --method subscription"),
-            ("claude:work", "claude-code", "krowk connect anthropic --method subscription --name work"),
-            ("codex:team", "codex-app-server", "krowk connect openai --method subscription --name team"),
-            ("supergrok", "xai-oauth", "krowk connect xai --method subscription"),
-            ("grok:team", "xai-oauth", "krowk connect grok:team"),
-            ("anthropic:work", "anthropic-api", "krowk connect anthropic --method api-key --name work"),
-            ("openrouter", "openrouter-api", "krowk connect openrouter"),
-            ("local", "openai-compatible", "krowk connect openai-compatible --name local"),
-            ("mywork", "claude-code", "krowk connect mywork"),
+            ("claude", "claude-code", "gruntas connect anthropic --method subscription"),
+            ("claude:work", "claude-code", "gruntas connect anthropic --method subscription --name work"),
+            ("codex:team", "codex-app-server", "gruntas connect openai --method subscription --name team"),
+            ("supergrok", "xai-oauth", "gruntas connect xai --method subscription"),
+            ("grok:team", "xai-oauth", "gruntas connect grok:team"),
+            ("anthropic:work", "anthropic-api", "gruntas connect anthropic --method api-key --name work"),
+            ("openrouter", "openrouter-api", "gruntas connect openrouter"),
+            ("local", "openai-compatible", "gruntas connect openai-compatible --name local"),
+            ("mywork", "claude-code", "gruntas connect mywork"),
         ] {
             assert_eq!(connect_command(instance, kind), want, "{instance}");
         }

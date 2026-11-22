@@ -1,6 +1,6 @@
-krowk push --help
-krowk runs start --help
-krowk sessions import --help
-krowk artifacts --help
-krowk push --help --json
-krowk artifacts --help --json
+gruntas push --help
+gruntas runs start --help
+gruntas sessions import --help
+gruntas artifacts --help
+gruntas push --help --json
+gruntas artifacts --help --json

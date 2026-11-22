@@ -1,9 +1,9 @@
 //! Signing in to a remote MCP server that asks for OAuth (R-MCP-6 to 9, 12,
-//! 13). Written in krowk on the pieces of `oauth` (PKCE, the loopback
+//! 13). Written in gruntas on the pieces of `oauth` (PKCE, the loopback
 //! listener, the credentials lock), beside the xAI login rather than
 //! generalising it: the endpoints here come from the server's own
 //! `WWW-Authenticate` answer, RFC 9728 protected-resource metadata and RFC
-//! 8414 metadata on whatever host that names, and krowk registers itself
+//! 8414 metadata on whatever host that names, and gruntas registers itself
 //! (RFC 7591) as a public client every time.
 //!
 //! A sign-in is two steps so a front end can sit between them: `start`
@@ -14,7 +14,7 @@
 //! is written until the tokens are in hand: a sign-in that fails or is
 //! abandoned leaves the credentials file as it was.
 //!
-//! The sign-ins are the `mcp` section of krowk's credentials file, apart
+//! The sign-ins are the `mcp` section of gruntas's credentials file, apart
 //! from the provider logins, keyed by the server's name. An entry records
 //! the server URL, so a server whose URL changed counts as signed out.
 //! **The tokens are secrets**: never printed, logged or put in an error.
@@ -87,7 +87,7 @@ pub enum Bearer {
 /// The access token for a call to `name` (R-MCP-10). One within a minute of
 /// expiry, or the `refused` one (a `401` answered it), is refreshed first:
 /// under the credentials lock, re-reading the file, since refresh tokens
-/// rotate and another krowk may have spent the one read before. The refresh
+/// rotate and another gruntas may have spent the one read before. The refresh
 /// sends the same `resource` as the sign-in, and writes nothing if the
 /// sign-in was removed meanwhile (R-MCP-12).
 pub async fn bearer(http: &reqwest::Client, credentials: &Path, name: &str, url: &str, refused: Option<&str>) -> Result<Bearer, EngineError> {
@@ -143,7 +143,7 @@ pub async fn bearer(http: &reqwest::Client, credentials: &Path, name: &str, url:
 
 /// `https(what, url)`: the endpoint, or the failed check by name.
 fn https(what: &str, url: &str) -> Result<url::Url, EngineError> {
-    trusted(url).map_err(|_| fail(format!("the {what} {url} is not https — krowk signs in to a server only over https (the https check on every metadata, authorization and token endpoint)")))
+    trusted(url).map_err(|_| fail(format!("the {what} {url} is not https — gruntas signs in to a server only over https (the https check on every metadata, authorization and token endpoint)")))
 }
 
 /// What a sign-in in progress holds until the browser (or the person)
@@ -229,7 +229,7 @@ async fn server_metadata(http: &reqwest::Client, issuer: &str) -> Result<(Endpoi
         return Err(fail(format!("{iss}'s metadata names the issuer {named:?}, not itself — refusing to sign in against it (issuer check)")));
     }
     if !meta.get("code_challenge_methods_supported").and_then(Value::as_array).is_some_and(|m| m.iter().any(|v| v == "S256")) {
-        return Err(fail(format!("{iss} does not advertise PKCE S256, which krowk requires (PKCE check)")));
+        return Err(fail(format!("{iss} does not advertise PKCE S256, which gruntas requires (PKCE check)")));
     }
     let token = s("token_endpoint").ok_or_else(|| fail(format!("{iss}'s metadata names no token endpoint")))?;
     https("token endpoint", &token)?;
@@ -243,10 +243,10 @@ async fn server_metadata(http: &reqwest::Client, issuer: &str) -> Result<(Endpoi
     Ok((Endpoints { issuer: iss.into(), authorization: Some(authorization), token, device_authorization: None, registration }, offline))
 }
 
-/// Registers krowk as a public client with the loopback redirect (RFC 7591).
+/// Registers gruntas as a public client with the loopback redirect (RFC 7591).
 async fn register(http: &reqwest::Client, server: &str, e: &Endpoints, redirect: &str) -> Result<String, EngineError> {
     let Some(reg) = &e.registration else {
-        return Err(fail(format!("{server} requires a sign-in, but its authorization server ({}) offers no client registration — krowk cannot sign in to it", e.issuer)));
+        return Err(fail(format!("{server} requires a sign-in, but its authorization server ({}) offers no client registration — gruntas cannot sign in to it", e.issuer)));
     };
     let body = json!({
         "client_name": "gruntas",
@@ -270,7 +270,7 @@ async fn register(http: &reqwest::Client, server: &str, e: &Endpoints, redirect:
         Some(id) if status.is_success() && !id.is_empty() => Ok(id.into()),
         _ => {
             let (err, desc) = oauth_error(&v);
-            Err(fail(format!("{} refused to register krowk (HTTP {}: {err} {desc})", e.issuer, status.as_u16())))
+            Err(fail(format!("{} refused to register gruntas (HTTP {}: {err} {desc})", e.issuer, status.as_u16())))
         }
     }
 }
@@ -362,7 +362,7 @@ pub struct Ui<'a> {
     pub paste: Option<&'a mut dyn FnMut() -> Result<String, EngineError>>,
 }
 
-/// Signs in from blocking code (`krowk mcp login`), on a runtime of its own.
+/// Signs in from blocking code (`gruntas mcp login`), on a runtime of its own.
 pub fn sign_in(credentials: &Path, name: &str, url: &str, ui: Ui<'_>) -> Result<(), EngineError> {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| EngineError::new("runtime_unavailable", format!("the async runtime could not start: {e}")))?;
     rt.block_on(async {

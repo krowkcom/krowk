@@ -147,7 +147,7 @@ fn r_perm_1_only_the_person_puts_a_session_in_unhinged() {
     let cfg = Config { trusted: Some(Arc::new(|_: &Path| true)), ..Config::default() };
     assert_eq!(Policy::load(&cfg, &d.join("src")).unwrap().loaded.default_mode, None, "a trusted repository's unhinged never counts");
     let cfg = Config { user: Some(json!({"permissions": {"defaultMode": "unhinged"}})), ..cfg };
-    assert_eq!(Policy::load(&cfg, &d.join("src")).unwrap().loaded.default_mode, Some(PermissionMode::Unhinged), "krowk's own config chooses it");
+    assert_eq!(Policy::load(&cfg, &d.join("src")).unwrap().loaded.default_mode, Some(PermissionMode::Unhinged), "gruntas's own config chooses it");
     // Claude Code's user file does not: Claude Code would skip the whole
     // file, deny rules and hooks included.
     let claude = d.join("home/.claude");
@@ -234,7 +234,7 @@ fn r_perm_1_the_fenced_directories_are_asked_about_and_no_rule_opens_them() {
     assert_eq!(letter(&gate(&p, PermissionMode::BypassPermissions).verdict(&edit(d.join(".claude/settings.json")))), 'Y');
     let mut protected = policy(&d, &[(Kind::Allow, "Edit")]);
     protected.protected.push(PathBuf::from("/home/someone/.krowk"));
-    assert_eq!(letter(&gate(&protected, PermissionMode::AcceptEdits).verdict(&edit(PathBuf::from("/home/someone/.krowk/config.json")))), '?', "krowk's own config directory, wherever it is");
+    assert_eq!(letter(&gate(&protected, PermissionMode::AcceptEdits).verdict(&edit(PathBuf::from("/home/someone/.krowk/config.json")))), '?', "gruntas's own config directory, wherever it is");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -251,7 +251,7 @@ fn r_perm_1_rules_load_from_every_source_and_a_broken_file_stops_the_turn() {
     let cfg = Config { home: Some(home.clone()), user: Some(json!({"permissions": {"ask": ["Bash(git push:*)"]}})), ..Config::default() };
     let p = Policy::load(&cfg, &d).unwrap();
     let texts: Vec<(Kind, &str)> = p.loaded.rules.iter().map(|(k, r)| (*k, r.text.as_str())).collect();
-    assert_eq!(texts, [(Kind::Ask, "Bash(git push:*)"), (Kind::Allow, "Bash(git status)"), (Kind::Deny, "WebFetch")], "krowk's user config, Claude's user settings, the project's, not its old .krowk");
+    assert_eq!(texts, [(Kind::Ask, "Bash(git push:*)"), (Kind::Allow, "Bash(git status)"), (Kind::Deny, "WebFetch")], "gruntas's user config, Claude's user settings, the project's, not its old .krowk");
     assert_eq!(p.deny_list(), ["WebFetch"]);
     std::fs::create_dir_all(d.join(".claude")).unwrap();
     std::fs::write(d.join(".claude/settings.local.json"), "{ not json").unwrap();
@@ -336,10 +336,10 @@ async fn questions_go_out_as_an_approval_request_and_come_back_answered_declined
 #[tokio::test(flavor = "current_thread")]
 async fn r_perm_2_an_asked_call_is_an_approval_request_any_client_answers_and_grants_are_remembered() {
     let d = repo("approve");
-    let krowk = d.join("krowk-config");
+    let gruntas = d.join("krowk-config");
     let approvals = Approvals::default();
     let grants = SessionGrants::default();
-    let file = krowk.join(settings::GRANTS_FILE);
+    let file = gruntas.join(settings::GRANTS_FILE);
     let g = Gate::new(Policy::modes_only(&d), PermissionMode::Default, grants.clone(), Some(approvals.clone()), Some(file.clone()), "s1", "t1");
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     let (_c, cancel) = watch::channel(false);
@@ -377,7 +377,7 @@ async fn r_perm_2_an_asked_call_is_an_approval_request_any_client_answers_and_gr
     assert!(rules::matches(&quoted, &bash("rm 'a b'"), &at, true) && !rules::matches(&quoted, &bash("rm a b"), &at, true));
     assert!(remember(&bash("git status && rm x")).is_empty(), "a line of several commands is allowed once, never remembered");
 
-    // A project grant is written to krowk's own file, for that project.
+    // A project grant is written to gruntas's own file, for that project.
     let g2 = Gate::new(Policy::modes_only(&d), PermissionMode::Default, SessionGrants::default(), Some(approvals.clone()), Some(file.clone()), "s2", "t2");
     let (tx, mut rx) = tokio::sync::mpsc::channel(8);
     let answering = approvals.clone();
@@ -391,7 +391,7 @@ async fn r_perm_2_an_asked_call_is_an_approval_request_any_client_answers_and_gr
     g2.check(&bash("cargo test"), "bash", &json!({}), &tx, &cancel).await.unwrap();
     let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
     assert_eq!(saved["projects"][d.display().to_string()]["allow"], json!(["Bash(cargo test)"]));
-    let cfg = Config { krowk_dir: Some(krowk.clone()), ..Config::default() };
+    let cfg = Config { krowk_dir: Some(gruntas.clone()), ..Config::default() };
     let next = Policy::load(&cfg, &d).unwrap();
     assert_eq!(letter(&gate(&next, PermissionMode::Default).verdict(&bash("cargo test"))), 'Y', "the next session has it");
     #[cfg(unix)]
@@ -594,7 +594,7 @@ fn r_sub_1_krowks_session_tools_need_no_mode_but_deny_and_ask_rules_hold_them() 
 }
 
 /// Claude Code's own user settings, the way Claude Code writes them, with
-/// the `auto` mode krowk does not run.
+/// the `auto` mode gruntas does not run.
 fn claude_settings(dir: &Path, deny: &str) {
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(
@@ -616,16 +616,16 @@ fn r_perm_1_a_default_mode_krowk_does_not_run_is_read_as_default_with_a_notice()
     let d = repo("auto-user");
     let claude = d.join("home/.claude");
     claude_settings(&claude, "Read(.env)");
-    // Claude's file names `auto`, which krowk does not run, and nothing
+    // Claude's file names `auto`, which gruntas does not run, and nothing
     // else names a mode: default, and a notice that says how to choose.
     let cfg = Config { claude_dir: Some(claude.clone()), home: Some(d.join("home")), ..Config::default() };
     let p = Policy::load(&cfg, &d.join("src")).expect("an unknown defaultMode does not refuse the settings");
     assert_eq!(p.loaded.default_mode, None, "runs in default");
     assert!(matches!(p.loaded.notices.as_slice(), [n] if n.starts_with("~/.claude/settings.json sets defaultMode \"auto\"") && n.contains("asks before edits and commands")), "{:?}", p.loaded.notices);
-    // krowk's own config naming a mode is the mode, and nothing is said.
+    // gruntas's own config naming a mode is the mode, and nothing is said.
     let cfg = Config { user: Some(json!({"permissions": {"defaultMode": "acceptEdits"}})), claude_dir: Some(claude.clone()), ..Config::default() };
     let p = Policy::load(&cfg, &d.join("src")).unwrap();
-    assert_eq!(p.loaded.default_mode, Some(PermissionMode::AcceptEdits), "a mode krowk does not run sets nothing");
+    assert_eq!(p.loaded.default_mode, Some(PermissionMode::AcceptEdits), "a mode gruntas does not run sets nothing");
     assert!(p.loaded.notices.is_empty(), "{:?}", p.loaded.notices);
     let g = gate(&p, PermissionMode::Default);
     assert_eq!(letter(&g.verdict(&read(d.join("src/.env")))), 'N', "the file's deny rule still holds");

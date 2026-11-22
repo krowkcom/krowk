@@ -1,4 +1,4 @@
-//! `codex app-server`'s notifications as krowk's events. Codex reports a
+//! `codex app-server`'s notifications as gruntas's events. Codex reports a
 //! turn as thread items — an agent message, reasoning, a command it ran, a
 //! patch it applied, an MCP or dynamic tool call — each `item/started`,
 //! streamed by its own `…/delta` notifications, then `item/completed`; and
@@ -11,12 +11,12 @@
 //! - every tool Codex runs is a `toolCall`, completed as soon as Codex says
 //!   what it is, and a `toolResult` when Codex says how it came out — a
 //!   command as `shell`, a patch as `apply_patch`, an MCP tool as
-//!   `mcp__<server>__<tool>`, krowk's own bridged tools as
+//!   `mcp__<server>__<tool>`, gruntas's own bridged tools as
 //!   `mcp__gruntas__<tool>` like every backend's;
 //! - a token-usage update closes one model call: `response.completed`
 //!   names the model output that completed since the last one.
 //!
-//! Codex's own items are keyed by its ids; krowk mints its own for the log,
+//! Codex's own items are keyed by its ids; gruntas mints its own for the log,
 //! and a tool call keeps Codex's id as its `callId`. The prompt Codex echoes
 //! as a `userMessage` is not repeated: the host logged it already, and
 //! steering is logged by the engine where it was accepted.
@@ -36,7 +36,7 @@ pub const OUTPUT_CAP: usize = 64 * 1024;
 pub struct Translator {
     /// The model Codex says answers, for `response.completed`.
     pub model: String,
-    /// Codex item id → krowk item id, for the items started and not yet
+    /// Codex item id → gruntas item id, for the items started and not yet
     /// completed. A tool call's result gets an id of its own.
     open: HashMap<String, Open>,
     /// Model output completed since the last model call closed.
@@ -47,7 +47,7 @@ pub struct Translator {
     /// A patch's files by Codex item id, as the approval request is
     /// answered from them.
     pub changes: HashMap<String, Vec<String>>,
-    /// Why krowk declined an item Codex asked about, for its result.
+    /// Why gruntas declined an item Codex asked about, for its result.
     pub declined: HashMap<String, String>,
     /// The last error Codex reported that it will not retry.
     pub error: Option<Value>,
@@ -75,9 +75,9 @@ fn str_of<'a>(v: &'a Value, k: &str) -> &'a str {
     v.get(k).and_then(Value::as_str).unwrap_or_default()
 }
 
-/// Codex's token counts in krowk's five columns. Codex reports input with
+/// Codex's token counts in gruntas's five columns. Codex reports input with
 /// the cached part in it and output with the reasoning part, as the
-/// Responses API does; krowk prices each column once, so they are split.
+/// Responses API does; gruntas prices each column once, so they are split.
 pub fn usage(u: &Value) -> Usage {
     let n = |k: &str| u.get(k).and_then(Value::as_i64).unwrap_or(0).max(0);
     let (input, cached, written) = (n("inputTokens"), n("cachedInputTokens"), n("cacheWriteInputTokens"));
@@ -459,7 +459,7 @@ mod tests {
     }
 
     /// The pinned schema gives each thread its own `ThreadTokenUsage`, and
-    /// krowk meters a call by its `last`, never by the difference of two
+    /// gruntas meters a call by its `last`, never by the difference of two
     /// `total`s — `total` only tells a repeat from a new call. So even a
     /// Codex whose parent total counted its sub-threads' tokens too would
     /// not have them counted twice: the parent's call is its `last`.
@@ -533,13 +533,13 @@ mod tests {
     #[test]
     fn r_back_5_tool_results_say_how_each_kind_of_call_came_out() {
         let mut t = Translator::new("m");
-        t.declined.insert("c2".into(), "krowk declined it".into());
+        t.declined.insert("c2".into(), "gruntas declined it".into());
         let results: Vec<(String, bool)> = [
             json!({"type": "commandExecution", "id": "c1", "command": "false", "cwd": "/", "status": "failed", "exitCode": 1, "aggregatedOutput": "no"}),
             json!({"type": "commandExecution", "id": "c2", "command": "rm -rf /", "cwd": "/", "status": "declined"}),
             json!({"type": "fileChange", "id": "f1", "status": "completed", "changes": [{"path": "/repo/a.txt", "kind": {"type": "update"}, "diff": ""}]}),
             json!({"type": "mcpToolCall", "id": "m1", "server": "docs", "tool": "search", "arguments": {}, "status": "failed", "error": {"message": "server gone"}}),
-            json!({"type": "dynamicToolCall", "id": "d1", "namespace": "gruntas", "tool": "session_info", "arguments": {}, "status": "completed", "success": true, "contentItems": [{"type": "inputText", "text": "krowk session: s"}]}),
+            json!({"type": "dynamicToolCall", "id": "d1", "namespace": "gruntas", "tool": "session_info", "arguments": {}, "status": "completed", "success": true, "contentItems": [{"type": "inputText", "text": "gruntas session: s"}]}),
         ]
         .iter()
         .filter_map(|item| {
@@ -551,10 +551,10 @@ mod tests {
         })
         .collect();
         assert_eq!(results[0], ("no\n(exit code 1)".to_string(), true));
-        assert_eq!(results[1], ("krowk declined it".to_string(), true));
+        assert_eq!(results[1], ("gruntas declined it".to_string(), true));
         assert_eq!(results[2], ("applied: /repo/a.txt".to_string(), false));
         assert_eq!(results[3], ("server gone".to_string(), true));
-        assert_eq!(results[4], ("krowk session: s".to_string(), false));
+        assert_eq!(results[4], ("gruntas session: s".to_string(), false));
         assert_eq!(t.changes["f1"], ["/repo/a.txt"]);
         let mut named = Vec::new();
         for item in [json!({"type": "dynamicToolCall", "id": "d2", "namespace": "gruntas", "tool": "session_info", "arguments": {}}), json!({"type": "mcpToolCall", "id": "m2", "server": "docs", "tool": "search", "arguments": {}})] {

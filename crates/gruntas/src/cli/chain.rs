@@ -183,7 +183,7 @@ pub(super) fn this_subject(ctx: &Ctx, device: &DeviceKey, signing: &SigningKey) 
         name.pop();
     }
     if name.trim().is_empty() {
-        name = "krowk device".into();
+        name = "gruntas device".into();
     }
     Subject { kind: Kind::Device, name, os: std::env::consts::OS.into(), device: device.public(), signing: signing.public() }
 }
@@ -253,15 +253,15 @@ pub(super) fn before_sealing(ctx: &Ctx, client: &Client, me: &Me) -> Result<u32,
 pub(super) fn sealing_generation(held: Option<u32>, named: u32) -> Result<u32, Error> {
     match held {
         Some(g) if g == named => Ok(g),
-        Some(g) if g < named => Err(fail("user_key_behind", format!("your device list names user key generation {named}, and this device holds only {g} — it seals nothing new until it has taken up the newer key; run `krowk sync status`"))),
-        Some(g) => Err(fail("user_key_refused", format!("this device holds user key generation {g}, newer than your device list names ({named}) — it seals nothing; run `krowk sync status`"))),
-        None => Err(fail("user_key_missing", "this device holds no user key, so it seals nothing — run `krowk sync status`, or pair it again with `krowk sync join`")),
+        Some(g) if g < named => Err(fail("user_key_behind", format!("your device list names user key generation {named}, and this device holds only {g} — it seals nothing new until it has taken up the newer key; run `gruntas sync status`"))),
+        Some(g) => Err(fail("user_key_refused", format!("this device holds user key generation {g}, newer than your device list names ({named}) — it seals nothing; run `gruntas sync status`"))),
+        None => Err(fail("user_key_missing", "this device holds no user key, so it seals nothing — run `gruntas sync status`, or pair it again with `gruntas sync join`")),
     }
 }
 
 /// The list's entries as the verifier takes them.
 pub(super) fn decode(list: &gruntas_api::sync::DeviceList) -> Result<Vec<SignedEntry>, Error> {
-    let bad = |seq: u64| fail("malformed_response", format!("the registry served entry {seq} of your device list in a shape krowk does not read"));
+    let bad = |seq: u64| fail("malformed_response", format!("the registry served entry {seq} of your device list in a shape gruntas does not read"));
     list.entries
         .iter()
         .map(|e| {
@@ -300,7 +300,7 @@ pub(super) fn verified(ctx: &Ctx, client: &Client, me: &Me) -> Result<Verified, 
     }
     let chain = store.save_device_list(&entries).map_err(|e| fail("device_list_refused", format!("{e} — this device will not trust it. Nothing was changed; if it persists, the registry is serving a list your devices did not make")))?;
     if !chain.devices().iter().any(|d| d.id() == me.device.id()) {
-        return Err(fail("device_removed", "this device is no longer on your device list — it was removed, and syncs nothing. Pair it again with `krowk sync join` from a device on the list"));
+        return Err(fail("device_removed", "this device is no longer on your device list — it was removed, and syncs nothing. Pair it again with `gruntas sync join` from a device on the list"));
     }
     adopt_user_key(ctx, client, me, &chain)?;
     Ok(Verified { chain, entries })
@@ -310,11 +310,11 @@ pub(super) fn verified(ctx: &Ctx, client: &Client, me: &Me) -> Result<Verified, 
 /// by: this device is on none it made, and stops.
 fn reset(at: Option<u64>) -> Error {
     let when = at.map(|t| format!(" at {}", utc(t))).unwrap_or_default();
-    fail("device_list_reset", format!("your device list was started over{when}, and this device is not on the new one. It has stopped syncing. If you started over, pair it again with `krowk sync join`; if you did not, someone with your password did, so change it"))
+    fail("device_list_reset", format!("your device list was started over{when}, and this device is not on the new one. It has stopped syncing. If you started over, pair it again with `gruntas sync join`; if you did not, someone with your password did, so change it"))
 }
 
 pub(super) fn not_set_up() -> Error {
-    fail("not_set_up", "sync is not set up on this machine — `krowk sync init` sets it up, `krowk sync join` adds this machine from one of your devices, and `krowk sync recover` gets back in with the recovery kit")
+    fail("not_set_up", "sync is not set up on this machine — `gruntas sync init` sets it up, `gruntas sync join` adds this machine from one of your devices, and `gruntas sync recover` gets back in with the recovery kit")
 }
 
 /// The user keys this device holds (`Keystore::user_keys`).
@@ -329,7 +329,7 @@ pub(super) fn links_of(wraps: &gruntas_api::sync::UserKeyWraps) -> Vec<Vec<u8>> 
 
 /// Generation `generation` as the registry wrapped it to the asking device.
 fn wrap_for(wraps: &gruntas_api::sync::UserKeyWraps, generation: u32) -> Result<Vec<u8>, Error> {
-    wraps.wraps.iter().find(|w| w.generation == generation).and_then(|w| e2e::unhex(&w.wrapped_key)).ok_or_else(|| fail("user_key_missing", format!("the registry holds no user key generation {generation} wrapped to this device — ask again later, or pair it again with `krowk sync join`")))
+    wraps.wraps.iter().find(|w| w.generation == generation).and_then(|w| e2e::unhex(&w.wrapped_key)).ok_or_else(|| fail("user_key_missing", format!("the registry holds no user key generation {generation} wrapped to this device — ask again later, or pair it again with `gruntas sync join`")))
 }
 
 fn key_refused(e: gruntas_client::e2e::Error) -> Error {
@@ -476,7 +476,7 @@ pub(super) fn show_kit(ctx: &mut Ctx, words: &str) {
             _ => write!(stderr, "{:pad$}", "", pad = 10usize.saturating_sub(w.len())),
         };
     }
-    let _ = writeln!(stderr, "Write it down or save it (--save FILE). krowk can't show it again.");
+    let _ = writeln!(stderr, "Write it down or save it (--save FILE). gruntas can't show it again.");
     let _ = stderr.flush();
 }
 

@@ -1,10 +1,10 @@
-//! What every krowk client shares (R-CLIENT-1): the CLI links it,
+//! What every gruntas client shares (R-CLIENT-1): the CLI links it,
 //! so the end-to-end encryption is written once and never again per client.
 //!
 //! - `e2e`: the constructions — device keypairs, the account key wrapped to
 //!   each device with HPKE, session keys wrapped under the account key, and
 //!   session content sealed under a session key (R-E2E-2, R-E2E-3).
-//! - `keystore`: the device key and the wrapped account key in krowk's
+//! - `keystore`: the device key and the wrapped account key in gruntas's
 //!   home, `0600`.
 //! - `pairing`: adding a device by a short code — SPAKE2 with key
 //!   confirmation both ways, as a sans-IO state machine for each side.

@@ -1,4 +1,4 @@
-$ krowk push a.txt
+$ gruntas push a.txt
 stdout:
 {
   "ok": true,

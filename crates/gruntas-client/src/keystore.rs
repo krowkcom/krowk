@@ -1,4 +1,4 @@
-//! This device's keys in krowk's home: two files, each `0600`, each
+//! This device's keys in gruntas's home: two files, each `0600`, each
 //! replaced by rename through gruntas-api's credentials write, never written
 //! in place.
 //!
@@ -30,7 +30,7 @@
 //! Where the five live is the platform's (R-CLIENT-4): `Keystore` makes
 //! every rule above itself — the pin, a generation never going back, a wrap
 //! checked against this device — and reaches storage only through
-//! `KeyStorage`, one slot per file. `FileStorage` is krowk's home, as above;
+//! `KeyStorage`, one slot per file. `FileStorage` is gruntas's home, as above;
 //! another platform's store plugs in the same way, and none writes a
 //! rule again (R-CLIENT-1). `MemoryStorage` holds them in memory, for tests
 //! and fakes.
@@ -57,7 +57,7 @@ pub enum Slot {
 }
 
 impl Slot {
-    /// Its file in krowk's home.
+    /// Its file in gruntas's home.
     pub fn file_name(self) -> &'static str {
         match self {
             Slot::Device => "device.json",
@@ -105,7 +105,7 @@ pub trait KeyStorage: Send + Sync {
     fn describe(&self, slot: Slot) -> String;
 }
 
-/// The keys as files in krowk's home: each `0600`, each replaced by rename
+/// The keys as files in gruntas's home: each `0600`, each replaced by rename
 /// through gruntas-api's credentials write. A slot's lock is a `.lock` file
 /// beside its file: `account-key.lock`, `device-list.lock`.
 #[derive(Debug, Clone)]
@@ -327,7 +327,7 @@ impl Keystore {
         Keystore { storage }
     }
 
-    /// The keys kept as files in the krowk home `home`.
+    /// The keys kept as files in the gruntas home `home`.
     pub fn new(home: &Path) -> Keystore {
         Keystore::with(Arc::new(FileStorage::new(home)))
     }
@@ -364,7 +364,7 @@ impl Keystore {
     /// This device's key, if it has one.
     pub fn device(&self) -> Result<Option<DeviceKey>, String> {
         let Some(f) = self.load::<DeviceFile>(Slot::Device)? else { return Ok(None) };
-        let bad = || format!("{} does not hold a device key krowk reads — move it aside and run `krowk sync recover`", self.describe(Slot::Device));
+        let bad = || format!("{} does not hold a device key gruntas reads — move it aside and run `gruntas sync recover`", self.describe(Slot::Device));
         if f.version != 1 {
             return Err(bad());
         }
@@ -400,7 +400,7 @@ impl Keystore {
     pub fn signing_key(&self) -> Result<SigningKey, String> {
         let _lock = self.storage.lock(Slot::Account)?;
         if let Some(f) = self.load::<DeviceFile>(Slot::Signing)? {
-            let bad = || format!("{} does not hold a signing key krowk reads — move it aside, and krowk makes a new one to register", self.describe(Slot::Signing));
+            let bad = || format!("{} does not hold a signing key gruntas reads — move it aside, and gruntas makes a new one to register", self.describe(Slot::Signing));
             if f.version != 1 {
                 return Err(bad());
             }
@@ -421,7 +421,7 @@ impl Keystore {
     }
 
     fn parse_id(&self, f: &AccountFile) -> Result<KeyId, String> {
-        let bad = || format!("{} does not hold a wrapped account key krowk reads — move it aside and run `krowk sync recover`", self.describe(Slot::Account));
+        let bad = || format!("{} does not hold a wrapped account key gruntas reads — move it aside and run `gruntas sync recover`", self.describe(Slot::Account));
         if f.version != 1 {
             return Err(bad());
         }
@@ -434,9 +434,9 @@ impl Keystore {
         let Some(f) = self.load::<AccountFile>(Slot::Account)? else { return Ok(None) };
         let name = self.describe(Slot::Account);
         let id = self.parse_id(&f)?;
-        let device = self.device()?.ok_or_else(|| format!("{name} is here but this device's key ({}) is not, so it cannot be opened — run `krowk sync recover` with the recovery phrase", self.describe(Slot::Device)))?;
+        let device = self.device()?.ok_or_else(|| format!("{name} is here but this device's key ({}) is not, so it cannot be opened — run `gruntas sync recover` with the recovery phrase", self.describe(Slot::Device)))?;
         if f.device_id != device.id().to_string() {
-            return Err(format!("{name} was wrapped for device {}, not this device ({}) — run `krowk sync recover` with the recovery phrase", f.device_id, device.id()));
+            return Err(format!("{name} was wrapped for device {}, not this device ({}) — run `gruntas sync recover` with the recovery phrase", f.device_id, device.id()));
         }
         let blob = e2e::unhex(&f.wrapped).ok_or_else(|| format!("{name} is not valid"))?;
         e2e::unwrap_account_key(&blob, id, &device).map(Some).map_err(|e| format!("{name}: {e}"))
@@ -459,7 +459,7 @@ impl Keystore {
             if id == account.id() {
                 origin = if f.origin == "recover" { f.origin } else { "init".into() };
             } else if f.origin != "recover" {
-                return Err(format!("this home already holds account key {id}, put here by `krowk sync init` or `join` — recovering another into it would lose that one; use a fresh krowk home, or move {} aside", self.describe(Slot::Account)));
+                return Err(format!("this home already holds account key {id}, put here by `gruntas sync init` or `join` — recovering another into it would lose that one; use a fresh gruntas home, or move {} aside", self.describe(Slot::Account)));
             } else {
                 replaced = Some(id);
             }
@@ -485,7 +485,7 @@ impl Keystore {
 
     /// `f`, opened with this device's key; `name` is where it was read.
     fn open_user_keys(&self, f: &UserKeysFile, name: &str) -> Result<UserKeys, String> {
-        let bad = || format!("{name} does not hold user keys krowk reads — move it aside and add this device again");
+        let bad = || format!("{name} does not hold user keys gruntas reads — move it aside and add this device again");
         if f.version != 1 {
             return Err(bad());
         }
@@ -602,7 +602,7 @@ fn load<T: DeserializeOwned>(storage: &dyn KeyStorage, slot: Slot) -> Result<Opt
 /// The device list `f` holds, verified from entry 0; `name` is where it was
 /// read.
 fn verify_list(f: &DeviceListFile, name: &str) -> Result<Chain, String> {
-    let bad = || format!("{name} does not hold a device list krowk reads — move it aside and add this device to your devices again");
+    let bad = || format!("{name} does not hold a device list gruntas reads — move it aside and add this device to your devices again");
     if f.version != 1 || f.entries.is_empty() {
         return Err(bad());
     }

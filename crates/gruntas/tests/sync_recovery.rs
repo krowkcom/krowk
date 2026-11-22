@@ -1,9 +1,9 @@
 //! Setting sync up, getting back in and replacing the kit, end to end on
 //! scratch homes against the stand-in registry (D6; canon,
 //! engineering/devices.md → Recovery, Replacing the kit, Starting over):
-//! `krowk sync init` with the kit saved to a file, a start-over that keeps
-//! the sessions this device can open, `krowk machines recovery new` with the
-//! old kit's words, and `krowk sync recover` on a new machine.
+//! `gruntas sync init` with the kit saved to a file, a start-over that keeps
+//! the sessions this device can open, `gruntas machines recovery new` with the
+//! old kit's words, and `gruntas sync recover` on a new machine.
 
 #![cfg(all(feature = "harness", unix))]
 
@@ -35,14 +35,14 @@ fn registry() -> (gruntas_devregistry::Running, String) {
     (r, api)
 }
 
-/// krowk with `home` as HOME and nothing else of this machine's, the debug
+/// gruntas with `home` as HOME and nothing else of this machine's, the debug
 /// build's stand-in for the person at the terminal answering `answers` in
 /// turn, and `input` on stdin.
-fn krowk(home: &Path, api: &str, token: &str, args: &[&str], answers: &str, input: &str) -> Output {
+fn gruntas(home: &Path, api: &str, token: &str, args: &[&str], answers: &str, input: &str) -> Output {
     krowk_with(home, api, token, args, answers, input, &[])
 }
 
-/// `krowk`, with `env` set as well.
+/// `gruntas`, with `env` set as well.
 fn krowk_with(home: &Path, api: &str, token: &str, args: &[&str], answers: &str, input: &str, env: &[(&str, &str)]) -> Output {
     let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
     c.args(args)
@@ -76,7 +76,7 @@ fn keys(home: &Path) -> Keystore {
 
 /// `sync init` on `home`, the kit written to `kit` (0600, never stdout).
 fn init(home: &Path, api: &str, token: &str, kit: &Path) -> String {
-    let out = krowk(home, api, token, &["sync", "init", "--save", kit.to_str().unwrap(), "--json"], "", "");
+    let out = gruntas(home, api, token, &["sync", "init", "--save", kit.to_str().unwrap(), "--json"], "", "");
     let v = ok(&out);
     assert_eq!(v["data"]["recovery_kit"], true, "{v}");
     let words = std::fs::read_to_string(kit).unwrap().trim().to_string();
@@ -140,7 +140,7 @@ fn d6_a_start_over_seals_this_devices_sessions_again_under_the_new_list() {
     let key = publish(&laptop, &api, LAPTOP, id);
     let old_root = keys(&laptop).device_list().unwrap().unwrap().root();
 
-    let out = krowk(&laptop, &api, LAPTOP, &["sync", "init", "--start-over", "--save", r.join("kit-2").to_str().unwrap(), "--json"], "y", "");
+    let out = gruntas(&laptop, &api, LAPTOP, &["sync", "init", "--start-over", "--save", r.join("kit-2").to_str().unwrap(), "--json"], "y", "");
     let v = ok(&out);
     assert_eq!((v["data"]["started_over"].clone(), v["data"]["resealed"].clone(), v["data"]["left"].clone()), (true.into(), 1.into(), 0.into()), "{v}");
     assert!(String::from_utf8_lossy(&out.stderr).contains("come along"), "the prompt says the sessions come along");
@@ -154,13 +154,13 @@ fn d6_a_start_over_seals_this_devices_sessions_again_under_the_new_list() {
     assert!(laptop.join(".gruntas/before-start-over").is_dir(), "the old keys stay aside");
 
     // Run again, it goes through what is left: nothing.
-    let again = ok(&krowk(&laptop, &api, LAPTOP, &["sync", "init", "--start-over", "--json"], "", ""));
+    let again = ok(&gruntas(&laptop, &api, LAPTOP, &["sync", "init", "--start-over", "--json"], "", ""));
     assert_eq!((again["data"]["resealed"].clone(), again["data"]["left"].clone(), again["data"]["continued"].clone()), (0.into(), 0.into(), true.into()), "{again}");
     // D6: said, so a person who meant a new start-over knows to discard first.
-    let said = krowk(&laptop, &api, LAPTOP, &["sync", "init", "--start-over"], "", "");
-    assert!(String::from_utf8_lossy(&said.stdout).contains("a new start-over needs `krowk machines recovery discard-old` first"), "{}", String::from_utf8_lossy(&said.stdout));
+    let said = gruntas(&laptop, &api, LAPTOP, &["sync", "init", "--start-over"], "", "");
+    assert!(String::from_utf8_lossy(&said.stdout).contains("a new start-over needs `gruntas machines recovery discard-old` first"), "{}", String::from_utf8_lossy(&said.stdout));
     // And the aside goes only when the person says so.
-    let dropped = ok(&krowk(&laptop, &api, LAPTOP, &["sync", "recovery", "discard-old", "--json"], "y", ""));
+    let dropped = ok(&gruntas(&laptop, &api, LAPTOP, &["sync", "recovery", "discard-old", "--json"], "y", ""));
     assert_eq!((dropped["data"]["discarded"].clone(), dropped["data"]["left"].clone()), (true.into(), 0.into()), "{dropped}");
     assert!(!laptop.join(".gruntas/before-start-over").exists());
     let _ = std::fs::remove_dir_all(&r);
@@ -175,14 +175,14 @@ fn d6_recovery_new_with_the_old_kit_replaces_it_at_once() {
     let r = root("kit-new");
     let laptop = r.join("laptop");
     let old = init(&laptop, &api, LAPTOP, &r.join("kit-1"));
-    let v = ok(&krowk(&laptop, &api, LAPTOP, &["sync", "recovery", "new", "--save", r.join("kit-2").to_str().unwrap(), "--json"], "", &format!("{old}\n")));
+    let v = ok(&gruntas(&laptop, &api, LAPTOP, &["sync", "recovery", "new", "--save", r.join("kit-2").to_str().unwrap(), "--json"], "", &format!("{old}\n")));
     assert_eq!(v["data"]["generation"], 2, "{v}");
     let new = std::fs::read_to_string(r.join("kit-2")).unwrap();
-    ok(&krowk(&laptop, &api, LAPTOP, &["sync", "recovery", "check", "--json"], "", &new));
-    let refused = krowk(&laptop, &api, LAPTOP, &["sync", "recovery", "check", "--json"], "", &format!("{old}\n"));
+    ok(&gruntas(&laptop, &api, LAPTOP, &["sync", "recovery", "check", "--json"], "", &new));
+    let refused = gruntas(&laptop, &api, LAPTOP, &["sync", "recovery", "check", "--json"], "", &format!("{old}\n"));
     assert!(!refused.status.success() && String::from_utf8_lossy(&refused.stderr).contains("kit_not_on_list"));
     // The device still syncs, on a key that speaks for it.
-    let status = ok(&krowk(&laptop, &api, LAPTOP, &["sync", "status", "--json"], "", ""));
+    let status = ok(&gruntas(&laptop, &api, LAPTOP, &["sync", "status", "--json"], "", ""));
     assert_eq!((status["data"]["generation"].clone(), status["data"]["recovery_kit"].clone()), (2.into(), true.into()), "{status}");
     let _ = std::fs::remove_dir_all(&r);
 }
@@ -200,14 +200,14 @@ fn d6_recover_on_a_new_machine_keeps_or_removes_each_device_and_opens_the_old_se
     let key = publish(&laptop, &api, LAPTOP, id);
 
     // The laptop is lost: removed in the review.
-    let v = ok(&krowk(&desktop, &api, DESKTOP, &["sync", "recover", "--json"], "n", &format!("{words}\n")));
+    let v = ok(&gruntas(&desktop, &api, DESKTOP, &["sync", "recover", "--json"], "n", &format!("{words}\n")));
     assert_eq!((v["data"]["removed"].clone(), v["data"]["generation"].clone(), v["data"]["kept"].clone()), (1.into(), 2.into(), serde_json::json!([])), "{v}");
     let chain = keys(&desktop).device_list().unwrap().unwrap();
     let names: Vec<_> = chain.devices().iter().map(|d| d.name.clone()).collect();
     assert!(names.contains(&"desktop".to_string()) && !names.contains(&"laptop".to_string()), "{names:?}");
     assert_eq!(open(&desktop, &api, DESKTOP, id).unwrap().as_bytes(), key.as_bytes(), "the lost machine's session opens here");
     // And the removed laptop is refused.
-    let refused = krowk(&laptop, &api, LAPTOP, &["sync", "status", "--json"], "", "");
+    let refused = gruntas(&laptop, &api, LAPTOP, &["sync", "status", "--json"], "", "");
     assert!(!refused.status.success(), "{}", String::from_utf8_lossy(&refused.stdout));
     let _ = std::fs::remove_dir_all(&r);
 }
@@ -221,12 +221,12 @@ fn d7_a_removed_device_cannot_open_a_session_sealed_after_its_removal() {
     let r = root("remove");
     let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
     let words = init(&laptop, &api, LAPTOP, &r.join("kit"));
-    let back = ok(&krowk(&desktop, &api, DESKTOP, &["sync", "recover", "--json"], "y", &format!("{words}\n")));
+    let back = ok(&gruntas(&desktop, &api, DESKTOP, &["sync", "recover", "--json"], "y", &format!("{words}\n")));
     assert_eq!(back["data"]["kept"], serde_json::json!(["laptop"]), "{back}");
     let held = keys(&desktop).user_keys().unwrap().unwrap();
     // The laptop takes the desktop's list in, then removes it.
-    ok(&krowk(&laptop, &api, LAPTOP, &["sync", "status", "--json"], "", ""));
-    let v = ok(&krowk(&laptop, &api, LAPTOP, &["devices", "remove", "desktop", "--json"], "y", ""));
+    ok(&gruntas(&laptop, &api, LAPTOP, &["sync", "status", "--json"], "", ""));
+    let v = ok(&gruntas(&laptop, &api, LAPTOP, &["devices", "remove", "desktop", "--json"], "y", ""));
     assert_eq!(v["data"]["generation"], 2, "{v}");
 
     let id = "01a0ec7b-6666-7000-8000-000000000071";
@@ -235,7 +235,7 @@ fn d7_a_removed_device_cannot_open_a_session_sealed_after_its_removal() {
     let s = client_of(&laptop, &api, LAPTOP).show_sync_session(id).unwrap();
     let wrapped = e2e::unhex(&s.wrapped_key).unwrap();
     assert!(e2e::unwrap_session_key(&wrapped, &gruntas_harness::daemon::ws::uuid(id), &held).is_err(), "the desktop's keys do not open it");
-    let refused = krowk(&desktop, &api, DESKTOP, &["sync", "status", "--json"], "", "");
+    let refused = gruntas(&desktop, &api, DESKTOP, &["sync", "status", "--json"], "", "");
     assert!(!refused.status.success(), "and the desktop is off the list: {}", String::from_utf8_lossy(&refused.stdout));
     let _ = std::fs::remove_dir_all(&r);
 }
@@ -246,7 +246,7 @@ fn d7_a_removed_device_cannot_open_a_session_sealed_after_its_removal() {
 fn d6_a_skipped_kit_is_warned_about_once() {
     let (_r, api) = registry();
     let r = root("skip");
-    let out = krowk(&r.join("laptop"), &api, LAPTOP, &["sync", "init"], "s", "");
+    let out = gruntas(&r.join("laptop"), &api, LAPTOP, &["sync", "init"], "s", "");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert_eq!(said.matches("no recovery kit").count(), 1, "{said}");
@@ -254,7 +254,7 @@ fn d6_a_skipped_kit_is_warned_about_once() {
     let _ = std::fs::remove_dir_all(&r);
 }
 
-/// Ticket 168: past the registry's v1_until date, a krowk that signs v1's
+/// Ticket 168: past the registry's v1_until date, a gruntas that signs v1's
 /// lines (forced, in a test build) is refused. It says the registry's words
 /// whole and once, exits non-zero, and names the code to search for.
 #[test]
@@ -273,17 +273,17 @@ fn a_krowk_signing_retired_v1_lines_is_told_to_upgrade() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     let err: Value = stderr.find("{\n").and_then(|at| serde_json::from_str(&stderr[at..]).ok()).unwrap_or_else(|| panic!("{stderr}"));
     assert!(!out.status.success());
-    let said = "this krowk is older than 0.42.0 and signs registry requests with the retired v1 lines — run `krowk upgrade`";
+    let said = "this gruntas is older than 0.42.0 and signs registry requests with the retired v1 lines — run `gruntas upgrade`";
     assert_eq!((err["error"]["error"].as_str(), err["error"]["fix"].as_str()), (Some("signature_version_retired"), Some(said)), "{err}");
 
     let out = krowk_with(&desktop, &api, DESKTOP, &[&init[..], &["--format", "human"]].concat(), "", "", &v1);
     let human = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success() && human.contains("This krowk is older than 0.42.0 and signs registry requests with the retired v1 lines.") && human.contains("Try: krowk upgrade"), "{human}");
-    assert_eq!((human.matches("0.42.0").count(), human.matches("krowk upgrade").count()), (1, 1), "{human}");
+    assert!(!out.status.success() && human.contains("This gruntas is older than 0.42.0 and signs registry requests with the retired v1 lines.") && human.contains("Try: gruntas upgrade"), "{human}");
+    assert_eq!((human.matches("0.42.0").count(), human.matches("gruntas upgrade").count()), (1, 1), "{human}");
     assert!(human.contains("Code: signature_version_retired"), "{human}");
 
     // Unforced, the same machine signs v2 and is served.
     let _ = std::fs::remove_file(&kit);
-    ok(&krowk(&laptop, &api, LAPTOP, &[&init[..], &["--json"]].concat(), "", ""));
+    ok(&gruntas(&laptop, &api, LAPTOP, &[&init[..], &["--json"]].concat(), "", ""));
     let _ = std::fs::remove_dir_all(&r);
 }

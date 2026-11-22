@@ -49,7 +49,7 @@ async fn until(pool: &Pool, want: Status) {
 
 #[tokio::test]
 async fn r_mcp_4_an_exited_server_is_failed_retried_after_the_interval_and_at_once_on_reconnect() {
-    let dir = std::env::temp_dir().join(format!("krowk-mcp-status-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("gruntas-mcp-status-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let pool = Pool::with_retry(Duration::from_millis(1500));
     let mcp = pool.adopt(vec![fake(&dir, None)]).await;
@@ -84,7 +84,7 @@ async fn r_mcp_4_an_exited_server_is_failed_retried_after_the_interval_and_at_on
 
 #[tokio::test]
 async fn r_mcp_3_a_server_still_connecting_is_waited_for_by_a_call_and_one_answering_401_needs_sign_in() {
-    let dir = std::env::temp_dir().join(format!("krowk-mcp-status-slow-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("gruntas-mcp-status-slow-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let pool = Pool::default();
     let mcp = pool.adopt(vec![fake(&dir, Some("2"))]).await;

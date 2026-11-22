@@ -38,7 +38,7 @@ pub fn log(root: &Path, dir: &str) -> String {
     std::fs::read_to_string(log_path(root, dir)).unwrap_or_default()
 }
 
-/// The prompts it was sent: each `user` line krowk wrote it.
+/// The prompts it was sent: each `user` line gruntas wrote it.
 pub fn prompts(root: &Path, dir: &str) -> Vec<serde_json::Value> {
     log(root, dir).lines().filter_map(|l| l.strip_prefix("in ")).filter(|l| l.starts_with(r#"{"type":"user""#)).filter_map(|l| serde_json::from_str(l).ok()).collect()
 }
@@ -64,7 +64,7 @@ pub fn typed(n: usize, pause: f64, word: &str, per: usize) -> String {
     format!("@type {n} {pause} {word} {per}\n{}", result("typed"))
 }
 
-/// A Bash call the model makes, krowk asked whether it may run, and the
+/// A Bash call the model makes, gruntas asked whether it may run, and the
 /// result the model reads (a denial's message, or empty). The fake runs
 /// nothing either way: a test wanting the command's file made adds a
 /// `@touch` after it.

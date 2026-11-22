@@ -7,7 +7,7 @@
 //! - **Whose command**: the repository's own, in its `.gruntas/config.json`,
 //!   only once the person trusts the repository (`crate::trust`, the
 //!   question that also turns its hooks on), and then it is the one that
-//!   runs; the person's, in krowk's `config.json`, otherwise. An untrusted
+//!   runs; the person's, in gruntas's `config.json`, otherwise. An untrusted
 //!   repository's command is not run, and the agent is told so.
 //! - **In the sandbox**: the workspace profile over the worktree — the
 //!   network on, since installing is most of what it is for, and only the
@@ -26,7 +26,7 @@
 //! - **A build slot** (`crate::builds`) when the command is a heavy one,
 //!   waited for within the timeout.
 //! - **Its output** goes to `<admin dir>/gruntas-setup.log`, the worktree's
-//!   own directory in the repository's git directory, written by krowk
+//!   own directory in the repository's git directory, written by gruntas
 //!   once the command is over — and so once nothing it started is left
 //!   to plant a link there (the sandbox's pid namespace is gone) — and
 //!   never through a link. Kept to its last `LOG_CAP` bytes.
@@ -56,7 +56,7 @@ const LOG_CAP: usize = 1 << 20;
 const NOTE_LINES: usize = 50;
 const NOTE_BYTES: usize = 8 * 1024;
 
-/// The pool every live krowk worktree holds a slot of (`crate::slots`).
+/// The pool every live gruntas worktree holds a slot of (`crate::slots`).
 pub const PORT_POOL: &str = "port-slots";
 /// Its size: port bases from 20000 to 29990.
 pub const PORT_SLOTS: usize = 1000;
@@ -77,7 +77,7 @@ pub fn port_base(slot: &crate::slots::Slot) -> u16 {
 /// What the setup command of the worktree whose top is `worktree` runs
 /// in: the workspace profile over it alone, with `policy`'s home, fences
 /// and secrets, held by bubblewrap where it works, else by the container
-/// krowk runs in. None where this machine has neither.
+/// gruntas runs in. None where this machine has neither.
 pub fn sandbox(policy: &crate::permissions::Policy, worktree: &Path) -> Option<crate::sandbox::Plan> {
     use crate::sandbox::{By, Plan, Profile, Sandbox};
     let by = if crate::sandbox::enforcer().is_ok() {
@@ -105,9 +105,9 @@ pub(super) fn setup(p: &Prepare<'_>) -> Option<String> {
         Some(own) if p.trusted => (own, "the repository's .gruntas/config.json"),
         _ => {
             if own.is_some() {
-                notes.push("the repository's worktrees.setup command (in its .gruntas/config.json) did not run: the person has not trusted this repository, and krowk runs a repository's own commands only in one they trust. Set up what your task needs yourself.".to_string());
+                notes.push("the repository's worktrees.setup command (in its .gruntas/config.json) did not run: the person has not trusted this repository, and gruntas runs a repository's own commands only in one they trust. Set up what your task needs yourself.".to_string());
             }
-            (p.config, "krowk's config.json")
+            (p.config, "gruntas's config.json")
         }
     };
     if let Some(command) = config.setup() {
@@ -138,7 +138,7 @@ fn run_setup(p: &Prepare<'_>, command: &str, from: &str, timeout: Duration) -> O
             None => Some(plan),
         },
         None if p.trusted => None,
-        None => return gate("this machine has no sandbox to run it in, and outside one krowk runs it only for a repository the person has trusted"),
+        None => return gate("this machine has no sandbox to run it in, and outside one gruntas runs it only for a repository the person has trusted"),
     };
     let deadline = Instant::now() + timeout;
     let mut env: Vec<(String, String)> = vec![("GRUNTAS_PROJECT_ROOT".into(), wt.main.display().to_string()), ("GRUNTAS_WORKTREE_PATH".into(), wt.path.display().to_string())];
@@ -242,8 +242,8 @@ fn run_in(plan: Option<&crate::sandbox::Plan>, command: &str, dir: &Path, env: &
     };
     cmd.current_dir(dir).stdin(std::process::Stdio::null());
     // No terminal: an install that would ask on `/dev/tty` fails rather
-    // than draw over krowk's. Its session is its group, stopped whole. And
-    // nothing krowk holds open reaches it, as for the bash tool.
+    // than draw over gruntas's. Its session is its group, stopped whole. And
+    // nothing gruntas holds open reaches it, as for the bash tool.
     #[cfg(unix)]
     // SAFETY: setsid and `cloexec_past_stdio` are async-signal-safe and
     // touch no memory of the parent's; they run in the child between fork
@@ -491,19 +491,19 @@ mod tests {
         let run = |cfg: &WorktreesConfig| prepare(&Prepare { sandbox: plan.as_ref(), trusted: true, ..Prepare::new(&w, cfg) });
         let notes = run(&setup_config("echo installing; echo broken >&2; exit 3", None));
         let prompt = first_prompt(&notes, "Fix the build.");
-        assert!(prompt.starts_with("Note from krowk, which prepared this worktree: the worktree's setup command (`echo installing; echo broken >&2; exit 3`, from krowk's config.json) exited with code 3"), "{prompt}");
+        assert!(prompt.starts_with("Note from gruntas, which prepared this worktree: the worktree's setup command (`echo installing; echo broken >&2; exit 3`, from gruntas's config.json) exited with code 3"), "{prompt}");
         assert!(prompt.contains("```\ninstalling\nbroken\n```") && prompt.contains(&log_of(&w).display().to_string()) && prompt.ends_with("\n\nFix the build."), "{prompt}");
         let started = Instant::now();
         let notes = run(&setup_config("echo started; sleep 5", Some(1)));
         assert!(started.elapsed() < Duration::from_secs(4), "stopped at its timeout: {:?}", started.elapsed());
         let prompt = first_prompt(&notes, "Fix the build.");
-        assert!(prompt.starts_with("Note from krowk, which prepared this worktree: the worktree's setup command (`echo started; sleep 5`, from krowk's config.json) timed out after 1 s"), "{prompt}");
+        assert!(prompt.starts_with("Note from gruntas, which prepared this worktree: the worktree's setup command (`echo started; sleep 5`, from gruntas's config.json) timed out after 1 s"), "{prompt}");
         assert!(prompt.contains("```\nstarted\n```"), "{prompt}");
         assert!(std::fs::read_to_string(log_of(&w)).unwrap().ends_with("(timed out after 1 s and was stopped)\n"));
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// A descriptor krowk holds open without `O_CLOEXEC` does not reach the
+    /// A descriptor gruntas holds open without `O_CLOEXEC` does not reach the
     /// setup command, sandboxed or not: it cannot write through it to a
     /// file outside the worktree.
     #[cfg(target_os = "linux")]

@@ -122,11 +122,11 @@ fn serialize(p: &Pairing) -> Json {
 }
 
 fn gone(slug: &str) -> Resp {
-    error(410, "pairing_gone", &format!("{slug} has ended — run `krowk machines add` again for a new code"), None)
+    error(410, "pairing_gone", &format!("{slug} has ended — run `gruntas machines add` again for a new code"), None)
 }
 
 fn out_of_turn(slug: &str) -> Resp {
-    error(409, "pairing_out_of_turn", &format!("that step came out of turn, so {slug} has ended — run `krowk machines add` again"), None)
+    error(409, "pairing_out_of_turn", &format!("that step came out of turn, so {slug} has ended — run `gruntas machines add` again"), None)
 }
 
 fn read_body(req: &mut Req) -> Result<Vec<u8>, Resp> {
@@ -166,7 +166,7 @@ pub fn open(app: &App, req: &mut Req) -> Resp {
             p.state = State::Dead;
         }
         if s.sync.pairings.values().any(|p| p.person == who.person && p.live()) {
-            return Err(error(409, "pairing_open", "a pairing is already open for your account — finish it, or run `krowk machines add` again after it lapses (10 minutes)", None));
+            return Err(error(409, "pairing_open", "a pairing is already open for your account — finish it, or run `gruntas machines add` again after it lapses (10 minutes)", None));
         }
         let p = Pairing {
             slug: generate_slug("pai"),
@@ -223,7 +223,7 @@ fn find_open(app: &App, req: &Req) -> Resp {
         let who = caller_of(&s.sync, req)?;
         let found = s.sync.pairings.values().find(|p| p.person == who.person && p.state == State::Open && p.joiner_message.is_none() && p.expires_at > now);
         found.map(|p| Resp::json(200, &serialize(p))).ok_or_else(|| {
-            error(404, "no_pairing", "none of your devices has a pairing open — run `krowk machines add` on one of them first", None)
+            error(404, "no_pairing", "none of your devices has a pairing open — run `gruntas machines add` on one of them first", None)
         })
     };
     run().unwrap_or_else(|r| r)

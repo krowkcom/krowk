@@ -1,9 +1,9 @@
-# With no HOME there is no config directory: never .krowk beside the
-# caller, which would make a repository's own .krowk krowk's config.
+# With no HOME there is no config directory: never .gruntas beside the
+# caller, which would make a repository's own .gruntas the config.
 @unenv HOME
 @sh mkdir -p .git
-krowk config show
-krowk config set workspace ws_x --global
+gruntas config show
+gruntas config set workspace ws_x --global
 @ls {work}
-krowk config show
-krowk workspaces
+gruntas config show
+gruntas workspaces

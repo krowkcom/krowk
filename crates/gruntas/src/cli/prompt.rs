@@ -1,5 +1,5 @@
-//! `krowk -p "…"`: one prompt, answered headless by krowk's own engine, then
-//! projected into krowk.db so `krowk sessions` lists it. The engine, the log
+//! `gruntas -p "…"`: one prompt, answered headless by gruntas's own engine, then
+//! projected into gruntas.db so `gruntas sessions` lists it. The engine, the log
 //! and the output formats live in `gruntas-harness`; this is the command line
 //! around them — flags, the prompt from stdin, the config, the exit code.
 
@@ -28,7 +28,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
         return Err(fail("bad_flag", "-p prints its own output — pick it with --output-format text|json|stream-json instead of --format, --json or --jq"));
     }
     let format = OutputFormat::parse(&ctx.f.output_format).ok_or_else(|| {
-        fail("bad_flag", format!("--output-format {} is not one krowk -p writes — one of {}", ctx.f.output_format, OutputFormat::NAMES.join(", ")))
+        fail("bad_flag", format!("--output-format {} is not one gruntas -p writes — one of {}", ctx.f.output_format, OutputFormat::NAMES.join(", ")))
     })?;
     let flag_mode = permission_flag(ctx)?;
     let prompt = prompt_text(positionals)?;
@@ -71,7 +71,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
             _ => None,
         })
     });
-    // WT6: a session resumed in a krowk worktree is held there again, and
+    // WT6: a session resumed in a gruntas worktree is held there again, and
     // its worktree is trusted as the repository it was made from.
     let trust_as = own_worktree::TrustAs::default();
     let resumed = match (&resume, &session_cwd) {
@@ -89,7 +89,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     }
     #[cfg(unix)]
     if ctx.f.daemon && ctx.f.trust {
-        return Err(fail("bad_flag", "--trust holds for one run in this process, and --daemon runs the turn in the host daemon — trust the repository for good (`krowk trust`), or drop --daemon"));
+        return Err(fail("bad_flag", "--trust holds for one run in this process, and --daemon runs the turn in the host daemon — trust the repository for good (`gruntas trust`), or drop --daemon"));
     }
     if ctx.f.daemon && (ctx.f.own_worktree || resumed.is_some()) {
         return Err(fail("bad_flag", "a session in a worktree of its own runs in this process, which holds the worktree and finishes it when the run ends, and --daemon runs the turn in the host daemon — drop --daemon"));
@@ -101,7 +101,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     let trusted = flag_trust || store.trusts(&trust_as.root(&trust::root(&runs_in)));
     let model = route(ctx, &registry, asked.as_ref(), session_model.as_ref(), &runs_in, trusted)?;
     let runs_native = model.as_ref().or(session_model.as_ref()).and_then(|m| registry.get(&m.instance).ok()).is_some_and(|i| i.backend.is_none());
-    // D4: krowk runs a turn only in Claude Code or Codex — an instance named
+    // D4: gruntas runs a turn only in Claude Code or Codex — an instance named
     // here (`--model`, `defaultModel`, a resumed session's) that is neither
     // is refused before anything starts.
     if runs_native {
@@ -160,7 +160,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
         session,
     };
     // R-PRES-6: the run's record, on stderr when that is a terminal: working
-    // now, and what it came to right before krowk exits, left behind for a
+    // now, and what it came to right before gruntas exits, left behind for a
     // person who started it in another tab.
     // Its first line with text: a prompt piped in may open on a blank one.
     let topic = prompt.trim_start().lines().next().unwrap_or_default().to_string();
@@ -188,7 +188,7 @@ fn report(ctx: &mut Ctx, state: State, msg: &str) {
     }
 }
 
-/// The turn, from its start to what krowk exits with.
+/// The turn, from its start to what gruntas exits with.
 fn turn(ctx: &mut Ctx, cfg: HostConfig, opts: headless::Options) -> Result<(), Error> {
     let format = opts.format;
     let outcome = if ctx.f.daemon { on_daemon(ctx, &cfg.cwd.clone(), opts)? } else { headless::run(cfg, opts, ctx.io.stdout) };
@@ -202,13 +202,13 @@ fn turn(ctx: &mut Ctx, cfg: HostConfig, opts: headless::Options) -> Result<(), E
         }
     }
 
-    // The log is the session; krowk.db is its projection, brought up to date
+    // The log is the session; gruntas.db is its projection, brought up to date
     // now so the listing has it. A store that cannot take it costs the
-    // listing, never the answer — `krowk sessions sync` catches up.
+    // listing, never the answer — `gruntas sessions sync` catches up.
     if let Some(id) = &outcome.session_id
         && let Err(e) = sessions::project_native(ctx.io.env, id)
     {
-        ctx.warn(&format!("the session is saved, but gruntas.db was not updated: {} — `krowk sessions sync` retries", e.fix()));
+        ctx.warn(&format!("the session is saved, but gruntas.db was not updated: {} — `gruntas sessions sync` retries", e.fix()));
     }
     if let Some(e) = outcome.error {
         return Err(engine_error(&e.code, &e.message, e.status));
@@ -219,13 +219,13 @@ fn turn(ctx: &mut Ctx, cfg: HostConfig, opts: headless::Options) -> Result<(), E
             None => fail("turn_failed", "the turn failed"),
         }),
         Some(r) if r.status == TurnStatus::Interrupted => {
-            Err(fail("interrupted", format!("the turn was interrupted; what it produced is kept — continue with `krowk -p --resume {} …`", r.session_id)))
+            Err(fail("interrupted", format!("the turn was interrupted; what it produced is kept — continue with `gruntas -p --resume {} …`", r.session_id)))
         }
         // An early offer (D9): the turn succeeded, and the next one can run elsewhere.
         Some(r) => {
             if let Some(o) = r.switch_offer.as_ref().filter(|o| o.early) {
                 let room = o.room.as_ref().map(|r| format!(" ({r})")).unwrap_or_default();
-                ctx.warn(&format!("{} is running low — continue on {}{room} with `krowk -p --resume {} --model {}`", o.from, o.to, r.session_id, o.to));
+                ctx.warn(&format!("{} is running low — continue on {}{room} with `gruntas -p --resume {} --model {}`", o.from, o.to, r.session_id, o.to));
             }
             Ok(())
         }
@@ -259,7 +259,7 @@ pub(super) fn model_flag(ctx: &Ctx, registry: &Registry) -> Result<Option<instan
 /// that has no model yet, the default. None: the session keeps its model.
 /// The vendors are asked in the session's directory when its repository
 /// is trusted already (`trusted`: `--trust`, or remembered), so the turn's
-/// own check before it starts is answered from the cache; else in krowk's
+/// own check before it starts is answered from the cache; else in gruntas's
 /// own directory, and no trust question is asked for routing.
 pub(super) fn route(ctx: &Ctx, registry: &Registry, asked: Option<&instances::Asked>, session_model: Option<&gruntas_harness::protocol::ModelRef>, runs_in: &std::path::Path, trusted: bool) -> Result<Option<gruntas_harness::protocol::ModelRef>, Error> {
     if asked.is_none() && session_model.is_some() {
@@ -286,13 +286,13 @@ pub(super) fn permission_flag(ctx: &Ctx) -> Result<Option<PermissionMode>, Error
     }
 }
 
-/// `--sandbox`: krowk's OS sandbox held the tools of its own turns, and
+/// `--sandbox`: gruntas's OS sandbox held the tools of its own turns, and
 /// Claude Code and Codex run their own tools outside it, so a profile is
 /// refused rather than ignored; `off` is what every run is.
 fn sandbox_flag(flag: &str) -> Result<(), Error> {
     match flag {
         "" | "off" => Ok(()),
-        s if Profile::parse(s).is_some() => Err(fail("sandbox_unsupported", "Claude Code and Codex run their own tools outside krowk's sandbox — drop --sandbox")),
+        s if Profile::parse(s).is_some() => Err(fail("sandbox_unsupported", "Claude Code and Codex run their own tools outside gruntas's sandbox — drop --sandbox")),
         s => Err(fail("bad_flag", format!("--sandbox {s} is not a profile — one of {}, or off", Profile::NAMES.join(", ")))),
     }
 }
@@ -300,7 +300,7 @@ fn sandbox_flag(flag: &str) -> Result<(), Error> {
 /// The mode a prompt runs in: the flag, else the most specific
 /// `permissions.defaultMode` the settings name (a repository's only once it
 /// is trusted, and never bypassPermissions or unhinged), else default — with the
-/// notices to show: a `defaultMode` krowk does not run is read as default,
+/// notices to show: a `defaultMode` gruntas does not run is read as default,
 /// and with the flag given no file's mode matters. A settings file that
 /// does not parse is named here, flag or not, before anything runs — or
 /// any trust question is asked.
@@ -318,8 +318,8 @@ pub(super) fn bad_settings(e: String) -> Error {
 }
 
 /// What the harness reads permission rules, instructions, skills and hooks
-/// from: krowk's own config.json, Claude Code's user directory
-/// (`CLAUDE_CONFIG_DIR`, else `~/.claude`), and krowk's home,
+/// from: gruntas's own config.json, Claude Code's user directory
+/// (`CLAUDE_CONFIG_DIR`, else `~/.claude`), and gruntas's home,
 /// where remembered grants are kept and which no file tool writes.
 pub(super) fn permissions_config(ctx: &Ctx, config: &serde_json::Value, trusted: permissions::settings::Trusted, approvals: bool) -> permissions::Config {
     let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(std::path::PathBuf::from);
@@ -338,7 +338,7 @@ pub(super) fn permissions_config(ctx: &Ctx, config: &serde_json::Value, trusted:
 }
 
 /// The arguments; stdin only when there are none and it is not a terminal
-/// (`git diff | krowk -p`). Never both: an agent that spawns krowk with a
+/// (`git diff | gruntas -p`). Never both: an agent that spawns gruntas with a
 /// stdin it never closes would otherwise hang a prompt it passed as words.
 fn prompt_text(positionals: &[String]) -> Result<String, Error> {
     let mut prompt = positionals.join(" ");
@@ -348,13 +348,13 @@ fn prompt_text(positionals: &[String]) -> Result<String, Error> {
         let _ = stdin.lock().take(8 << 20).read_to_string(&mut prompt);
     }
     if prompt.trim().is_empty() {
-        return Err(fail("empty_prompt", "-p needs a prompt: `krowk -p \"what does this repo do?\"`, or pipe one in"));
+        return Err(fail("empty_prompt", "-p needs a prompt: `gruntas -p \"what does this repo do?\"`, or pipe one in"));
     }
     Ok(prompt.trim_end().to_string())
 }
 
 /// The harness's part of the global config.json, whose `workspace` key the
-/// rest of krowk reads. A file that does not parse is an error: somebody
+/// rest of gruntas reads. A file that does not parse is an error: somebody
 /// wrote it meaning something.
 /// `--image`: the files' images as a prompt carries them, and the prompt
 /// with each one's `[Image #N]` put before it.
@@ -384,7 +384,7 @@ pub(super) fn rollover_flag(ctx: &Ctx) -> Result<Option<Rollover>, Error> {
     }
 }
 
-/// `--max-usd` and `--max-tokens`, as `krowk sessions budget` reads them:
+/// `--max-usd` and `--max-tokens`, as `gruntas sessions budget` reads them:
 /// the engine refuses the model call that would take the session past
 /// either (R-BUDGET-1).
 pub(super) fn budget_flag(ctx: &Ctx) -> Result<Option<BudgetLimits>, Error> {
@@ -395,7 +395,7 @@ pub(super) fn budget_flag(ctx: &Ctx) -> Result<Option<BudgetLimits>, Error> {
 
 /// R-EVID-1: what the host's `publish` runs — gruntas_push, the MCP server's
 /// own code, against the registry this invocation pushes to (`--dev` is the
-/// stand-in), with the key read the way krowk-mcp reads it: GRUNTAS_TOKEN, then
+/// stand-in), with the key read the way gruntas-mcp reads it: GRUNTAS_TOKEN, then
 /// the workspace the config names. A workspace that names no stored key
 /// refuses uploads rather than landing them anonymously, as there.
 pub(super) fn publisher(ctx: &Ctx) -> Publisher {
@@ -438,7 +438,7 @@ pub(super) fn load_instances() -> Result<instances::InstancesConfig, Error> {
 
 /// The person's own config's instances, with their stored keys: the one
 /// place the CLI names the credentials file keys are read from. An API key
-/// or a gateway it defines for krowk to run itself is turned into a Claude
+/// or a gateway it defines for gruntas to run itself is turned into a Claude
 /// Code or Codex account here, on first use, with a line on stderr for
 /// each (R-NAT-2).
 pub(super) fn instances_from(v: &serde_json::Value) -> Result<instances::InstancesConfig, Error> {
@@ -451,7 +451,7 @@ pub(super) fn instances_from(v: &serde_json::Value) -> Result<instances::Instanc
         true => v,
         false => {
             for line in &converted {
-                eprintln!("krowk: {line}");
+                eprintln!("gruntas: {line}");
             }
             now = config_json()?;
             &now
@@ -473,8 +473,8 @@ pub(super) fn config_json() -> Result<serde_json::Value, Error> {
     serde_json::from_slice(&raw).map_err(|e| fail("bad_config", format!("{} is not valid JSON: {e}", path.display())))
 }
 
-/// `--resume` takes the session id a result names, or anything `krowk
-/// sessions show` takes that resolves to a krowk session.
+/// `--resume` takes the session id a result names, or anything `gruntas
+/// sessions show` takes that resolves to a gruntas session.
 pub(super) fn resolve_resume(ctx: &mut Ctx, sessions_dir: &std::path::Path, reference: &str) -> Result<String, Error> {
     let reference = reference.trim();
     // Resuming an archived session brings it back first (R-VINT-4), and
@@ -492,7 +492,7 @@ pub(super) fn resolve_resume(ctx: &mut Ctx, sessions_dir: &std::path::Path, refe
     if d.session.harness != gruntas_harness::project::HARNESS {
         return Err(fail(
             "no_session",
-            format!("{reference:?} is a {} session — `krowk -p --resume` continues krowk's own sessions only", if d.session.harness.is_empty() { "foreign" } else { &d.session.harness }),
+            format!("{reference:?} is a {} session — `gruntas -p --resume` continues gruntas's own sessions only", if d.session.harness.is_empty() { "foreign" } else { &d.session.harness }),
         ));
     }
     #[cfg(unix)]
@@ -502,7 +502,7 @@ pub(super) fn resolve_resume(ctx: &mut Ctx, sessions_dir: &std::path::Path, refe
 
 /// R-BACK-6: `claude -p` runs a repository's hooks and MCP servers without
 /// the trust dialog Claude Code shows on a terminal, and Codex what its
-/// project config names, so krowk asks its own before a backend is spawned. A repository trusted before, or `--trust`,
+/// project config names, so gruntas asks its own before a backend is spawned. A repository trusted before, or `--trust`,
 /// goes ahead; a person at the terminal is asked, and a yes is remembered;
 /// anything headless is refused. The home directory and `/` are never
 /// offered: only `--trust`, for one run, starts a backend there. Nothing is
@@ -515,10 +515,10 @@ fn trust_gate(flag: bool, ask: bool, dir: std::path::PathBuf, home: Option<std::
             return Ok(());
         }
         if let Some(why) = store.refuses(root) {
-            return Err(trust::untrusted(root, &format!("It cannot be trusted for good — {why}. Pass --trust to run there this once, or run krowk -p from a repository of its own.")));
+            return Err(trust::untrusted(root, &format!("It cannot be trusted for good — {why}. Pass --trust to run there this once, or run gruntas -p from a repository of its own.")));
         }
         if !ask {
-            return Err(store.untrusted(root, "Look at what it would run, then pass --trust to run it anyway, or run `krowk trust` there to trust it for good."));
+            return Err(store.untrusted(root, "Look at what it would run, then pass --trust to run it anyway, or run `gruntas trust` there to trust it for good."));
         }
         if ask_trust(&store, root, vendor) { Ok(()) } else { Err(store.untrusted(root, "Nothing was run.")) }
     })
@@ -539,7 +539,7 @@ pub(super) fn ask_trust(store: &trust::Store, root: &std::path::Path, vendor: &s
     let runs = trust::what_runs(root);
     let why = match vendor {
         "Claude Code" => "Claude Code runs a repository's own hooks and MCP servers without asking.".to_string(),
-        "krowk" => "krowk takes a repository's hooks, allow rules and extra directories only once you trust it.".to_string(),
+        "gruntas" => "gruntas takes a repository's hooks, allow rules and extra directories only once you trust it.".to_string(),
         v => format!("{v} runs a repository's own hooks and MCP servers without asking."),
     };
     let has = if runs.is_empty() { "Nothing of that kind is there now.".to_string() } else { format!("It has {}.", runs.join(", ")) };
@@ -561,7 +561,7 @@ pub(super) fn ask_trust(store: &trust::Store, root: &std::path::Path, vendor: &s
 }
 
 /// Prices a model call from the models.dev cache or the embedded snapshot,
-/// as every figure `krowk sessions` shows is priced. The environment is
+/// as every figure `gruntas sessions` shows is priced. The environment is
 /// captured now: the engine runs on its own thread.
 pub(super) fn pricer(env: &dyn Fn(&str) -> String) -> gruntas_harness::host::Pricer {
     let (own, home) = (env("GRUNTAS_HOME"), env("HOME"));
@@ -600,7 +600,7 @@ pub(super) fn catalog(env: &dyn Fn(&str) -> String) -> gruntas_harness::host::Ca
 }
 
 /// The models.dev cache's listing, which a bare model id is routed by,
-/// read from the cache only, like the catalog; and where krowk's worktrees
+/// read from the cache only, like the catalog; and where gruntas's worktrees
 /// are made.
 pub(super) fn agents_config(env: &dyn Fn(&str) -> String) -> AgentsConfig {
     let home = env("HOME");
@@ -613,12 +613,12 @@ pub(super) fn agents_config(env: &dyn Fn(&str) -> String) -> AgentsConfig {
         };
         pricing::cache_path(&env).and_then(|p| std::fs::read(p).ok()).map(|raw| gruntas_harness::catalog::models(&raw, provider)).unwrap_or_default()
     });
-    // Under the data directory the sandbox knows krowk's worktrees by.
+    // Under the data directory the sandbox knows gruntas's worktrees by.
     let worktrees = gruntas_api::home::worktrees_root(env);
     AgentsConfig { models, worktrees }
 }
 
-/// An engine failure as krowk's error: the code and its fix, with the HTTP
+/// An engine failure as gruntas's error: the code and its fix, with the HTTP
 /// status the provider answered, so the exit code classifies it the way it
 /// classifies a registry failure.
 pub(super) fn engine_error(code: &str, message: &str, status: u16) -> Error {
@@ -633,7 +633,7 @@ mod sandbox_tests {
     #[test]
     fn r_perm_3_a_sandbox_profile_is_refused_and_off_runs() {
         assert!(sandbox_flag("").is_ok() && sandbox_flag("off").is_ok());
-        assert!(sandbox_flag("workspace").unwrap_err().fix().contains("outside krowk's sandbox"));
+        assert!(sandbox_flag("workspace").unwrap_err().fix().contains("outside gruntas's sandbox"));
         assert!(sandbox_flag("loose").unwrap_err().fix().contains("not a profile"));
     }
 }

@@ -19,7 +19,7 @@ pub(super) fn keystore(ctx: &Ctx) -> Result<Keystore, Error> {
 #[cfg(unix)]
 pub(super) fn vintage_keys(ctx: &Ctx) -> Result<(Client, gruntas_harness::vintage::Keys), Error> {
     let ks = keystore(ctx)?;
-    let not_set_up = || fail("not_set_up", "archived sessions are sealed under your user key, which this machine does not hold yet — set sync up with `krowk sync init`, or add this machine from one that syncs with `krowk machines add` and `krowk sync join`");
+    let not_set_up = || fail("not_set_up", "archived sessions are sealed under your user key, which this machine does not hold yet — set sync up with `gruntas sync init`, or add this machine from one that syncs with `gruntas machines add` and `gruntas sync join`");
     let device = ks.device().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(not_set_up)?.id();
     // The list first: a vintage is sealed only under the generation the
     // verified list leaves current, never under one a removed device holds.
@@ -37,7 +37,7 @@ pub(super) fn vintage_keys(ctx: &Ctx) -> Result<(Client, gruntas_harness::vintag
 pub(super) fn keyed_client(ctx: &Ctx, what: &str) -> Result<Client, Error> {
     let client = super::agent::new_client(ctx)?;
     if !client.authenticated() {
-        return Err(fail("not_authenticated", format!("{what} needs an API key to the workspace this machine syncs — run `krowk login`, or set GRUNTAS_TOKEN")));
+        return Err(fail("not_authenticated", format!("{what} needs an API key to the workspace this machine syncs — run `gruntas login`, or set GRUNTAS_TOKEN")));
     }
     Ok(client)
 }

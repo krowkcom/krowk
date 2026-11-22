@@ -1,6 +1,6 @@
 //! Asking for permission through the host (R-PERM-2), for a session
 //! running in Claude Code — the fake `claude` (`common/fake.rs`): a call
-//! Claude Code asks krowk about (`can_use_tool`) that krowk's rules say to
+//! Claude Code asks gruntas about (`can_use_tool`) that gruntas's rules say to
 //! ask a person about is an approval request a client answers over the
 //! protocol, and with nobody to ask it is refused at once, saying what
 //! would allow it. Claude Code's own permissions, hooks, skills and
@@ -84,14 +84,14 @@ fn prompt(text: &str, mode: PermissionMode) -> Command {
     }
 }
 
-/// A model that runs one bash command — Claude Code asking krowk first —
+/// A model that runs one bash command — Claude Code asking gruntas first —
 /// then answers. The fake makes `file`, as the command would, only if it
 /// was allowed.
 fn one_bash(command: &str, file: &str) -> String {
     format!("{}\n@touch {file}\n{}", fake::asks_bash("toolu_01Call", command), fake::answer("Done."))
 }
 
-/// Runs a prompt with no client answering approvals, as `krowk -p` does.
+/// Runs a prompt with no client answering approvals, as `gruntas -p` does.
 fn run(host: &Host, cmd: Command) -> (Vec<StreamLine>, RunResult) {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     rt.block_on(async {

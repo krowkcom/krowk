@@ -1,4 +1,4 @@
-$ krowk runs start --title "first" --pull-request https://github.com/o/r/pull/2 --session sess --repo o/r --commit deadbeef --agent claude
+$ gruntas runs start --title "first" --pull-request https://github.com/o/r/pull/2 --session sess --repo o/r --commit deadbeef --agent claude
 stdout:
 {
   "ok": true,
@@ -21,19 +21,19 @@ stdout:
   "breadcrumbs": [
     {
       "action": "attach uploads",
-      "cmd": "krowk push <file> --run <run_1>",
+      "cmd": "gruntas push <file> --run <run_1>",
       "description": "every push naming this run is grouped under it and inherits the metadata recorded on it; <file> is the path to upload"
     },
     {
       "action": "close",
-      "cmd": "krowk runs finish <run_1>",
+      "cmd": "gruntas runs finish <run_1>",
       "description": "marks the run finished; a run stays open until something says so"
     }
   ]
 }
 exit: 0
 
-$ krowk runs start
+$ gruntas runs start
 stdout:
 {
   "ok": true,
@@ -49,19 +49,19 @@ stdout:
   "breadcrumbs": [
     {
       "action": "attach uploads",
-      "cmd": "krowk push <file> --run <run_2>",
+      "cmd": "gruntas push <file> --run <run_2>",
       "description": "every push naming this run is grouped under it and inherits the metadata recorded on it; <file> is the path to upload"
     },
     {
       "action": "close",
-      "cmd": "krowk runs finish <run_2>",
+      "cmd": "gruntas runs finish <run_2>",
       "description": "marks the run finished; a run stays open until something says so"
     }
   ]
 }
 exit: 0
 
-$ krowk runs list
+$ gruntas runs list
 stdout:
 {
   "ok": true,
@@ -96,7 +96,7 @@ stdout:
 }
 exit: 0
 
-$ krowk runs list --limit 1
+$ gruntas runs list --limit 1
 stdout:
 {
   "ok": true,
@@ -117,20 +117,20 @@ stdout:
   "breadcrumbs": [
     {
       "action": "next page",
-      "cmd": "krowk runs list --limit 1 --before <run_2>",
+      "cmd": "gruntas runs list --limit 1 --before <run_2>",
       "description": "this page came back full, so any older rows are behind that cursor"
     }
   ]
 }
 exit: 0
 
-$ krowk runs list --format human
+$ gruntas runs list --format human
 stdout:
 <run_2>  open
 <run_1>  open  first
 exit: 0
 
-$ krowk runs show <run_3>
+$ gruntas runs show <run_3>
 stderr:
 {
   "ok": false,
@@ -144,7 +144,7 @@ stderr:
 }
 exit: 2
 
-$ krowk runs finish <run_3>
+$ gruntas runs finish <run_3>
 stderr:
 {
   "ok": false,

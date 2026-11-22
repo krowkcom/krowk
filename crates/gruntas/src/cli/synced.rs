@@ -1,4 +1,4 @@
-//! `krowk sync sessions`, `krowk sync host` and `krowk sync attach`: a
+//! `gruntas sync sessions`, `gruntas sync host` and `gruntas sync attach`: a
 //! session running on one machine, watched and steered from another
 //! (engineering/harness.md → Sync). The bridge and the viewer are
 //! `gruntas_harness::sync`; this is the command line around them.
@@ -25,7 +25,7 @@
 //!   announced, then follows it as `attach` does.
 //!
 //! The relay is `GRUNTAS_RELAY_URL`, else the reference relay on this
-//! machine (`krowk relay serve`), until the hosted relay has a published
+//! machine (`gruntas relay serve`), until the hosted relay has a published
 //! address.
 
 use super::sync::{keyed_client, keystore};
@@ -49,7 +49,7 @@ struct Keys {
 
 fn keys(ctx: &Ctx) -> Result<Keys, Error> {
     let ks = keystore(ctx)?;
-    let device = ks.device().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(|| fail("not_set_up", "this machine has no sync keys — run `krowk sync init`, `recover` or `join` first"))?.id();
+    let device = ks.device().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(|| fail("not_set_up", "this machine has no sync keys — run `gruntas sync init`, `recover` or `join` first"))?.id();
     // Every session key is sealed under the person's user key, so a
     // machine without it has nothing to open or seal with.
     let user = ks.user_keys().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(|| fail("not_set_up", "this machine holds no user key yet — add it to your devices from one that does, or recover with your kit"))?;
@@ -88,7 +88,7 @@ fn signed(ctx: &Ctx, k: &Keys, what: &str) -> Result<Client, Error> {
 const HOSTED_RELAY: &str = "wss://relay.krowk.com";
 
 /// The relay a sync link dials: `GRUNTAS_RELAY_URL` when set, else the hosted
-/// relay for the production registry, else the local stand-in (`krowk relay
+/// relay for the production registry, else the local stand-in (`gruntas relay
 /// serve`) that a stand-in or custom registry is run beside.
 fn relay(ctx: &Ctx, base_url: &str) -> String {
     relay_for(&ctx.env("GRUNTAS_RELAY_URL"), base_url)
@@ -128,14 +128,14 @@ fn direct(ctx: &mut Ctx, api: &Client) -> Result<Option<gruntas_harness::sync::d
     let roster = match roster {
         Ok(roster) => roster,
         Err(why) => {
-            let _ = writeln!(ctx.io.stderr, "krowk: no direct path ({why}); the session goes by the relay");
+            let _ = writeln!(ctx.io.stderr, "gruntas: no direct path ({why}); the session goes by the relay");
             return Ok(None);
         }
     };
     Ok(Some(gruntas_harness::sync::direct::Config { socket, roster, same_user, lan, lan_at: None, stop: None, whois_kept: None, lan_check: None }))
 }
 
-/// Where the registry's ticket keys are kept between hostings, in krowk's
+/// Where the registry's ticket keys are kept between hostings, in gruntas's
 /// cache: `{"registry": "<base url>", "fetchedMs": <ms>, "ticketKeys": {...}}`.
 const TICKET_KEYS_CACHE: &str = "relay-ticket-keys.json";
 
@@ -144,7 +144,7 @@ const TICKET_KEYS_CACHE: &str = "relay-ticket-keys.json";
 /// longer than this after the last fetch that listed it.
 const TICKET_KEYS_KEPT_MS: i64 = 24 * 60 * 60 * 1000;
 
-/// The keys `GRUNTAS_RELAY_TICKET_KEYS` names a file of (the one `krowk relay
+/// The keys `GRUNTAS_RELAY_TICKET_KEYS` names a file of (the one `gruntas relay
 /// serve --ticket-keys` reads), for a stand-in registry: they win over the
 /// registry's. None when it is unset; a file that does not read is an error.
 fn named_ticket_keys(ctx: &Ctx) -> Result<Option<gruntas_harness::relay::Roster>, Error> {
@@ -204,7 +204,7 @@ fn kept_keys(text: &str, registry: &str, now_ms: i64) -> Option<gruntas_harness:
     gruntas_harness::relay::Roster::parse(text).ok()
 }
 
-/// `krowk machines` (R-NET-4, R-HOST-3): the machines of yours that host
+/// `gruntas machines` (R-NET-4, R-HOST-3): the machines of yours that host
 /// synced sessions, from the registry's sessions and your device list, each
 /// marked hosting when it holds one's lease now and direct when the
 /// tailnet reaches it — no tag, and no step in the Tailscale admin
@@ -219,7 +219,7 @@ fn kept_keys(text: &str, registry: &str, now_ms: i64) -> Option<gruntas_harness:
 pub(super) fn machines(ctx: &mut Ctx) -> Result<(), Error> {
     use gruntas_harness::sync::{hosts::Announced, tailscale};
     let k = keys(ctx)?;
-    let api = signed(ctx, &k, "krowk machines")?;
+    let api = signed(ctx, &k, "gruntas machines")?;
     // A removed device is refused here (`device_revoked`), in the
     // registry's own words. A registry that keeps no presences yet has
     // none to list.
@@ -257,8 +257,8 @@ pub(super) fn machines(ctx: &mut Ctx) -> Result<(), Error> {
         .map(|(h, online)| {
             let (origin, url) = here.as_ref().filter(|_| !h.this_machine)?;
             Some(match &h.announced {
-                None => "no announcement yet: run krowk machines always-on on there".to_string(),
-                Some(_) if !online => "offline: start krowk's host service there".to_string(),
+                None => "no announcement yet: run gruntas machines always-on on there".to_string(),
+                Some(_) if !online => "offline: start gruntas's host service there".to_string(),
                 Some(a) => gruntas_harness::sync::hosts::fix(&a.announcement, origin, url).unwrap_or_else(|| "ready".into()),
             })
         })
@@ -314,7 +314,7 @@ pub(super) fn machines(ctx: &mut Ctx) -> Result<(), Error> {
         let _ = writeln!(ctx.io.stdout, "\n{}", super::recovery::REMINDER);
     }
     if hosts.is_empty() {
-        let _ = writeln!(ctx.io.stdout, "no machine of yours hosts a synced session or announces itself yet — `krowk sync host <session>` on one hosts it");
+        let _ = writeln!(ctx.io.stdout, "no machine of yours hosts a synced session or announces itself yet — `gruntas sync host <session>` on one hosts it");
     }
     // A new machine that signed in, and the code to type on it: last, as it
     // waits on a person.
@@ -347,7 +347,7 @@ fn repository_here() -> Option<(String, String)> {
 /// and its directories, home as `~`.
 fn announced_lines(a: &gruntas_harness::sync::hosts::Announced, now: jiff::Timestamp) -> Vec<String> {
     let r = &a.announcement;
-    let mut out = vec![if a.online { format!("online · krowk {}", r.version) } else { format!("offline · last seen {}", ago(&a.updated_at, now)) }];
+    let mut out = vec![if a.online { format!("online · gruntas {}", r.version) } else { format!("offline · last seen {}", ago(&a.updated_at, now)) }];
     let ready: Vec<String> = r.instances.iter().filter(|i| i.ready).map(|i| match &i.models[..] {
         [] => i.name.clone(),
         [one] => format!("{} ({one})", i.name),
@@ -374,7 +374,7 @@ fn announced_lines(a: &gruntas_harness::sync::hosts::Announced, now: jiff::Times
 }
 
 /// A path on another machine with its home shown as `~`: `/home/<name>`,
-/// `/Users/<name>` or `/root`, the homes krowk's platforms make.
+/// `/Users/<name>` or `/root`, the homes gruntas's platforms make.
 fn home_as_tilde(path: &str) -> String {
     let rest = |prefix: &str| path.strip_prefix(prefix).and_then(|r| match r.split_once('/') {
         Some((name, rest)) if !name.is_empty() => Some(format!("~/{rest}")),
@@ -404,11 +404,11 @@ fn ago(at: &str, now: jiff::Timestamp) -> String {
 fn one(args: &[String], what: &str) -> Result<String, Error> {
     match args {
         [s] => Ok(s.clone()),
-        _ => Err(fail("bad_args", format!("`krowk sync {what}` takes one session id"))),
+        _ => Err(fail("bad_args", format!("`gruntas sync {what}` takes one session id"))),
     }
 }
 
-/// What `krowk sessions` adds to this machine's own list: this machine's name
+/// What `gruntas sessions` adds to this machine's own list: this machine's name
 /// on the device list, and the synced sessions it can open, newest first.
 /// `None` when sync is not set up here, so nothing is asked of the registry;
 /// `Err` is why the other machines' sessions could not be listed.
@@ -419,7 +419,7 @@ pub(super) fn listing(ctx: &Ctx) -> Option<Result<(String, Vec<SyncedRow>), Stri
         Err(e) => return Some(Err(e.fix())),
     };
     let run = || -> Result<(String, Vec<SyncedRow>), Error> {
-        let api = signed(ctx, &k, "krowk sessions")?;
+        let api = signed(ctx, &k, "gruntas sessions")?;
         let (listed, _) = viewer::list(&api, &k.user, &k.chain)?;
         let name_of = |id: &str| k.chain.devices().iter().find(|d| d.kind == gruntas_client::device_chain::Kind::Device && d.id().to_string() == id).map(|d| super::sync::printable(&d.name));
         let this = name_of(&k.device.to_string()).unwrap_or_else(|| "this machine".into());
@@ -442,7 +442,7 @@ pub(super) fn listing(ctx: &Ctx) -> Option<Result<(String, Vec<SyncedRow>), Stri
 
 pub(super) fn sessions(ctx: &mut Ctx) -> Result<(), Error> {
     let k = keys(ctx)?;
-    let api = signed(ctx, &k, "krowk sync sessions")?;
+    let api = signed(ctx, &k, "gruntas sync sessions")?;
     let (listed, unreadable) = viewer::list(&api, &k.user, &k.chain)?;
     let rows: Vec<_> = listed.iter().map(|s| json!({"id": s.id, "title": s.index.title, "cwd": s.index.cwd, "updatedMs": s.index.updated_ms, "host": s.holder})).collect();
     if ctx.format == crate::output::Format::Json {
@@ -464,7 +464,7 @@ pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
     // the bridge would take the session's lease in the registry and then
     // have nothing to follow: said here, before anything is written there.
     if !gruntas_harness::log::valid_id(&session) {
-        return Err(fail("bad_session", format!("{session:?} is not a session id — `krowk sessions` lists this machine's")));
+        return Err(fail("bad_session", format!("{session:?} is not a session id — `gruntas sessions` lists this machine's")));
     }
     let session = local_log(ctx, &session)?;
     // Synced already by this machine's daemon (automatic sync): a second
@@ -503,7 +503,7 @@ fn host_once(ctx: &mut Ctx, session: &str, cwd: &std::path::Path, handed: Option
 
 /// A bridge's options for `session`, whose own directory is `cwd`: the
 /// device list brought up to date first, then the keys it leaves current,
-/// the signed registry client, the relay and the direct paths. What `krowk
+/// the signed registry client, the relay and the direct paths. What `gruntas
 /// sync host` runs the bridge with, and what the host daemon's automatic
 /// sync builds each of its bridges with (`host::serve`). May ask the
 /// registry: never on the daemon's thread.
@@ -511,7 +511,7 @@ pub(super) fn options(ctx: &mut Ctx, session: &str, cwd: &std::path::Path, hande
     // The list first: a newer key it takes up is the one `keys` reads.
     current(ctx)?;
     let k = keys(ctx)?;
-    let api = Arc::new(signed(ctx, &k, "krowk sync host")?);
+    let api = Arc::new(signed(ctx, &k, "gruntas sync host")?);
     let env = gruntas_api::relay_env(&api.base_url, ctx.io.env).to_string();
     let direct = direct(ctx, &api)?;
     Ok(host::Options {
@@ -529,7 +529,7 @@ pub(super) fn options(ctx: &mut Ctx, session: &str, cwd: &std::path::Path, hande
         ttl: host::LEASE_TTL,
         keep: host::KEEP,
         direct,
-        // Kept in the session's sealed index, for `krowk machines`.
+        // Kept in the session's sealed index, for `gruntas machines`.
         tailnet: gruntas_harness::sync::tailscale::status(&gruntas_harness::sync::tailscale::socket(ctx.io.env)).ok().and_then(|s| s.tailnet()),
         handed,
         approval_wait: host::APPROVAL_WAIT,
@@ -553,7 +553,7 @@ pub(super) fn announcer(ctx: &mut Ctx, fresh: bool) -> Result<gruntas_harness::s
     Ok(gruntas_harness::sync::announce::Announcer { api, keys: k.user, chain: k.chain, device: k.device })
 }
 
-/// The `Placer` krowk-mcp's delegation places by (R-ALLOC-11), made on
+/// The `Placer` gruntas-mcp's delegation places by (R-ALLOC-11), made on
 /// the first call that asks and then kept, so its placements of the last 30
 /// seconds count: none when sync is not set up here. When `local`, its
 /// `Placer` also runs a
@@ -596,7 +596,7 @@ fn made(f: &super::flags::Flags, local: bool) -> Option<Arc<gruntas_harness::syn
 /// Interrupts the turn `session` is running, as a viewer does.
 fn interrupt(ctx: &mut Ctx, session: &str) -> Result<(), String> {
     let k = keys(ctx).map_err(|e| e.fix())?;
-    let api = signed(ctx, &k, "krowk sync").map_err(|e| e.fix())?;
+    let api = signed(ctx, &k, "gruntas sync").map_err(|e| e.fix())?;
     let env = gruntas_api::relay_env(&api.base_url, ctx.io.env).to_string();
     let relay = relay(ctx, &api.base_url);
     let o = gruntas_harness::sync::viewer::Options { relay, env, api: Arc::new(api), device: k.device, signing: k.signing, keys: k.user, chain: k.chain, session: session.to_string(), known: None, addrs: None };
@@ -618,8 +618,8 @@ pub(super) fn ready(ctx: &Ctx) -> Result<(), Error> {
 }
 
 /// The id of the log this machine keeps for `session`: the id itself, or —
-/// for the id `krowk sessions` listed a session under before its row took
-/// its log's id — the log id krowk.db binds it to.
+/// for the id `gruntas sessions` listed a session under before its row took
+/// its log's id — the log id gruntas.db binds it to.
 fn local_log(ctx: &Ctx, session: &str) -> Result<String, Error> {
     let dir = gruntas_harness::log::sessions_dir(ctx.io.env)?;
     let has_log = |id: &str| dir.join(id).join(gruntas_harness::log::EVENTS_FILE).is_file();
@@ -627,14 +627,14 @@ fn local_log(ctx: &Ctx, session: &str) -> Result<String, Error> {
         return Ok(session.to_string());
     }
     log_id_for(ctx, session).filter(|id| has_log(id)).ok_or_else(|| {
-        fail("no_session", format!("this machine has no session {session} to host — start one here (`krowk`, or `krowk -p \"...\"`), then `krowk sync host <its id>`; `krowk sessions` lists this machine's"))
+        fail("no_session", format!("this machine has no session {session} to host — start one here (`gruntas`, or `gruntas -p \"...\"`), then `gruntas sync host <its id>`; `gruntas sessions` lists this machine's"))
     })
 }
 
-/// The log id of the native session krowk.db stores under `id`: a session
+/// The log id of the native session gruntas.db stores under `id`: a session
 /// stored before its row took its log's id is listed under the other one.
 /// None for anything else, a store that cannot be read included — never a
-/// new krowk.db made just to look.
+/// new gruntas.db made just to look.
 fn log_id_for(ctx: &Ctx, id: &str) -> Option<String> {
     if !gruntas_store::db_path(ctx.io.env).ok()?.is_file() {
         return None;
@@ -643,7 +643,7 @@ fn log_id_for(ctx: &Ctx, id: &str) -> Option<String> {
     gruntas_store::foreign_session_id(&conn, id, gruntas_harness::project::HARNESS).ok().flatten()
 }
 
-/// `krowk sync take <session>` (R-HAND-1, R-HAND-5, R-INST-5, R-CRED-1):
+/// `gruntas sync take <session>` (R-HAND-1, R-HAND-5, R-INST-5, R-CRED-1):
 /// the session moved here from the machine hosting it, run from a clone of
 /// its repository. Nothing moves until this machine has shown it can run
 /// the session — its instance here by name, signed in, its model reachable,
@@ -652,15 +652,15 @@ pub(super) fn take(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     use gruntas_harness::sync::{handoff, store};
     let session = one(args, "take")?;
     if !gruntas_harness::log::valid_id(&session) {
-        return Err(fail("bad_session", format!("{session:?} is not a session id — `krowk sessions` lists them")));
+        return Err(fail("bad_session", format!("{session:?} is not a session id — `gruntas sessions` lists them")));
     }
     let cwd = std::env::current_dir().map_err(|e| fail("no_cwd", e.to_string()))?;
     current(ctx)?;
     let k = keys(ctx)?;
-    let api = Arc::new(signed(ctx, &k, "krowk sync take")?);
+    let api = Arc::new(signed(ctx, &k, "gruntas sync take")?);
     let me = k.device.to_string();
     let read_log = |api: &Client| -> Result<Vec<serde_json::Value>, Error> {
-        let s = api.show_sync_session(&session).map_err(|e| if e.status == 404 { fail("no_session", format!("the registry holds no synced session {session} — `krowk sessions` lists them")) } else { e })?;
+        let s = api.show_sync_session(&session).map_err(|e| if e.status == 404 { fail("no_session", format!("the registry holds no synced session {session} — `gruntas sessions` lists them")) } else { e })?;
         let key = store::open_session_key(&s, &session, &k.user, &k.chain, gruntas_client::session_record::Signer::EverHeld).map_err(|e| fail("sync_failed", e))?;
         let index = store::open_index(&key, &session, &s.sealed_index).map_err(|e| fail("sync_failed", e))?;
         Ok(store::attach(api, &key, &session, index, None).map_err(|e| fail("sync_failed", e))?.events)
@@ -668,7 +668,7 @@ pub(super) fn take(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     match api.show_sync_session(&session).ok().and_then(|s| s.lease) {
         Some(l) if l.device == me => return Err(fail("already_here", format!("this machine hosts session {session} already"))),
         Some(_) => {}
-        None => return Err(fail("no_host", format!("session {session} has no host right now, so there is no live work to move; `krowk sync host {session}` on the machine that has it, then take it again"))),
+        None => return Err(fail("no_host", format!("session {session} has no host right now, so there is no live work to move; `gruntas sync host {session}` on the machine that has it, then take it again"))),
     }
     let events = read_log(&api)?;
     let home = ready_here(ctx, &session, &events, &cwd)?;
@@ -679,13 +679,13 @@ pub(super) fn take(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let env = gruntas_api::relay_env(&api.base_url, ctx.io.env).to_string();
     let v = keys(ctx)?;
     let o = viewer::Options { relay: relay(ctx, &api.base_url), env, api: api.clone(), device: v.device, signing: v.signing, keys: v.user, chain: v.chain, session: session.clone(), known: None, addrs: None };
-    let _ = writeln!(ctx.io.stderr, "krowk: asking the session's host to hand it over…");
+    let _ = writeln!(ctx.io.stderr, "gruntas: asking the session's host to hand it over…");
     let handed = match gruntas_harness::sync::ask_handoff(o, std::time::Duration::from_secs(300)) {
         Ok(h) => h,
         // The host may have handed the lease over with an answer that never
         // came: said as it is, not as a refusal.
         Err(e) if api.show_sync_session(&session).ok().and_then(|s| s.lease).is_some_and(|l| l.device == me) => {
-            return Err(fail("handoff_lost", format!("the host handed session {session} to this machine, but its answer did not arrive ({e}); the lease lapses in a minute — then `krowk sync host {session}` on the machine whose work it is")));
+            return Err(fail("handoff_lost", format!("the host handed session {session} to this machine, but its answer did not arrive ({e}); the lease lapses in a minute — then `gruntas sync host {session}` on the machine whose work it is")));
         }
         // This machine is over its machine limit: the host said why, and
         // the session stays there (R-SYNC-17).
@@ -702,11 +702,11 @@ pub(super) fn take(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         let _ = api.release_lease(&session, &handed.token);
         e
     };
-    let key = handoff::key_from_hex(&handed.key).ok_or_else(|| give_back(fail("handoff_failed", "the host sent no key this krowk reads")))?;
+    let key = handoff::key_from_hex(&handed.key).ok_or_else(|| give_back(fail("handoff_failed", "the host sent no key this gruntas reads")))?;
     let sealed = api.read_transport(&handed.transport).map_err(give_back)?;
     let plain = gruntas_client::e2e::open_transport(&sealed, &gruntas_harness::daemon::ws::uuid(&session), &key).map_err(|e| give_back(fail("handoff_failed", e.to_string())))?;
     let bundle = handoff::Bundle::decode(&plain, &session).map_err(|e| give_back(fail("handoff_failed", e)))?;
-    let root = gruntas_api::home::worktrees_root(ctx.io.env).ok_or_else(|| give_back(fail("no_home", "krowk found no home directory to make worktrees under — set HOME or XDG_DATA_HOME")))?;
+    let root = gruntas_api::home::worktrees_root(ctx.io.env).ok_or_else(|| give_back(fail("no_home", "gruntas found no home directory to make worktrees under — set HOME or XDG_DATA_HOME")))?;
     let applied = handoff::apply(&bundle, &cwd, &root).map_err(|e| give_back(fail("handoff_failed", format!("{e} — the session's lease was given back; host it again where it was"))))?;
     let _ = api.spend_transport(&handed.transport);
     // And past here the worktree goes too.
@@ -746,8 +746,8 @@ fn ready_here(ctx: &Ctx, session: &str, events: &[serde_json::Value], cwd: &std:
     let stays = "the session stays where it is";
     let config = super::prompt::config_json()?;
     let registry = gruntas_harness::instances::Registry::resolve(&super::prompt::instances_from(&config)?, &gruntas_api::home::process_env);
-    let inst = registry.get(&name).map_err(|_| fail("instance_missing", format!("session {session} runs on the {name} instance, which this machine does not have — {stays}; connect it here under the same name with `krowk connect`, then take it again")))?;
-    // D4: a session on an instance krowk would run itself goes nowhere.
+    let inst = registry.get(&name).map_err(|_| fail("instance_missing", format!("session {session} runs on the {name} instance, which this machine does not have — {stays}; connect it here under the same name with `gruntas connect`, then take it again")))?;
+    // D4: a session on an instance gruntas would run itself goes nowhere.
     if inst.backend.is_none() {
         return Err(fail("removed_provider", gruntas_harness::connect::NO_DIRECT_MODELS));
     }
@@ -760,7 +760,7 @@ fn ready_here(ctx: &Ctx, session: &str, events: &[serde_json::Value], cwd: &std:
     let store = trust::Store::new(Some(super::providers::krowk_dir()?.join(trust::FILE)), Some(ctx.env("HOME")).filter(|h| !h.is_empty()).map(Into::into));
     let root = trust::root(cwd);
     if !store.trusts(&root) {
-        return Err(fail("untrusted_directory", format!("{} is not a repository you have trusted, and the session runs on {}, which runs what a repository configures — {stays}; run `krowk trust` there, then take it again", root.display(), inst.vendor)));
+        return Err(fail("untrusted_directory", format!("{} is not a repository you have trusted, and the session runs on {}, which runs what a repository configures — {stays}; run `gruntas trust` there, then take it again", root.display(), inst.vendor)));
     }
     Ok(b.home.clone())
 }
@@ -769,7 +769,7 @@ pub(super) fn attach(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let session = one(args, "attach")?;
     current(ctx)?;
     let k = keys(ctx)?;
-    let api = Arc::new(signed(ctx, &k, "krowk sync attach")?);
+    let api = Arc::new(signed(ctx, &k, "gruntas sync attach")?);
     let env = gruntas_api::relay_env(&api.base_url, ctx.io.env).to_string();
     let o = viewer::Options { relay: relay(ctx, &api.base_url), env, api, device: k.device, signing: k.signing, keys: k.user, chain: k.chain, session: session.clone(), known: None, addrs: None };
     gruntas_harness::sync::run_attach(o, &mut *ctx.io.stdout).map_err(|e| fail("sync_failed", e))
@@ -787,9 +787,9 @@ const ANSWER_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
 /// automatic sync takes it up to at its first turn.
 const APPEAR_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// `krowk sync new --host <name> --cwd <dir> [--model <instance>/<id>]
+/// `gruntas sync new --host <name> --cwd <dir> [--model <instance>/<id>]
 /// "<prompt>"` (R-HOST-4): another machine of the person's asked to start a
-/// session, then followed as `krowk sync attach` follows one. A host that
+/// session, then followed as `gruntas sync attach` follows one. A host that
 /// is offline, a directory it did not announce and a model it has no ready
 /// instance for are refused here, from its announcement, before anything is
 /// sent; the host checks again, and its own refusal is said the same way.
@@ -798,22 +798,22 @@ pub(super) fn new_session(ctx: &mut Ctx, args: &[String], form: &str) -> Result<
     use gruntas_client::host_command::{self, HostAnswer, HostCommand};
     let prompt = args.join(" ");
     let on = if form == "sync new" { "--host" } else { "--on" };
-    let example = format!("e.g. krowk {form} {on} desktop --cwd ~/code/app \"fix the tests\"");
+    let example = format!("e.g. gruntas {form} {on} desktop --cwd ~/code/app \"fix the tests\"");
     if prompt.trim().is_empty() {
-        return Err(fail("bad_args", format!("`krowk {form}` takes the session's first prompt — {example}")));
+        return Err(fail("bad_args", format!("`gruntas {form}` takes the session's first prompt — {example}")));
     }
     let (asked, dir) = (ctx.f.host.trim().to_string(), ctx.f.cwd.trim().to_string());
     if asked.is_empty() {
-        return Err(fail("bad_args", format!("`krowk {form}` needs {on}, the machine to start the session on (`krowk machines` lists yours) — {example}")));
+        return Err(fail("bad_args", format!("`gruntas {form}` needs {on}, the machine to start the session on (`gruntas machines` lists yours) — {example}")));
     }
     if dir.is_empty() {
-        return Err(fail("bad_args", format!("`krowk {form}` needs --cwd, the directory there to start it in (`krowk machines` lists what each machine offers) — {example}")));
+        return Err(fail("bad_args", format!("`gruntas {form}` needs --cwd, the directory there to start it in (`gruntas machines` lists what each machine offers) — {example}")));
     }
     let here = std::env::current_dir().map_err(|e| fail("no_cwd", e.to_string()))?;
     let cwd = absolute(&dir, &ctx.env("HOME"), &here)?;
     current(ctx)?;
     let k = keys(ctx)?;
-    let api = signed(ctx, &k, "krowk sync new")?;
+    let api = signed(ctx, &k, "gruntas sync new")?;
     let host = find_host(&k.chain, &asked)?;
     let (to, name, now) = (host.id(), host.name.clone(), jiff::Timestamp::now());
     let presences = match api.list_presences() {
@@ -828,7 +828,7 @@ pub(super) fn new_session(ctx: &mut Ctx, args: &[String], form: &str) -> Result<
             // Offline is what matters then, whatever its last words were
             // sealed under.
             Err(_) if !p.online => return Err(offline(&name, &format!("last seen {}", ago(&p.updated_at, now)))),
-            Err(e) => return Err(fail("host_unreadable", format!("{name}'s announcement does not open on this machine ({e}) — `krowk sync status` here, and on {name}, checks each one's keys"))),
+            Err(e) => return Err(fail("host_unreadable", format!("{name}'s announcement does not open on this machine ({e}) — `gruntas sync status` here, and on {name}, checks each one's keys"))),
         },
     };
     let model = startable(&name, announced.as_ref(), &cwd, &ctx.f.model, now)?;
@@ -849,16 +849,16 @@ pub(super) fn new_session(ctx: &mut Ctx, args: &[String], form: &str) -> Result<
                 std::thread::sleep(ANSWER_EVERY * tries);
             }
             // The last try may have landed with its answer lost.
-            Err(e) if unreachable(&e) => return Err(fail(&e.code(), format!("the start could not be sent to {name} ({}) — it may still have reached it and start the session; krowk sessions will list it", e.code()))),
+            Err(e) if unreachable(&e) => return Err(fail(&e.code(), format!("the start could not be sent to {name} ({}) — it may still have reached it and start the session; gruntas sessions will list it", e.code()))),
             Err(e) => return Err(e),
         }
     }
-    let _ = writeln!(ctx.io.stderr, "krowk: asked {} to start the session — waiting for it (up to 10 s)…", super::sync::printable(&name));
+    let _ = writeln!(ctx.io.stderr, "gruntas: asked {} to start the session — waiting for it (up to 10 s)…", super::sync::printable(&name));
     let deadline = std::time::Instant::now() + ANSWER_WAIT;
     let answer = loop {
         match api.host_command(&to.to_string(), &id) {
             Ok(s) if s.answered => {
-                let Some(sealed) = s.answer else { return Err(fail("bad_answer", format!("{name} answered with nothing this krowk reads"))) };
+                let Some(sealed) = s.answer else { return Err(fail("bad_answer", format!("{name} answered with nothing this gruntas reads"))) };
                 break host_command::open_answer(&sealed, &id, &to, &k.device, &k.user, &k.chain).map_err(|e| fail("bad_answer", e))?;
             }
             Ok(_) => {}
@@ -866,7 +866,7 @@ pub(super) fn new_session(ctx: &mut Ctx, args: &[String], form: &str) -> Result<
             Err(e) => return Err(e),
         }
         if std::time::Instant::now() >= deadline {
-            return Err(fail("host_silent", format!("{name} didn't answer within 30 s — it may still start the session; krowk sessions will list it")));
+            return Err(fail("host_silent", format!("{name} didn't answer within 30 s — it may still start the session; gruntas sessions will list it")));
         }
         std::thread::sleep(ANSWER_EVERY);
     };
@@ -886,17 +886,17 @@ pub(super) fn new_session(ctx: &mut Ctx, args: &[String], form: &str) -> Result<
             Ok(_) => break,
             Err(e) if (e.status == 404 || unreachable(&e)) && std::time::Instant::now() < deadline => std::thread::sleep(ANSWER_EVERY),
             Err(e) if e.status == 404 => {
-                return Err(fail("no_session", format!("{name} started session {session}, but it has not reached the registry within 10 s — `krowk sessions attach {session}` follows it once it does")));
+                return Err(fail("no_session", format!("{name} started session {session}, but it has not reached the registry within 10 s — `gruntas sessions attach {session}` follows it once it does")));
             }
             Err(e) => return Err(e),
         }
     }
-    let _ = writeln!(ctx.io.stderr, "krowk: {} started session {session}; following it", super::sync::printable(&name));
+    let _ = writeln!(ctx.io.stderr, "gruntas: {} started session {session}; following it", super::sync::printable(&name));
     attach(ctx, &[session])
 }
 
 /// A host's refusal code as it is reported, which picks the exit code: one
-/// of krowk's own shape, else `host_refused`.
+/// of gruntas's own shape, else `host_refused`.
 fn refusal_code(code: &str) -> &str {
     let ours = !code.is_empty() && code.len() <= gruntas_client::host_command::MAX_CODE && code.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
     if ours { code } else { "host_refused" }
@@ -911,7 +911,7 @@ fn find_host<'a>(chain: &'a Chain, asked: &str) -> Result<&'a gruntas_client::de
     let found: Vec<_> = chain.devices().iter().filter(|d| d.kind == gruntas_client::device_chain::Kind::Device).filter(|d| d.name.to_lowercase() == lower || (by_id && d.id().to_string().starts_with(&lower))).collect();
     match found[..] {
         [one] => Ok(one),
-        [] => Err(fail("no_host", format!("no machine named '{}' — krowk machines lists yours", super::sync::printable(asked)))),
+        [] => Err(fail("no_host", format!("no machine named '{}' — gruntas machines lists yours", super::sync::printable(asked)))),
         _ => {
             let named: Vec<String> = found.iter().map(|d| format!("{} ({})", super::sync::printable(&d.name), &d.id().to_string()[..12])).collect();
             Err(fail("ambiguous_host", format!("'{}' names more than one machine: {} — pass --host with 8 or more characters of its id", super::sync::printable(asked), named.join(", "))))
@@ -931,7 +931,7 @@ fn startable(name: &str, announced: Option<&gruntas_harness::sync::hosts::Announ
         _ => return Err(offline(name, &announced.map_or_else(|| "not announced".to_string(), |a| format!("last seen {}", ago(&a.updated_at, now))))),
     };
     if !a.directories.iter().any(|d| d == cwd) {
-        let offers = if a.directories.is_empty() { "none yet — run `krowk trust` in a repository there".to_string() } else { a.directories.join(", ") };
+        let offers = if a.directories.is_empty() { "none yet — run `gruntas trust` in a repository there".to_string() } else { a.directories.join(", ") };
         return Err(fail("directory_not_offered", super::sync::printable(&format!("{shown} does not offer {cwd}; it offers: {offers}"))));
     }
     let model = model.trim();
@@ -944,11 +944,11 @@ fn startable(name: &str, announced: Option<&gruntas_harness::sync::hosts::Announ
             return Err(fail("no_ready_model", format!("{shown} announces no model for its ready instances — name one with --model <instance>/<id>")));
         }
         let fixes: Vec<String> = a.instances.iter().map(|i| format!("{} — {}", i.name, i.fix.clone().unwrap_or_else(|| i.state.clone()))).collect();
-        let fixes = if fixes.is_empty() { "it has no instance — connect one there with krowk connect".to_string() } else { fixes.join("; ") };
+        let fixes = if fixes.is_empty() { "it has no instance — connect one there with gruntas connect".to_string() } else { fixes.join("; ") };
         return Err(fail("no_ready_model", super::sync::printable(&format!("{shown} has no ready model: {fixes}"))));
     }
     let Some((instance, id)) = model.split_once('/').filter(|(i, m)| !i.is_empty() && !m.is_empty()) else {
-        return Err(fail("bad_model", format!("--model takes <instance>/<id>, e.g. anthropic/claude-opus-5-5 — `krowk machines` lists {shown}'s instances")));
+        return Err(fail("bad_model", format!("--model takes <instance>/<id>, e.g. anthropic/claude-opus-5-5 — `gruntas machines` lists {shown}'s instances")));
     };
     let fix = match a.instances.iter().find(|i| i.name == instance) {
         Some(i) if i.ready => return Ok(ModelRef { instance: instance.into(), model: id.into() }),
@@ -964,7 +964,7 @@ fn startable(name: &str, announced: Option<&gruntas_harness::sync::hosts::Announ
 
 /// The refusal of a host that is offline, `seen` saying since when.
 fn offline(name: &str, seen: &str) -> Error {
-    fail("host_offline", format!("{} is offline ({seen}): start krowk there, or krowk machines always-on on", super::sync::printable(name)))
+    fail("host_offline", format!("{} is offline ({seen}): start gruntas there, or gruntas machines always-on on", super::sync::printable(name)))
 }
 
 /// `dir` as the host is asked for it: `~` expanded to `home`, made absolute
@@ -991,8 +991,8 @@ fn command_id() -> String {
     format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
 }
 
-/// `krowk --resume <id>` for a session this machine does not have but can
-/// open from sync: it follows it as `krowk sync attach` does, so the
+/// `gruntas --resume <id>` for a session this machine does not have but can
+/// open from sync: it follows it as `gruntas sync attach` does, so the
 /// command an artifact card copies works on any of the workspace's
 /// machines, not only the one holding the log. None when the id is local,
 /// or this machine does not sync, or the registry holds no session under it
@@ -1007,12 +1007,12 @@ pub(super) fn resume(ctx: &mut Ctx) -> Option<Result<(), Error>> {
         return None;
     }
     let k = keys(ctx).ok()?;
-    let api = signed(ctx, &k, "krowk --resume").ok()?;
+    let api = signed(ctx, &k, "gruntas --resume").ok()?;
     let s = api.show_sync_session(&id).ok()?;
     gruntas_harness::sync::store::open_session_key(&s, &id, &k.user, &k.chain, gruntas_client::session_record::Signer::EverHeld).ok()?;
     // Said plainly, on stderr: what follows is stream-json, as
-    // `krowk sync attach` prints it.
-    let _ = writeln!(ctx.io.stderr, "krowk: session {id} runs on another machine — following it through sync as stream-json (`krowk sessions attach`)");
+    // `gruntas sync attach` prints it.
+    let _ = writeln!(ctx.io.stderr, "gruntas: session {id} runs on another machine — following it through sync as stream-json (`gruntas sessions attach`)");
     Some(attach(ctx, &[id]))
 }
 
@@ -1020,7 +1020,7 @@ pub(super) fn resume(ctx: &mut Ctx) -> Option<Result<(), Error>> {
 mod tests {
     use super::relay_for;
 
-    /// R-HOST-3: `krowk machines` shows an announced host's state, its ready
+    /// R-HOST-3: `gruntas machines` shows an announced host's state, its ready
     /// instances with their first model, the others with their fix, and its
     /// directories with the home as `~`.
     #[test]
@@ -1030,7 +1030,7 @@ mod tests {
         let announcement = Announcement { device: "d".into(), name: "a".into(), os: "linux".into(), version: "0.31.0".into(), online_since_ms: 0, instances: vec![inst("anthropic", true, &["claude-sonnet-4-5", "claude-opus-4-1"]), inst("codex", true, &[]), inst("openai", false, &[])], directories: vec!["/home/ann/code/krowk".into(), "/Users/ann".into(), "/srv/x".into(), "/root/y".into()], sessions: Vec::new(), capacity: None, repositories: Vec::new(), accepting: false };
         let mut a = gruntas_harness::sync::hosts::Announced { online: true, updated_at: "2026-10-25T10:00:00Z".into(), announcement };
         let now: jiff::Timestamp = "2026-10-25T10:12:30Z".parse().unwrap();
-        assert_eq!(super::announced_lines(&a, now), ["online · krowk 0.31.0", "ready: anthropic (claude-sonnet-4-5, …), codex", "not ready: openai — set OPENAI_API_KEY", "directories: ~/code/krowk, ~, /srv/x, …"]);
+        assert_eq!(super::announced_lines(&a, now), ["online · gruntas 0.31.0", "ready: anthropic (claude-sonnet-4-5, …), codex", "not ready: openai — set OPENAI_API_KEY", "directories: ~/code/krowk, ~, /srv/x, …"]);
         a.online = false;
         assert_eq!(super::announced_lines(&a, now)[0], "offline · last seen 12m ago");
         assert_eq!(super::home_as_tilde("/root/y"), "~/y");
@@ -1038,7 +1038,7 @@ mod tests {
         assert_eq!(super::ago("not a time", now), "a while ago");
     }
 
-    /// R-HOST-4, R-SWITCH-4: `krowk sync new` refuses, from the host's
+    /// R-HOST-4, R-SWITCH-4: `gruntas sync new` refuses, from the host's
     /// announcement, a host that is offline, a directory it did not offer
     /// and a model it has no ready instance for, each with its fix; with no
     /// `--model` it takes the first ready instance's first model.
@@ -1063,8 +1063,8 @@ mod tests {
         a.announcement.instances.retain(|i| !i.ready);
         assert_eq!(refused(Some(&a), "/srv/x", ""), ("no_ready_model".into(), "desk has no ready model: openai — set the key of openai".into()));
         a.online = false;
-        assert_eq!(refused(Some(&a), "/srv/x", ""), ("host_offline".into(), "desk is offline (last seen 12m ago): start krowk there, or krowk machines always-on on".into()));
-        assert_eq!(refused(None, "/srv/x", "").1, "desk is offline (not announced): start krowk there, or krowk machines always-on on");
+        assert_eq!(refused(Some(&a), "/srv/x", ""), ("host_offline".into(), "desk is offline (last seen 12m ago): start gruntas there, or gruntas machines always-on on".into()));
+        assert_eq!(refused(None, "/srv/x", "").1, "desk is offline (not announced): start gruntas there, or gruntas machines always-on on");
     }
 
     /// R-HOST-4: `--host` names a machine on the list by its name in any
@@ -1090,12 +1090,12 @@ mod tests {
         assert_eq!(found("recovery"), Err("no_host".into()), "the kit is no machine");
         assert_eq!(found(&kit.id().to_string()[..8]), Err("no_host".into()));
         assert_eq!(found("TWIN"), Ok(twin.id()));
-        assert_eq!(super::find_host(&chain, "nope").unwrap_err().fix(), "no machine named 'nope' — krowk machines lists yours");
+        assert_eq!(super::find_host(&chain, "nope").unwrap_err().fix(), "no machine named 'nope' — gruntas machines lists yours");
     }
 
     /// `--cwd` is the host's path: `~` expanded and made absolute, never
     /// resolved. A command id is a version 4 UUID, and a host's refusal code
-    /// is reported only in krowk's own shape.
+    /// is reported only in gruntas's own shape.
     #[test]
     fn r_host_4_sync_new_asks_for_an_absolute_path_under_a_fresh_uuid() {
         let here = std::path::Path::new("/work/here");

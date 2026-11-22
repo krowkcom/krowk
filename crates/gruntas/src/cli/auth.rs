@@ -1,7 +1,7 @@
-//! `auth`, and its short forms `login`, `logout` and `whoami`: your krowk
+//! `auth`, and its short forms `login`, `logout` and `whoami`: your gruntas
 //! account — getting a key onto this machine, printing it, checking it,
 //! and taking it off again. A model provider is not signed in to here but
-//! connected, with `krowk connect`.
+//! connected, with `gruntas connect`.
 
 use super::agent::new_client;
 use super::workspace::resolve_workspace;
@@ -14,13 +14,13 @@ use serde_json::json;
 use std::time::Instant;
 
 /// Words that name a model provider, or an instance of one, rather than
-/// anything `login` takes: somebody who types them wants `krowk connect`.
+/// anything `login` takes: somebody who types them wants `gruntas connect`.
 const PROVIDER_WORDS: &[&str] =
     &["anthropic", "claude", "openai", "chatgpt", "codex", "gpt", "xai", "grok", "supergrok", "openrouter", "openai-compatible"];
 
 /// Where a model provider is connected, in the words of an error that
 /// points there: the vendor and method a word means, in the one form every
-/// fix line takes — `krowk connect anthropic --method subscription --name
+/// fix line takes — `gruntas connect anthropic --method subscription --name
 /// work` — the name and the method kept from an instance's name.
 fn connect_hint(word: &str) -> String {
     #[cfg(feature = "harness")]
@@ -35,7 +35,7 @@ fn connect_hint(word: &str) -> String {
         };
         let cmd = match connect::by_provider(&prefix, false) {
             Some(m) => connect::connect_command(&format!("{prefix}:{}", &word[word.find(':').unwrap_or(0) + 1..]), m.kind),
-            None => format!("krowk connect {word}"),
+            None => format!("gruntas connect {word}"),
         };
         return format!("to connect a model provider, run `{cmd}`");
     }
@@ -45,9 +45,9 @@ fn connect_hint(word: &str) -> String {
             "openai" | "chatgpt" | "codex" | "gpt" => "openai --method subscription",
             "xai" | "grok" | "supergrok" => "xai --method api-key",
             "openrouter" => "openrouter",
-            _ => return "to connect a model provider, run `krowk connect openai-compatible --name <name> --base-url <url>`".into(),
+            _ => return "to connect a model provider, run `gruntas connect openai-compatible --name <name> --base-url <url>`".into(),
         };
-        format!("to connect a model provider, run `krowk connect {way}`")
+        format!("to connect a model provider, run `gruntas connect {way}`")
     } else {
         "model providers are connected in the full build (a release, or `--features harness`), with its connect command".into()
     }
@@ -60,19 +60,19 @@ pub(crate) fn login(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         if first.starts_with("krowk_sk_") {
             return Err(fail(
                 "token_not_a_positional",
-                "a key has to go behind the flag: `krowk login --token krowk_sk_...` — passed as a bare argument it is ignored",
+                "a key has to go behind the flag: `gruntas login --token krowk_sk_...` — passed as a bare argument it is ignored",
             ));
         }
         let word = first.trim().to_ascii_lowercase();
         if PROVIDER_WORDS.contains(&word.as_str()) || PROVIDER_WORDS.iter().any(|p| word.starts_with(&format!("{p}:"))) {
             return Err(fail(
                 "unexpected_argument",
-                format!("`login` is your krowk account and takes no provider — {}", connect_hint(first.trim())),
+                format!("`login` is your gruntas account and takes no provider — {}", connect_hint(first.trim())),
             ));
         }
         return Err(fail(
             "unexpected_argument",
-            format!("`krowk login` takes no arguments, and got `{}` — the key goes behind --token", args[..args.len().min(2)].join(" ")),
+            format!("`gruntas login` takes no arguments, and got `{}` — the key goes behind --token", args[..args.len().min(2)].join(" ")),
         ));
     }
     if ctx.f.token.is_empty() { login_in_browser(ctx) } else { login_with_token(ctx) }
@@ -132,7 +132,7 @@ fn login_in_browser(ctx: &mut Ctx) -> Result<(), Error> {
     Ok(())
 }
 
-/// A browser login, its key stored as `krowk login` stores one, `action`
+/// A browser login, its key stored as `gruntas login` stores one, `action`
 /// saying what it is for. Returns the key itself beside what was
 /// stored, so a caller acts with the key just minted even where
 /// GRUNTAS_TOKEN would shadow it.
@@ -140,7 +140,7 @@ pub(super) fn browser_login(ctx: &mut Ctx, action: gruntas_api::LoginAction) -> 
     if in_ci(ctx) && !ctx.f.no_browser {
         return Err(fail(
             "no_one_to_approve",
-            "a browser login needs somebody to approve it, and this looks like CI — pass `krowk login --token krowk_sk_...`, \
+            "a browser login needs somebody to approve it, and this looks like CI — pass `gruntas login --token krowk_sk_...`, \
              or add --no-browser if there is somebody to hand the code to",
         ));
     }
@@ -153,7 +153,7 @@ pub(super) fn browser_login(ctx: &mut Ctx, action: gruntas_api::LoginAction) -> 
         if e.status == 404 {
             e.body.insert(
                 "fix".into(),
-                json!("this registry does not answer browser login — check GRUNTAS_API_URL, or issue a key in the dashboard and store it with `krowk login --token krowk_sk_...`"),
+                json!("this registry does not answer browser login — check GRUNTAS_API_URL, or issue a key in the dashboard and store it with `gruntas login --token krowk_sk_...`"),
             );
         }
         e
@@ -176,7 +176,7 @@ pub(super) fn browser_login(ctx: &mut Ctx, action: gruntas_api::LoginAction) -> 
         fail(
             "credentials_unwritable",
             format!(
-                "could not write {}: {} — the approved key was handed over once and the registry keeps no copy, so fix the path and run `krowk login` again for a new one",
+                "could not write {}: {} — the approved key was handed over once and the registry keeps no copy, so fix the path and run `gruntas login` again for a new one",
                 creds::credentials_text(),
                 e.fix()
             ),
@@ -259,7 +259,7 @@ pub(crate) fn token(ctx: &mut Ctx) -> Result<(), Error> {
         env_token
     };
     if token.is_empty() {
-        return Err(fail("not_authenticated", "run `krowk login --token krowk_sk_...`, or upload anonymously"));
+        return Err(fail("not_authenticated", "run `gruntas login --token krowk_sk_...`, or upload anonymously"));
     }
     let _ = writeln!(ctx.io.stdout, "{token}");
     Ok(())
@@ -270,19 +270,19 @@ pub(crate) fn token(ctx: &mut Ctx) -> Result<(), Error> {
 /// revoked in the dashboard, which is said, since "logged out" could be
 /// read as "revoked".
 pub(crate) fn logout(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
-    // An argument is refused before anything is removed: `krowk logout
-    // anthropic` meant a provider, and the krowk key it would otherwise
+    // An argument is refused before anything is removed: `gruntas logout
+    // anthropic` meant a provider, and the gruntas key it would otherwise
     // take cannot be shown again.
     if let Some(first) = args.first() {
         let word = first.trim().to_ascii_lowercase();
         let fix = if PROVIDER_WORDS.contains(&word.as_str()) || PROVIDER_WORDS.iter().any(|p| word.starts_with(&format!("{p}:"))) {
             if cfg!(feature = "harness") {
-                format!("`logout` is your krowk account and takes no provider — to disconnect a model provider, run `krowk disconnect {}`", first.trim())
+                format!("`logout` is your gruntas account and takes no provider — to disconnect a model provider, run `gruntas disconnect {}`", first.trim())
             } else {
-                "`logout` is your krowk account and takes no provider — model providers are disconnected in the full build (a release, or `--features harness`), with its disconnect command".into()
+                "`logout` is your gruntas account and takes no provider — model providers are disconnected in the full build (a release, or `--features harness`), with its disconnect command".into()
             }
         } else {
-            format!("`krowk logout` takes no arguments, and got `{}` — nothing was removed", args[..args.len().min(2)].join(" "))
+            format!("`gruntas logout` takes no arguments, and got `{}` — nothing was removed", args[..args.len().min(2)].join(" "))
         };
         return Err(fail("unexpected_argument", fix));
     }
@@ -313,7 +313,7 @@ pub(crate) fn logout(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         None => vec!["no key is stored for the workspace that resolves here — nothing to log out of".to_string()],
     };
     if !left.is_empty() && gone.is_some() {
-        lines.push(format!("  still stored: {} — `krowk workspaces use <name>` makes one the default", left.join(", ")));
+        lines.push(format!("  still stored: {} — `gruntas workspaces use <name>` makes one the default", left.join(", ")));
     }
     if shadowed {
         lines.push("  ! GRUNTAS_TOKEN is set and still wins — unset it too".into());
@@ -326,7 +326,7 @@ pub(crate) fn logout(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
 pub(crate) fn verify(ctx: &mut Ctx) -> Result<(), Error> {
     let client = new_client(ctx)?;
     if !client.authenticated() {
-        return Err(fail("not_authenticated", "no key to verify — run `krowk login --token krowk_sk_...`, or upload anonymously"));
+        return Err(fail("not_authenticated", "no key to verify — run `gruntas login --token krowk_sk_...`, or upload anonymously"));
     }
     let key = client.verify_key()?;
     if ctx.env("GRUNTAS_TOKEN").is_empty() {

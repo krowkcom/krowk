@@ -1,4 +1,4 @@
-//! `krowk -p --worktree` (worktrees WT6), the built binary against the
+//! `gruntas -p --worktree` (worktrees WT6), the built binary against the
 //! fake `claude` (Claude Code) on PATH, in a real repository with a stand-in home and
 //! data directory: a session that makes a file makes it in a new worktree,
 //! not the checkout, and the worktree is kept and named, in the result and
@@ -35,7 +35,7 @@ impl Sandbox {
         std::fs::create_dir_all(b.root.join("home/.gruntas")).unwrap();
         std::fs::write(b.root.join("home/.gruntas/trusted.json"), json!({"directories": [b.repo(), b.root.join("elsewhere")]}).to_string()).unwrap();
         git(&b.repo(), &["init", "-q", "-b", "main"]);
-        std::fs::write(b.repo().join("README.md"), "# krowk\n").unwrap();
+        std::fs::write(b.repo().join("README.md"), "# gruntas\n").unwrap();
         git(&b.repo(), &["add", "README.md"]);
         git(&b.repo(), &["commit", "-q", "-m", "one"]);
         b
@@ -45,7 +45,7 @@ impl Sandbox {
         self.root.join("repo")
     }
 
-    /// Where krowk keeps worktrees for this sandbox's `XDG_DATA_HOME`.
+    /// Where gruntas keeps worktrees for this sandbox's `XDG_DATA_HOME`.
     fn worktrees(&self) -> PathBuf {
         self.root.join("data/gruntas/worktrees")
     }
@@ -63,7 +63,7 @@ impl Sandbox {
             .env("FAKE_CLAUDE_SCENARIO", self.root.join("scenario.jsonl"))
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1")
-            // Nothing above the sandbox is a repository krowk could find.
+            // Nothing above the sandbox is a repository gruntas could find.
             .env("GIT_CEILING_DIRECTORIES", &self.root)
             .current_dir(dir)
             .stdin(Stdio::null())
@@ -71,13 +71,13 @@ impl Sandbox {
             .unwrap()
     }
 
-    /// `krowk -p` in the repository, the mode chosen so no sandbox is
+    /// `gruntas -p` in the repository, the mode chosen so no sandbox is
     /// needed: what it printed, stdout and stderr, having succeeded.
     fn prompt(&self, args: &[&str]) -> (String, String) {
         let args: Vec<&str> = ["-p", "--model", "claude/sonnet", "--permission-mode", "acceptEdits"].into_iter().chain(args.iter().copied()).collect();
         let o = self.krowk_in(&self.repo(), &args);
         let (out, err) = (String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned());
-        assert!(o.status.success(), "krowk {args:?}: {out}{err}");
+        assert!(o.status.success(), "gruntas {args:?}: {out}{err}");
         (out, err)
     }
 
@@ -148,7 +148,7 @@ fn wt6_a_worktree_session_makes_its_file_in_the_worktree_which_is_kept_and_named
     let path = PathBuf::from(wt["path"].as_str().unwrap_or_else(|| panic!("the kept worktree is named: {result}")));
     let hex = path.file_name().unwrap().to_string_lossy().into_owned();
     assert_eq!((wt["branch"].as_str(), &wt["commits"], &wt["uncommittedChanges"]), (Some(format!("gruntas/{hex}").as_str()), &json!(0), &json!(true)));
-    assert!(path.starts_with(b.worktrees()), "under krowk's worktrees: {}", path.display());
+    assert!(path.starts_with(b.worktrees()), "under gruntas's worktrees: {}", path.display());
     assert!(path.join("NEW.md").is_file(), "made in the worktree");
     assert!(!b.repo().join("NEW.md").exists(), "not in the checkout");
     assert!(!err.contains("Worktree kept"), "JSON names it in the result alone: {err}");
@@ -164,7 +164,7 @@ fn wt6_a_worktree_session_makes_its_file_in_the_worktree_which_is_kept_and_named
     // Resumed, it runs in its worktree again, and is named again on the
     // way out: on stderr, the answer being text.
     let (_, err) = b.prompt(&["--resume", session, "anything else?"]);
-    assert!(err.contains(&format!("Worktree kept: {} (branch gruntas/{hex}) — `krowk worktrees apply {hex}` brings its changes into your checkout", path.display())), "{err}");
+    assert!(err.contains(&format!("Worktree kept: {} (branch gruntas/{hex}) — `gruntas worktrees apply {hex}` brings its changes into your checkout", path.display())), "{err}");
     assert!(path.join("NEW.md").is_file());
 
     // A new session and a resumed one are not the same thing.
@@ -177,7 +177,7 @@ fn wt6_a_worktree_session_makes_its_file_in_the_worktree_which_is_kept_and_named
     let o = b.krowk_in(&b.repo(), &["-p", "--model", "claude/sonnet", "--resume", session, "hi"]);
     let said = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(2), "{said}");
-    assert!(said.contains("worktree_missing") && said.contains("krowk worktrees"), "{said}");
+    assert!(said.contains("worktree_missing") && said.contains("gruntas worktrees"), "{said}");
 }
 
 #[test]
@@ -266,14 +266,14 @@ fn wt6_help_lists_the_flag_and_sessions_keeps_its_own() {
     let lines: Vec<&str> = help.lines().filter(|l| l.contains("--worktree")).collect();
     assert_eq!(lines.len(), 1, "{help}");
     assert!(lines[0].contains("start one in a worktree"), "{}", lines[0]);
-    // `krowk help flags` has it among the agent's flags, whole.
+    // `gruntas help flags` has it among the agent's flags, whole.
     let o = b.krowk_in(&b.repo(), &["help", "flags"]);
     let flags = String::from_utf8_lossy(&o.stdout).split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(flags.contains("--worktree With -p: start the session in a new git worktree of this repository"), "{flags}");
-    // `krowk sessions --worktree <path>` still filters the listing.
+    // `gruntas sessions --worktree <path>` still filters the listing.
     let o = b.krowk_in(&b.repo(), &["sessions", "--worktree", "/nowhere", "--json"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     // Anywhere else, it is named as the flag of what takes it.
     let o = b.krowk_in(&b.repo(), &["worktrees", "list", "--worktree"]);
-    assert!(String::from_utf8_lossy(&o.stderr).contains("`krowk -p`"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("`gruntas -p`"), "{}", String::from_utf8_lossy(&o.stderr));
 }

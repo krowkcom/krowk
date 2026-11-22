@@ -59,14 +59,14 @@ pub enum EngineEvent {
     /// the vendor keeps its transcript, and what it is billed to. The host
     /// logs it when it is new or has changed.
     BackendSession { backend: String, session_id: String, transcript: Option<String>, billing: Option<Billing> },
-    /// `publish` opened the session's krowk run: the host logs it, so every
+    /// `publish` opened the session's gruntas run: the host logs it, so every
     /// later publish — this session's next turn's too — attaches to it.
     RunOpened { run: String },
     /// A call a backend's own subagent made: metered for the budget and the
     /// session's cost, and kept out of this conversation.
     SubagentResponse { response_id: Option<String>, model: String, usage: Usage },
     /// What a backend said the whole turn cost (Claude Code's
-    /// `total_cost_usd`), which counts calls krowk may not have seen.
+    /// `total_cost_usd`), which counts calls gruntas may not have seen.
     ReportedCost { usd: f64 },
     /// Something for the person and nobody else — never logged, never sent
     /// to a model: an anonymous upload's claim command.
@@ -124,7 +124,7 @@ pub enum EngineEvent {
     /// whose clock starts again once it is answered.
     AskedFor { request_id: String, call_id: String },
     /// It ended, and nothing more of it follows: how, and why when the
-    /// backend or krowk said.
+    /// backend or gruntas said.
     BackendChildEnded { task_id: String, status: crate::protocol::ChildState, error: Option<String> },
 }
 
@@ -133,7 +133,7 @@ pub enum EngineEvent {
 pub struct Pending {
     /// Why it began, in words: `background agent “x” completed`.
     pub reason: String,
-    /// The mode its process is in, which krowk accepted: the last turn's,
+    /// The mode its process is in, which gruntas accepted: the last turn's,
     /// or default after that plan turn's `ExitPlanMode` was approved. The
     /// turn runs in it — never looser than what was asked but for that.
     pub mode: Option<PermissionMode>,
@@ -159,14 +159,14 @@ pub struct TurnContext {
     pub history: Vec<HistoryItem>,
     /// Where the session runs: tools resolve paths against it.
     pub cwd: PathBuf,
-    /// What the turn's commands get in their environment beyond krowk's
-    /// own, in the sandbox too: a krowk worktree's `GRUNTAS_PORT_BASE`.
+    /// What the turn's commands get in their environment beyond gruntas's
+    /// own, in the sandbox too: a gruntas worktree's `GRUNTAS_PORT_BASE`.
     pub env: Vec<(String, String)>,
     /// The session's own directory, beside its log: where the images its
     /// prompts carry are kept (`crate::images`).
     pub session_dir: PathBuf,
     pub permission_mode: PermissionMode,
-    /// The effort asked for, on krowk's ladder; the engine maps it onto the
+    /// The effort asked for, on gruntas's ladder; the engine maps it onto the
     /// rungs the model takes.
     pub effort: Option<Effort>,
     /// What the catalog knows of the model, when it knows it.
@@ -211,7 +211,7 @@ pub struct TurnContext {
 /// comes after either is told so instead of being queued for nobody.
 ///
 /// A running turn waits for steering on `arrived` rather than a timer, so a
-/// backend that has gone quiet leaves krowk asleep (R-PERF-2).
+/// backend that has gone quiet leaves gruntas asleep (R-PERF-2).
 #[derive(Debug, Clone, Default)]
 pub struct Steers(Arc<Mutex<SteerQueue>>, Arc<Notify>);
 
@@ -376,7 +376,7 @@ pub trait Engine: Send + Sync {
     fn shutdown(&self) -> BoxFuture<'_, ()> {
         Box::pin(async {})
     }
-    /// A turn the backend began by itself and krowk has not run yet; none
+    /// A turn the backend began by itself and gruntas has not run yet; none
     /// for an engine that never begins one.
     fn pending(&self) -> Option<Pending> {
         None
@@ -413,7 +413,7 @@ pub async fn sleep_until(deadline: Option<tokio::time::Instant>) {
 }
 
 /// Tokens in a text, estimated at four bytes a token — the ratio providers
-/// quote for English and code. No tokenizer ships with krowk; what the
+/// quote for English and code. No tokenizer ships with gruntas; what the
 /// estimate is for is noticing growth, which it does whatever the true
 /// ratio is.
 pub fn estimate_tokens(text: &str) -> u64 {

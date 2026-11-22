@@ -3,7 +3,7 @@
 //! one as `/name`, and its body goes to the backend with the prompt
 //! (`invoked`): a vendor's agent may not read the directory it is in.
 //!
-//! Skills are found in krowk's home (`skills/`), `~/.agents/skills`, Claude
+//! Skills are found in gruntas's home (`skills/`), `~/.agents/skills`, Claude
 //! Code's user directory (`skills/`), and `.agents/skills` then
 //! `.claude/skills` in every directory from the repository's root down to the
 //! working directory; a skill of the same name found later — deeper, or
@@ -76,7 +76,7 @@ pub fn discover(cfg: &Config, cwd: &Path) -> Vec<Skill> {
 }
 
 /// What a skill the person asked for starts with in the log: clients show
-/// it as krowk's, not the person's words.
+/// it as gruntas's, not the person's words.
 pub const INVOKED: &str = "<skill name=\"";
 
 /// A prompt that asks for a skill — `/name`, then what it is for — as the

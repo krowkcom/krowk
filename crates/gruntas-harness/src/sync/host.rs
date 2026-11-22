@@ -103,7 +103,7 @@ pub struct Options {
     /// relay alone.
     pub direct: Option<super::direct::Config>,
     /// This machine's tailnet node, kept in the session's sealed index so
-    /// `krowk machines` finds it on the tailnet (R-NET-4); None when Tailscale
+    /// `gruntas machines` finds it on the tailnet (R-NET-4); None when Tailscale
     /// is down.
     pub tailnet: Option<super::tailscale::Tailnet>,
     /// The lease another host handed this one with the session (R-HAND-1):
@@ -116,11 +116,11 @@ pub struct Options {
     /// why this one must stop (the automatic sync's supervisor, which runs
     /// one reader for all of them): `run` then starts no list reader of its
     /// own, and ends with the reason at its next sweep, as with its own.
-    /// `None` — `krowk sync host` — reads the list itself every
+    /// `None` — `gruntas sync host` — reads the list itself every
     /// `LIST_EVERY`.
     pub stale: Option<Arc<Mutex<Option<String>>>>,
     /// What an owner that lets an idle bridge go and takes it up again is
-    /// told (the automatic sync's supervisor, ticket 116); `None` — `krowk
+    /// told (the automatic sync's supervisor, ticket 116); `None` — `gruntas
     /// sync host` — tells nobody.
     pub supervised: Option<Supervised>,
 }
@@ -213,7 +213,7 @@ pub async fn parked(p: Parked, mut stop: watch::Receiver<bool>, beats: tokio::ti
     woke
 }
 
-/// How a bridge that handed its session over ends: what `krowk sync host`
+/// How a bridge that handed its session over ends: what `gruntas sync host`
 /// says, its lease the other device's now.
 pub const HANDED_OVER: &str = "handed over";
 
@@ -236,7 +236,7 @@ struct Held {
 
 /// How a bridge that could not take the lease up ends, the registry's code
 /// after it in brackets: `(lease_held)` when another bridge holds it — a
-/// `krowk sync host`, or a host that crashed and whose lease has not
+/// `gruntas sync host`, or a host that crashed and whose lease has not
 /// lapsed yet (the automatic sync's supervisor waits, and never takes it).
 pub const NOT_GRANTED: &str = "the registry did not grant the lease";
 
@@ -302,7 +302,7 @@ fn take(o: &Options) -> Result<(SessionKeys, Writer, Held), String> {
         None => o.api.acquire_lease(id, &o.device.to_string(), o.ttl, &o.env).map_err(|e| if e.code() == "sync_machine_limit" { over_limit(&e) } else { format!("{NOT_GRANTED} ({}): {}", e.code(), e.fix()) })?,
     };
     if lease.relay_ticket.is_empty() {
-        return Err("the registry issued no host ticket: this device has no signing key on record — pair it again with `krowk sync join`".into());
+        return Err("the registry issued no host ticket: this device has no signing key on record — pair it again with `gruntas sync join`".into());
     }
     let (keys, wrapped) = rotate_if_behind(o, keys, wrapped, &index, &lease.token)?;
     let writer = Writer::take_up(o.api.clone(), keys.clone(), id, wrapped, index, lease.fence)?.with_images(o.sessions.join(id));
@@ -310,7 +310,7 @@ fn take(o: &Options) -> Result<(SessionKeys, Writer, Held), String> {
 }
 
 /// This machine as the index names its host: what the index is next
-/// written with, so `krowk machines` lists the session under it.
+/// written with, so `gruntas machines` lists the session under it.
 fn hosted_on(o: &Options) -> store::HostedOn {
     store::HostedOn { device: o.device.to_string(), tailnet: o.tailnet.clone() }
 }
@@ -324,7 +324,7 @@ fn hosted_on(o: &Options) -> store::HostedOn {
 /// the registry refuses leaves the session unhosted: nothing more is sealed
 /// under a key a removed device holds.
 fn rotate_if_behind(o: &Options, keys: SessionKeys, wrapped: String, index: &Index, token: &str) -> Result<(SessionKeys, String), String> {
-    let generation = e2e::unhex(&wrapped).ok_or("the session's wrapped key is not hex").and_then(|w| e2e::session_key_generation(&w).map_err(|_| "the session's wrapped key is not one krowk reads"))?;
+    let generation = e2e::unhex(&wrapped).ok_or("the session's wrapped key is not hex").and_then(|w| e2e::session_key_generation(&w).map_err(|_| "the session's wrapped key is not one gruntas reads"))?;
     if generation >= o.chain.generation() {
         return Ok((keys, wrapped));
     }
@@ -418,7 +418,7 @@ fn link_dead(gap: Duration, heard: Duration, unacked: usize, waited: Option<Dura
 pub const LIST_EVERY: Duration = Duration::from_secs(60);
 
 /// What a running host ends with when the list moved on under it and a
-/// device was removed: `krowk sync host` takes the session up again, under
+/// device was removed: `gruntas sync host` takes the session up again, under
 /// the new list and the user key it leaves current.
 pub const LIST_MOVED: &str = "a device was removed from your device list while this host ran";
 
@@ -441,7 +441,7 @@ pub enum ListEnd {
 
 impl ListEnd {
     /// What a host of `session` ends with. A move starts with `LIST_MOVED`,
-    /// which is how `krowk sync host` and the automatic sync's supervisor
+    /// which is how `gruntas sync host` and the automatic sync's supervisor
     /// know to take the session up again under the new list.
     pub fn why(&self, session: &str) -> String {
         match self {
@@ -563,7 +563,7 @@ fn say_limited(e: &str) {
     let mut said = LIMITED_SAID.lock().unwrap_or_else(|e| e.into_inner());
     if said.is_none_or(|at| at.elapsed() >= LIMITED) {
         *said = Some(Instant::now());
-        eprintln!("krowk: the registry is limiting this machine's writes for a moment ({e}); the sessions' chunks are kept and put again in {} s", LIMITED.as_secs());
+        eprintln!("gruntas: the registry is limiting this machine's writes for a moment ({e}); the sessions' chunks are kept and put again in {} s", LIMITED.as_secs());
     }
 }
 
@@ -646,7 +646,7 @@ fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Recei
                 say_limited(&e);
                 quiet = Some(Instant::now() + LIMITED);
             }
-            Err(e) => eprintln!("krowk: a chunk of the session could not be written yet ({e}); it is kept and put again"),
+            Err(e) => eprintln!("gruntas: a chunk of the session could not be written yet ({e}); it is kept and put again"),
             Ok(()) => {}
         }
         if let Some(head) = w.head() {
@@ -944,7 +944,7 @@ fn listen_direct(o: &Options) -> Option<super::direct::Listening> {
     match o.direct.as_ref().map(|c| super::direct::listen(c, crate::daemon::ws::uuid(&o.session), o.device)) {
         Some(Ok(l)) => Some(l),
         Some(Err(e)) => {
-            eprintln!("krowk: no direct path ({e}); the session goes by the relay");
+            eprintln!("gruntas: no direct path ({e}); the session goes by the relay");
             None
         }
         None => None,
@@ -1412,7 +1412,7 @@ impl Hosting {
             }
             Err(e) => {
                 if self.unjoined.as_deref() != Some(e.as_str()) {
-                    eprintln!("krowk: session {} is not on the relay {}: {e}; trying again every second or two", self.o.session, self.o.relay);
+                    eprintln!("gruntas: session {} is not on the relay {}: {e}; trying again every second or two", self.o.session, self.o.relay);
                     self.unjoined = Some(e);
                 }
                 self.retry = Instant::now() + rejoin_wait(&mut self.rejoin_rng);
@@ -1449,7 +1449,7 @@ impl Hosting {
             In::Control(v) if v["type"] == "error" => {
                 let why = format!("the relay let this host's link go: {} — {}; joining again", v["code"].as_str().unwrap_or("?"), v["message"].as_str().unwrap_or(""));
                 if self.unjoined.as_deref() != Some(why.as_str()) {
-                    eprintln!("krowk: session {}: {why}", self.o.session);
+                    eprintln!("gruntas: session {}: {why}", self.o.session);
                     self.unjoined = Some(why);
                 }
                 self.let_go(direct);
@@ -1596,7 +1596,7 @@ impl Hosting {
                         // here, in the host's log, and to the device that
                         // asked; the session stays here.
                         let said = format!("{MOVE_REFUSED}{name}: {}", e.fix());
-                        eprintln!("krowk: {said}");
+                        eprintln!("gruntas: {said}");
                         said
                     } else {
                         format!("the registry did not hand the lease over ({}): {}", e.code(), e.fix())
@@ -1795,7 +1795,7 @@ fn task_result(o: &Options, held: &Mutex<Held>, completed: &crate::protocol::Log
     let (transport, key, error) = match stored {
         Ok((t, k)) => (t, k, None),
         Err(e) => {
-            eprintln!("krowk: the result of task session {} was not stored: {e}", o.session);
+            eprintln!("gruntas: the result of task session {} was not stored: {e}", o.session);
             (None, None, Some(e.chars().take(500).collect::<String>()))
         }
     };
@@ -1804,8 +1804,8 @@ fn task_result(o: &Options, held: &Mutex<Held>, completed: &crate::protocol::Log
     Some(Packed { event: crate::protocol::LogEvent { id: gruntas_store::new_id(), parent_id: Some(completed.id.clone()), session_id: o.session.clone(), time_ms: gruntas_store::now_ms(), body }, discard })
 }
 
-/// The worktree at `path`, if it is one krowk made under `root`, removed
-/// with its branch; one that cannot be is left for `krowk worktrees`.
+/// The worktree at `path`, if it is one gruntas made under `root`, removed
+/// with its branch; one that cannot be is left for `gruntas worktrees`.
 fn discard_worktree(root: &std::path::Path, path: &str) {
     if let Ok(listed) = crate::worktree::manage::find(root, path) && let Some(w) = listed.worktree() {
         let _ = crate::worktree::discard(&w);
@@ -1851,7 +1851,7 @@ async fn give_back(o: Arc<Options>, held: Arc<Mutex<Held>>, lost: Arc<AtomicBool
     .await;
 }
 
-/// Waits for Ctrl-C or SIGTERM: `krowk sync host` then ends the stream with
+/// Waits for Ctrl-C or SIGTERM: `gruntas sync host` then ends the stream with
 /// its final sealed batch and lets the lease go, rather than leaving
 /// viewers to find the stream cut short and the lease to lapse.
 pub async fn interrupted() {
@@ -1884,7 +1884,7 @@ fn rejoin_wait(rng: &mut u64) -> Duration {
 mod tests {
 
     /// R-ALLOC-6: a finished task's worktree is removed once its result is
-    /// stored, and a path that is none of krowk's is left alone.
+    /// stored, and a path that is none of gruntas's is left alone.
     #[test]
     fn alloc_06_a_stored_tasks_worktree_is_removed() {
         let root = std::env::temp_dir().join(format!("krowk-alloc-06-discard-{}", std::process::id()));
@@ -1899,7 +1899,7 @@ mod tests {
         drop(held);
         std::fs::write(wt.path.join("child.txt"), "x").unwrap();
         discard_worktree(&root.join("worktrees"), &repo.display().to_string());
-        assert!(repo.exists() && wt.path.exists(), "a path that is no worktree of krowk's stays");
+        assert!(repo.exists() && wt.path.exists(), "a path that is no worktree of gruntas's stays");
         discard_worktree(&root.join("worktrees"), &wt.path.display().to_string());
         assert!(!wt.path.exists(), "the worktree is gone");
         let _ = std::fs::remove_dir_all(&root);
@@ -2170,7 +2170,7 @@ mod tests {
 
     /// D5 mB: a running host reads the list again. Nothing new, or a device
     /// added, it goes on; a removal moves the key on, and it stops for
-    /// `krowk sync host` to take the session up again under the new list;
+    /// `gruntas sync host` to take the session up again under the new list;
     /// its own removal stops it for good.
     #[test]
     fn d5_a_running_host_learns_of_a_removal_from_the_list() {
@@ -2180,7 +2180,7 @@ mod tests {
         let (chain, start) = Chain::start(laptop.subject("laptop"), &laptop.signing, None, T0).unwrap();
         let o = options(&url, &laptop, UserKeys::new(start.newest.clone(), []).unwrap(), chain.clone(), id);
         o.api.init_device_list(&post(&start)).unwrap();
-        // What the host's own reader (`list_loop`, as `krowk sync host`
+        // What the host's own reader (`list_loop`, as `gruntas sync host`
         // runs it with no `stale` given) ends the bridge with.
         let list_news = |o: &Options, chain: &Chain| list_news(&o.api, o.device, chain).map_err(|e| e.why(&o.session));
         assert!(list_news(&o, &chain).unwrap().is_none(), "nothing new");

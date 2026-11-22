@@ -2,7 +2,7 @@
 //! own, made from the current directory's repository at its working state,
 //! so sessions in separate terminals stop sharing one checkout. The
 //! worktree is made, readied and finished by `gruntas_harness::worktree`, as a
-//! subagent's is; this is the command line around it, for `krowk -p`:
+//! subagent's is; this is the command line around it, for `gruntas -p`:
 //!
 //! - **Made before the session**, whose id is chosen first: the worktree is
 //!   locked in that session's name, and the host gives the id to its first
@@ -15,18 +15,18 @@
 //! - **Finished on the way out**, as a subagent's: unchanged, it is removed
 //!   with its branch; otherwise it is kept and named, as
 //!   `Worktree kept: <path> (branch gruntas/<hex>)` on stderr, with the
-//!   `krowk worktrees apply <hex>` that brings its changes home (WT13), or
+//!   `gruntas worktrees apply <hex>` that brings its changes home (WT13), or
 //!   as the `worktree` object of the result `-p` prints as JSON.
-//! - **Resumed where it ran**: a session whose directory is a krowk
+//! - **Resumed where it ran**: a session whose directory is a gruntas
 //!   worktree is held there again, and finished the same way. One whose
-//!   directory is gone is refused, naming `krowk worktrees`.
+//!   directory is gone is refused, naming `gruntas worktrees`.
 //! - **Trusted as its repository** (`TrustAs`): the trust list names the
-//!   repository a person trusted, never a worktree of it in krowk's data
+//!   repository a person trusted, never a worktree of it in gruntas's data
 //!   directory.
 //!
 //! - **Within the machine's cap** (WT12): the session holds one of the
 //!   machine's agent slots (`subagents.maxHost`, shared with every
-//!   subagent of every krowk) for its life, taken before its worktree is
+//!   subagent of every gruntas) for its life, taken before its worktree is
 //!   made or held again. When every one is held it waits, saying
 //!   `waiting for an agent slot (N in use)` on stderr; Ctrl-C ends the
 //!   wait. Its subagents run on its slot (`SessionSetup::on_agent_slot`)
@@ -36,7 +36,7 @@
 //! - **The default where config says so**: `worktrees.default` starts
 //!   every new session in a repository this way without the flag, whatever
 //!   model or agent runs it (`wanted`). `--worktree=false` runs one in
-//!   place, a resumed one or one already in a krowk worktree stays where it
+//!   place, a resumed one or one already in a gruntas worktree stays where it
 //!   is, and `-p --daemon` is refused, as with the flag. A repository's own counts once it
 //!   is trusted. A worktree the default cannot make refuses the session,
 //!   naming `--worktree=false` (`start`). Like `--worktree`, it holds an
@@ -52,17 +52,17 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 /// What `--worktree` outside a git repository is refused with.
-pub(super) const NEEDS_A_REPOSITORY: &str = "--worktree makes a git worktree of the repository you are in, and this directory is in none — run krowk from inside a repository, or drop --worktree";
+pub(super) const NEEDS_A_REPOSITORY: &str = "--worktree makes a git worktree of the repository you are in, and this directory is in none — run gruntas from inside a repository, or drop --worktree";
 
-/// Where krowk's worktrees are.
+/// Where gruntas's worktrees are.
 fn root(ctx: &Ctx) -> Result<PathBuf, Error> {
-    gruntas_api::home::worktrees_root(ctx.io.env).ok_or_else(|| fail("no_home", "krowk found no home directory to make worktrees under — set HOME or XDG_DATA_HOME"))
+    gruntas_api::home::worktrees_root(ctx.io.env).ok_or_else(|| fail("no_home", "gruntas found no home directory to make worktrees under — set HOME or XDG_DATA_HOME"))
 }
 
 /// Whether the session starts in a worktree of its own: `--worktree` as
 /// given, else `worktrees.default` — a trusted repository's own before the
 /// person's — for a `fresh` one (new, and run in this process) when `cwd`
-/// is in a repository and not already in one of krowk's worktrees.
+/// is in a repository and not already in one of gruntas's worktrees.
 pub(super) fn wanted(ctx: &Ctx, fresh: bool, cwd: &Path, permissions: &permissions::Config, registry: &Registry) -> bool {
     if ctx.f.given.contains("worktree") {
         return ctx.f.own_worktree;
@@ -80,7 +80,7 @@ pub(super) fn wanted(ctx: &Ctx, fresh: bool, cwd: &Path, permissions: &permissio
     root(ctx).map_or(true, |root| !below(&root, &cwd))
 }
 
-/// Whether `dir` is below krowk's worktrees `root`, as given or canonical.
+/// Whether `dir` is below gruntas's worktrees `root`, as given or canonical.
 fn below(root: &Path, dir: &Path) -> bool {
     let real = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     [root, real.as_path()].iter().any(|r| dir != *r && dir.starts_with(r))
@@ -155,8 +155,8 @@ fn agent_slot(ctx: &mut Ctx, registry: &Registry) -> Option<gruntas_harness::slo
     }
 }
 
-/// The krowk worktree the session `session` ran in, `dir`, held again for
-/// it to go on there: none when `dir` is not one of krowk's worktrees.
+/// The gruntas worktree the session `session` ran in, `dir`, held again for
+/// it to go on there: none when `dir` is not one of gruntas's worktrees.
 /// Refused when it is gone, or another live session holds it.
 pub(super) fn resumed(ctx: &mut Ctx, registry: &Registry, session: &str, dir: &Path) -> Result<Option<InUse>, Error> {
     let Ok(root) = root(ctx) else { return Ok(None) };
@@ -166,14 +166,14 @@ pub(super) fn resumed(ctx: &mut Ctx, registry: &Registry, session: &str, dir: &P
     if !dir.is_dir() {
         return Err(fail(
             "worktree_missing",
-            format!("session {session} ran in the krowk worktree {}, which is gone — `krowk worktrees` lists the ones that remain; or start a fresh session, without --resume", dir.display()),
+            format!("session {session} ran in the gruntas worktree {}, which is gone — `gruntas worktrees` lists the ones that remain; or start a fresh session, without --resume", dir.display()),
         ));
     }
     let Some(wt) = manage::find(&root, &dir.display().to_string()).ok().and_then(|l| l.worktree()) else { return Ok(None) };
     let agent = agent_slot(ctx, registry);
     let held = manage::hold_again(&wt).map_err(|e| fail("worktree_failed", format!("the worktree {} could not be held for the session: {e}", wt.path.display())))?;
     let Some(held) = held else {
-        return Err(fail("worktree_live", format!("another krowk session works in {} now — resume this one once it has ended", wt.path.display())));
+        return Err(fail("worktree_live", format!("another gruntas session works in {} now — resume this one once it has ended", wt.path.display())));
     };
     let (mut in_use, missing) = InUse::new(wt, held, gruntas_harness::slots::runtime_dir(ctx.io.env));
     in_use.agent = agent;
@@ -192,13 +192,13 @@ pub(super) fn report(ctx: &mut Ctx, wt: &Worktree, finished: &Result<Finished, w
         Ok(Finished::Kept { .. }) => {
             let _ = writeln!(ctx.io.stderr, "{}", worktree::kept_line(wt));
         }
-        Err(e) => ctx.warn(&format!("the worktree {} (branch {}) was left as it is: {e} — `krowk worktrees` lists it", wt.path.display(), wt.branch())),
+        Err(e) => ctx.warn(&format!("the worktree {} (branch {}) was left as it is: {e} — `gruntas worktrees` lists it", wt.path.display(), wt.branch())),
     }
 }
 
-/// The repository a krowk worktree this process works in is trusted as:
+/// The repository a gruntas worktree this process works in is trusted as:
 /// its main checkout. The trust list names the repository a person
-/// trusted, and a worktree of it, under krowk's data directory, is that
+/// trusted, and a worktree of it, under gruntas's data directory, is that
 /// repository's content. Set once the worktree is known, and read by every
 /// trust question the session's settings, gate and routing ask, each of
 /// which is handed the worktree's top (`trust::root`).

@@ -1,5 +1,5 @@
 //! A Codex login, as Codex reports it (R-INST-2, with `codex login` in
-//! place of `claude auth login`). krowk never opens Codex's login file or
+//! place of `claude auth login`). gruntas never opens Codex's login file or
 //! runs an OAuth flow of its own with Codex's client: it asks `codex login
 //! status`, and a login is made by `codex login` itself, on the person's
 //! own terminal, in OpenAI's own flow. Both run with the instance's
@@ -79,7 +79,7 @@ pub fn status(b: &Backend, probe: &Probe) -> Result<Status, String> {
         .ok_or_else(|| format!("`{} login status` did not answer within {} seconds", b.binary, probe.within.as_secs_f32()))?;
     let said = format!("{}\n{}", String::from_utf8_lossy(&out.stderr), String::from_utf8_lossy(&out.stdout));
     if !said.contains("Logged in") && !said.contains("Not logged in") {
-        return Err(format!("`{} login status` answered in a way krowk does not read (exit {})", b.binary, out.status));
+        return Err(format!("`{} login status` answered in a way gruntas does not read (exit {})", b.binary, out.status));
     }
     Ok(Status::parse(out.status.success(), &said))
 }
@@ -185,8 +185,8 @@ fn read_account(r: &Value) -> Status {
 /// Runs `codex login` on this terminal: OpenAI's own sign-in, which opens
 /// a browser or prints a link, and writes the login into the instance's
 /// home. `device` asks Codex for its device-code flow instead. What Codex
-/// prints goes to stderr, where the person reads it, so krowk's own stdout
-/// stays the one answer a script parses. It starts in `dir`, krowk's own
+/// prints goes to stderr, where the person reads it, so gruntas's own stdout
+/// stays the one answer a script parses. It starts in `dir`, gruntas's own
 /// directory, never in a repository whose `.codex/config.toml` nobody
 /// trusted.
 pub fn login(b: &Backend, device: bool, dir: &Path) -> Result<ExitStatus, String> {
@@ -197,7 +197,7 @@ pub fn login(b: &Backend, device: bool, dir: &Path) -> Result<ExitStatus, String
 /// `codex logout`, for this instance's home: Codex's own sign-out, which
 /// asks nothing. Run where and as long as a status check is (`probe`),
 /// its output kept from the terminal; whether it exited cleanly is all
-/// krowk reads of it.
+/// gruntas reads of it.
 pub fn logout(b: &Backend, probe: &Probe) -> Result<ExitStatus, String> {
     let out = crate::readiness::output_within(&mut command(b, &["logout"]), probe)
         .map_err(|e| format!("{} could not be run: {e}", b.binary))?

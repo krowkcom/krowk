@@ -1,9 +1,9 @@
 @fixture harnesses
-krowk sessions import --from all --quiet
-krowk sessions --harness claude
-krowk sessions --harness cursor
-krowk sessions --harness opencode
-krowk sessions --harness nope
-krowk sessions --worktree {work}
-krowk sessions --worktree {work}/claude
-krowk sessions --worktree /nonexistent
+gruntas sessions import --from all --quiet
+gruntas sessions --harness claude
+gruntas sessions --harness cursor
+gruntas sessions --harness opencode
+gruntas sessions --harness nope
+gruntas sessions --worktree {work}
+gruntas sessions --worktree {work}/claude
+gruntas sessions --worktree /nonexistent

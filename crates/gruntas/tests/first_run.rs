@@ -1,8 +1,8 @@
-//! The first machine's setup from bare `krowk` (D4, D5, R-EASE-1..6), the
+//! The first machine's setup from bare `gruntas` (D4, D5, R-EASE-1..6), the
 //! built binary on a pseudo-terminal against the in-process stand-in
-//! registry and the fake `claude`: sign in or use krowk locally, connect a
-//! model with `krowk connect`'s pickers, the always-on question and the
-//! recovery kit, each as plain prompts; resumed by running `krowk` again;
+//! registry and the fake `claude`: sign in or use gruntas locally, connect a
+//! model with `gruntas connect`'s pickers, the always-on question and the
+//! recovery kit, each as plain prompts; resumed by running `gruntas` again;
 //! an account that already has machines joining them with a code; and the
 //! lines the overview adds (D9, D5).
 
@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const WAIT: Duration = Duration::from_secs(20);
-const REMINDER: &str = "One machine, no recovery kit: losing it loses your sessions. krowk machines recovery.";
+const REMINDER: &str = "One machine, no recovery kit: losing it loses your sessions. gruntas machines recovery.";
 
 struct Sandbox {
     root: PathBuf,
@@ -46,7 +46,7 @@ impl Sandbox {
         Sandbox { root: root.canonicalize().unwrap() }
     }
 
-    /// `krowk args…` on this home, signing in at the stand-in registry
+    /// `gruntas args…` on this home, signing in at the stand-in registry
     /// `api`; headless, so no real browser opens.
     fn command(&self, api: &str, args: &[&str]) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
@@ -133,11 +133,11 @@ fn types(t: &mut pty::Pty, keys: &[u8]) {
 }
 
 fn ends(t: &mut pty::Pty) {
-    let status = t.wait(WAIT).expect("krowk ended");
+    let status = t.wait(WAIT).expect("gruntas ended");
     assert!(status.success(), "{status:?}: {:?}", t.text());
 }
 
-/// `krowk connect`'s pickers, through to the fake Claude's login.
+/// `gruntas connect`'s pickers, through to the fake Claude's login.
 fn connects_claude(t: &mut pty::Pty) {
     says(t, "Connect a model");
     for (question, keys) in [("Connect which provider?", &b"\r"[..]), ("How do you connect anthropic?", b"\r"), ("not signed in, reconnect", b"\r"), ("Press Enter to sign in to Claude", b"\r")] {
@@ -153,15 +153,15 @@ fn wide(c: Command) -> pty::Pty {
 
 /// A fresh home goes sign-in, registered for sync with a workspace key, then
 /// the model, with no other prompt. Cancelled at the model step, the next
-/// `krowk` goes straight back to it; then the always-on question, declined,
+/// `gruntas` goes straight back to it; then the always-on question, declined,
 /// and the recovery kit, saved.
 #[test]
 fn a_fresh_home_signs_in_registers_for_sync_and_then_connects_a_model() {
     let (r, api) = registry(Default::default());
     let b = Sandbox::new("fresh");
     let mut t = wide(b.command(&api, &[]));
-    says(&t, "Sign in to krowk");
-    says(&t, "[Enter] open the browser   [l] use krowk locally, without an account");
+    says(&t, "Sign in to gruntas");
+    says(&t, "[Enter] open the browser   [l] use gruntas locally, without an account");
     types(&mut t, b"\r");
     signs_in(&r, &t);
     says(&t, "Signed in. 'first' is set up to sync.");
@@ -170,28 +170,28 @@ fn a_fresh_home_signs_in_registers_for_sync_and_then_connects_a_model() {
     assert_eq!(b.state()["pending"], false);
     // Cancelled at the model step: said, and the overview follows.
     types(&mut t, b"\x1b");
-    says(&t, "run krowk again to connect one");
-    says(&t, "krowk help agents");
+    says(&t, "run gruntas again to connect one");
+    says(&t, "gruntas help agents");
     ends(&mut t);
     assert_eq!(b.state()["always_on_asked"], false, "nothing past the model step was asked");
 
     // Run again: no account question, the model step.
     let mut t = wide(b.command(&api, &[]));
     connects_claude(&mut t);
-    assert!(!t.text().contains("Sign in to krowk"), "{:?}", t.text());
+    assert!(!t.text().contains("Sign in to gruntas"), "{:?}", t.text());
     says(&t, "Keep this machine available while you're away?");
     // `[Y/n]` on a desktop, `[y/N]` on a machine with a battery: answered
     // either way.
     says(&t, "It syncs your sessions and takes work from your other machines. [");
     types(&mut t, b"n\r");
-    says(&t, "Not enabled. `krowk machines always-on on` does it later.");
+    says(&t, "Not enabled. `gruntas machines always-on on` does it later.");
     says(&t, "12 words that stand in for a device of yours");
-    says(&t, "Nobody else can do this for you, krowk included.");
+    says(&t, "Nobody else can do this for you, gruntas included.");
     says(&t, "[Enter] saved   [s] later");
     assert!(b.keystore().device_list().unwrap().is_some_and(|c| c.recovery().is_none()), "no kit until it is saved");
     types(&mut t, b"\r");
     says(&t, "Your recovery kit is on your device list.");
-    says(&t, "krowk help agents");
+    says(&t, "gruntas help agents");
     ends(&mut t);
     assert!(b.keystore().device_list().unwrap().is_some_and(|c| c.recovery().is_some()), "the kit is on the list");
     let state = b.state();
@@ -201,13 +201,13 @@ fn a_fresh_home_signs_in_registers_for_sync_and_then_connects_a_model() {
 
     // Set up: the overview alone.
     let mut t = wide(b.command(&api, &[]));
-    says(&t, "krowk help agents");
+    says(&t, "gruntas help agents");
     ends(&mut t);
     assert!(!t.text().contains("Connect which provider?") && !t.text().contains("Keep this machine"), "{:?}", t.text());
 }
 
 /// "Later" at the kit leaves the list without one, and the overview reminds
-/// the person while it is their only machine, as `krowk machines` does; the
+/// the person while it is their only machine, as `gruntas machines` does; the
 /// kit is not offered again. A yes at the always-on question installs the
 /// service (the service manager here only logs): on Linux only, where that
 /// stand-in is `systemctl`.
@@ -217,7 +217,7 @@ fn later_at_the_kit_is_not_asked_again_and_the_reminder_follows_while_there_is_o
     let (r, api) = registry(Default::default());
     let b = Sandbox::new("later");
     let mut t = wide(b.command(&api, &[]));
-    says(&t, "Sign in to krowk");
+    says(&t, "Sign in to gruntas");
     types(&mut t, b"\r");
     signs_in(&r, &t);
     connects_claude(&mut t);
@@ -226,7 +226,7 @@ fn later_at_the_kit_is_not_asked_again_and_the_reminder_follows_while_there_is_o
     says(&t, "This machine stays available");
     says(&t, "[Enter] saved   [s] later");
     types(&mut t, b"s\r");
-    says(&t, "Later: `krowk machines recovery` makes one when you want it.");
+    says(&t, "Later: `gruntas machines recovery` makes one when you want it.");
     says(&t, REMINDER);
     ends(&mut t);
     let unit = std::fs::read_to_string(b.root.join("home/.config/systemd/user/gruntas-host.service")).unwrap_or_default();
@@ -245,20 +245,20 @@ fn later_at_the_kit_is_not_asked_again_and_the_reminder_follows_while_there_is_o
     let out = b.command(&api, &["machines", "--format", "human"]).output().unwrap();
     let said = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success() && said.contains(REMINDER), "{said} {}", String::from_utf8_lossy(&out.stderr));
-    // `krowk help` is not the overview: no reminder there.
+    // `gruntas help` is not the overview: no reminder there.
     let out = b.command(&api, &["help"]).output().unwrap();
     assert!(!String::from_utf8_lossy(&out.stdout).contains(REMINDER));
 }
 
 /// "Use locally" goes to the model step and is not offered again;
-/// `krowk login` afterwards runs the account step: signed in, and
+/// `gruntas login` afterwards runs the account step: signed in, and
 /// registered.
 #[test]
 fn using_krowk_locally_is_not_offered_again_and_krowk_login_runs_the_account_step() {
     let (r, api) = registry(Default::default());
     let b = Sandbox::new("locally");
     let mut t = wide(b.command(&api, &[]));
-    says(&t, "Sign in to krowk");
+    says(&t, "Sign in to gruntas");
     types(&mut t, b"l\r");
     says(&t, "Connect which provider?");
     assert!(!t.text().contains("Waiting for approval"), "{:?}", t.text());
@@ -267,10 +267,10 @@ fn using_krowk_locally_is_not_offered_again_and_krowk_login_runs_the_account_ste
     ends(&mut t);
     let mut t = wide(b.command(&api, &[]));
     says(&t, "Connect which provider?");
-    assert!(!t.text().contains("Sign in to krowk"), "{:?}", t.text());
+    assert!(!t.text().contains("Sign in to gruntas"), "{:?}", t.text());
     types(&mut t, b"\x1b");
     ends(&mut t);
-    // `krowk login`: the account step from the top.
+    // `gruntas login`: the account step from the top.
     let mut t = wide(b.command(&api, &["login"]));
     signs_in(&r, &t);
     says(&t, "is set up to sync");
@@ -279,7 +279,7 @@ fn using_krowk_locally_is_not_offered_again_and_krowk_login_runs_the_account_ste
     assert!(b.keystore().device_list().unwrap().is_some());
 }
 
-/// The first machine of an account, set up as `krowk sync init` does, its
+/// The first machine of an account, set up as `gruntas sync init` does, its
 /// key `krowk_sk_first#laptop`.
 fn first_machine(name: &str, api: &str) -> Sandbox {
     let other = Sandbox::new(name);
@@ -303,7 +303,7 @@ fn first_machine(name: &str, api: &str) -> Sandbox {
 
 /// A machine signed in to the laptop's account — the browser's sign-in
 /// stands in as a key of that person's — with its registration owed, as
-/// the sign-in step leaves it: the next `krowk` takes it up.
+/// the sign-in step leaves it: the next `gruntas` takes it up.
 fn signed_in_owing(name: &str, api: &str) -> Sandbox {
     let b = Sandbox::new(name);
     let login = b.command(api, &["login", "--token", "krowk_sk_first#second"]).output().unwrap();
@@ -397,7 +397,7 @@ fn an_account_with_machines_goes_to_the_add_a_machine_flow() {
 }
 
 /// No machine of the person's answers: the new machine says so, still owes
-/// the join (it asks again at the next `krowk`), and the model step follows.
+/// the join (it asks again at the next `gruntas`), and the model step follows.
 #[test]
 fn a_new_machine_with_no_host_online_says_so_and_keeps_the_join_owed() {
     let (_r, api) = registry(Default::default());
@@ -406,7 +406,7 @@ fn a_new_machine_with_no_host_online_says_so_and_keeps_the_join_owed() {
     let mut cmd = b.command(&api, &[]);
     cmd.env("GRUNTAS_TEST_NO_HOST_SECS", "2");
     let mut t = wide(cmd);
-    assert!(t.wait_for("None of your machines is online to show a code. Run krowk machines add on one of them.", Duration::from_secs(60)).is_some(), "{:?}", t.text());
+    assert!(t.wait_for("None of your machines is online to show a code. Run gruntas machines add on one of them.", Duration::from_secs(60)).is_some(), "{:?}", t.text());
     says(&t, "Connect which provider?");
     assert_eq!(b.state()["pending"], true, "still owed");
     assert!(b.keystore().device_list().unwrap().is_none(), "no list of its own");
@@ -416,16 +416,16 @@ fn a_new_machine_with_no_host_online_says_so_and_keeps_the_join_owed() {
 
 /// Any answer but Enter or `l` at the sign-in question is "not now": nothing
 /// is kept, and the overview follows. A registration left owed — signed in,
-/// then stopped or failed — is taken up by the next `krowk`, even on a
+/// then stopped or failed — is taken up by the next `gruntas`, even on a
 /// machine that can run a model by now.
 #[test]
 fn a_registration_left_owed_is_finished_by_the_next_krowk_and_any_other_answer_is_not_now() {
     let (_r, api) = registry(Default::default());
     let b = Sandbox::new("owed");
     let mut t = wide(b.command(&api, &[]));
-    says(&t, "Sign in to krowk");
+    says(&t, "Sign in to gruntas");
     types(&mut t, b"x\r");
-    says(&t, "krowk help agents");
+    says(&t, "gruntas help agents");
     ends(&mut t);
     assert!(!t.text().contains("Connect which provider?"), "{:?}", t.text());
     assert_eq!(b.state(), serde_json::json!({}));
@@ -437,34 +437,34 @@ fn a_registration_left_owed_is_finished_by_the_next_krowk_and_any_other_answer_i
     b.claude_signed_in();
     let mut t = wide(b.command(&api, &[]));
     says(&t, "is set up to sync");
-    says(&t, "krowk help agents");
+    says(&t, "gruntas help agents");
     ends(&mut t);
-    assert!(!t.text().contains("Sign in to krowk"), "{:?}", t.text());
+    assert!(!t.text().contains("Sign in to gruntas"), "{:?}", t.text());
     assert!(b.keystore().device_list().unwrap().is_some());
     assert_eq!(b.state()["pending"], false);
 }
 
 /// A sign-in that fails is said, and nothing after it is asked: the next
-/// `krowk` asks to sign in again rather than going on without an account.
+/// `gruntas` asks to sign in again rather than going on without an account.
 #[test]
 fn a_failed_sign_in_is_asked_again_and_nothing_after_it_is() {
     let (r, api) = registry(Default::default());
     let b = Sandbox::new("denied");
     let mut t = wide(b.command(&api, &[]));
-    says(&t, "Sign in to krowk");
+    says(&t, "Sign in to gruntas");
     types(&mut t, b"\r");
     decides(&r, &t, "denial");
-    says(&t, "run krowk again to retry");
-    says(&t, "krowk help agents");
+    says(&t, "run gruntas again to retry");
+    says(&t, "gruntas help agents");
     ends(&mut t);
     assert!(!t.text().contains("Connect which provider?"), "{:?}", t.text());
     let mut t = wide(b.command(&api, &[]));
-    says(&t, "Sign in to krowk");
+    says(&t, "Sign in to gruntas");
     types(&mut t, b"x\r");
     ends(&mut t);
 }
 
-/// D9, R-EASE-8: the overview bare `krowk` prints names the most important
+/// D9, R-EASE-8: the overview bare `gruntas` prints names the most important
 /// problem with the setup and its fix; a machine with nothing wrong says
 /// nothing. Read from the disk, so it is there piped too.
 #[test]
@@ -476,19 +476,19 @@ fn the_overview_shows_the_top_problem_and_nothing_when_nothing_is_wrong() {
     assert!(login.status.success(), "{}", String::from_utf8_lossy(&login.stderr));
     let out = b.command(&api, &[]).output().unwrap();
     let said = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success() && said.contains("This machine is not registered for sync — krowk login"), "{said}");
-    // Not in `krowk help`, which is the same page without the setup's state.
+    assert!(out.status.success() && said.contains("This machine is not registered for sync — gruntas login"), "{said}");
+    // Not in `gruntas help`, which is the same page without the setup's state.
     let out = b.command(&api, &["help"]).output().unwrap();
     assert!(!String::from_utf8_lossy(&out.stdout).contains("not registered"));
 
-    // Using krowk locally, with a model: nothing is wrong, so nothing is said.
+    // Using gruntas locally, with a model: nothing is wrong, so nothing is said.
     let b = Sandbox::new("no-problem");
     std::fs::create_dir_all(b.root.join("home/.gruntas")).unwrap();
     std::fs::write(b.root.join("home/.gruntas/first-run.json"), "{\"local\": true, \"always_on_asked\": true}\n").unwrap();
     b.claude_signed_in();
     let out = b.command(&api, &[]).output().unwrap();
     let said = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success() && said.contains("krowk help agents"), "{said}");
+    assert!(out.status.success() && said.contains("gruntas help agents"), "{said}");
     assert!(!said.contains("not registered"), "{said}");
     assert!(!said.contains(REMINDER), "{said}");
 }

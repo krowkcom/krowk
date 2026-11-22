@@ -1,4 +1,4 @@
-$ krowk pricing refresh
+$ gruntas pricing refresh
 stdout:
 {
   "meta_path": "<scratch>/home/.gruntas/cache/models.meta.json",
@@ -13,25 +13,25 @@ stdout:
 }
 exit: 0
 
-$ krowk pricing
+$ gruntas pricing
 stderr:
 {
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "the pricing command needs a subcommand: refresh; run `krowk help pricing`",
+    "fix": "the pricing command needs a subcommand: refresh; run `gruntas help pricing`",
     "retryable": false
   }
 }
 exit: 1
 
-$ krowk pricing bogus
+$ gruntas pricing bogus
 stderr:
 {
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "`pricing bogus` is not a krowk command; the pricing command takes refresh; run `krowk help pricing`",
+    "fix": "`pricing bogus` is not a gruntas command; the pricing command takes refresh; run `gruntas help pricing`",
     "retryable": false
   }
 }

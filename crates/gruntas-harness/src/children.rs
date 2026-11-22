@@ -1,4 +1,4 @@
-//! Child sessions, whoever starts them — krowk's own subagents, a
+//! Child sessions, whoever starts them — gruntas's own subagents, a
 //! backend's agents, `--worktree` sessions: how many may run at once, the
 //! machine-wide agent slots they hold, and the watch that frames where each
 //! stands for the parent's client (R-SUB-2, R-SUB-9).

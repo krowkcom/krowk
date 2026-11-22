@@ -1,4 +1,4 @@
-$ krowk auth verify --format human
+$ gruntas auth verify --format human
 stdout:
 ✓ Key <key_1> is valid
   Workspace   Local workspace (<ws_1>)
@@ -6,7 +6,7 @@ stdout:
   Plan        Pro · renews 19 Dec 2026
 exit: 0
 
-$ krowk auth token --format human
+$ gruntas auth token --format human
 stdout:
 krowk_sk_env
 exit: 0

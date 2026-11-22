@@ -3,10 +3,10 @@
 @registry
 @file a.txt hello
 @file shot.png \x89PNG\r\n\x1a\n0000
-@tty krowk push a.txt
-@tty krowk push a.txt shot.png
-@tty krowk push a.txt --json
-@tty krowk push missing.txt
-@tty krowk bogus
-@tty krowk doctor
-@tty krowk config show
+@tty gruntas push a.txt
+@tty gruntas push a.txt shot.png
+@tty gruntas push a.txt --json
+@tty gruntas push missing.txt
+@tty gruntas bogus
+@tty gruntas doctor
+@tty gruntas config show

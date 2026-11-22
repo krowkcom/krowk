@@ -1,4 +1,4 @@
-//! MCP servers a turn can use through krowk's bridge, with their tools
+//! MCP servers a turn can use through gruntas's bridge, with their tools
 //! deferred (R-TOOL-3).
 //!
 //! A person's MCP servers come from the places Claude Code keeps them, so a
@@ -10,7 +10,7 @@
 //! | project | `<repository>/.mcp.json`: `mcpServers` | only once the repository is trusted, and then those Claude Code's `enabledMcpjsonServers`, `disabledMcpjsonServers` and `enableAllProjectMcpServers` leave on |
 //! | Claude Code, user | Claude's `settings.json`, then `~/.claude.json` (`$CLAUDE_CONFIG_DIR/.claude.json`): `mcpServers` | always |
 //! | Claude Code, local | `~/.claude.json`: `projects["<working directory>"].mcpServers`, else `projects["<repository>"]`'s | always |
-//! | krowk, user | `config.json` in krowk's home: `mcpServers` | always |
+//! | gruntas, user | `config.json` in gruntas's home: `mcpServers` | always |
 //!
 //! The project is lowest, where Claude Code puts it above the user's: a
 //! repository's `github` must not take the place of the person's, whose
@@ -71,7 +71,7 @@ use tokio::sync::watch;
 pub const SEARCH: &str = "mcp_search";
 pub const CALL: &str = "mcp_call";
 
-/// The MCP revision krowk speaks, as the bridge does.
+/// The MCP revision gruntas speaks, as the bridge does.
 const MCP_VERSION: &str = "2025-06-18";
 /// A server that has not answered `initialize` and `tools/list` by then is
 /// reported as down, so one slow server cannot hold every search.
@@ -110,7 +110,7 @@ const MAX_SEARCH: usize = 32 << 10;
 const MAX_NAMES: usize = 4 << 10;
 /// A `.mcp.json` bigger than this is not read.
 const MAX_MCP_JSON: u64 = 1 << 20;
-/// krowk's own credentials, which a stdio server does not inherit unless
+/// gruntas's own credentials, which a stdio server does not inherit unless
 /// its config sets them in `env`: a server is someone else's program, and
 /// the person's provider keys are not its to spend.
 const SCRUBBED: &[&str] = &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "XAI_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"];
@@ -163,7 +163,7 @@ impl ServerConfig {
 
 /// The servers a repository's `.mcp.json` names that `discover` leaves out
 /// because the repository is not trusted, or its file changed since it was:
-/// what `krowk mcp list` shows as untrusted. None once it is trusted.
+/// what `gruntas mcp list` shows as untrusted. None once it is trusted.
 pub fn untrusted_project(cfg: &crate::permissions::Config, cwd: &Path) -> Vec<(String, ServerConfig)> {
     let root = crate::trust::root(cwd);
     if cfg.trusted.as_ref().is_some_and(|t| t(&root)) {
@@ -216,7 +216,7 @@ pub fn discover(cfg: &crate::permissions::Config, cwd: &Path) -> (Vec<Server>, V
     };
     let claude_json = claude_json.as_deref().and_then(read);
     // Claude Code keys a project by the directory it was started in, so
-    // that comes first; the repository's root is what krowk keyed it by.
+    // that comes first; the repository's root is what gruntas keyed it by.
     let project = claude_json.as_ref().and_then(|v| v.get("projects")).and_then(|p| [cwd, root.as_path()].iter().find_map(|k| p.get(k.display().to_string())));
     // Read once: the servers loaded are the ones whose digest is checked
     // here against what trust recorded, never a file swapped in after the
@@ -238,7 +238,7 @@ pub fn discover(cfg: &crate::permissions::Config, cwd: &Path) -> (Vec<Server>, V
         (Some(p), true) => read(p),
         _ => cfg.user.clone(),
     };
-    add(user.as_ref().and_then(|u| u.get("mcpServers")), "krowk's config.json", &all);
+    add(user.as_ref().and_then(|u| u.get("mcpServers")), "gruntas's config.json", &all);
     (out, skipped)
 }
 
@@ -530,7 +530,7 @@ impl Pool {
         Pool { kept: Default::default(), retry, credentials: None, signins: Default::default(), signin_ttl: crate::oauth::LOGIN_TIMEOUT }
     }
 
-    /// Remote servers send the sign-ins `krowk mcp login` stored in `path`.
+    /// Remote servers send the sign-ins `gruntas mcp login` stored in `path`.
     pub fn with_credentials(mut self, path: PathBuf) -> Pool {
         self.credentials = Some(path);
         self
@@ -1075,7 +1075,7 @@ impl Auth {
 
 /// What a call to a server that needs sign-in returns (R-MCP-11).
 fn needs_sign_in(name: &str) -> String {
-    format!("{name} needs sign-in: run `krowk mcp login {name}`")
+    format!("{name} needs sign-in: run `gruntas mcp login {name}`")
 }
 
 struct StdioIo {
@@ -1254,7 +1254,7 @@ impl Conn {
                         if junk > MAX_JUNK_LINES || junk_bytes > MAX_JUNK_BYTES {
                             io.kill();
                             junked.store(true, Ordering::Release);
-                            return Err(format!("it wrote {junk} lines that are not JSON-RPC ({} KiB) while krowk waited for its answer, so it was stopped", junk_bytes >> 10));
+                            return Err(format!("it wrote {junk} lines that are not JSON-RPC ({} KiB) while gruntas waited for its answer, so it was stopped", junk_bytes >> 10));
                         }
                         continue;
                     };
@@ -1267,7 +1267,7 @@ impl Conn {
                         let reply = if m == "ping" {
                             json!({"jsonrpc": "2.0", "id": rid, "result": {}})
                         } else {
-                            json!({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "krowk does not offer this"}})
+                            json!({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "gruntas does not offer this"}})
                         };
                         write_line(&mut io.stdin, &reply).await?;
                     }
@@ -1371,9 +1371,9 @@ impl Conn {
 
 /// The program a stdio server's `command` names, resolved here rather than
 /// by the OS: a relative path against the server's own working directory
-/// (never krowk's, which may be a repository nobody trusted), and a bare
+/// (never gruntas's, which may be a repository nobody trusted), and a bare
 /// name through the absolute directories of `PATH` only, since a relative
-/// entry there (`.`) would also resolve against krowk's.
+/// entry there (`.`) would also resolve against gruntas's.
 fn program(cmd: &str, cwd: &Path) -> Result<PathBuf, String> {
     let p = Path::new(cmd);
     if p.is_absolute() {
@@ -1434,7 +1434,7 @@ mod tests {
 
     #[test]
     fn r_tool_3_a_mcp_json_swapped_after_the_trust_check_is_not_loaded() {
-        let base = std::env::temp_dir().join(format!("krowk-mcp-swap-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("gruntas-mcp-swap-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("repo/.git")).unwrap();
         std::fs::create_dir_all(base.join("krowk")).unwrap();
@@ -1466,7 +1466,7 @@ mod tests {
 
     #[test]
     fn r_tool_3_an_untrusted_repository_lists_no_project_server_and_starts_the_persons_in_their_home() {
-        let base = std::env::temp_dir().join(format!("krowk-mcp-discover-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("gruntas-mcp-discover-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("repo/.git")).unwrap();
         std::fs::create_dir_all(base.join("home")).unwrap();
@@ -1491,7 +1491,7 @@ mod tests {
     /// A repository, trusted, with a `.mcp.json` naming `a`, `b` and `c`,
     /// started in its `app/` directory; Claude's files under `base/claude`.
     fn approval_repo(name: &str) -> (PathBuf, PathBuf, crate::permissions::Config) {
-        let base = std::env::temp_dir().join(format!("krowk-mcp-{name}-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("gruntas-mcp-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("repo/.git")).unwrap();
         std::fs::create_dir_all(base.join("repo/app/.claude")).unwrap();

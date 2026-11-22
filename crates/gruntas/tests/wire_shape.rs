@@ -28,32 +28,32 @@ fn wire_shape_matches_the_registrys_routes() {
     let file = dir.join("shot.png");
     std::fs::write(&file, "some bytes").unwrap();
     let file = file.display().to_string();
-    let krowk = Gruntas { home: dir.join("home"), api: format!("http://{proxy}/v1") };
+    let gruntas = Gruntas { home: dir.join("home"), api: format!("http://{proxy}/v1") };
 
-    let pushed = krowk.ok(&["push", &file], true);
+    let pushed = gruntas.ok(&["push", &file], true);
     let art = pushed["data"]["artifacts"][0]["slug"].as_str().unwrap().to_string();
     let run = pushed["data"]["run"]["slug"].as_str().unwrap().to_string();
-    krowk.ok(&["artifacts", "list"], true);
-    krowk.ok(&["artifacts", "show", &art], true);
-    krowk.ok(&["runs", "list"], true);
-    krowk.ok(&["runs", "show", &run], true);
+    gruntas.ok(&["artifacts", "list"], true);
+    gruntas.ok(&["artifacts", "show", &art], true);
+    gruntas.ok(&["runs", "list"], true);
+    gruntas.ok(&["runs", "show", &run], true);
     // A run's artifacts are a collection of the run, not a filter on the
     // listing above — so --run is a different endpoint, not a query parameter.
-    krowk.ok(&["artifacts", "list", &format!("--run={run}")], true);
-    krowk.run(&["doctor"], true);
+    gruntas.ok(&["artifacts", "list", &format!("--run={run}")], true);
+    gruntas.run(&["doctor"], true);
 
     // Claiming needs an anonymous artifact to claim.
-    let anonymous = krowk.ok(&["push", &file], false);
+    let anonymous = gruntas.ok(&["push", &file], false);
     let anon = &anonymous["data"]["artifacts"][0];
     let (slug, token) = (anon["slug"].as_str().unwrap().to_string(), anon["claim_token"].as_str().unwrap().to_string());
-    krowk.ok(&["claim", &slug, &token], true);
-    krowk.ok(&["artifacts", "attach", &slug, &format!("--run={run}")], true);
+    gruntas.ok(&["claim", &slug, &token], true);
+    gruntas.ok(&["artifacts", "attach", &slug, &format!("--run={run}")], true);
     // Taking it down again: a claimed artifact answers to the key that holds it.
-    krowk.ok(&["artifacts", "delete", &slug], true);
+    gruntas.ok(&["artifacts", "delete", &slug], true);
 
     // A browser login, approved by the proxy the instant it is opened so the
     // poll happens once. --no-browser: a test must not reach for the desktop.
-    krowk.ok(&["auth", "login", "--no-browser"], true);
+    gruntas.ok(&["auth", "login", "--no-browser"], true);
 
     assert!(failures.lock().unwrap().is_empty(), "standing in for the person at the browser: {:?}", failures.lock().unwrap());
     let want = [
@@ -92,7 +92,7 @@ fn wire_shape_matches_the_registrys_routes() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// The sync calls (R-SYNC-1): the device list `krowk sync init` posts, and
+/// The sync calls (R-SYNC-1): the device list `gruntas sync init` posts, and
 /// the session and lease calls gruntas-api makes for the host (ticket 19 puts
 /// them behind a command).
 #[cfg(all(feature = "harness", unix))]
@@ -114,7 +114,7 @@ fn sync_wire_shape_matches_the_registrys_routes() {
     *api.lock().unwrap() = format!("http://{proxy}/v1");
     let laptop = Gruntas { home: laptop_home, api: api.lock().unwrap().clone() };
 
-    // The laptop's device list, as `krowk sync init` posts it: its first
+    // The laptop's device list, as `gruntas sync init` posts it: its first
     // entry adds the laptop, and the post binds the key making it to it.
     use gruntas_client::device_chain::{Chain, Kind, Subject};
     use gruntas_client::e2e::{hex, DeviceKey, DeviceSigner, SigningKey};
@@ -240,7 +240,7 @@ impl Gruntas {
 
     fn ok(&self, args: &[&str], keyed: bool) -> Value {
         let (ok, out) = self.run(args, keyed);
-        assert!(ok, "krowk {} failed:\n{out}", args.join(" "));
+        assert!(ok, "gruntas {} failed:\n{out}", args.join(" "));
         serde_json::from_str(&out).unwrap_or(Value::Null)
     }
 }
@@ -280,7 +280,7 @@ fn start_proxy(registry: SocketAddr, calls: Arc<Mutex<Vec<String>>>, failures: A
 /// Approves a browser login the moment it is opened.
 fn approve_logins(registry: SocketAddr, method: &str, path: &str, answer: &[u8]) -> Result<(), String> {
     if method == "POST" && path.split('?').next() == Some("/v1/cli/authorizations") {
-        // Every login says what it is for, and `krowk login` is a login.
+        // Every login says what it is for, and `gruntas login` is a login.
         if !path.contains("action=login") {
             return Err(format!("a browser login opened without its action: {path}"));
         }

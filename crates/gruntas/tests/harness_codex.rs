@@ -1,9 +1,9 @@
-//! `krowk providers add codex` and `krowk -p` on a Codex instance, the
+//! `gruntas providers add codex` and `gruntas -p` on a Codex instance, the
 //! built binary against a fake `codex` on PATH (a script replaying recorded
 //! JSON-RPC; no real login anywhere): two accounts signed in through
 //! `codex login`, each with its own home sharing the person's Codex
 //! configuration, each running a session; a tool-using turn that lands in
-//! the log and in `krowk sessions`; the native `openai` key kept out of
+//! the log and in `gruntas sessions`; the native `openai` key kept out of
 //! Codex; Ctrl-C mid-turn and a resume; a login that fails; and the trust
 //! prompt's headless refusal.
 
@@ -29,7 +29,7 @@ impl Sandbox {
         std::fs::create_dir_all(root.join("home/.codex")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
         std::fs::create_dir_all(root.join("bin")).unwrap();
-        std::fs::write(root.join("repo/README.md"), "# krowk\n").unwrap();
+        std::fs::write(root.join("repo/README.md"), "# gruntas\n").unwrap();
         // The person's own Codex, which a new account shares.
         std::fs::write(root.join("home/.codex/config.toml"), "model = \"gpt-5.5\"\n").unwrap();
         std::fs::write(root.join("home/.codex/AGENTS.md"), "Be brief.\n").unwrap();
@@ -47,7 +47,7 @@ impl Sandbox {
         let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
         c.args(args)
             .env_clear()
-            // The fake comes first on PATH: it is the `codex` krowk finds.
+            // The fake comes first on PATH: it is the `codex` gruntas finds.
             .env("PATH", format!("{}:{}", self.root.join("bin").display(), std::env::var("PATH").unwrap_or_default()))
             .env("HOME", self.root.join("home"))
             .env("GRUNTAS_NO_UPDATE_CHECK", "1")
@@ -60,15 +60,15 @@ impl Sandbox {
         c
     }
 
-    fn krowk(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
+    fn gruntas(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         self.command(args, env).output().unwrap()
     }
 
     fn json(&self, args: &[&str], env: &[(&str, &str)]) -> Value {
-        let out = self.krowk(args, env);
+        let out = self.gruntas(args, env);
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-        assert!(out.status.success(), "krowk {args:?}: {stdout}{}", String::from_utf8_lossy(&out.stderr));
-        serde_json::from_str(stdout.trim()).unwrap_or_else(|e| panic!("krowk {args:?}: {e}: {stdout}"))
+        assert!(out.status.success(), "gruntas {args:?}: {stdout}{}", String::from_utf8_lossy(&out.stderr));
+        serde_json::from_str(stdout.trim()).unwrap_or_else(|e| panic!("gruntas {args:?}: {e}: {stdout}"))
     }
 
     fn fake_log(&self) -> String {
@@ -116,7 +116,7 @@ fn r_inst_2_two_codex_accounts_sign_in_through_codex_login_and_each_runs_a_sessi
     assert_listed_status(&b);
 
     // A session on each account, with the native openai instance's key in
-    // krowk's environment: it never reaches Codex.
+    // gruntas's environment: it never reaches Codex.
     let listed_up_to = b.fake_log().lines().count();
     let mut sessions = Vec::new();
     for name in ["team", "personal"] {
@@ -129,7 +129,7 @@ fn r_inst_2_two_codex_accounts_sign_in_through_codex_login_and_each_runs_a_sessi
         let home = b.data().join("accounts").join(format!("codex-{name}"));
         assert!(backend["transcriptPath"].as_str().unwrap().starts_with(&home.display().to_string()), "{backend}");
         assert_eq!(backend["billing"], "subscription");
-        assert!(events.iter().any(|e| e["type"] == "item.completed" && e["item"]["name"] == "mcp__gruntas__session_info"), "krowk's tool ran");
+        assert!(events.iter().any(|e| e["type"] == "item.completed" && e["item"]["name"] == "mcp__gruntas__session_info"), "gruntas's tool ran");
         sessions.push(session);
     }
     let fake = b.fake_log();
@@ -142,7 +142,7 @@ fn r_inst_2_two_codex_accounts_sign_in_through_codex_login_and_each_runs_a_sessi
     assert_eq!(accounts.len(), 4, "{accounts:?}");
     assert!(accounts[..2].iter().all(|a| a.contains("team@example.com")) && accounts[2..].iter().all(|a| a.contains("me@example.com")), "each session ran under its own account: {accounts:?}");
 
-    // krowk.db lists both.
+    // gruntas.db lists both.
     let listed = b.json(&["sessions", "--json"], &[]);
     let ids: Vec<String> = listed["data"]["sessions"].as_array().unwrap().iter().filter_map(|s| s["foreign_session_id"].as_str().map(String::from)).collect();
     for s in &sessions {
@@ -195,10 +195,10 @@ fn assert_listed_status(b: &Sandbox) {
 #[test]
 fn r_inst_2_a_codex_login_that_fails_adds_nothing() {
     let b = Sandbox::new("login-fails");
-    let out = b.krowk(&["providers", "add", "codex", "--name", "team", "--json"], &[("FAKE_CODEX_LOGIN", "fail")]);
+    let out = b.gruntas(&["providers", "add", "codex", "--name", "team", "--json"], &[("FAKE_CODEX_LOGIN", "fail")]);
     assert!(!out.status.success());
     let said = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
-    assert!(said.contains("not_authenticated") && said.contains("krowk connect openai --method subscription --name team"), "{said}");
+    assert!(said.contains("not_authenticated") && said.contains("gruntas connect openai --method subscription --name team"), "{said}");
     assert!(!b.data().join("accounts/codex-team").exists(), "the home it made is gone");
     let listed = b.json(&["providers", "list", "--json"], &[]);
     assert!(!listed["data"]["instances"].as_array().unwrap().iter().any(|r| r["instance"] == "codex:team"), "no definition was written");
@@ -213,7 +213,7 @@ fn r_back_6_a_codex_turn_is_not_started_headless_in_an_untrusted_repository() {
     let b = Sandbox::new("trust");
     b.json(&["providers", "add", "codex", "--name", "team", "--json"], &[]);
     let added = b.fake_log().len();
-    let out = b.krowk(&["-p", "hi", "--model", "codex:team/gpt-5.5", "--output-format", "json"], &[]);
+    let out = b.gruntas(&["-p", "hi", "--model", "codex:team/gpt-5.5", "--output-format", "json"], &[]);
     assert_eq!(out.status.code(), Some(4), "{}", String::from_utf8_lossy(&out.stderr));
     let said = String::from_utf8_lossy(&out.stderr);
     assert!(said.contains("untrusted_directory") && said.contains("--trust"), "{said}");
@@ -231,8 +231,8 @@ fn the_paste_guard_codex_runs_is_this_krowk_and_refuses_a_bare_card_link() {
     let answers: Vec<Value> = fake.lines().filter_map(|l| l.strip_prefix("hook-answer ")).map(|a| serde_json::from_str(a).unwrap_or_else(|e| panic!("{a}: {e}"))).collect();
     assert_eq!(answers.len(), 2, "{fake}");
     assert_eq!(answers[0]["hookSpecificOutput"]["permissionDecision"], "deny", "the bare link: {}", answers[0]);
-    assert!(answers[0]["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().contains("krowk block"));
-    assert_eq!(answers[1], serde_json::json!({}), "the krowk block goes through");
+    assert!(answers[0]["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().contains("gruntas block"));
+    assert_eq!(answers[1], serde_json::json!({}), "the gruntas block goes through");
     // Trusted in the instance's own Codex home, by Codex's own write.
     assert_eq!(fake.lines().filter(|l| l.starts_with("config-write ")).count(), 1, "{fake}");
 }
@@ -271,7 +271,7 @@ fn r_back_3_ctrl_c_interrupts_a_codex_turn_and_the_session_resumes() {
     assert!(b.fake_log().lines().any(|l| l == "interrupt"), "turn/interrupt reached Codex");
     let events = b.events(&session);
     assert!(events.iter().any(|e| e["type"] == "item.completed" && e["item"]["text"] == "1\n2\n3\n"), "what arrived is kept");
-    // A new krowk resumes the thread and goes on.
+    // A new gruntas resumes the thread and goes on.
     let out = b.json(&["-p", "go on", "--resume", &session, "--trust", "--output-format", "json"], &[("FAKE_CODEX_SCENARIO", &scenario("interrupt.jsonl"))]);
     assert_eq!(out["result"], "Picking up where we left off.");
     assert!(b.fake_log().lines().any(|l| l.starts_with("resume ")));

@@ -1660,7 +1660,7 @@ async fn r_lag_8_a_prompt_sent_again_after_a_lost_ack_runs_once() {
     assert_eq!(n, 1, "the prompt ran {n} times");
 }
 
-/// R-SYNC-2: a viewer on the host's own device — `krowk sync attach` on
+/// R-SYNC-2: a viewer on the host's own device — `gruntas sync attach` on
 /// machine A while A hosts — joins and leaves, and the host stays on the
 /// relay: B, watching from another device, is never told the host went,
 /// and a prompt B types afterwards is sent, not queued, and runs on A.
@@ -1889,7 +1889,7 @@ async fn ack_rtt(v: &mut viewer::Viewer, session: &str, frames: &mut Vec<Instant
 /// there and names it to B inside the welcome, sealed — the relay never
 /// sees the address — and B moves onto it, after which B's live frames no
 /// longer cross the relay. A names itself and its tailnet node in the
-/// sealed index, for `krowk machines` (R-NET-4).
+/// sealed index, for `gruntas machines` (R-NET-4).
 #[tokio::test]
 async fn r_net_2_the_session_moves_to_the_direct_path_and_live_frames_leave_the_relay() {
     let w = World::new("direct");
@@ -1901,7 +1901,7 @@ async fn r_net_2_the_session_moves_to_the_direct_path_and_live_frames_leave_the_
     w.synced(&session).await;
 
     // R-NET-4: A names itself in the sealed index, with its tailnet node,
-    // which is how `krowk machines` finds it with no tag on it.
+    // which is how `gruntas machines` finds it with no tag on it.
     let (api, id, keys, chain) = (w.client(), session.clone(), w.keys(), w.chain());
     let index = tokio::task::spawn_blocking(move || {
         let s = api.show_sync_session(&id).unwrap();
@@ -2506,7 +2506,7 @@ fn init_repo(repo: &Path) {
     git(repo, &["commit", "-q", "-m", "base"]);
 }
 
-/// B asks A for the session and takes it up, as `krowk sync take` does: a
+/// B asks A for the session and takes it up, as `gruntas sync take` does: a
 /// clone of A's repository, a home and a daemon of its own, the transport
 /// applied, the images the log names fetched, the log restored, and B's bridge
 /// hosting the session from the new worktree.
@@ -2527,7 +2527,7 @@ async fn take_up(w: &World, b: &Device, session: &str, a_bridge: tokio::task::Jo
     let ended = tokio::time::timeout(Duration::from_secs(20), a_bridge).await.expect("A's bridge stops").unwrap();
     assert!(ended.as_ref().is_err_and(|e| e.starts_with(host::HANDED_OVER)), "{ended:?}");
 
-    // B takes it up, as `krowk sync take` does.
+    // B takes it up, as `gruntas sync take` does.
     let (api, keys, chain, id, slug, b_env2, from, me, wt_root, b_repo2) = (w.as_device(b), w.keys(), w.chain(), session.to_string(), handed.transport.clone(), b_env.clone(), handed.from_device.clone(), b.key.id().to_string(), w.root.join("worktrees-b"), b_repo.clone());
     let claude_home = w.root.join("claude");
     let key = handoff::key_from_hex(&handed.key).unwrap();
@@ -2536,7 +2536,7 @@ async fn take_up(w: &World, b: &Device, session: &str, a_bridge: tokio::task::Jo
         let plain = e2e::open_transport(&sealed, &gruntas_harness::daemon::ws::uuid(&id), &key).unwrap();
         let bundle = handoff::Bundle::decode(&plain, &id).unwrap();
         let applied = handoff::apply(&bundle, &b_repo2, &wt_root).unwrap();
-        // As `krowk sync take` does: Claude Code's transcript, where B's resumes it.
+        // As `gruntas sync take` does: Claude Code's transcript, where B's resumes it.
         handoff::place_transcript(&bundle, &claude_home, &applied.cwd).unwrap();
         api.spend_transport(&slug).unwrap();
         let gone = api.read_transport(&slug).unwrap_err();
@@ -2896,7 +2896,7 @@ async fn r_sub_12_a_viewer_stops_one_claude_agent() {
     let sleeper = printed.iter().find(|m| m["subtype"] == "task_started" && m["description"] == "sleeper").unwrap()["task_id"].as_str().unwrap().to_string();
     let init = printed.iter().position(|m| m["subtype"] == "init").unwrap();
     let mut scenario = String::from("{\"type\":\"assistant\",\"message\":{\"model\":\"claude-sonnet-4-6\",\"id\":\"msg_hi\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}},\"parent_tool_use_id\":null,\"session_id\":\"{{SESSION}}\"}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"hello\",\"session_id\":\"{{SESSION}}\"}\n---\n");
-    // Where the recording stopped the sleeper, the fake waits for krowk to.
+    // Where the recording stopped the sleeper, the fake waits for gruntas to.
     for m in &printed[init + 1..] {
         let said_stopped = m["task_id"] == sleeper.as_str() && (m["patch"]["status"] == "killed" || m["status"] == "stopped");
         match m["type"].as_str() {
@@ -2950,7 +2950,7 @@ async fn r_sub_12_a_viewer_stops_one_claude_agent() {
 }
 
 /// R-SUB-6, R-SUB-7: Claude Code's agents, written as child sessions, ride
-/// the parent's chunks as krowk's own children do — the recorded parallel
+/// the parent's chunks as gruntas's own children do — the recorded parallel
 /// turn's two agents, on a session A's bridge syncs: every event of each
 /// child's log is in the chunks, the parent's replay is its own log's, and
 /// each child is rebuilt from them, its prompt first. What moves a session
@@ -3216,10 +3216,10 @@ impl World {
     fn announcer(&self, a: &Device, home: &str, run: &str) -> announce::Options {
         let (api, device, user, chain) = (self.as_device(a), a.key.id(), self.user_key(), self.chain());
         let (env, instances) = (self.env_at(home, run), self.instances());
-        let krowk = self.root.join(home).join(".gruntas");
+        let gruntas = self.root.join(home).join(".gruntas");
         // Where `claude auth status` is asked.
-        std::fs::create_dir_all(krowk.join("probe")).unwrap();
-        let trusted = gruntas_harness::trust::Store::new(Some(krowk.join(gruntas_harness::trust::FILE)), Some(self.root.join(home)));
+        std::fs::create_dir_all(gruntas.join("probe")).unwrap();
+        let trusted = gruntas_harness::trust::Store::new(Some(gruntas.join(gruntas_harness::trust::FILE)), Some(self.root.join(home)));
         trusted.trust(&self.repo().canonicalize().unwrap()).unwrap();
         let catalog = serde_json::json!({"anthropic": {"models": {CATALOG_MODEL: {"family": "claude", "tool_call": true, "release_date": "2026-09-01"}}}});
         announce::Options {
@@ -3230,8 +3230,8 @@ impl World {
             instances: Box::new(move || {
                 let registry = Registry::resolve(&instances, &env);
                 let all: Vec<_> = registry.instances.values().collect();
-                let probe = gruntas_harness::readiness::Probe::at(krowk.join("probe"));
-                let reports = gruntas_harness::readiness::check_all(&all, &krowk.join("credentials.json"), &probe);
+                let probe = gruntas_harness::readiness::Probe::at(gruntas.join("probe"));
+                let reports = gruntas_harness::readiness::check_all(&all, &gruntas.join("credentials.json"), &probe);
                 (registry, reports)
             }),
             catalog: Box::new(move || Some(serde_json::to_vec(&catalog).unwrap())),
@@ -3291,7 +3291,7 @@ async fn prompted(w: &World, d: &Client, session: Option<&str>, text: &str) -> S
     d.execute(w.prompt(session, text), tx).await.unwrap().unwrap().session_id
 }
 
-/// R-SYNC-3: a session prompted at A's terminal, with no `krowk sync`
+/// R-SYNC-3: a session prompted at A's terminal, with no `gruntas sync`
 /// command, is bridged by A's supervisor the moment its turn starts and
 /// listed on B within 5 seconds; B follows it live (R-SYNC-2: the bridge
 /// is its one writer, and B's view is the bridge's). R-LAG-9: the bridge's
@@ -3757,7 +3757,7 @@ async fn r_sync_3_sync_turned_off_stops_a_session_a_device_watches() {
     auto.stop(Duration::from_secs(10)).await;
 }
 
-/// R-SYNC-2: one writer. A manual `krowk sync host` holds the session; two
+/// R-SYNC-2: one writer. A manual `gruntas sync host` holds the session; two
 /// prompts follow with automatic sync on. The supervisor tries once — the
 /// registry refuses it the lease (`lease_held`) — and leaves the session
 /// alone for a minute: `build` is called at most once, the lease's fence
@@ -3827,7 +3827,7 @@ async fn r_sync_1_a_free_workspace_stops_auto_sync_for_an_hour() {
     let w = World::new("auto-free");
     let a = w.device("machine-a");
     let pause = Duration::from_secs(6);
-    let refuse = ("sync_requires_paid_plan".to_string(), "syncing sessions between devices needs a paid plan — run `krowk billing` to choose one for this workspace".to_string());
+    let refuse = ("sync_requires_paid_plan".to_string(), "syncing sessions between devices needs a paid plan — run `gruntas billing` to choose one for this workspace".to_string());
     let mut auto = w.auto_with(&a, AutoOpts { refuse: Some(refuse), paid_pause: pause, ..AutoOpts::default() });
     let d = w.daemon().await;
     let first = prompted(&w, &d, None, "say hello").await;
@@ -3888,7 +3888,7 @@ async fn r_sync_17_a_third_free_machine_stays_a_viewer_and_auto_sync_does_not_pa
     let (api, dev) = (w.as_device(&c), c.key.id().to_string());
     let (refused, viewer) = tokio::task::spawn_blocking(move || (api.acquire_lease(&first, &dev, 60, "development").unwrap_err(), api.relay_ticket("01a0ec7b-5555-7000-8000-000000000001", &dev, "development"))).await.unwrap();
     assert_eq!((refused.code().as_str(), refused.status), ("sync_machine_limit", 402), "{refused:?}");
-    assert_eq!(refused.fix(), "Free syncs sessions from two machines, and this would be a third (machine-b, machine-a). You can still follow from here, or run krowk billing to upgrade.");
+    assert_eq!(refused.fix(), "Free syncs sessions from two machines, and this would be a third (machine-b, machine-a). You can still follow from here, or run gruntas billing to upgrade.");
     assert_eq!(refused.body["details"]["machines"], serde_json::json!(["machine-b", "machine-a"]));
     assert!(viewer.is_ok(), "C follows A's session: {viewer:?}");
     auto.stop(Duration::from_secs(10)).await;
@@ -3913,7 +3913,7 @@ async fn r_sync_17_a_handoff_to_a_machine_over_the_limit_leaves_the_session_on_i
     let got = until(&mut cv, Duration::from_secs(30), &mut frames, |u| matches!(u, viewer::Update::Handoff(_))).await;
     let refused = got.into_iter().find_map(|u| if let viewer::Update::Handoff(r) = u { Some(r) } else { None }).unwrap().expect_err("refused");
     assert!(refused.starts_with(&format!("{}machine-c: Free syncs sessions from two machines, and this would be a third (", host::MOVE_REFUSED)), "{refused}");
-    assert!(refused.contains("machine-a") && refused.contains("machine-b") && refused.ends_with("or run krowk billing to upgrade."), "{refused}");
+    assert!(refused.contains("machine-a") && refused.contains("machine-b") && refused.ends_with("or run gruntas billing to upgrade."), "{refused}");
     let (api, id) = (w.client(), session.clone());
     let lease = tokio::task::spawn_blocking(move || api.show_sync_session(&id)).await.unwrap().unwrap().lease.expect("leased");
     assert_eq!(lease.device, a.key.id().to_string(), "the session stays on A");
@@ -4060,9 +4060,9 @@ async fn r_sync_15_an_image_pasted_again_keeps_as_long_as_the_chunk_naming_it() 
 }
 
 impl Auto {
-    /// A's daemon stopped as `krowk host stop` stops it — asked by a client,
+    /// A's daemon stopped as `gruntas host stop` stops it — asked by a client,
     /// its socket gone, `server::run` returned — and then its supervisor,
-    /// as `krowk host serve` stops it after `server::run`: every bridge
+    /// as `gruntas host serve` stops it after `server::run`: every bridge
     /// seals its stream and gives its lease back.
     async fn stop_daemon(&mut self, w: &World, d: &Client) {
         d.stop(true).await.expect("the daemon stops");
@@ -4109,7 +4109,7 @@ async fn caught_up_with(w: &World, v: &mut viewer::Viewer, session: &str, ids: &
 
 /// R-OFF-2, R-SYNC-3, R-SYNC-2 (ticket 98): a restart needs nothing of its
 /// own. B is attached to a session A's supervisor bridged; A's daemon
-/// stops — `krowk host stop`, an upgrade — and B sees the old stream end,
+/// stops — `gruntas host stop`, an upgrade — and B sees the old stream end,
 /// the lease given back. A new daemon and supervisor start on the same
 /// machine, and the session's next prompt takes it up again with no
 /// command: B, still attached, is told to join the new stream and shows the
@@ -4394,7 +4394,7 @@ fn presences_held(w: &World) -> String {
 /// R-HOST-3, R-NET-4: host A, sync set up and on, runs no session at all,
 /// and still B lists A's announcement and opens it: A online, its ready
 /// `claude` instance with its own default model first and the catalog's, its
-/// trusted repository, A's krowk version — and its name and OS the device
+/// trusted repository, A's gruntas version — and its name and OS the device
 /// list's. R-INST-6: an instance's limit rides along, none when the daemon
 /// has seen none.
 #[tokio::test]
@@ -4618,7 +4618,7 @@ async fn r_host_4_a_directory_a_did_not_offer_is_refused_and_nothing_starts() {
     send_command(&w, &b, &a, &id, &start_json(&elsewhere, &w.model(), "hello"));
     let HostAnswer::Refused { code, message } = answer_of(&w, &b, &a, &id, Instant::now() + Duration::from_secs(20)).await else { panic!("started") };
     assert_eq!(code, "directory_not_offered");
-    assert!(message.starts_with(&format!("start-host-a does not offer {elsewhere}: run `krowk trust {elsewhere}` on start-host-a")) && message.ends_with(&offered_dir(&w)), "{message}");
+    assert!(message.starts_with(&format!("start-host-a does not offer {elsewhere}: run `gruntas trust {elsewhere}` on start-host-a")) && message.ends_with(&offered_dir(&w)), "{message}");
     assert!(daemon_sessions(&w).await.is_empty(), "nothing started");
     auto.stop(Duration::from_secs(10)).await;
 }

@@ -1,14 +1,14 @@
-//! The instance registry: named provider instances in krowk's own config
+//! The instance registry: named provider instances in gruntas's own config
 //! (`config.json`, key `instances`), each one account or configuration of a
 //! provider on this host — `anthropic`, `openai:work`, `supergrok`. A model
 //! is always chosen as an instance and a model id (`ModelRef`).
 //!
 //! A definition holds nothing secret: an API-key instance names the
 //! environment variable its key is read from, never the key, and an OAuth
-//! instance's tokens live in krowk's provider credentials file, so
+//! instance's tokens live in gruntas's provider credentials file, so
 //! definitions can sync between hosts and keys cannot (R-INST-5). A key
 //! can be stored too — in that same credentials file, never here — and is
-//! then used before the variable (`crate::keys`). The kinds krowk once ran
+//! then used before the variable (`crate::keys`). The kinds gruntas once ran
 //! itself — `anthropic-api`, `openai-api`, `xai-api`, `openrouter-api`,
 //! `openai-compatible`, and `xai-oauth` for SuperGrok — are still read, so
 //! that a key's definition is turned into a Claude Code or Codex account
@@ -72,7 +72,7 @@ pub struct InstancesConfig {
     /// How subagents run: how many at once, and on which model.
     #[serde(default, skip_serializing_if = "SubagentsConfig::is_empty")]
     pub subagents: SubagentsConfig,
-    /// How krowk readies a worktree it makes for an agent.
+    /// How gruntas readies a worktree it makes for an agent.
     #[serde(default, skip_serializing_if = "WorktreesConfig::is_empty")]
     pub worktrees: WorktreesConfig,
     /// How many build and test commands run at once, machine-wide.
@@ -93,7 +93,7 @@ pub struct InstancesConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rollover_order: Vec<String>,
     /// Names instances were renamed from, and the name each is now
-    /// (`krowk providers rename`): a session that ran on the old name
+    /// (`gruntas providers rename`): a session that ran on the old name
     /// resumes on the new one, and `--model <old>/<model>` still runs.
     /// A name an instance has now is never read through it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -101,7 +101,7 @@ pub struct InstancesConfig {
     /// The provider credentials file stored keys are read from
     /// (`keys::apply`): set by whoever loads the person's own config, and
     /// never by JSON — no config file, a repository's least of all, can
-    /// point krowk at keys, `$VAR`s or commands of its choosing.
+    /// point gruntas at keys, `$VAR`s or commands of its choosing.
     #[serde(skip)]
     #[schemars(skip)]
     pub keys_from: Option<PathBuf>,
@@ -114,7 +114,7 @@ pub struct SubagentsConfig {
     /// Subagents one turn runs at once; 4 when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_parallel: Option<usize>,
-    /// Agents every krowk on the machine runs at once — subagents and
+    /// Agents every gruntas on the machine runs at once — subagents and
     /// `--worktree` sessions, each holding one of the `agent-slots` for
     /// its life; twice the cores or twice the GiB of memory, whichever is
     /// fewer, kept to 4 … 64, when absent.
@@ -144,7 +144,7 @@ impl SubagentsConfig {
     }
 }
 
-/// `worktrees` in config.json: how a worktree krowk makes for an agent is
+/// `worktrees` in config.json: how a worktree gruntas makes for an agent is
 /// readied before the agent starts (`crate::worktree::STEPS`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -278,7 +278,7 @@ pub enum InstanceKind {
         effort: Option<Effort>,
     },
     /// Any server that speaks Chat Completions (or the Responses API) at a
-    /// base URL: a local model, a gateway, a provider krowk has no kind for.
+    /// base URL: a local model, a gateway, a provider gruntas has no kind for.
     #[serde(rename = "openai-compatible")]
     OpenaiCompatible {
         /// Where the API is, e.g. `http://127.0.0.1:11434/v1`. Required.
@@ -297,7 +297,7 @@ pub enum InstanceKind {
         effort: Option<Effort>,
     },
     /// xAI with a SuperGrok (or X Premium) subscription, signed in with
-    /// OAuth by `krowk providers add supergrok`. The tokens live in krowk's
+    /// OAuth by `gruntas providers add supergrok`. The tokens live in gruntas's
     /// provider credentials file, never here.
     #[serde(rename = "xai-oauth")]
     XaiOauth {
@@ -307,7 +307,7 @@ pub enum InstanceKind {
         /// The authorization server; `https://auth.x.ai` when absent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         issuer: Option<String>,
-        /// The OAuth client krowk signs in as. When absent, krowk registers
+        /// The OAuth client gruntas signs in as. When absent, gruntas registers
         /// itself where the server offers dynamic registration.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         client_id: Option<String>,
@@ -319,8 +319,8 @@ pub enum InstanceKind {
     },
     /// The user's own, unmodified `claude` binary — Claude Code — driven as
     /// a backend: it runs the loop on its own login, a Claude subscription
-    /// or whatever the config directory holds, and krowk never reads that
-    /// login (R-BACK-2). Added with `krowk providers add claude`.
+    /// or whatever the config directory holds, and gruntas never reads that
+    /// login (R-BACK-2). Added with `gruntas providers add claude`.
     #[serde(rename = "claude-code")]
     ClaudeCode {
         /// The binary; `claude` on PATH when absent.
@@ -332,17 +332,17 @@ pub enum InstanceKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         config_dir: Option<String>,
         /// More environment for the process, e.g. `ANTHROPIC_BASE_URL` for
-        /// a router. Literal values: a key belongs in the environment krowk
+        /// a router. Literal values: a key belongs in the environment gruntas
         /// runs in, never in a definition. `CLAUDE_CONFIG_DIR` is not one
         /// of them — `configDir` is the one way to name it. The ambient
         /// `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and
         /// `ANTHROPIC_BASE_URL` reach the process only when named here.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         env: BTreeMap<String, String>,
-        /// More launch arguments, after krowk's own.
+        /// More launch arguments, after gruntas's own.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         args: Vec<String>,
-        /// The environment variable krowk reads a key from and hands the
+        /// The environment variable gruntas reads a key from and hands the
         /// process — as `ANTHROPIC_AUTH_TOKEN` when `env` names a base URL
         /// (a router's bearer token), else as `ANTHROPIC_API_KEY`. The
         /// variable's name is stored, never the key. None: Claude Code
@@ -355,7 +355,7 @@ pub enum InstanceKind {
     /// The user's own, unmodified `codex` binary, driven as `codex
     /// app-server` — OpenAI's own interface for third-party clients: it runs
     /// the loop on its own login, a ChatGPT subscription or an API key, and
-    /// krowk never reads that login (R-BACK-3). Added with `krowk providers
+    /// gruntas never reads that login (R-BACK-3). Added with `gruntas providers
     /// add codex`.
     #[serde(rename = "codex-app-server")]
     CodexAppServer {
@@ -367,7 +367,7 @@ pub enum InstanceKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         codex_home: Option<String>,
         /// More environment for the process, e.g. `OPENAI_BASE_URL` for a
-        /// router. Literal values: a key belongs in the environment krowk
+        /// router. Literal values: a key belongs in the environment gruntas
         /// runs in, never in a definition — name it with `apiKeyEnv`.
         /// `CODEX_HOME` is not one of them: `codexHome` is the one way to
         /// name it. The ambient `OPENAI_API_KEY`, `OPENAI_BASE_URL` and
@@ -379,7 +379,7 @@ pub enum InstanceKind {
         /// provider named with `-c`, e.g. `-c model_provider=openrouter`.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         args: Vec<String>,
-        /// The environment variable krowk reads a key from and hands the
+        /// The environment variable gruntas reads a key from and hands the
         /// process under the same name: the one a router's model provider
         /// reads (its `env_key`). The variable's name is stored, never the
         /// key. None: Codex signs in with its own login.
@@ -442,9 +442,9 @@ impl InstanceKind {
     }
 }
 
-/// The vendor and method `krowk connect` makes a kind with — `claude-code`
+/// The vendor and method `gruntas connect` makes a kind with — `claude-code`
 /// is `anthropic` by `subscription` — for a fix line in the one form every
-/// one of them takes: `krowk connect anthropic --method subscription --name
+/// one of them takes: `gruntas connect anthropic --method subscription --name
 /// work`. `connect::METHODS` holds the same pairs, and a test holds the two
 /// to each other.
 pub fn kind_connect(tag: &str) -> Option<(&'static str, &'static str)> {
@@ -477,7 +477,7 @@ pub enum Auth {
     Keyless,
     /// Tokens from the OAuth login, refreshed as they expire.
     OAuth { issuer: String, client_id: Option<String>, scope: String },
-    /// The vendor binary's own login, in its config directory. krowk asks
+    /// The vendor binary's own login, in its config directory. gruntas asks
     /// the binary whether there is one (`claude auth status`, `codex login
     /// status`) and never reads it (R-BACK-2, R-BACK-3, R-INST-2).
     Vendor,
@@ -547,7 +547,7 @@ pub struct Resolved {
     pub thinking: Thinking,
     pub max_tokens: u32,
     pub effort: Option<Effort>,
-    /// Set on a backend instance: the process krowk drives.
+    /// Set on a backend instance: the process gruntas drives.
     pub backend: Option<Backend>,
     /// A key stored in the credentials file, which owns the instance: then
     /// `api_key` is that key (a command's once it has run), and
@@ -675,7 +675,7 @@ impl Registry {
         ModelRef { instance: self.current(&m.instance), model: m.model.clone() }
     }
 
-    /// Whether `rolloverOrder` says something krowk can do, checked when
+    /// Whether `rolloverOrder` says something gruntas can do, checked when
     /// the config is read so a mistake is named then, not at the limit
     /// (R-INST-8): every entry an instance this host has. `auto` needs no
     /// order (D4); an `instance/model` entry's model, and an entry of
@@ -796,7 +796,7 @@ impl Registry {
     /// The instances that could run a bare `model` — with none, any model —
     /// by name, whether they are ready or not (that is the router's to
     /// ask): every Claude Code or Codex account that serves the id's line
-    /// (D4: krowk runs no model itself). An Anthropic model runs on
+    /// (D4: gruntas runs no model itself). An Anthropic model runs on
     /// `claude-code`, a GPT on `codex-app-server`; a Grok, or a model behind
     /// a gateway, runs on the account that names it. None is ranked above
     /// another: which one runs is `readiness::route`'s rule, and never a
@@ -825,13 +825,13 @@ impl Registry {
         }
         let family = format!("claude-{alias}");
         crate::catalog::newest(&listed(&inst.provider), &family)
-            .ok_or_else(|| format!("{m:?} is Claude Code's alias for the {family} family, which the model catalog does not list for {} — run `krowk pricing refresh`, or name the model as {}/<model>", inst.name, inst.name))
+            .ok_or_else(|| format!("{m:?} is Claude Code's alias for the {family} family, which the model catalog does not list for {} — run `gruntas pricing refresh`, or name the model as {}/<model>", inst.name, inst.name))
     }
 
     pub fn get(&self, name: &str) -> Result<&Resolved, String> {
         self.instances.get(name).ok_or_else(|| {
             let known: Vec<&str> = self.instances.keys().map(String::as_str).collect();
-            format!("no instance named {name:?} — this host has {}; connect one with `krowk connect`", known.join(", "))
+            format!("no instance named {name:?} — this host has {}; connect one with `gruntas connect`", known.join(", "))
         })
     }
 }
@@ -842,7 +842,7 @@ pub enum Asked {
     /// `<instance>/<model>`: runs there, never rerouted.
     Exact(ModelRef),
     /// A bare id — `sonnet`, `gpt-5.5`, or a router's `x/y` that names no
-    /// instance — whose instance krowk picks.
+    /// instance — whose instance gruntas picks.
     Bare(String),
 }
 
@@ -882,7 +882,7 @@ fn line_of(model: &str) -> Line {
 }
 
 /// The line an instance of `kind` serves. A router or a compatible server
-/// serves whatever it serves, which krowk cannot tell: it is reached by
+/// serves whatever it serves, which gruntas cannot tell: it is reached by
 /// naming it.
 fn line_of_kind(kind: &str) -> Option<Line> {
     match kind {
@@ -936,8 +936,8 @@ pub fn find_binary(binary: &str, path: &str) -> Option<PathBuf> {
         p.is_file()
     };
     // Absolute, since what runs it may start it in another directory (a
-    // vendor's login runs in krowk's own): `./claude`, or a relative PATH
-    // entry, is where krowk found it, not where the child would look.
+    // vendor's login runs in gruntas's own): `./claude`, or a relative PATH
+    // entry, is where gruntas found it, not where the child would look.
     let absolute = |p: PathBuf| std::path::absolute(&p).unwrap_or(p);
     if binary.contains(std::path::MAIN_SEPARATOR) || binary.contains('/') {
         let p = PathBuf::from(binary);
@@ -1026,7 +1026,7 @@ fn resolve_one(name: &str, kind: &InstanceKind, env: &dyn Fn(&str) -> String) ->
             let (api_key, key_env) = if keyed { api(api_key_env, "") } else { (String::new(), String::new()) };
             let provider = provider.clone().filter(|p| !p.trim().is_empty()).unwrap_or_else(|| "openai-compatible".into());
             let wire = wire_api.filter(|w| RESPONSES_OR_CHAT.contains(w));
-            // A server krowk knows nothing of speaks Chat Completions unless
+            // A server gruntas knows nothing of speaks Chat Completions unless
             // its definition says otherwise: the catalog describes providers,
             // not this server.
             Resolved {
@@ -1139,12 +1139,12 @@ pub fn from_config_json(raw: &serde_json::Value) -> Result<InstancesConfig, Stri
             if let InstanceKind::ClaudeCode { env, .. } = kind
                 && env.contains_key("CLAUDE_CONFIG_DIR")
             {
-                return Err(format!("\"instances\": {name} sets CLAUDE_CONFIG_DIR in its env — name the directory with \"configDir\" instead, the one place krowk reads it from"));
+                return Err(format!("\"instances\": {name} sets CLAUDE_CONFIG_DIR in its env — name the directory with \"configDir\" instead, the one place gruntas reads it from"));
             }
             if let InstanceKind::CodexAppServer { env, .. } = kind
                 && env.contains_key("CODEX_HOME")
             {
-                return Err(format!("\"instances\": {name} sets CODEX_HOME in its env — name the directory with \"codexHome\" instead, the one place krowk reads it from"));
+                return Err(format!("\"instances\": {name} sets CODEX_HOME in its env — name the directory with \"codexHome\" instead, the one place gruntas reads it from"));
             }
         }
     }
@@ -1396,7 +1396,7 @@ mod tests {
         );
         let names = |m: Option<&str>| reg.candidates(m).iter().map(|i| i.name.clone()).collect::<Vec<_>>();
         // Only Claude Code and Codex accounts run a turn (D4): an instance
-        // krowk would run itself is never a candidate.
+        // gruntas would run itself is never a candidate.
         let claude = ["claude", "claude:work"];
         assert_eq!(names(Some("sonnet")), claude);
         assert_eq!(names(Some("claude-sonnet-4-6")), claude);
@@ -1415,15 +1415,15 @@ mod tests {
         assert_eq!(
             connect,
             [
-                Some("krowk connect anthropic --method api-key".to_string()),
-                Some("krowk connect anthropic --method subscription".into()),
-                Some("krowk connect anthropic --method subscription --name work".into()),
-                Some("krowk connect openai --method subscription --name team".into()),
-                Some("krowk connect openai --method api-key".into()),
+                Some("gruntas connect anthropic --method api-key".to_string()),
+                Some("gruntas connect anthropic --method subscription".into()),
+                Some("gruntas connect anthropic --method subscription --name work".into()),
+                Some("gruntas connect openai --method subscription --name team".into()),
+                Some("gruntas connect openai --method api-key".into()),
                 // A name no --name spells is reconnected by its name.
-                Some("krowk connect grok:team".into()),
-                Some("krowk connect xai --method api-key".into()),
-                Some("krowk connect openai-compatible --name router".into()),
+                Some("gruntas connect grok:team".into()),
+                Some("gruntas connect xai --method api-key".into()),
+                Some("gruntas connect openai-compatible --name router".into()),
             ]
         );
 
@@ -1436,7 +1436,7 @@ mod tests {
         let (api, cc, gpt) = (reg.get("anthropic").unwrap(), reg.get("claude").unwrap(), reg.get("codex").unwrap());
         assert_eq!(reg.model_on(cc, Some("Sonnet"), &listed).unwrap(), "sonnet");
         assert_eq!(reg.model_on(api, Some("Sonnet"), &listed).unwrap(), "claude-sonnet-5");
-        assert!(reg.model_on(api, Some("sonnet"), &|_| Vec::new()).unwrap_err().contains("krowk pricing refresh"));
+        assert!(reg.model_on(api, Some("sonnet"), &|_| Vec::new()).unwrap_err().contains("gruntas pricing refresh"));
         assert_eq!(reg.model_on(api, Some("claude-sonnet-4-6"), &listed).unwrap(), "claude-sonnet-4-6");
         assert_eq!((reg.model_on(api, None, &listed).unwrap(), reg.model_on(cc, None, &listed).unwrap(), reg.model_on(gpt, None, &listed).unwrap()), (DEFAULT_MODEL.to_string(), DEFAULT_MODEL.to_string(), "gpt-5.5".to_string()));
         // An explicit instance is read as it is, never offered elsewhere.

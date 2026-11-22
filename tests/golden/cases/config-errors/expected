@@ -1,40 +1,40 @@
-$ krowk config set
+$ gruntas config set
 stderr:
 {
   "ok": false,
   "error": {
     "error": "missing_argument",
-    "fix": "pass the key and the value: `krowk config set workspace <name>` — keys: workspace",
+    "fix": "pass the key and the value: `gruntas config set workspace <name>` — keys: workspace",
     "retryable": false
   }
 }
 exit: 1
 
-$ krowk config set onlykey
+$ gruntas config set onlykey
 stderr:
 {
   "ok": false,
   "error": {
     "error": "missing_argument",
-    "fix": "pass the key and the value: `krowk config set workspace <name>` — keys: workspace",
+    "fix": "pass the key and the value: `gruntas config set workspace <name>` — keys: workspace",
     "retryable": false
   }
 }
 exit: 1
 
-$ krowk config unset
+$ gruntas config unset
 stderr:
 {
   "ok": false,
   "error": {
     "error": "missing_argument",
-    "fix": "pass the key: `krowk config unset workspace` — keys: workspace",
+    "fix": "pass the key: `gruntas config unset workspace` — keys: workspace",
     "retryable": false
   }
 }
 exit: 1
 
-$ krowk config show extra
+$ gruntas config show extra
 stdout:
 {
   "ok": true,
@@ -45,7 +45,7 @@ stdout:
   "breadcrumbs": [
     {
       "action": "set the workspace",
-      "cmd": "krowk config set workspace <workspace>",
+      "cmd": "gruntas config set workspace <workspace>",
       "description": "pins which workspace commands in this repository use — --global sets the machine-wide fallback instead"
     }
   ]

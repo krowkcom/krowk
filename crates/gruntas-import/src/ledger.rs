@@ -1,7 +1,7 @@
 //! Provider-side usage ledgers: what a provider metered, read beside the
 //! transcripts so an execution the client never saw still counts.
 //!
-//! A ledger is a JSONL file in `~/.gruntas/ledger/<name>.jsonl` (krowk's home),
+//! A ledger is a JSONL file in `~/.gruntas/ledger/<name>.jsonl` (gruntas's home),
 //! one metered execution per line, in the provider's words:
 //!
 //! ```json
@@ -20,7 +20,7 @@
 //! and reasoning over output is capped at output.
 //!
 //! It is read through the same sandbox as every transcript an importer
-//! reads, rooted at krowk's home rather than the user's (`in_krowk_home`).
+//! reads, rooted at gruntas's home rather than the user's (`in_krowk_home`).
 //!
 //! Each file is one session (harness `ledger`, bound on the file name), one
 //! message per row. Turns, and whether a row is also in a local transcript
@@ -38,7 +38,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 const LEDGER_DIR: &str = "ledger";
-/// Where ledgers live, relative to krowk's home.
+/// Where ledgers live, relative to gruntas's home.
 pub const LEDGER_REL: &str = gruntas_api::home::LEDGER;
 const LEDGER_EXT: &str = "jsonl";
 const VCS_NONE: &str = "none";
@@ -54,8 +54,8 @@ impl Source for Ledger {
     /// is no ledger, which is the usual answer.
     fn discover(&self, env: Env) -> Result<Vec<Ref>, ImportError> {
         check_os()?;
-        let Some(krowk) = krowk_home(env) else { return Ok(Vec::new()) };
-        let env: Env = &|k: &str| if k == "HOME" { krowk.clone() } else { env(k) };
+        let Some(gruntas) = krowk_home(env) else { return Ok(Vec::new()) };
+        let env: Env = &|k: &str| if k == "HOME" { gruntas.clone() } else { env(k) };
         let home = home_dir(env);
         if home.is_empty() || std::fs::symlink_metadata(Path::new(&home).join(LEDGER_REL)).is_err() {
             return Ok(Vec::new());
@@ -80,8 +80,8 @@ impl Source for Ledger {
     }
 
     fn read(&self, env: Env, r: &Ref, _cursor: &str) -> Result<(Thread, String, ReadResult), ImportError> {
-        let krowk = krowk_home(env).ok_or_else(|| ImportError::NoHome("ledger: krowk has no home".into()))?;
-        let env: Env = &|k: &str| if k == "HOME" { krowk.clone() } else { env(k) };
+        let gruntas = krowk_home(env).ok_or_else(|| ImportError::NoHome("ledger: gruntas has no home".into()))?;
+        let env: Env = &|k: &str| if k == "HOME" { gruntas.clone() } else { env(k) };
         let (mut file, path) = open_home(env, &r.path, 0).map_err(|e| context(e, &format!("ledger: open {}", r.path)))?;
         let mut rows: Vec<Row> = Vec::new();
         let mut seen = HashSet::new();
@@ -104,12 +104,12 @@ impl Source for Ledger {
     }
 
     fn unchanged(&self, env: Env, r: &Ref, cursor: &str) -> bool {
-        let Some(krowk) = krowk_home(env) else { return false };
-        jsonl_unchanged(&|k: &str| if k == "HOME" { krowk.clone() } else { env(k) }, r, cursor)
+        let Some(gruntas) = krowk_home(env) else { return false };
+        jsonl_unchanged(&|k: &str| if k == "HOME" { gruntas.clone() } else { env(k) }, r, cursor)
     }
 }
 
-/// krowk's home, the root a ledger is confined to — in place of the user's
+/// gruntas's home, the root a ledger is confined to — in place of the user's
 /// home the other importers are.
 fn krowk_home(env: Env) -> Option<String> {
     gruntas_api::home::dir(env).ok().map(|h| h.display().to_string())

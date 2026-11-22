@@ -3,10 +3,10 @@
 //!
 //! | source | file | believed |
 //! |---|---|---|
-//! | krowk, user | `config.json` in krowk's home: `permissions`, `hooks` | in full |
+//! | gruntas, user | `config.json` in gruntas's home: `permissions`, `hooks` | in full |
 //! | Claude Code, user | `settings.json` in Claude's config directory (`$CLAUDE_CONFIG_DIR`, else `~/.claude`) | in full |
-//! | krowk, remembered | `permissions.json` in krowk's home: what a person allowed for a project | in full, for that project |
-//! | krowk, project | `<repository>/.gruntas/config.json` | trusted repository: in full; otherwise its `deny` and `ask` only (and its `worktrees.setup` command not at all) |
+//! | gruntas, remembered | `permissions.json` in gruntas's home: what a person allowed for a project | in full, for that project |
+//! | gruntas, project | `<repository>/.gruntas/config.json` | trusted repository: in full; otherwise its `deny` and `ask` only (and its `worktrees.setup` command not at all) |
 //! | Claude Code, project | `.claude/settings.json` and `.claude/settings.local.json`, from the repository's root down to the working directory | the same |
 //!
 //! Every file has Claude Code's shape — `permissions.allow`, `.ask`,
@@ -22,13 +22,13 @@
 //! `defaultMode` is never `bypassPermissions` or `unhinged`: that is the
 //! person's to choose, on the command line or in their own settings. None
 //! of these files is one the model can write: every file tool refuses
-//! `.claude`, `.gruntas` and krowk's home unless a person approves that one
+//! `.claude`, `.gruntas` and gruntas's home unless a person approves that one
 //! call (or runs unhinged), and no allow rule or remembered grant opens
 //! them.
 //!
 //! A file that exists and does not parse, or holds a rule that does not,
 //! stops the turn with its name: a deny rule silently dropped is a rule
-//! that no longer holds. A `defaultMode` krowk does not run (Claude Code's
+//! that no longer holds. A `defaultMode` gruntas does not run (Claude Code's
 //! `auto`, or one added later) is the one exception: a mode can only widen,
 //! so the file is read as `default` — never looser — and a notice names
 //! the file and the value.
@@ -41,15 +41,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Whether a repository root has been trusted, by the client's rules
-/// (krowk's trusted list, `--trust`).
+/// (gruntas's trusted list, `--trust`).
 pub type Trusted = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
 
 /// What the host is told about the person's own settings and the places
-/// krowk keeps its own. Everything is optional: a host with none of it
+/// gruntas keeps its own. Everything is optional: a host with none of it
 /// judges by the modes alone.
 #[derive(Clone, Default)]
 pub struct Config {
-    /// krowk's `config.json`, whole: its `permissions` and `hooks` are read.
+    /// gruntas's `config.json`, whole: its `permissions` and `hooks` are read.
     pub user: Option<Value>,
     /// Where it lives, for messages.
     pub user_path: Option<PathBuf>,
@@ -63,14 +63,14 @@ pub struct Config {
     /// Claude Code's user config directory (`$CLAUDE_CONFIG_DIR`, else
     /// `~/.claude`): `settings.json`, `CLAUDE.md`, `skills/`.
     pub claude_dir: Option<PathBuf>,
-    /// krowk's home: remembered grants live there, and no file
+    /// gruntas's home: remembered grants live there, and no file
     /// tool writes into it — its config, trust list and grants decide what
-    /// krowk allows.
+    /// gruntas allows.
     pub krowk_dir: Option<PathBuf>,
     /// Which repositories are trusted; none trusts none.
     pub trusted: Option<Trusted>,
     /// A client is attached that answers approval requests (a viewer). A
-    /// host without one — `krowk -p` — never waits on a person: what would
+    /// host without one — `gruntas -p` — never waits on a person: what would
     /// be asked is refused, with the reason.
     pub approvals: bool,
     /// The OS sandbox a turn asked for (R-PERM-3). Claude Code and Codex
@@ -97,7 +97,7 @@ impl Config {
     }
 }
 
-/// The remembered project grants, in krowk's home.
+/// The remembered project grants, in gruntas's home.
 pub const GRANTS_FILE: &str = "permissions.json";
 
 /// Everything the sources say for one working directory.
@@ -113,7 +113,7 @@ pub struct Loaded {
     /// The most specific `defaultMode`.
     pub default_mode: Option<PermissionMode>,
     /// What the person is told of the files that count: a `defaultMode`
-    /// krowk does not run.
+    /// gruntas does not run.
     pub notices: Vec<String>,
     pub hooks: Hooks,
     /// The repository the working directory belongs to.
@@ -137,7 +137,7 @@ struct File {
     rules: Vec<(Kind, Rule)>,
     dirs: Vec<PathBuf>,
     default_mode: Option<PermissionMode>,
-    /// A `defaultMode` krowk does not run, as JSON text, and whether it
+    /// A `defaultMode` gruntas does not run, as JSON text, and whether it
     /// counts as `default` (anything but Claude Code's `auto`, which sets
     /// nothing).
     unknown_mode: Option<(String, bool)>,
@@ -145,16 +145,16 @@ struct File {
 }
 
 impl File {
-    /// The mode this file sets, and what is said of a mode krowk does not
+    /// The mode this file sets, and what is said of a mode gruntas does not
     /// run. `auto` sets nothing, and is spoken of only if no file sets a
     /// mode (`load` decides); anything else is `default`, said at once.
     fn mode(&self, home: Option<&Path>, config: &str) -> (Option<PermissionMode>, Option<String>) {
         let Some((m, narrows)) = &self.unknown_mode else { return (self.default_mode, None) };
         if m == "\"unhinged\"" {
-            let why = format!("{} sets defaultMode \"unhinged\", which is krowk's own — Claude Code skips a settings file naming it, deny rules and hooks included — so krowk asks before edits and commands · set permissions.defaultMode in {config} to choose unhinged", tilde(&self.source, home));
+            let why = format!("{} sets defaultMode \"unhinged\", which is gruntas's own — Claude Code skips a settings file naming it, deny rules and hooks included — so gruntas asks before edits and commands · set permissions.defaultMode in {config} to choose unhinged", tilde(&self.source, home));
             return (Some(PermissionMode::Default), Some(why));
         }
-        let why = format!("{} sets defaultMode {m}, which krowk doesn't have, so it asks before edits and commands · set permissions.defaultMode in {config} to choose", tilde(&self.source, home));
+        let why = format!("{} sets defaultMode {m}, which gruntas doesn't have, so it asks before edits and commands · set permissions.defaultMode in {config} to choose", tilde(&self.source, home));
         (narrows.then_some(PermissionMode::Default), Some(why))
     }
 }
@@ -182,7 +182,7 @@ fn read_object(v: &Value, source: &str, root: &Path, base: &Path, home: Option<&
         }
         // Claude Code's `auto` — looser than default, a classifier deciding
         // — sets nothing, so another file's mode still counts. Anything
-        // else krowk does not run (`dontAsk`, a mode from a later Claude
+        // else gruntas does not run (`dontAsk`, a mode from a later Claude
         // Code, not a string at all) may have meant stricter, so it is read
         // as default, and an earlier file's looser mode does not stand.
         match p.get("defaultMode") {
@@ -230,7 +230,7 @@ fn read_file(path: &Path, root: &Path, base: &Path, home: Option<&Path>) -> Resu
 }
 
 /// A settings file bigger than this is not read: it is read before the
-/// trust question, and what a repository holds is not its to make krowk
+/// trust question, and what a repository holds is not its to make gruntas
 /// swallow whole.
 const MAX_SETTINGS: u64 = 4 << 20;
 
@@ -307,17 +307,17 @@ pub fn load(cfg: &Config, cwd: &Path) -> Result<Loaded, String> {
         _ => cfg.user.clone(),
     };
     if let Some(v) = &fresh {
-        let source = cfg.user_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "krowk's config.json".into());
+        let source = cfg.user_path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "gruntas's config.json".into());
         let base = cfg.home.clone().unwrap_or_else(|| cwd.to_path_buf());
         user.push(read_object(v, &source, &root, &base, home)?);
     }
     if let Some(dir) = cfg.claude_home()
         && let Some(mut f) = read_file(&dir.join("settings.json"), &root, cfg.home.as_deref().unwrap_or(&dir), home)?
     {
-        // unhinged is krowk's own, and Claude Code skips a whole settings
+        // unhinged is gruntas's own, and Claude Code skips a whole settings
         // file naming a mode it does not know — its deny rules and hooks
         // with it. So Claude's file never chooses unhinged: it reads as
-        // default, with a notice, and krowk's config.json is where it is set.
+        // default, with a notice, and gruntas's config.json is where it is set.
         if f.default_mode == Some(PermissionMode::Unhinged) {
             f.default_mode = None;
             f.unknown_mode = Some(("\"unhinged\"".into(), true));
@@ -358,10 +358,10 @@ pub fn load(cfg: &Config, cwd: &Path) -> Result<Loaded, String> {
     // A setup command widens as a hook does: it is a command the
     // repository names.
     let mut out = Loaded { root: root.clone(), trusted, widens: worktrees.as_ref().is_some_and(|w| w.setup().is_some()), worktrees, rollover: rollover.filter(|_| trusted), ..Loaded::default() };
-    let config = cfg.user_path.as_ref().map(|p| tilde(&p.display().to_string(), home)).unwrap_or_else(|| "krowk's config.json".into());
+    let config = cfg.user_path.as_ref().map(|p| tilde(&p.display().to_string(), home)).unwrap_or_else(|| "gruntas's config.json".into());
     // `auto`'s notices, said only if nothing sets a mode.
     let mut unknown: Vec<String> = Vec::new();
-    // A mode krowk does not run, read as default, is said only while it is
+    // A mode gruntas does not run, read as default, is said only while it is
     // the mode that runs: a later file's mode takes its notice with it.
     let mut narrowed: Option<String> = None;
     let mut said = |mode: Option<PermissionMode>, notice: Option<String>| match (mode, notice) {
@@ -410,7 +410,7 @@ pub fn load(cfg: &Config, cwd: &Path) -> Result<Loaded, String> {
 /// trust question's reason.
 pub fn widens(cfg: &Config, cwd: &Path) -> bool {
     let cfg = Config { trusted: None, user: None, claude_dir: None, krowk_dir: None, ..cfg.clone() };
-    // A `.mcp.json` names commands krowk's bridge would start: trust turns
+    // A `.mcp.json` names commands gruntas's bridge would start: trust turns
     // them on, so it is asked about too (R-TOOL-3).
     load(&cfg, cwd).map(|l| l.widens).unwrap_or(false) || crate::mcp::project_has_servers(&crate::trust::root(cwd))
 }

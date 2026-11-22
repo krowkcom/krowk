@@ -1,4 +1,4 @@
-$ krowk upgrade
+$ gruntas upgrade
 stderr:
 {
   "ok": false,

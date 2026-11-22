@@ -83,6 +83,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **The help text, the greeting and every message say gruntas.** Hints
+  print `gruntas <command>`, `gruntas help` and `gruntas-mcp` describe
+  themselves as gruntas, and no `krowk` binary is built any more.
+  Hosts stay on krowk.com for now.
+
 - **API keys and gateways now run in Claude Code or Codex.** `krowk connect`
   turns an Anthropic API key into a Claude Code account, and an
   Anthropic-compatible gateway (`--base-url`) into one that sends to it; an

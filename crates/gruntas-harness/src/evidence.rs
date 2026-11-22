@@ -1,9 +1,9 @@
-//! `publish`, krowk's evidence tool (R-EVID-1, R-TOOL-1): the files an
+//! `publish`, gruntas's evidence tool (R-EVID-1, R-TOOL-1): the files an
 //! agent wants a person to see — a screenshot, a diff, a log — pushed as
-//! krowk artifacts, each with a permalink, grouped under the session's
-//! krowk run and tagged with the session (`krowk.session`).
+//! gruntas artifacts, each with a permalink, grouped under the session's
+//! gruntas run and tagged with the session (`krowk.session`).
 //!
-//! The push itself is krowk's own: the harness does not link the registry
+//! The push itself is gruntas's own: the harness does not link the registry
 //! client, so the CLI hands the host a `Publisher` that runs `gruntas_push`'s
 //! code — its root confinement, its credential-file and hard-link refusals,
 //! unchanged — with the session's working directory as the root. What this
@@ -26,9 +26,9 @@ use std::sync::Arc;
 pub const PUBLISH: &str = "publish";
 
 /// What the model is told the tool does. Short: it rides on every call.
-pub const DESCRIPTION: &str = "Publish files — screenshots, diffs, logs — as krowk artifacts under this session's run, and get each one's link. Files must be in the working directory; credential files are refused. Anyone with the link can read the file.";
+pub const DESCRIPTION: &str = "Publish files — screenshots, diffs, logs — as gruntas artifacts under this session's run, and get each one's link. Files must be in the working directory; credential files are refused. Anyone with the link can read the file.";
 
-/// Publish files as krowk artifacts.
+/// Publish files as gruntas artifacts.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PublishInput {
@@ -46,7 +46,7 @@ pub struct PublishRequest {
     pub root: PathBuf,
     pub files: Vec<String>,
     pub caption: Option<String>,
-    /// The krowk session, recorded as `krowk.session`.
+    /// The gruntas session, recorded as `krowk.session`.
     pub session_id: String,
     /// The session's run, once it has one.
     pub run: Option<String>,
@@ -167,7 +167,7 @@ pub fn call(cwd: &Path, input: &serde_json::Value) -> Result<crate::permissions:
 /// A host without a publisher still offers the tool — its definition is
 /// part of the cached prefix and does not come and go — and says why it
 /// cannot run.
-pub const UNAVAILABLE: &str = "publish is not available in this session: krowk was started without a way to reach its registry.";
+pub const UNAVAILABLE: &str = "publish is not available in this session: gruntas was started without a way to reach its registry.";
 
 #[cfg(test)]
 mod tests {

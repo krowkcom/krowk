@@ -1,4 +1,4 @@
-//! R-BACK-2, non-negotiable: krowk never runs a Claude OAuth flow, never
+//! R-BACK-2, non-negotiable: gruntas never runs a Claude OAuth flow, never
 //! reads Claude's credentials — the keychain entry or the credentials file
 //! in Claude's config directory — and never passes itself off as Claude
 //! Code. Three checks hold every build to it:
@@ -83,7 +83,7 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         }
         // The schema of `codex app-server`, pinned byte for byte from Codex
         // (scripts/codex_schema.sh): Codex's own words for its own options,
-        // one of them a login store krowk never uses — not krowk's source.
+        // one of them a login store gruntas never uses — not gruntas's source.
         if name == "codex" && dir.file_name().is_some_and(|d| d == "schema") {
             continue;
         }
@@ -120,7 +120,7 @@ fn r_back_2_no_source_file_names_claudes_credentials_its_oauth_or_its_headers() 
     let ws = workspace();
     let roots: Vec<PathBuf> = ["crates", "tests", "scripts", "npm", "skills"].iter().map(|d| ws.join(d)).collect();
     let found = scan(&roots);
-    assert!(found.is_empty(), "R-BACK-2: krowk never reads Claude's credentials, runs its OAuth or spoofs Claude Code:\n{}", found.join("\n"));
+    assert!(found.is_empty(), "R-BACK-2: gruntas never reads Claude's credentials, runs its OAuth or spoofs Claude Code:\n{}", found.join("\n"));
 
     // The check itself: a file that reads the path is caught.
     let canary = std::env::temp_dir().join(format!("krowk-compliance-canary-{}", std::process::id()));
@@ -181,7 +181,7 @@ fn keychain_deps(lock: &str) -> Vec<String> {
 fn r_back_2_no_crate_krowk_links_is_a_keychain_client() {
     let lock = std::fs::read_to_string(workspace().join("Cargo.lock")).unwrap();
     let found = keychain_deps(&lock);
-    assert!(found.is_empty(), "R-BACK-2: krowk links a keychain or secret-store client: {found:?}");
+    assert!(found.is_empty(), "R-BACK-2: gruntas links a keychain or secret-store client: {found:?}");
     // The check itself: a keychain crate, or the Security binding used by
     // anything but the trust-store readers, is caught.
     let kr = ["key", "ring"].concat();
@@ -279,7 +279,7 @@ fn r_back_2_a_whole_claude_workflow_never_opens_claudes_credentials_or_a_keychai
     assert!(wire.hits().contains(&default_creds), "the tripwire did not see a read");
     wire.reset();
 
-    let krowk = |args: &[&str], scenario: Option<&str>| {
+    let gruntas = |args: &[&str], scenario: Option<&str>| {
         let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
         c.args(args)
             .env_clear()
@@ -306,11 +306,11 @@ fn r_back_2_a_whole_claude_workflow_never_opens_claudes_credentials_or_a_keychai
         (vec!["providers", "remove", "claude:work", "--json"], None, true),
     ];
     for (args, scenario, must_succeed) in steps {
-        let (ok, said) = krowk(&args, scenario);
-        assert!(ok || !must_succeed, "krowk {args:?}: {said}");
-        assert!(wire.hits().is_empty(), "R-BACK-2: `krowk {}` opened Claude's credentials file: {:?}", args.join(" "), wire.hits());
+        let (ok, said) = gruntas(&args, scenario);
+        assert!(ok || !must_succeed, "gruntas {args:?}: {said}");
+        assert!(wire.hits().is_empty(), "R-BACK-2: `gruntas {}` opened Claude's credentials file: {:?}", args.join(" "), wire.hits());
     }
-    assert!(!asked.exists(), "R-BACK-2: krowk asked a keychain: {}", std::fs::read_to_string(&asked).unwrap_or_default());
+    assert!(!asked.exists(), "R-BACK-2: gruntas asked a keychain: {}", std::fs::read_to_string(&asked).unwrap_or_default());
     drop(wire);
     let _ = std::fs::remove_dir_all(&root);
 }

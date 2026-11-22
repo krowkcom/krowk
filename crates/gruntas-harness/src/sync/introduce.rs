@@ -6,7 +6,7 @@
 //! registry's one-pairing-per-person rule decides which: the others'
 //! `open_pairing` is `pairing_open`, and they leave it be.
 //!
-//! **The roles are today's** (`krowk machines add`, `krowk sync join`): this
+//! **The roles are today's** (`gruntas machines add`, `gruntas sync join`): this
 //! host is A. It makes the code, opens the pairing, and runs A's side of
 //! the SPAKE2 exchange, never B's. A request carries no keys and opens
 //! nothing: its name and OS are untrusted hints that are not even shown.
@@ -17,7 +17,7 @@
 //! is read again, current and verified, before anything is opened.
 //!
 //! **The answer is a person's.** The code and the question are shown by the
-//! terminal UI and `krowk machines`, which ask the daemon for the offer and
+//! terminal UI and `gruntas machines`, which ask the daemon for the offer and
 //! send the answer back over its socket (`ClientFrame::PairingOffer`,
 //! `PairingAnswer`); nothing here answers for them. The question is asked
 //! once, and an answer sent when none is asked is refused.
@@ -167,7 +167,7 @@ impl Introductions {
         let this = self.clone();
         let spawned = std::thread::Builder::new().name("gruntas-introduce".into()).spawn(move || this.run(&id));
         if let Err(e) = spawned {
-            eprintln!("krowk: a new machine asked for a pairing, and no thread could answer it: {e}");
+            eprintln!("gruntas: a new machine asked for a pairing, and no thread could answer it: {e}");
             self.lock().busy = false;
         }
     }
@@ -236,7 +236,7 @@ impl Introductions {
         }
     }
 
-    /// A's whole side, as `krowk machines add` runs it.
+    /// A's whole side, as `gruntas machines add` runs it.
     fn drive(&self) -> Over {
         let failed = |why: String| Over::Failed(why);
         let i = match (self.build)() {
@@ -283,13 +283,13 @@ impl Introductions {
         if posted.is_ok()
             && let Some(Err(e)) = i.keep.as_ref().map(|k| k(&sealed.entries))
         {
-            eprintln!("krowk: the device list could not be kept after adding a machine: {e}");
+            eprintln!("gruntas: the device list could not be kept after adding a machine: {e}");
         }
         let (name, os) = (sealed.name, sealed.os);
         match (acked, posted) {
             (Ok(_), Ok(())) => Over::Added(name, os),
-            (Err(_), Ok(())) => failed(format!("'{name}' was sent your key but never confirmed it. It is on your devices so you can take it off and rotate your key away from it: krowk machines remove '{name}'")),
-            (_, Err(e)) => failed(format!("'{name}' was sent your key, but it could not be added to your devices ({}) — it may hold your key without being listed. Check krowk machines; rotate your key with the next krowk machines remove", e.code())),
+            (Err(_), Ok(())) => failed(format!("'{name}' was sent your key but never confirmed it. It is on your devices so you can take it off and rotate your key away from it: gruntas machines remove '{name}'")),
+            (_, Err(e)) => failed(format!("'{name}' was sent your key, but it could not be added to your devices ({}) — it may hold your key without being listed. Check gruntas machines; rotate your key with the next gruntas machines remove", e.code())),
         }
     }
 
@@ -308,13 +308,13 @@ impl Introductions {
         // A name or OS with a character the list refuses (a bidirectional
         // override, an invisible one) is never put in front of the person.
         if new.name.chars().chain(new.os.chars()).any(refused_in_name) {
-            return Err("the new machine's name or OS has characters that cannot be shown safely — nothing was added; on the new machine run krowk sync join --name <another name>".into());
+            return Err("the new machine's name or OS has characters that cannot be shown safely — nothing was added; on the new machine run gruntas sync join --name <another name>".into());
         }
         let (name, os) = (printable(&new.name), printable(&new.os));
         // Before the person is asked: a name that reads like a listed
         // device's is the new machine's to change.
         if let Some(d) = i.chain.devices().iter().find(|d| confusable_names(&d.name, &new.name)) {
-            return Err(format!("the new machine calls itself '{name}', which reads like '{}' already on your devices — nothing was added; on the new machine run krowk sync join --name <another name>", printable(&d.name)));
+            return Err(format!("the new machine calls itself '{name}', which reads like '{}' already on your devices — nothing was added; on the new machine run gruntas sync join --name <another name>", printable(&d.name)));
         }
         self.ask(&i.api, id, &name, &os)?;
         let subject = Subject { kind: Kind::Device, name: new.name.clone(), os: new.os.clone(), device: new.device, signing: new.signing };

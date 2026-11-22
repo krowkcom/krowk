@@ -12,7 +12,7 @@
 //! person; the registry's `owner_user_id` is not signed, since a value the
 //! registry supplies proves nothing against the registry.
 //!
-//! A record is accepted only when its seal is one this krowk knows
+//! A record is accepted only when its seal is one this gruntas knows
 //! (`user`), checked first; the generation it names is one the list
 //! commits to; and its signer is a device the list has ever held
 //! (`Chain::signer`) — the Ed25519 key checked is the list's, never one the
@@ -43,7 +43,7 @@ pub enum Signer {
 fn seal_byte(seal: &str) -> Result<u8, Error> {
     match seal {
         SEAL_USER => Ok(1),
-        _ => Err(Error("the session is sealed some way other than to your user key, which this krowk does not open".into())),
+        _ => Err(Error("the session is sealed some way other than to your user key, which this gruntas does not open".into())),
     }
 }
 
@@ -71,7 +71,7 @@ pub fn verify(session: &[u8; 16], wrapped: &[u8], seal: &str, signer: DeviceId, 
     if from == Signer::Listed && !chain.devices().iter().any(|d| d.id() == signer) {
         return Err(Error(format!("the session's record is signed by device {signer}, which is no longer on your device list — nothing is written under it; start a new session and host that")));
     }
-    let signature: [u8; SIGNATURE] = signature.try_into().map_err(|_| Error("the session's record carries no signature krowk reads — refused".into()))?;
+    let signature: [u8; SIGNATURE] = signature.try_into().map_err(|_| Error("the session's record carries no signature gruntas reads — refused".into()))?;
     signing.verify(&message(session, generation, key.0, seal, wrapped), &signature).map_err(|_| Error("the session's record signature does not verify — refused".into()))
 }
 

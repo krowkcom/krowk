@@ -343,7 +343,7 @@ fn r_e2e_1_a_changed_byte_does_not_open() {
     }
     let mut newer = sealed.clone();
     newer[0] = 2;
-    assert!(presence::open(&newer, &me, &keys(1), &chain(&w)).unwrap_err().contains("upgrade krowk"));
+    assert!(presence::open(&newer, &me, &keys(1), &chain(&w)).unwrap_err().contains("upgrade gruntas"));
 }
 
 #[test]

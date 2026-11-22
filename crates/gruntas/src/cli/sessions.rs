@@ -1,5 +1,5 @@
-//! `krowk sessions` and `krowk pricing refresh`: the device-side commands,
-//! reading and writing krowk.db on this machine. Nothing here touches the
+//! `gruntas sessions` and `gruntas pricing refresh`: the device-side commands,
+//! reading and writing gruntas.db on this machine. Nothing here touches the
 //! registry; `sessions sync` is the one command allowed network, and only to
 //! refresh prices.
 
@@ -21,12 +21,12 @@ const MAX_REPORTED_ERRORS: usize = 10;
 const MAX_SKIPPED_TYPES: usize = 32;
 const MAX_SKIPPED_TYPE_LEN: usize = 64;
 const MAX_ERROR_REASON_LEN: usize = 512;
-const SKIPPED_TYPE_OTHER: &str = "krowk:other";
+const SKIPPED_TYPE_OTHER: &str = "gruntas:other";
 const UNSUPPORTED_OS: &str = "sessions is not supported on Windows in v1";
 const PRICING_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Every source import, sync and rebuild read: the transcripts on this
-/// machine, and in the harness build krowk's own session logs too.
+/// machine, and in the harness build gruntas's own session logs too.
 fn all_sources() -> Vec<Box<dyn Source>> {
     #[allow(unused_mut)]
     let mut all = gruntas_import::sources();
@@ -36,7 +36,7 @@ fn all_sources() -> Vec<Box<dyn Source>> {
 }
 
 /// Brings one native session's rows up to date from its log, right after a
-/// `krowk -p` turn: the same read and write an import does, for its log and
+/// `gruntas -p` turn: the same read and write an import does, for its log and
 /// for every subagent's under it (R-SUB-6), parents first, so each child
 /// links to the session that started it. A session whose rows are still
 /// its stub's stand-ins though its log is back — a restore cut short
@@ -47,7 +47,7 @@ pub(super) fn project_native(env: gruntas_import::Env, session_id: &str) -> Resu
     let src = gruntas_harness::project::Gruntas;
     let found = src.discover(env).map_err(|e| fail("import_failed", e.to_string()))?;
     let Some(r) = found.iter().find(|r| r.id == session_id) else {
-        return Err(fail("import_failed", format!("the log of session {session_id} is not where krowk keeps sessions")));
+        return Err(fail("import_failed", format!("the log of session {session_id} is not where gruntas keeps sessions")));
     };
     let mut tree = vec![r.clone()];
     if let Ok(dir) = gruntas_harness::log::sessions_dir(env) {
@@ -68,9 +68,9 @@ pub(super) fn project_native(env: gruntas_import::Env, session_id: &str) -> Resu
 }
 
 /// Brings an archived native session back into its directory and into
-/// krowk.db (R-VINT-4): fetched from the vintage it went into — or from
+/// gruntas.db (R-VINT-4): fetched from the vintage it went into — or from
 /// vintage `from` of its week, when one is named — opened, written back,
-/// then projected as a `krowk -p` turn's log is, the archive's stand-in
+/// then projected as a `gruntas -p` turn's log is, the archive's stand-in
 /// rows dropped first. Says which vintage it came from, and what the
 /// person should know about it.
 #[cfg(all(feature = "harness", unix))]
@@ -78,7 +78,7 @@ pub(super) fn restore_native(ctx: &mut Ctx, session_id: &str, from: Option<&str>
     let dir = gruntas_harness::log::sessions_dir(ctx.io.env)?;
     // Kept on this machine when it was archived on Free: no registry needed.
     if from.is_none() {
-        let mut waiting = || ctx.warn(&format!("waiting for another krowk restoring {session_id}…"));
+        let mut waiting = || ctx.warn(&format!("waiting for another gruntas restoring {session_id}…"));
         if let Some(restored) = gruntas_harness::vintage::restore_kept(&dir, session_id, &mut waiting)? {
             project_native(ctx.io.env, session_id)?;
             return Ok(restored);
@@ -86,15 +86,15 @@ pub(super) fn restore_native(ctx: &mut Ctx, session_id: &str, from: Option<&str>
     }
     let (client, keys) = super::sync::vintage_keys(ctx)?;
     let restored = {
-        let mut waiting = || ctx.warn(&format!("waiting for another krowk restoring {session_id}…"));
+        let mut waiting = || ctx.warn(&format!("waiting for another gruntas restoring {session_id}…"));
         match from {
             Some(slug) => gruntas_harness::vintage::restore_from(&client, &keys, &dir, session_id, slug, &mut waiting),
             None => gruntas_harness::vintage::restore(&client, &keys, &dir, session_id, &mut waiting),
         }
     }?;
-    // Restored by another krowk while this one waited: its rows are not
+    // Restored by another gruntas while this one waited: its rows are not
     // dropped again, but projected all the same, which replaces stand-ins
-    // that krowk was stopped before replacing (`project_native`).
+    // that gruntas was stopped before replacing (`project_native`).
     if !restored.already {
         let conn = open_store(ctx)?;
         gruntas_store::drop_bodies(&conn, gruntas_harness::project::HARNESS, session_id).map_err(|e| store_fail(&e, &db_path_string(ctx)))?;
@@ -132,7 +132,7 @@ pub(super) fn restore_if_archived(ctx: &mut Ctx, session_id: &str) -> Result<boo
     Ok(true)
 }
 
-/// The idle cut-off `krowk sessions archive` uses: `--older-than`, else
+/// The idle cut-off `gruntas sessions archive` uses: `--older-than`, else
 /// GRUNTAS_ARCHIVE_AFTER_DAYS, else 14 days.
 #[cfg(all(feature = "harness", unix))]
 fn idle_days(ctx: &Ctx) -> Result<u64, Error> {
@@ -150,17 +150,17 @@ fn idle_days(ctx: &Ctx) -> Result<u64, Error> {
 #[cfg(all(feature = "harness", unix))]
 const FREE_ARCHIVE: &str = "On Free, archived sessions stay on this machine; the synced copy expires after 7 days.";
 
-/// `krowk sessions archive`: every native session idle past the cut-off
+/// `gruntas sessions archive`: every native session idle past the cut-off
 /// leaves the machine for its week's vintage (R-VINT-1, R-VINT-2), and
-/// keeps its index row in krowk.db (R-VINT-3). `--weekly` is the weekly
+/// keeps its index row in gruntas.db (R-VINT-3). `--weekly` is the weekly
 /// job: it does nothing until a week has passed since the last run. On
-/// Free its log is kept on the machine, and `krowk sessions` no longer
+/// Free its log is kept on the machine, and `gruntas sessions` no longer
 /// lists it until it is restored.
 #[cfg(all(feature = "harness", unix))]
 pub fn archive(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     check_os()?;
     if !args.is_empty() {
-        return Err(fail("bad_flag", format!("`krowk sessions archive` takes no arguments, got {}", args.join(" "))));
+        return Err(fail("bad_flag", format!("`gruntas sessions archive` takes no arguments, got {}", args.join(" "))));
     }
     let days = idle_days(ctx)?;
     let dir = gruntas_harness::log::sessions_dir(ctx.io.env)?;
@@ -176,7 +176,7 @@ pub fn archive(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let free = client.verify_key()?.plan == "free";
     let run = gruntas_harness::vintage::archive(&client, &keys, &dir, now, days, free);
     // The weeks stored before a failure are archived: their bodies leave
-    // krowk.db whether or not the rest of the run went through.
+    // gruntas.db whether or not the rest of the run went through.
     let done = run.archived;
     if free && !done.is_empty() {
         ctx.warn(FREE_ARCHIVE);
@@ -197,9 +197,9 @@ pub fn archive(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     emit_data(ctx, json!({ "archived": rows, "due": true }), format!("{n} session{} archived", if n == 1 { "" } else { "s" }))
 }
 
-/// `krowk sessions restore <id> [--from <vintage>]`: an archived session
+/// `gruntas sessions restore <id> [--from <vintage>]`: an archived session
 /// back on the machine, from the vintage it went into, or from the one of
-/// its week `--from` names (`krowk sessions vintage <id>` lists them).
+/// its week `--from` names (`gruntas sessions vintage <id>` lists them).
 #[cfg(all(feature = "harness", unix))]
 pub fn restore(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     check_os()?;
@@ -216,14 +216,14 @@ pub fn restore(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let slug = &r.vintage;
     // None read: it was kept on this machine when it was archived on Free.
     let said = match (r.already, slug.is_empty()) {
-        (true, _) => format!("session {id} is back: another krowk restored it"),
+        (true, _) => format!("session {id} is back: another gruntas restored it"),
         (false, true) => format!("session {id} restored from this machine"),
         (false, false) => format!("session {id} restored from vintage {slug}"),
     };
     emit_data(ctx, json!({ "restored": id, "vintage": slug, "warnings": r.warnings }), said)
 }
 
-/// `krowk sessions vintage [<id>|<week>]`: the vintages the registry keeps
+/// `gruntas sessions vintage [<id>|<week>]`: the vintages the registry keeps
 /// — each week's current one, and those a newer one replaced, which it
 /// keeps for a while — for one archived session's week, one ISO week, or
 /// every week. For a session, the one its stub recorded is marked.
@@ -236,7 +236,7 @@ pub fn vintage(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         _ => {
             let id = native_arg(ctx, args, "vintage")?;
             let dir = gruntas_harness::log::sessions_dir(ctx.io.env)?;
-            let stub = gruntas_harness::vintage::read_stub(&dir, &id).ok_or_else(|| fail("not_archived", format!("session {id} is not archived on this machine, so it is in no vintage — `krowk sessions vintage <week>` lists a week's")))?;
+            let stub = gruntas_harness::vintage::read_stub(&dir, &id).ok_or_else(|| fail("not_archived", format!("session {id} is not archived on this machine, so it is in no vintage — `gruntas sessions vintage <week>` lists a week's")))?;
             (Some(vec![stub.week.clone()]), Some((id, stub)))
         }
     };
@@ -298,7 +298,7 @@ pub fn vintage(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         let _ = writeln!(ctx.io.stdout, "{}  {}  {}  {}{mark}", cell(&v.week), cell(&v.slug), output::human_bytes(v.byte_size as i64), state);
     }
     if let Some((id, _)) = &stub {
-        let _ = writeln!(ctx.io.stdout, "\n`krowk sessions restore {id} --from <vintage>` restores it from one of them");
+        let _ = writeln!(ctx.io.stdout, "\n`gruntas sessions restore {id} --from <vintage>` restores it from one of them");
     }
     Ok(())
 }
@@ -310,7 +310,7 @@ fn is_iso_week(s: &str) -> bool {
     b.len() == 8 && b[..4].iter().all(u8::is_ascii_digit) && &b[4..6] == b"-W" && b[6..].iter().all(u8::is_ascii_digit)
 }
 
-/// `krowk sessions pin|unpin <id>`: a pinned session is never archived.
+/// `gruntas sessions pin|unpin <id>`: a pinned session is never archived.
 #[cfg(all(feature = "harness", unix))]
 pub fn pin(ctx: &mut Ctx, args: &[String], pinned: bool) -> Result<(), Error> {
     check_os()?;
@@ -321,8 +321,8 @@ pub fn pin(ctx: &mut Ctx, args: &[String], pinned: bool) -> Result<(), Error> {
     emit_data(ctx, json!({ "id": id, "pinned": pinned }), format!("session {id} {verb}ned"))
 }
 
-/// The native session a `krowk sessions <verb>` argument names, by its log
-/// id: the id itself when its directory is here, else krowk.db's answer.
+/// The native session a `gruntas sessions <verb>` argument names, by its log
+/// id: the id itself when its directory is here, else gruntas.db's answer.
 #[cfg(all(feature = "harness", unix))]
 fn native_arg(ctx: &Ctx, args: &[String], verb: &str) -> Result<String, Error> {
     let dir = gruntas_harness::log::sessions_dir(ctx.io.env)?;
@@ -336,7 +336,7 @@ fn native_arg(ctx: &Ctx, args: &[String], verb: &str) -> Result<String, Error> {
     let id = resolve_arg(ctx, &conn, args, verb)?;
     let d = load_by_id(ctx, &conn, &id)?;
     if d.session.harness != gruntas_harness::project::HARNESS {
-        return Err(fail("no_session", format!("{id} is a {} session — only krowk's own sessions are archived", d.session.harness)));
+        return Err(fail("no_session", format!("{id} is a {} session — only gruntas's own sessions are archived", d.session.harness)));
     }
     Ok(d.session.foreign_session_id)
 }
@@ -367,7 +367,7 @@ pub(super) fn open_store(ctx: &Ctx) -> Result<Connection, Error> {
     gruntas_store::open(ctx.io.env).map_err(|e| store_fail(&e, &db_path_string(ctx)))
 }
 
-/// Where krowk.db lives, or store.open's own sentence for an environment
+/// Where gruntas.db lives, or store.open's own sentence for an environment
 /// that names no home.
 fn resolve_store_path(ctx: &Ctx) -> Result<String, Error> {
     let path = db_path_string(ctx);
@@ -382,7 +382,7 @@ fn resolve_store_path(ctx: &Ctx) -> Result<String, Error> {
 
 // ---- list -------------------------------------------------------------------
 
-/// A synced session as `krowk sessions` lists it after this machine's own.
+/// A synced session as `gruntas sessions` lists it after this machine's own.
 pub(super) struct SyncedRow {
     pub id: String,
     pub title: String,
@@ -440,7 +440,7 @@ pub fn list(ctx: &mut Ctx) -> Result<(), Error> {
     let conn = open_store(ctx)?;
     let rows = gruntas_store::list_sessions(&conn, &ctx.f.harness, &ctx.f.worktree, limit).map_err(|e| store_fail(&e, &db_path_string(ctx)))?;
     // Archived on Free, with the local copy kept: out of the list until
-    // `krowk sessions restore` brings it back.
+    // `gruntas sessions restore` brings it back.
     #[cfg(all(feature = "harness", unix))]
     let rows: Vec<SessionRow> = match gruntas_harness::log::sessions_dir(ctx.io.env) {
         Ok(dir) => rows.into_iter().filter(|r| r.harness != gruntas_harness::project::HARNESS || !gruntas_harness::vintage::is_kept(&dir, &r.foreign_session_id)).collect(),
@@ -493,7 +493,7 @@ pub fn list(ctx: &mut Ctx) -> Result<(), Error> {
     // them, so the picker only fires on a paged list.
     if interactive(ctx) && !ctx.f.all && !rows.is_empty() && rows.len() <= DEFAULT_SESSION_LIMIT {
         let id = pick_session(&rows, now, &archived_rows(ctx, &rows))?;
-        let _ = writeln!(ctx.io.stdout, "krowk sessions show {id}");
+        let _ = writeln!(ctx.io.stdout, "gruntas sessions show {id}");
         let _ = write!(ctx.io.stdout, "{}", elsewhere_text(&other, ctx.colour, now, "\n"));
         return Ok(());
     }
@@ -609,7 +609,7 @@ impl Priced {
     }
 }
 
-/// One figure: dollars, and the price source when krowk priced it rather
+/// One figure: dollars, and the price source when gruntas priced it rather
 /// than the source reporting it.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TurnCost {
@@ -844,7 +844,7 @@ fn short_id(id: &str) -> String {
 
 fn human_sessions_list(rows: &[SessionRow], priced: &[Priced], colour: bool, now: i64) -> String {
     if rows.is_empty() {
-        return "No sessions yet — `krowk sessions import --from all` brings in the ones your agents keep.".into();
+        return "No sessions yet — `gruntas sessions import --from all` brings in the ones your agents keep.".into();
     }
     const MAX_TITLE: usize = 60;
     const MAX_SOURCE: usize = 40;
@@ -898,7 +898,7 @@ fn elsewhere_text(other: &Elsewhere, colour: bool, now: i64, gap: &str) -> Strin
     out
 }
 
-/// The sessions on other machines, under the machine each runs on; `krowk
+/// The sessions on other machines, under the machine each runs on; `gruntas
 /// sessions attach|take <id>` opens one by the id shown.
 fn human_synced_list(rows: &[SyncedRow], colour: bool, now: i64) -> String {
     const MAX_TITLE: usize = 60;
@@ -924,7 +924,7 @@ fn human_synced_list(rows: &[SyncedRow], colour: bool, now: i64) -> String {
 
 /// The picker offers only rows already in the store, which is what makes it
 /// safe to offer.
-/// The rows of `rows` that are krowk sessions archived on this machine,
+/// The rows of `rows` that are gruntas sessions archived on this machine,
 /// by row id: the pickers mark them, since picking one restores it first.
 pub(super) fn archived_rows(ctx: &Ctx, rows: &[SessionRow]) -> BTreeSet<String> {
     #[cfg(all(feature = "harness", unix))]
@@ -963,7 +963,7 @@ pub(super) fn pick_session(rows: &[SessionRow], now: i64, archived: &BTreeSet<St
 
 // ---- show -------------------------------------------------------------------
 
-/// The one session `krowk sessions <verb> <id>` names, read in full.
+/// The one session `gruntas sessions <verb> <id>` names, read in full.
 pub(super) fn load_detail(ctx: &Ctx, args: &[String], verb: &str) -> Result<SessionDetail, Error> {
     let conn = open_store(ctx)?;
     let id = resolve_arg(ctx, &conn, args, verb)?;
@@ -978,13 +978,13 @@ pub(super) fn load_by_id(ctx: &Ctx, conn: &Connection, id: &str) -> Result<Sessi
     }
 }
 
-/// The session id `krowk sessions <verb> <id>` names.
+/// The session id `gruntas sessions <verb> <id>` names.
 pub(super) fn resolve_arg(ctx: &Ctx, conn: &Connection, args: &[String], verb: &str) -> Result<String, Error> {
     let Some(reference) = args.first().filter(|a| !a.trim().is_empty()) else {
-        return Err(fail("no_session", format!("pass the session: `krowk sessions {verb} <id>`")));
+        return Err(fail("no_session", format!("pass the session: `gruntas sessions {verb} <id>`")));
     };
     if args.len() > 1 {
-        return Err(fail("bad_flag", format!("`krowk sessions {verb}` takes one session id, got extra {}", args[1..].join(" "))));
+        return Err(fail("bad_flag", format!("`gruntas sessions {verb}` takes one session id, got extra {}", args[1..].join(" "))));
     }
     match gruntas_store::resolve_session_id(conn, reference) {
         Ok(id) => Ok(id),
@@ -1142,7 +1142,7 @@ pub fn show(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
             text += &format!("\nfirst asked  {}\n", cell(&stub.summary));
         }
         let id = &d.session.foreign_session_id;
-        let again = if matches!(e.code().as_str(), "not_set_up" | "not_authenticated") { String::new() } else { format!(" (`krowk sessions restore {id}` tries again)") };
+        let again = if matches!(e.code().as_str(), "not_set_up" | "not_authenticated") { String::new() } else { format!(" (`gruntas sessions restore {id}` tries again)") };
         ctx.warn(&format!("session {id} is archived and only its stub is here, so this is its summary — {}{again}", e.fix()));
     }
     let _ = write!(ctx.io.stdout, "{text}");
@@ -1449,7 +1449,7 @@ struct ImportReport {
     pricing: Option<SyncPricing>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ledger: Option<LedgerReport>,
-    /// Every (provider, model) in the store with tokens krowk cannot price
+    /// Every (provider, model) in the store with tokens gruntas cannot price
     /// and no cost the source reported: their sessions' costs read —.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     unpriced_models: Vec<String>,
@@ -1476,7 +1476,7 @@ impl ProviderReport {
 
     /// Folds one read's lossiness in, bounded: at most 32 named types (in
     /// sorted order, so the same 32 every run), each name at most 64 bytes;
-    /// the rest summed under `krowk:other`, which sits beside them.
+    /// the rest summed under `gruntas:other`, which sits beside them.
     fn absorb(&mut self, r: &gruntas_import::ReadResult) {
         for (k, v) in &r.unknown_types {
             let known = self.skipped_by_type.contains_key(k);
@@ -1508,13 +1508,13 @@ fn selected_sources(from: &str) -> Result<Vec<Box<dyn Source>>, Error> {
     let names: Vec<&str> = all.iter().map(|s| s.name()).collect();
     let choices = format!("{}|all", names.join("|"));
     match from {
-        "" => Err(fail("bad_flag", format!("`krowk sessions import` needs --from <{choices}> — it says which agent's transcripts to read"))),
+        "" => Err(fail("bad_flag", format!("`gruntas sessions import` needs --from <{choices}> — it says which agent's transcripts to read"))),
         "all" => Ok(all),
         _ => all
             .into_iter()
             .find(|s| s.name() == from)
             .map(|s| vec![s])
-            .ok_or_else(|| fail("bad_flag", format!("--from {from} is not a source krowk can read — one of {choices}"))),
+            .ok_or_else(|| fail("bad_flag", format!("--from {from} is not a source gruntas can read — one of {choices}"))),
     }
 }
 
@@ -1544,7 +1544,7 @@ pub fn rebuild(ctx: &mut Ctx) -> Result<(), Error> {
         return Err(fail(
             "confirmation_required",
             format!(
-                "rebuilding deletes {store_path} and re-imports every transcript — run `krowk sessions rebuild --yes` to confirm when nobody is at a terminal to ask"
+                "rebuilding deletes {store_path} and re-imports every transcript — run `gruntas sessions rebuild --yes` to confirm when nobody is at a terminal to ask"
             ),
         ));
     }
@@ -1557,7 +1557,7 @@ pub fn rebuild(ctx: &mut Ctx) -> Result<(), Error> {
     }
     let _lock = lock_store(&store_path)?;
     // Exactly the database and its WAL sidecars: import.lock is held right
-    // now, and anything else in the directory is not krowk's to remove.
+    // now, and anything else in the directory is not gruntas's to remove.
     let mut removed = Vec::new();
     for path in [store_path.clone(), format!("{store_path}-wal"), format!("{store_path}-shm")] {
         match std::fs::remove_file(&path) {
@@ -1588,7 +1588,7 @@ pub fn sync(ctx: &mut Ctx) -> Result<(), Error> {
 
 /// Refreshes the models.dev cache when its last fetch is a day old, or
 /// unknown, or in the future, or there is no readable cache. The sidecar's
-/// `fetched_at_ms` is the clock: a 304 stamps it too, since "when did krowk
+/// `fetched_at_ms` is the clock: a 304 stamps it too, since "when did gruntas
 /// last ask" is the question.
 fn sync_prices(env: &dyn Fn(&str) -> String, no_network: bool) -> SyncPricing {
     sync_prices_from(env, no_network, pricing::MODELS_URL, now_ms())
@@ -1763,7 +1763,7 @@ fn emit_import_report(ctx: &mut Ctx, report: &ImportReport) -> Result<(), Error>
         }
     }
     if !report.unpriced_models.is_empty() {
-        out += &format!("! No price for {} — their costs show as —; `krowk pricing refresh` may know them\n", report.unpriced_models.join(", "));
+        out += &format!("! No price for {} — their costs show as —; `gruntas pricing refresh` may know them\n", report.unpriced_models.join(", "));
     }
     if let Some(l) = &report.ledger {
         out += &format!("reconciled {} ledger rows a transcript saw, {} only the provider saw", l.observed, l.unobserved);
@@ -1810,7 +1810,7 @@ fn import_summary(r: &ImportReport) -> String {
 
 // ---- the import lock --------------------------------------------------------
 
-/// import.lock beside krowk.db, flock'd exclusively and never waited on: a
+/// import.lock beside gruntas.db, flock'd exclusively and never waited on: a
 /// second import is a mistake to report, not a queue to join. The kernel
 /// drops the lock however the process dies, so a killed import leaves a
 /// stale file and no stale lock. Dropping the returned file releases it.
@@ -1820,7 +1820,7 @@ fn lock_store(store_path: &str) -> Result<std::fs::File, Error> {
         fail(
             "import_locked",
             format!(
-                "another `krowk sessions import` or `rebuild` is running on this store — wait for it to finish, or check {} if you think it is not",
+                "another `gruntas sessions import` or `rebuild` is running on this store — wait for it to finish, or check {} if you think it is not",
                 path.display()
             ),
         )
@@ -1857,7 +1857,7 @@ impl PrivateDir for std::fs::DirBuilder {
 }
 
 /// Err(None) is somebody else holding it; Err(Some(why)) is a file that
-/// could not be opened, or is not a lock krowk will take.
+/// could not be opened, or is not a lock gruntas will take.
 #[cfg(unix)]
 fn lock_file(path: &Path) -> Result<std::fs::File, Option<String>> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -1874,7 +1874,7 @@ fn lock_file(path: &Path) -> Result<std::fs::File, Option<String>> {
         .map_err(|e| Some(format!("open {}: {e}", path.display())))?;
     let meta = f.metadata().map_err(|e| Some(format!("stat {}: {e}", path.display())))?;
     if !meta.is_file() {
-        return Err(Some(format!("{} is not a regular file, so it is not a lock krowk will take", path.display())));
+        return Err(Some(format!("{} is not a regular file, so it is not a lock gruntas will take", path.display())));
     }
     match f.try_lock() {
         Ok(()) => Ok(f),
@@ -1945,7 +1945,7 @@ mod tests {
     #[test]
     fn a_second_lock_on_the_same_store_is_refused_as_held() {
         let dir = std::env::temp_dir().join(format!("krowk-lock-{}", std::process::id()));
-        let store = dir.join("krowk.db").display().to_string();
+        let store = dir.join("gruntas.db").display().to_string();
         let first = lock_store(&store).unwrap();
         let second = lock_store(&store).unwrap_err();
         assert_eq!(second.code(), "import_locked");

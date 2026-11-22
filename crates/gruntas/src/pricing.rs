@@ -100,7 +100,7 @@ fn date_of(ms: i64) -> String {
     jiff::Timestamp::from_millisecond(ms).map(|t| t.strftime("%Y-%m-%d").to_string()).unwrap_or_else(|_| "at an unknown date".into())
 }
 
-/// `cache/models.json` in krowk's home; none without one.
+/// `cache/models.json` in gruntas's home; none without one.
 pub fn cache_path(env: &dyn Fn(&str) -> String) -> Option<PathBuf> {
     gruntas_api::home::dir(env).ok().map(|h| h.join(gruntas_api::home::CACHE).join("models.json"))
 }
@@ -252,7 +252,7 @@ pub fn refresh_within(env: &dyn Fn(&str) -> String, url: &str, timeout: Duration
             if std::io::Read::read_to_end(&mut std::io::Read::take(res.body_mut().as_reader(), MAX_BODY + 1), &mut body).is_err()
                 || body.len() as u64 > MAX_BODY
             {
-                return Ok(Outcome::Unreachable("models.dev answered with a body krowk could not read".into()));
+                return Ok(Outcome::Unreachable("models.dev answered with a body gruntas could not read".into()));
             }
             if parse_rates(&body).is_none_or(|t| t.is_empty()) {
                 return Ok(Outcome::Unreachable("models.dev answered with something that is not a price file".into()));
@@ -274,7 +274,7 @@ fn cache_readable(cache: &Path) -> bool {
 /// How old the prices are.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Freshness {
-    /// No cache: the snapshot built into krowk prices everything.
+    /// No cache: the snapshot built into gruntas prices everything.
     SnapshotOnly,
     /// A cache file that holds no prices: the snapshot is doing the work.
     Unreadable,

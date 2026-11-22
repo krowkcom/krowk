@@ -416,7 +416,7 @@ fn fixed(le: &str) -> Fixed {
 /// python-spake2's asymmetric vector (password "password", idA "idA",
 /// idB "idB"), which magic-wormhole's own implementation produces and the
 /// spake2 crate reproduces in its private test: here through the public
-/// API krowk calls, so a change to the crate that broke interop fails here.
+/// API gruntas calls, so a change to the crate that broke interop fails here.
 /// The scalars are the vector's decimal ones, as 32 little-endian bytes.
 #[test]
 fn d2_spake2_matches_the_magic_wormhole_vectors() {

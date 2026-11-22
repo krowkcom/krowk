@@ -1,34 +1,34 @@
-$ krowk claim
+$ gruntas claim
 stderr:
 {
   "ok": false,
   "error": {
     "error": "missing_claim",
-    "fix": "pass both the artifact and its token: `krowk claim art_... krowk_claim_...`",
+    "fix": "pass both the artifact and its token: `gruntas claim art_... krowk_claim_...`",
     "retryable": false
   }
 }
 exit: 3
 
-$ krowk claim <art_1>
+$ gruntas claim <art_1>
 stderr:
 {
   "ok": false,
   "error": {
     "error": "missing_claim",
-    "fix": "pass both the artifact and its token: `krowk claim art_... krowk_claim_...`",
+    "fix": "pass both the artifact and its token: `gruntas claim art_... krowk_claim_...`",
     "retryable": false
   }
 }
 exit: 3
 
-$ krowk claim <art_1> krowk_claim_00
+$ gruntas claim <art_1> krowk_claim_00
 stderr:
 {
   "ok": false,
   "error": {
     "error": "unauthorized",
-    "fix": "this endpoint needs an API key — run `krowk login --token krowk_sk_...`, or set GRUNTAS_TOKEN",
+    "fix": "this endpoint needs an API key — run `gruntas login --token krowk_sk_...`, or set GRUNTAS_TOKEN",
     "message": "Provide a valid API key as `Authorization: Bearer krowk_sk_...`.",
     "retryable": false,
     "status": 401

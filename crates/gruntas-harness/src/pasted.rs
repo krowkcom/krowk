@@ -1,6 +1,6 @@
 //! An image made ready to send, and a pasted or dropped path read as one:
-//! what a client's composer, `krowk -p --image` and the typed line of
-//! `krowk sync attach` all use, so there is one way an image is made small
+//! what a client's composer, `gruntas -p --image` and the typed line of
+//! `gruntas sync attach` all use, so there is one way an image is made small
 //! enough for any provider. At most `MAX_SIDE` pixels a side and
 //! `MAX_BYTES`, kept as it came when it already is, else resized and
 //! written as PNG, or as JPEG when a PNG is too big.
@@ -76,7 +76,7 @@ pub fn inputs(images: &[Image]) -> (Vec<crate::protocol::ImageInput>, String) {
 /// `bytes` as an image any provider takes (the module's note says how).
 pub fn normalise(bytes: &[u8]) -> Result<Image, String> {
     use image::ImageFormat as F;
-    let unreadable = || "not an image krowk reads (PNG, JPEG, GIF or WebP)".to_string();
+    let unreadable = || "not an image gruntas reads (PNG, JPEG, GIF or WebP)".to_string();
     let format = image::guess_format(bytes).map_err(|_| unreadable())?;
     let reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), format);
     let (width, height) = reader.into_dimensions().map_err(|_| unreadable())?;

@@ -144,7 +144,7 @@ fn anonymous_metadata_note(ctx: &Ctx) -> Option<String> {
     let given: Vec<&str> = run_metadata_given(ctx).into_iter().chain(artifact_metadata_given(ctx)).collect();
     (!given.is_empty()).then(|| {
         format!(
-            "{} was not recorded: a keyless upload records no metadata — run `krowk login --token krowk_sk_...`",
+            "{} was not recorded: a keyless upload records no metadata — run `gruntas login --token krowk_sk_...`",
             given.join(", ")
         )
     })
@@ -154,7 +154,7 @@ fn named_run_metadata_note(ctx: &Ctx) -> Option<String> {
     let given = run_metadata_given(ctx);
     (!given.is_empty()).then(|| {
         format!(
-            "{} was not recorded: run {} already carries the metadata it was opened with — pass these to `krowk runs start`, or drop --run and let this push open its own run",
+            "{} was not recorded: run {} already carries the metadata it was opened with — pass these to `gruntas runs start`, or drop --run and let this push open its own run",
             given.join(", "),
             ctx.f.run
         )
@@ -169,7 +169,7 @@ fn with_progress(mut e: Error, done: &[Artifact], run: &str, own_run: bool) -> E
     }
     if own_run {
         e.body.insert("run".into(), json!(run));
-        let finish = format!("the run is still open — close it with `krowk runs finish {run}`");
+        let finish = format!("the run is still open — close it with `gruntas runs finish {run}`");
         let fix = match e.fix() {
             f if f.is_empty() => finish,
             f => format!("{f}; {finish}"),
@@ -193,7 +193,7 @@ fn uploading(paths: &[String], i: usize) -> String {
 /// push and uploads create.
 pub(crate) fn upload(ctx: &mut Ctx, files: &[String]) -> Result<(), Error> {
     if files.is_empty() {
-        return Err(fail("no_file", "pass at least one path: `krowk push screenshot.png`"));
+        return Err(fail("no_file", "pass at least one path: `gruntas push screenshot.png`"));
     }
     let extras = parse_metadata(&ctx.f.metadata)?;
     let captions = captions_for(&ctx.f.caption, files.len())?;
@@ -252,7 +252,7 @@ pub(crate) fn upload(ctx: &mut Ctx, files: &[String]) -> Result<(), Error> {
     if own_run {
         match client.finish_run(&run) {
             Ok(finished) => result.run = Some(finished),
-            Err(e) => result.notes.push(format!("run {run} could not be finished: {} — retry `krowk runs finish {run}`", e.code())),
+            Err(e) => result.notes.push(format!("run {run} could not be finished: {} — retry `gruntas runs finish {run}`", e.code())),
         }
     }
     drop(spin);
@@ -284,16 +284,16 @@ pub(crate) fn uploads_list(ctx: &mut Ctx) -> Result<(), Error> {
 }
 
 pub(crate) fn uploads_show(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
-    let slug = slug_arg(KIND_ARTIFACT, args, "no_artifact", "pass the artifact: `krowk artifacts show art_...`")?;
+    let slug = slug_arg(KIND_ARTIFACT, args, "no_artifact", "pass the artifact: `gruntas artifacts show art_...`")?;
     let artifact = new_client(ctx)?.show_artifact(&slug)?;
     let rendered = output::artifact(&artifact, ctx.format, ctx.f.quiet, ctx.colour, &now());
     ctx.emit(&rendered)
 }
 
 pub(crate) fn uploads_attach(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
-    let slug = slug_arg(KIND_ARTIFACT, args, "no_artifact", "pass the artifact: `krowk artifacts attach art_... --run run_...`")?;
+    let slug = slug_arg(KIND_ARTIFACT, args, "no_artifact", "pass the artifact: `gruntas artifacts attach art_... --run run_...`")?;
     if ctx.f.run.trim().is_empty() {
-        return Err(fail("no_run", format!("pass the run to attach it to: `krowk artifacts attach {slug} --run run_...`")));
+        return Err(fail("no_run", format!("pass the run to attach it to: `gruntas artifacts attach {slug} --run run_...`")));
     }
     run_flag(ctx)?;
     let artifact = new_client(ctx)?.attach_run(&slug, &ctx.f.run)?;
@@ -305,7 +305,7 @@ pub(crate) fn uploads_attach(ctx: &mut Ctx, args: &[String]) -> Result<(), Error
 /// is reached for when a secret was published by accident. A key speaks for
 /// its workspace; a claim token for the one anonymous upload it came with.
 pub(crate) fn uploads_delete(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
-    let slug = slug_arg(KIND_ARTIFACT, args, "no_artifact", "pass the artifact: `krowk artifacts delete art_...`")?;
+    let slug = slug_arg(KIND_ARTIFACT, args, "no_artifact", "pass the artifact: `gruntas artifacts delete art_...`")?;
     let token = args.get(1).map(|t| t.trim().to_string()).unwrap_or_default();
     // A second word that is not a token would withhold the key and turn an
     // authorised takedown into an unauthorised one; it is not quoted back,
@@ -329,7 +329,7 @@ pub(crate) fn uploads_delete(ctx: &mut Ctx, args: &[String]) -> Result<(), Error
         return Err(fail(
             "missing_claim",
             format!(
-                "taking down an anonymous upload needs the claim token it came back with: `krowk artifacts delete {slug} krowk_claim_...` — with an API key, the key is authority enough"
+                "taking down an anonymous upload needs the claim token it came back with: `gruntas artifacts delete {slug} krowk_claim_...` — with an API key, the key is authority enough"
             ),
         ));
     }
@@ -366,14 +366,14 @@ pub(crate) fn runs_list(ctx: &mut Ctx) -> Result<(), Error> {
 }
 
 pub(crate) fn runs_show(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
-    let slug = slug_arg(KIND_RUN, args, "no_run", "pass the run: `krowk runs show run_...`")?;
+    let slug = slug_arg(KIND_RUN, args, "no_run", "pass the run: `gruntas runs show run_...`")?;
     let run = new_client(ctx)?.show_run(&slug)?;
     let rendered = output::run_detail(&run, ctx.format, ctx.f.quiet, ctx.colour);
     ctx.emit(&rendered)
 }
 
 pub(crate) fn runs_finish(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
-    let slug = slug_arg(KIND_RUN, args, "no_run", "pass the run: `krowk runs finish run_...`")?;
+    let slug = slug_arg(KIND_RUN, args, "no_run", "pass the run: `gruntas runs finish run_...`")?;
     let run = new_client(ctx)?.finish_run(&slug)?;
     let rendered = output::run(&run, ctx.format, ctx.f.quiet, ctx.colour);
     ctx.emit(&rendered)
@@ -383,9 +383,9 @@ pub(crate) fn runs_finish(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
 /// attaches it after, since the attach resolves in the key's workspace.
 pub(crate) fn claim(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if args.len() < 2 {
-        return Err(fail("missing_claim", "pass both the artifact and its token: `krowk claim art_... krowk_claim_...`"));
+        return Err(fail("missing_claim", "pass both the artifact and its token: `gruntas claim art_... krowk_claim_...`"));
     }
-    let slug = slug_arg(KIND_ARTIFACT, args, "no_artifact", "pass both the artifact and its token: `krowk claim art_... krowk_claim_...`")?;
+    let slug = slug_arg(KIND_ARTIFACT, args, "no_artifact", "pass both the artifact and its token: `gruntas claim art_... krowk_claim_...`")?;
     run_flag(ctx)?;
     let client = new_client(ctx)?;
     let mut artifact = client.claim_artifact(&slug, args[1].trim())?;
@@ -395,7 +395,7 @@ pub(crate) fn claim(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         artifact = client.attach_run(&artifact.slug, &ctx.f.run).map_err(|mut e| {
             e.body.insert("claimed".into(), json!(artifact.slug));
             let retry = format!(
-                "the upload is claimed and kept, only the run is not attached — retry `krowk artifacts attach {} --run <run>` with a run this workspace holds",
+                "the upload is claimed and kept, only the run is not attached — retry `gruntas artifacts attach {} --run <run>` with a run this workspace holds",
                 artifact.slug
             );
             let fix = match e.fix() {

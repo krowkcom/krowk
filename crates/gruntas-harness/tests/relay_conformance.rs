@@ -3,7 +3,7 @@
 //! reaches into a relay's code: every test dials a channel, answers the
 //! challenge and watches what comes back, so the same suite holds any
 //! implementation of the contract to it — the reference relay
-//! (`krowk relay serve`, `gruntas_harness::relay`) by default, ticket 18's
+//! (`gruntas relay serve`, `gruntas_harness::relay`) by default, ticket 18's
 //! Durable Object under `wrangler dev` with
 //!
 //! ```sh
@@ -57,7 +57,7 @@ fn device_id(name: &str) -> DeviceId {
 fn session_id(test: &str) -> String {
     let h = seed(&format!("session/{test}"));
     let mut b: [u8; 16] = h[..16].try_into().unwrap();
-    // A UUIDv7's version and variant bits, so it reads as the ids krowk mints.
+    // A UUIDv7's version and variant bits, so it reads as the ids gruntas mints.
     b[6] = 0x70 | (b[6] & 0x0f);
     b[8] = 0x80 | (b[8] & 0x3f);
     let x = e2e::hex(&b);
@@ -128,7 +128,7 @@ fn the_checked_in_roster_is_the_generated_one() {
 
 /// The relay under test: `GRUNTAS_RELAY_URL`, or the reference relay started
 /// in this process on a loopback port with the fixture — the same
-/// `relay::run` that `krowk relay serve --ticket-keys` runs.
+/// `relay::run` that `gruntas relay serve --ticket-keys` runs.
 fn relay_url() -> &'static str {
     static URL: OnceLock<String> = OnceLock::new();
     URL.get_or_init(|| {
@@ -934,7 +934,7 @@ async fn r_relay_1_a_frame_with_no_host_is_refused_host_absent_and_the_link_stay
     }
 }
 
-/// R-RELAY-1: a viewer of the host's own device — `krowk sync attach` on
+/// R-RELAY-1: a viewer of the host's own device — `gruntas sync attach` on
 /// the machine that hosts — is a viewer like any other. Its joining and
 /// leaving, closed cleanly or dropped, never takes the channel from the
 /// host: no other viewer is told the host went, the host's connection stays

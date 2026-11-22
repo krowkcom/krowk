@@ -1,10 +1,10 @@
-//! krowk's provider credentials file and the OAuth pieces its sign-ins
+//! gruntas's provider credentials file and the OAuth pieces its sign-ins
 //! share: the store, PKCE, the token request and the loopback callback.
 //! `mcp_oauth` signs in to MCP servers with them; `connect` and `keys`
 //! keep keys in the same file.
 //!
-//! **The tokens are secrets.** They live in krowk's one credentials file
-//! (`credentials.json` in krowk's home, `gruntas_api::creds`), `0600` in the
+//! **The tokens are secrets.** They live in gruntas's one credentials file
+//! (`credentials.json` in gruntas's home, `gruntas_api::creds`), `0600` in the
 //! `0700` home and replaced by rename, never in place; no token is ever
 //! printed, logged or put in an error. The logins are its `instances`, and
 //! stored API keys (`crate::keys`) its `keys`, beside the registry's keys,
@@ -91,12 +91,12 @@ struct File {
     /// Stored API keys, by instance.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     keys: BTreeMap<String, crate::keys::KeyRef>,
-    /// Whatever a later krowk writes that this one does not know, kept.
+    /// Whatever a later gruntas writes that this one does not know, kept.
     #[serde(flatten)]
     other: serde_json::Map<String, Value>,
 }
 
-/// krowk's provider credentials file.
+/// gruntas's provider credentials file.
 #[derive(Debug, Clone)]
 pub struct Store {
     pub path: PathBuf,
@@ -231,7 +231,7 @@ pub struct Endpoints {
     pub registration: Option<String>,
 }
 
-/// An endpoint krowk will send a secret to: https, or http on a loopback
+/// An endpoint gruntas will send a secret to: https, or http on a loopback
 /// address (a local stand-in).
 pub(crate) fn trusted(url: &str) -> Result<url::Url, EngineError> {
     let u = url::Url::parse(url).map_err(|e| fail(format!("{url:?} is not a URL ({e})")))?;
@@ -239,7 +239,7 @@ pub(crate) fn trusted(url: &str) -> Result<url::Url, EngineError> {
     if u.scheme() == "https" || (u.scheme() == "http" && loopback) {
         Ok(u)
     } else {
-        Err(fail(format!("{url} is not https — krowk sends credentials to https endpoints only")))
+        Err(fail(format!("{url} is not https — gruntas sends credentials to https endpoints only")))
     }
 }
 
@@ -327,14 +327,14 @@ pub(crate) async fn callback(listener: &tokio::net::TcpListener, state: &str) ->
             continue;
         }
         let (page, result) = match (q.get("code"), q.get("error")) {
-            (Some(code), None) => ("krowk is signed in. You can close this tab.", Ok(code.clone())),
+            (Some(code), None) => ("gruntas is signed in. You can close this tab.", Ok(code.clone())),
             (_, err) => {
                 let err = clean(&err.cloned().unwrap_or_else(|| "no code".into()));
                 let desc = clean(q.get("error_description").map(String::as_str).unwrap_or_default());
                 ("The sign-in did not complete. You can close this tab and look at the terminal.", Err(fail(format!("the sign-in was refused ({err} {desc})"))))
             }
         };
-        let body = format!("<!doctype html><title>krowk</title><p>{page}</p>");
+        let body = format!("<!doctype html><title>gruntas</title><p>{page}</p>");
         let _ = conn.write_all(format!("HTTP/1.1 200 OK\r\ncontent-type: text/html; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).as_bytes()).await;
         return result;
     }

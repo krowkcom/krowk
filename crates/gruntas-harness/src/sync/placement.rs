@@ -1,7 +1,7 @@
 //! Placement (R-ALLOC-7 … R-ALLOC-11; engineering/harness.md → Automatic
 //! allocation): which of the person's machines runs a task a supervisor
-//! hands over, and the task's way there and back. krowk's own `subagent`
-//! tool and krowk-mcp's `gruntas_delegate` and `gruntas_collect` are its two
+//! hands over, and the task's way there and back. gruntas's own `subagent`
+//! tool and gruntas-mcp's `gruntas_delegate` and `gruntas_collect` are its two
 //! callers, and share all of it.
 //!
 //! **It runs on the supervisor's machine** (D3), from the announcements
@@ -61,7 +61,7 @@
 //! caller's, never retried (D11): `Failure`. A machine with no announcement
 //! for `OFFLINE_AFTER` and no stream from the child has gone (R-ALLOC-9).
 //!
-//! krowk's own agent places its subagents with the `Placer`, and krowk-mcp
+//! gruntas's own agent places its subagents with the `Placer`, and gruntas-mcp
 //! its `gruntas_delegate` tasks (`Here::Worktree`).
 
 use super::announce::Announcer;
@@ -77,7 +77,7 @@ use std::time::{Duration, Instant};
 /// How long a placement this supervisor made counts as an agent slot in
 /// use on its machine (D9), so calls made together spread out.
 pub const RECENT: Duration = Duration::from_secs(30);
-/// How far ahead a `run`'s `notAfterMs` is: the host-silence limit `krowk
+/// How far ahead a `run`'s `notAfterMs` is: the host-silence limit `gruntas
 /// sync new --host` waits (D11).
 pub const ANSWER_WAIT: Duration = Duration::from_secs(30);
 /// How much longer than `notAfterMs` the supervisor still takes a
@@ -115,7 +115,7 @@ impl HostPin {
             _ if s.is_empty() => Err("host is empty: name a machine, or any, any:macos, any:linux or any:windows".into()),
             _ if s == "any" => Ok(HostPin::Any),
             Some(("any", os)) if OSES.contains(&os) => Ok(HostPin::Os(os.to_string())),
-            Some(("any", os)) => Err(format!("any:{os} names no OS krowk knows: any:macos, any:linux or any:windows")),
+            Some(("any", os)) => Err(format!("any:{os} names no OS gruntas knows: any:macos, any:linux or any:windows")),
             _ => Ok(HostPin::Machine(s.to_string())),
         }
     }
@@ -148,7 +148,7 @@ pub struct TaskSpec {
     /// (D13): sent as the `run`'s `permissionMode`.
     pub permission_mode: Option<PermissionMode>,
     /// Where to store the job: the parent's synced session and its lease;
-    /// none for a parent that is not synced (krowk-mcp's), when the
+    /// none for a parent that is not synced (gruntas-mcp's), when the
     /// `Placer` registers one of its own.
     pub store: Option<JobStore>,
 }
@@ -250,10 +250,10 @@ pub fn ruled_out(c: &Candidate, ask: &Ask<'_>) -> Option<String> {
     }
     if !c.here {
         let Some(cap) = &a.capacity else {
-            return Some(format!("{name} runs a krowk older than automatic allocation: update krowk there"));
+            return Some(format!("{name} runs a gruntas older than automatic allocation: update gruntas there"));
         };
         if !a.accepting {
-            return Some(format!("{name} does not take work from your other machines: on {name}, run: krowk machines accept on"));
+            return Some(format!("{name} does not take work from your other machines: on {name}, run: gruntas machines accept on"));
         }
         if !a.repositories.iter().any(|r| r.origin == ask.origin) {
             return Some(format!("{name} has no clone of {}: on {name}, run: git clone {}", ask.origin, without_credentials(ask.clone_url)));
@@ -266,7 +266,7 @@ pub fn ruled_out(c: &Candidate, ask: &Ask<'_>) -> Option<String> {
     match instance(c, ask) {
         Some(i) if i.ready => None,
         Some(i) => Some(format!("{name} cannot run {}: {}", ask.model.instance, i.fix.clone().unwrap_or_else(|| format!("{} is not ready ({})", i.name, i.state)))),
-        None => Some(format!("{name} has no account {} to run {}: sign one in there with krowk connect", ask.model.instance, ask.model)),
+        None => Some(format!("{name} has no account {} to run {}: sign one in there with gruntas connect", ask.model.instance, ask.model)),
     }
 }
 
@@ -300,8 +300,8 @@ pub fn choose(candidates: &[Candidate], ask: &Ask<'_>) -> Result<Choice, String>
     let within: Vec<usize> = (0..candidates.len()).filter(|&i| named(&candidates[i])).collect();
     if within.is_empty() {
         return Err(match ask.host {
-            Some(HostPin::Machine(n)) => format!("None of your machines is named {n}. `krowk machines` lists them."),
-            Some(HostPin::Os(os)) => format!("None of your machines runs {os}. `krowk machines` lists them."),
+            Some(HostPin::Machine(n)) => format!("None of your machines is named {n}. `gruntas machines` lists them."),
+            Some(HostPin::Os(os)) => format!("None of your machines runs {os}. `gruntas machines` lists them."),
             _ => "There is no machine to run it on.".to_string(),
         });
     }
@@ -419,7 +419,7 @@ pub fn result_of(events: &[LogEvent], child: &str) -> Result<Option<ResultRef>, 
                 match (transport, key) {
                     (Some(t), Some(k)) if slug_shaped(t) && key_shaped(k) => {}
                     (None, None) => {}
-                    _ => return Err("the child's result names a transport or key this krowk does not read".into()),
+                    _ => return Err("the child's result names a transport or key this gruntas does not read".into()),
                 }
                 return Ok(Some(ResultRef { transport: transport.clone(), key: key.clone(), against: against.clone(), denied: denied.clone() }));
             }
@@ -432,11 +432,11 @@ pub fn result_of(events: &[LogEvent], child: &str) -> Result<Option<ResultRef>, 
 /// Who runs a task placed on this machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Here {
-    /// The caller, as it runs any subagent (krowk's own agent):
+    /// The caller, as it runs any subagent (gruntas's own agent):
     /// `Progress::Here` says so.
     Caller,
     /// The `Placer`, as a child in a local worktree of the repository,
-    /// landed as a remote one is (krowk-mcp, which has no engine of its
+    /// landed as a remote one is (gruntas-mcp, which has no engine of its
     /// own). Never through the registry.
     Worktree,
 }
@@ -503,7 +503,7 @@ impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Failure::NoMachine(why) => write!(f, "{why}"),
-            Failure::MachineLimit => write!(f, "No machine could take it without going over your plan's machine limit. See krowk billing."),
+            Failure::MachineLimit => write!(f, "No machine could take it without going over your plan's machine limit. See gruntas billing."),
             Failure::TooBig => write!(f, "{}", super::handoff::JOB_TOO_BIG),
             Failure::Offline { machine } => write!(f, "{machine} went offline mid-task; its work is in a worktree there."),
             Failure::Failed { machine, reason } => write!(f, "The task failed on {machine}: {reason}"),
@@ -1041,7 +1041,7 @@ fn finished(events: &[Value], child: &str) -> Option<Result<Finish, String>> {
     }
 }
 
-/// The `Placer` krowk-mcp's delegation tools (R-ALLOC-11) place by, made
+/// The `Placer` gruntas-mcp's delegation tools (R-ALLOC-11) place by, made
 /// on first use: none when sync is not set up here.
 pub type PlacerSource = Arc<dyn Fn() -> Option<Arc<Placer>> + Send + Sync>;
 
@@ -1125,7 +1125,7 @@ mod tests {
     #[test]
     fn r_alloc_9_failures_read_as_the_screens_say() {
         assert_eq!(Failure::Offline { machine: "desktop".into() }.to_string(), "desktop went offline mid-task; its work is in a worktree there.");
-        assert!(Failure::MachineLimit.to_string().contains("krowk billing"));
+        assert!(Failure::MachineLimit.to_string().contains("gruntas billing"));
         assert!(Failure::TooBig.to_string().contains("64 MiB"));
         assert!(Failure::Unknown("t1".into()).to_string().contains("t1"));
     }
@@ -1526,7 +1526,7 @@ mod tests {
         let h = p.start(s, Here::Caller);
         let got = p.wait(&h, Duration::from_secs(5)).unwrap_err();
         assert_eq!(got, Failure::MachineLimit);
-        assert!(got.to_string().contains("krowk billing"));
+        assert!(got.to_string().contains("gruntas billing"));
     }
 
     /// R-ALLOC-9: a machine that stops announcing and streaming fails the

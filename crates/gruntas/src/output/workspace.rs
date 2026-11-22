@@ -6,7 +6,7 @@ use serde::Serialize;
 use serde_json::json;
 use std::collections::BTreeMap;
 
-/// What `krowk workspaces` knows: the stored keys and which one resolves here.
+/// What `gruntas workspaces` knows: the stored keys and which one resolves here.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Workspaces {
     pub stored: Vec<WorkspaceKey>,
@@ -27,7 +27,7 @@ pub fn workspace_list(ws: &Workspaces, f: Format, quiet: bool, colour: bool) -> 
     if ws.stored.is_empty() {
         return format!(
             "No keys stored yet. Until there is one, uploads are anonymous and expire.\n{}",
-            crumb_line("Add one", "krowk login", colour)
+            crumb_line("Add one", "gruntas login", colour)
         );
     }
     let mut lines = vec!["Stored keys".to_string()];
@@ -39,7 +39,7 @@ pub fn workspace_list(ws: &Workspaces, f: Format, quiet: bool, colour: bool) -> 
     if !ws.resolved.is_empty() && ws.key_missing {
         lines.push(warning(
             colour,
-            &format!("{} resolves here ({}), but no key is stored for it, so every upload fails until `krowk login`", ws.resolved, ws.source),
+            &format!("{} resolves here ({}), but no key is stored for it, so every upload fails until `gruntas login`", ws.resolved, ws.source),
         ));
     } else if !ws.resolved.is_empty() {
         lines.push(format!("Uploads from here land in {} {}", ws.resolved, paint(colour, DIM, &format!("({})", ws.source))));
@@ -52,7 +52,7 @@ pub fn workspace_list(ws: &Workspaces, f: Format, quiet: bool, colour: bool) -> 
 
 fn summary(ws: &Workspaces) -> String {
     if ws.shadowed {
-        return "GRUNTAS_TOKEN is set and wins over every stored key — `krowk whoami` names the workspace that key acts in".into();
+        return "GRUNTAS_TOKEN is set and wins over every stored key — `gruntas whoami` names the workspace that key acts in".into();
     }
     let stored = format!("{} key(s) stored", ws.stored.len());
     if ws.resolved.is_empty() {
@@ -64,7 +64,7 @@ fn summary(ws: &Workspaces) -> String {
     }
     if ws.key_missing {
         return format!(
-            "{} resolves here ({}) but holds no key — every upload fails until `krowk login`",
+            "{} resolves here ({}) but holds no key — every upload fails until `gruntas login`",
             ws.resolved, ws.source
         );
     }
@@ -75,19 +75,19 @@ fn crumbs(ws: &Workspaces) -> Vec<Breadcrumb> {
     if ws.stored.is_empty() {
         return vec![crumb(
             "log in",
-            "krowk login",
+            "gruntas login",
             "approving it in the browser stores a key, and uploads stop expiring — `--token krowk_sk_...` stores one directly instead",
         )];
     }
     vec![
         crumb(
             "switch the default",
-            "krowk workspaces use <workspace>",
+            "gruntas workspaces use <workspace>",
             "repoints the machine-wide default at another stored key — <workspace> is a name from this list",
         ),
         crumb(
             "pin this repository",
-            "krowk config set workspace <workspace>",
+            "gruntas config set workspace <workspace>",
             "writes .gruntas/config.json at the repository root, so every command run inside it uses that workspace's key \
              whoever runs it — <workspace> is a name from this list",
         ),
@@ -105,7 +105,7 @@ pub fn default_workspace(name: &str, path: &str, f: Format, quiet: bool, colour:
             format!("default workspace is now {name}"),
             vec![crumb(
                 "check what resolves here",
-                "krowk workspaces",
+                "gruntas workspaces",
                 "a repo config, GRUNTAS_WORKSPACE or --workspace still outranks the default",
             )],
         );
@@ -141,7 +141,7 @@ pub fn config_show(v: &ConfigView, f: Format, quiet: bool, colour: bool) -> Stri
             summary,
             vec![crumb(
                 "set the workspace",
-                "krowk config set workspace <workspace>",
+                "gruntas config set workspace <workspace>",
                 "pins which workspace commands in this repository use — --global sets the machine-wide fallback instead",
             )],
         );
@@ -166,7 +166,7 @@ pub fn config_got(key: &str, value: &str, source: &str, f: Format, quiet: bool, 
             return encode(&r);
         }
         let said = if value.is_empty() { format!("{key} is not set") } else { format!("{key} = {value} ({source})") };
-        return ok(r, said, vec![crumb("see every layer", "krowk config show", "names the files the configuration is read from")]);
+        return ok(r, said, vec![crumb("see every layer", "gruntas config show", "names the files the configuration is read from")]);
     }
     if value.is_empty() {
         return paint(colour, DIM, &format!("{key} is not set."));
@@ -191,7 +191,7 @@ pub fn config_wrote(key: &str, value: &str, path: &str, f: Format, quiet: bool, 
             said,
             vec![crumb(
                 "check the effective configuration",
-                "krowk config show",
+                "gruntas config show",
                 "reports what actually resolves here, which layer wins, and why",
             )],
         );

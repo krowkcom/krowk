@@ -4,7 +4,7 @@
 //! addresses the welcome named.
 //!
 //! The service is `_krowk._tcp.local.`, and an instance is named by the
-//! session's tag — a hash of its id — so the network learns that some krowk
+//! session's tag — a hash of its id — so the network learns that some gruntas
 //! session is hosted at an address, never which. mDNS is a way to find an
 //! address and nothing more (R-NET-3): anyone on the LAN can answer for a
 //! tag, so an address found this way is joined exactly as a welcome's is,

@@ -4,31 +4,31 @@
 @env GRUNTAS_TOKEN=krowk_sk_test
 @file a.txt hello
 @file b.txt world
-krowk runs start --title "the work"
+gruntas runs start --title "the work"
 @let RUN .data.slug
-krowk push a.txt
+gruntas push a.txt
 @let ART .data.artifacts[0].slug
-krowk artifacts show {ART}
-krowk artifacts show {ART} --format human
-krowk artifacts show {ART} --format markdown
-krowk artifacts attach {ART} --run {RUN}
-krowk artifacts attach {ART} --run {RUN}
-krowk runs show {RUN}
-krowk runs show {RUN} --format human
-krowk push b.txt --run {RUN}
-krowk push b.txt --run {registry}/r/{RUN}
-krowk runs list --limit 1
+gruntas artifacts show {ART}
+gruntas artifacts show {ART} --format human
+gruntas artifacts show {ART} --format markdown
+gruntas artifacts attach {ART} --run {RUN}
+gruntas artifacts attach {ART} --run {RUN}
+gruntas runs show {RUN}
+gruntas runs show {RUN} --format human
+gruntas push b.txt --run {RUN}
+gruntas push b.txt --run {registry}/r/{RUN}
+gruntas runs list --limit 1
 @let RUNNEXT .data.next
-krowk runs list --limit 1 --before {RUNNEXT}
-krowk artifacts list --limit 1
+gruntas runs list --limit 1 --before {RUNNEXT}
+gruntas artifacts list --limit 1
 @let NEXT .data.next
-krowk artifacts list --limit 1 --before {NEXT}
-krowk artifacts list --run {RUN}
-krowk runs finish {RUN}
-krowk runs finish {RUN}
-krowk runs show {RUN} --format human
-krowk artifacts delete {ART}
-krowk artifacts delete {ART}
-krowk artifacts show {ART}
-krowk artifacts attach
-krowk artifacts attach {ART}
+gruntas artifacts list --limit 1 --before {NEXT}
+gruntas artifacts list --run {RUN}
+gruntas runs finish {RUN}
+gruntas runs finish {RUN}
+gruntas runs show {RUN} --format human
+gruntas artifacts delete {ART}
+gruntas artifacts delete {ART}
+gruntas artifacts show {ART}
+gruntas artifacts attach
+gruntas artifacts attach {ART}

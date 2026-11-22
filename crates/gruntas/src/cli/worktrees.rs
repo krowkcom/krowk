@@ -1,10 +1,10 @@
-//! `krowk worktrees`: the git worktrees krowk made for agents, across
+//! `gruntas worktrees`: the git worktrees gruntas made for agents, across
 //! repositories (WT9). Every agent that changed something leaves one, and
 //! deleting one by hand strands git's record of it and can lose work. The
 //! work is `gruntas_harness::worktree::manage`; this is the command line
 //! around it.
 //!
-//! - `list` (bare `krowk worktrees` too): each one's directory, repository,
+//! - `list` (bare `gruntas worktrees` too): each one's directory, repository,
 //!   branch, base, commits ahead of the base, uncommitted changes, session,
 //!   age, and whether a live session holds it. A commit already on
 //!   `origin`'s default branch, or with an equivalent patch there (a merged
@@ -17,7 +17,7 @@
 //!   `--worktree` session's is, except that a `--from` on neither this
 //!   checkout nor `origin`'s default branch gets no `.worktreeinclude`
 //!   copies and no setup command, and that a repository's own setup command
-//!   does not run when `add` is itself run from a krowk worktree, whose path
+//!   does not run when `add` is itself run from a gruntas worktree, whose path
 //!   is not on the trust list. Nothing finishes it: no process stays to hold
 //!   it, so it reads as not live, and it is kept until `apply` or `remove`.
 //! - `remove <hex|path> [--force]`: refused (exit 4) while a live session
@@ -61,9 +61,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-/// Where krowk's worktrees are.
+/// Where gruntas's worktrees are.
 fn root(ctx: &Ctx) -> Result<PathBuf, Error> {
-    gruntas_api::home::worktrees_root(ctx.io.env).ok_or_else(|| fail("no_home", "krowk found no home directory to look for its worktrees under — set HOME or XDG_DATA_HOME"))
+    gruntas_api::home::worktrees_root(ctx.io.env).ok_or_else(|| fail("no_home", "gruntas found no home directory to look for its worktrees under — set HOME or XDG_DATA_HOME"))
 }
 
 fn now_ms() -> i64 {
@@ -120,7 +120,7 @@ pub(super) fn list(ctx: &mut Ctx) -> Result<(), Error> {
     }
     let out = &mut *ctx.io.stdout;
     if all.is_empty() {
-        let _ = writeln!(out, "No krowk worktrees.");
+        let _ = writeln!(out, "No gruntas worktrees.");
         return Ok(());
     }
     let cells: Vec<[String; 8]> = all
@@ -149,7 +149,7 @@ pub(super) fn list(ctx: &mut Ctx) -> Result<(), Error> {
 
 pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if let Some(extra) = args.first() {
-        return Err(fail("bad_argument", format!("`krowk worktrees add` takes no `{extra}`: it chooses the directory itself, and starts from a ref with --from <ref>")));
+        return Err(fail("bad_argument", format!("`gruntas worktrees add` takes no `{extra}`: it chooses the directory itself, and starts from a ref with --from <ref>")));
     }
     let from = ctx.f.from.trim().to_string();
     if from.is_empty() && ctx.f.given.contains("from") {
@@ -162,11 +162,11 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(PathBuf::from);
     let store = trust::Store::new(Some(super::providers::krowk_dir()?.join(trust::FILE)), home);
     let permissions = prompt::permissions_config(ctx, &config, Arc::new(move |repo: &std::path::Path| store.trusts(repo)), false);
-    // The session asking, when one is: `krowk worktrees` names it.
+    // The session asking, when one is: `gruntas worktrees` names it.
     let owner = ["GRUNTAS_SESSION", "CLAUDE_CODE_SESSION_ID"].iter().map(|k| ctx.env(k)).find(|s| !s.trim().is_empty()).unwrap_or_else(gruntas_store::new_id);
     let (in_use, notes) = own_worktree::make(ctx, &root, &cwd, &permissions, &registry, &owner, Some(from.as_str()).filter(|f| !f.is_empty())).map_err(|mut e| {
         if e.code() == "not_a_repository" {
-            e.body.insert("fix".into(), "`krowk worktrees add` makes a worktree of the repository you are in, and this directory is in none — run it from inside a repository".into());
+            e.body.insert("fix".into(), "`gruntas worktrees add` makes a worktree of the repository you are in, and this directory is in none — run it from inside a repository".into());
         }
         e
     })?;
@@ -177,13 +177,13 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let top = trust::root(&cwd);
     let same = |a: &std::path::Path, b: &std::path::Path| a.canonicalize().ok().zip(b.canonicalize().ok()).is_some_and(|(a, b)| a == b);
     let to = if same(&top, &wt.main) { String::new() } else { format!(" --to {}", manage::quote(&top)) };
-    let apply = format!("krowk worktrees apply {}{to}", wt.hex);
+    let apply = format!("gruntas worktrees apply {}{to}", wt.hex);
     if ctx.format != Format::Human {
         let data = json!({ "hex": wt.hex, "path": wt.path.display().to_string(), "repo": wt.main.display().to_string(), "branch": wt.branch(), "base": wt.base, "session": owner, "notes": notes, "apply": apply });
         return super::sessions::emit_data(ctx, data, summary);
     }
     let out = &mut *ctx.io.stdout;
-    let _ = writeln!(out, "{}\nBranch {}. It stays until `{apply}` or `krowk worktrees remove {}`.", wt.path.display(), wt.branch(), wt.hex);
+    let _ = writeln!(out, "{}\nBranch {}. It stays until `{apply}` or `gruntas worktrees remove {}`.", wt.path.display(), wt.branch(), wt.hex);
     for n in &notes {
         let _ = writeln!(out, "{n}");
     }
@@ -191,7 +191,7 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
 }
 
 pub(super) fn remove(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
-    let key = args.first().map(|a| a.trim()).filter(|a| !a.is_empty()).ok_or_else(|| fail("missing_argument", "name the worktree to remove: `krowk worktrees remove <hex|path>` — `krowk worktrees` lists them"))?;
+    let key = args.first().map(|a| a.trim()).filter(|a| !a.is_empty()).ok_or_else(|| fail("missing_argument", "name the worktree to remove: `gruntas worktrees remove <hex|path>` — `gruntas worktrees` lists them"))?;
     let root = root(ctx)?;
     let human = ctx.format == Format::Human;
     let removed = manage::remove(&root, key, ctx.f.force).map_err(|r| refused(r, now_ms(), !human))?;
@@ -214,9 +214,9 @@ pub(super) fn remove(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
 
 pub(super) fn apply(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if let Some(extra) = args.get(1) {
-        return Err(fail("bad_argument", format!("`krowk worktrees apply` takes one worktree, not `{extra}` too — quote a --to path that has spaces")));
+        return Err(fail("bad_argument", format!("`gruntas worktrees apply` takes one worktree, not `{extra}` too — quote a --to path that has spaces")));
     }
-    let key = args.first().map(|a| a.trim()).filter(|a| !a.is_empty()).ok_or_else(|| fail("missing_argument", "name the worktree to apply: `krowk worktrees apply <hex|path>` — `krowk worktrees` lists them"))?;
+    let key = args.first().map(|a| a.trim()).filter(|a| !a.is_empty()).ok_or_else(|| fail("missing_argument", "name the worktree to apply: `gruntas worktrees apply <hex|path>` — `gruntas worktrees` lists them"))?;
     let root = root(ctx)?;
     let human = ctx.format == Format::Human;
     let to = match ctx.f.to.trim() {
@@ -251,14 +251,14 @@ pub(super) fn apply(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
             return Err(kept(fail("worktree_conflicts", fix), &files));
         }
         Applied::Submodules(paths) => {
-            let fix = format!("{} changed submodules ({}), which krowk does not apply — nothing was changed. The worktree and its branch {} are kept: bring those changes over by hand", l.path.display(), named(&paths), l.own_branch());
+            let fix = format!("{} changed submodules ({}), which gruntas does not apply — nothing was changed. The worktree and its branch {} are kept: bring those changes over by hand", l.path.display(), named(&paths), l.own_branch());
             return Err(kept(fail("worktree_submodules", fix), &paths));
         }
     };
     let n = files.len();
     let summary = match (&left, n) {
         (Some(why), _) => format!(
-            "Applied {n} changed file{} from {} to {}, but could not remove it afterwards ({why}) — do not apply it again; `krowk worktrees remove {} --force` removes it",
+            "Applied {n} changed file{} from {} to {}, but could not remove it afterwards ({why}) — do not apply it again; `gruntas worktrees remove {} --force` removes it",
             if n == 1 { "" } else { "s" },
             l.path.display(),
             target.display(),
@@ -279,7 +279,7 @@ pub(super) fn apply(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     Ok(())
 }
 
-/// A refusal as krowk's error: its code and fix, and, when `details`, the
+/// A refusal as gruntas's error: its code and fix, and, when `details`, the
 /// worktree it is about as the error's `details`, for a script to read; a
 /// person has the fix.
 fn refused(r: Refusal, now: i64, details: bool) -> Error {
@@ -290,10 +290,10 @@ fn refused(r: Refusal, now: i64, details: bool) -> Error {
         e
     };
     match r {
-        Refusal::NotFound(key) => fail("no_such_worktree", format!("`{key}` names no krowk worktree — `krowk worktrees` lists them")),
+        Refusal::NotFound(key) => fail("no_such_worktree", format!("`{key}` names no gruntas worktree — `gruntas worktrees` lists them")),
         Refusal::Ambiguous(paths) => {
             let paths: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
-            fail("ambiguous_worktree", format!("more than one krowk worktree is called that: {} — name it by its path", paths.join(", ")))
+            fail("ambiguous_worktree", format!("more than one gruntas worktree is called that: {} — name it by its path", paths.join(", ")))
         }
         Refusal::Live(l) => {
             let session = l.session.as_deref().unwrap_or("a session");
@@ -307,7 +307,7 @@ fn refused(r: Refusal, now: i64, details: bool) -> Error {
             match l.ahead {
                 Some(0) => {}
                 Some(n) => what.push(format!("{n} commit{} ahead of its base", if n == 1 { "" } else { "s" })),
-                None => what.push("a base krowk has no record of".to_string()),
+                None => what.push("a base gruntas has no record of".to_string()),
             }
             // A squash merge leaves no patch on origin to match its commits.
             let squash = if l.ahead.is_some_and(|n| n > 0) { " (a squash-merged branch still reads as ahead)" } else { "" };

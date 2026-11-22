@@ -316,7 +316,7 @@ fn children(stream: &[Value]) -> Vec<EngineEvent> {
     out
 }
 
-/// An agent's event in words, without the ids krowk makes up.
+/// An agent's event in words, without the ids gruntas makes up.
 fn said(ev: &EngineEvent) -> Option<String> {
     Some(match ev {
         EngineEvent::BackendChildStarted { task_id, call_id, description, agent, prompt, background } => format!("{task_id} started {call_id} {description:?} {agent:?} background={background} {prompt:?}"),

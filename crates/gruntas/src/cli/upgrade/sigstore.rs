@@ -383,7 +383,7 @@ mod tests {
     const SUMS: &[u8] = include_bytes!("../../../tests/fixtures/release-v0.13.0/checksums.txt");
     const BUNDLE: &str = include_str!("../../../tests/fixtures/release-v0.13.0/checksums.txt.sigstore.json");
 
-    /// The recorded release is krowk 0.13.0, signed before the rename, in the
+    /// The recorded release is gruntas 0.13.0, signed before the rename, in the
     /// old repository.
     fn old(version: &str) -> String {
         identity_in("https://github.com/krowkcom/krowk", version)
@@ -421,7 +421,7 @@ mod tests {
     fn a_release_is_checked_against_the_gruntas_release_workflow() {
         assert_eq!(identity("1.2.3"), "https://github.com/gruntas/gruntas/.github/workflows/release.yml@refs/tags/v1.2.3");
         let err = verify(SUMS, BUNDLE.as_bytes(), &identity("0.13.0")).unwrap_err();
-        assert!(err.contains("not by https://github.com/gruntas/gruntas/"), "the krowk release is not a gruntas one: {err}");
+        assert!(err.contains("not by https://github.com/gruntas/gruntas/"), "the gruntas release is not a gruntas one: {err}");
     }
 
     #[test]

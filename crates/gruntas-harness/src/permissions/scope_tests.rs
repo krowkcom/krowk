@@ -1,7 +1,7 @@
 //! What the scope lets the file tools reach, fences and keeps secret,
 //! asked of it directly: the working directory however a path is spelled
 //! or leads (R-TOOL-1), the fenced directories (`.git`, `.claude`, `.codex`,
-//! `.krowk`) and the protected ones (R-BACK-3, R-SUB-5), and krowk's home.
+//! `.krowk`) and the protected ones (R-BACK-3, R-SUB-5), and gruntas's home.
 
 use super::*;
 
@@ -158,7 +158,7 @@ fn r_sub_5_krowk_agent_definitions_are_kept_like_git() {
     let _ = std::fs::remove_dir_all(d);
 }
 
-/// krowk's home is secret wherever it sits and however it is reached:
+/// gruntas's home is secret wherever it sits and however it is reached:
 /// spelled with `..`, in another case, or through a symlink — fenced for
 /// reading as well as writing, and opened by no mode.
 #[cfg(unix)]
@@ -172,7 +172,7 @@ fn krowks_home_is_secret_however_it_is_spelled_or_reached() {
     for p in [home.join("keys/k"), d.join(".krowk-home/../.krowk-home/keys"), d.join(".KROWK-HOME/keys"), d.join("alias/keys/k")] {
         assert!(scope.secret(&p), "{}", p.display());
         for edit in [false, true] {
-            assert!(matches!(scope.reach(&p, edit), Reach::Fenced(why) if why.contains("krowk's home")), "{} (edit: {edit})", p.display());
+            assert!(matches!(scope.reach(&p, edit), Reach::Fenced(why) if why.contains("gruntas's home")), "{} (edit: {edit})", p.display());
         }
     }
     assert!(!scope.secret(&d.join(".krowk-homework")) && !scope.secret(&d.join("a.txt")));

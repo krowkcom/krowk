@@ -165,7 +165,7 @@ const MATROSKA_VIDEO_CODECS: [&[u8]; 15] = [
     b"V_QUICKTIME", b"V_VP8", b"V_VP9", b"V_AV1", b"V_VC1", b"V_DIRAC", b"V_PRORES",
 ];
 
-/// krowk's own extension table, sorted for lookup. The host's mime.types is
+/// gruntas's own extension table, sorted for lookup. The host's mime.types is
 /// never read, so one file declares the same from any machine. Every entry is
 /// what Go answered on macOS when the table was fixed, except .md/.markdown
 /// (text/markdown) and .webm (audio/webm, promoted by a video track).

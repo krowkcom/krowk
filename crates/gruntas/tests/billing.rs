@@ -1,4 +1,4 @@
-//! R-BILL-6: `krowk billing` opens the plan chooser on Free and the billing
+//! R-BILL-6: `gruntas billing` opens the plan chooser on Free and the billing
 //! route on a paid plan, and refuses a member with who to ask. Against the
 //! stand-in registry, whose key markers fake the plan and role; with
 //! `--no-browser`, so the page is printed rather than opened, whatever

@@ -62,7 +62,7 @@ pub const WAITING: usize = 32;
 pub const UNSAID: &str = "Claude Code stopped listing it and did not say how it ended";
 
 /// The note in an agent's transcript where lines held for it were dropped:
-/// krowk's words, not the agent's.
+/// gruntas's words, not the agent's.
 pub const DROPPED: &str = "<dropped-lines>";
 
 /// Whether a `task_started` is of one of the conversation's own agents:
@@ -352,7 +352,7 @@ impl Children {
         if h.dropped > 0
             && let Some(c) = self.under.get(call).and_then(|a| self.agents.get(a))
         {
-            let note = format!("{DROPPED}{} of this agent's first lines came before Claude Code said it started, more than krowk holds, and are not in this transcript.</dropped-lines>", h.dropped);
+            let note = format!("{DROPPED}{} of this agent's first lines came before Claude Code said it started, more than gruntas holds, and are not in this transcript.</dropped-lines>", h.dropped);
             out.extend(item(&c.task_id.clone(), Item::user(note)));
         }
         for l in h.lines {

@@ -1,5 +1,5 @@
 @fixture harnesses
-krowk sessions import --from all --quiet
-krowk sessions rebuild
-krowk sessions rebuild --yes
-krowk sessions --quiet
+gruntas sessions import --from all --quiet
+gruntas sessions rebuild
+gruntas sessions rebuild --yes
+gruntas sessions --quiet

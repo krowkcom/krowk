@@ -84,7 +84,7 @@ fn port_zero_serves_on_a_kernel_picked_port() {
     let addr = ln.local_addr().unwrap();
     let port = addr.port();
     let text = banner(&addr.to_string(), "127.0.0.1:0");
-    assert!(text.contains(&format!("krowk registry listening on http://localhost:{port}\n")), "{text}");
+    assert!(text.contains(&format!("gruntas registry listening on http://localhost:{port}\n")), "{text}");
     assert!(text.contains(&format!("GRUNTAS_API_URL=http://localhost:{port}/v1")), "{text}");
 
     std::thread::spawn(move || serve(&mut io::sink(), ln, "127.0.0.1:0", "", 0));
@@ -94,7 +94,7 @@ fn port_zero_serves_on_a_kernel_picked_port() {
 #[test]
 fn the_banner_warns_only_when_bound_off_box() {
     let def = banner("127.0.0.1:8787", DEFAULT_ADDR);
-    assert!(def.contains("krowk registry listening on http://localhost:8787\n"), "{def}");
+    assert!(def.contains("gruntas registry listening on http://localhost:8787\n"), "{def}");
     assert!(def.contains("--dev") && !def.contains("reachable from the network"), "{def}");
 
     for addr in ["0.0.0.0:8787", ":8787", "192.168.1.5:8787"] {

@@ -109,7 +109,7 @@ fn code(e: &Error) -> &'static str {
     let m = e.0.as_str();
     let table: &[(&str, &str)] = &[
         ("the device list is empty", "empty"),
-        ("which this krowk does not read", "unknown_version"),
+        ("which this gruntas does not read", "unknown_version"),
         ("unknown action", "unknown_action"),
         ("unknown device kind", "unknown_kind"),
         ("an entry is about one device", "subject_count"),

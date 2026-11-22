@@ -12,7 +12,7 @@
 //! archiving the same week never drop each other's sessions: the registry
 //! refuses the second as `vintage_conflict`, and it reads again. A pinned
 //! session is never taken, and neither is a subagent of one, or a session
-//! another krowk holds open (R-VINT-2).
+//! another gruntas holds open (R-VINT-2).
 //!
 //! **Only once the registry has finalized the vintage** does the session's
 //! directory change: an `archived.json` stub (`Stub`) goes in — title,
@@ -94,7 +94,7 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
 }
 
-/// One turn as the stub keeps it: enough to price it as krowk.db did.
+/// One turn as the stub keeps it: enough to price it as gruntas.db did.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StubTurn {
@@ -112,7 +112,7 @@ pub struct StubTurn {
 }
 
 /// What an archived session keeps on the machine (R-VINT-3): the tiny
-/// index row `krowk sessions` lists and search finds, and the week whose
+/// index row `gruntas sessions` lists and search finds, and the week whose
 /// vintage holds the rest.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -139,7 +139,7 @@ pub struct Stub {
 }
 
 impl Stub {
-    /// The stub a log leaves: its projection into krowk.db, kept small.
+    /// The stub a log leaves: its projection into gruntas.db, kept small.
     pub fn of(events: &[LogEvent], week: &str, now_ms: i64) -> Option<Stub> {
         let th = crate::project::thread(events, &mut gruntas_import::ReadResult::default())?;
         let parent = match &events.first()?.body {
@@ -240,7 +240,7 @@ pub fn list_archived(sessions: &Path) -> Vec<(String, PathBuf)> {
 pub fn pin(sessions: &Path, id: &str, pinned: bool) -> Result<(), String> {
     let dir = sessions.join(id);
     if !log::valid_id(id) || !dir.is_dir() {
-        return Err(format!("no krowk session {id:?} in {}", sessions.display()));
+        return Err(format!("no gruntas session {id:?} in {}", sessions.display()));
     }
     let marker = dir.join(PIN_FILE);
     let r = if pinned { std::fs::write(&marker, b"") } else { std::fs::remove_file(&marker).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }) };
@@ -274,7 +274,7 @@ struct Candidate {
 }
 
 /// The sessions idle for longer than `idle_ms` at `now_ms`, never a pinned
-/// one, a subagent of a pinned one, or one another krowk holds open.
+/// one, a subagent of a pinned one, or one another gruntas holds open.
 fn candidates(sessions: &Path, now_ms: i64, idle_ms: i64) -> Vec<Candidate> {
     let mut out = Vec::new();
     for (id, path) in log::list(sessions).unwrap_or_default() {
@@ -310,11 +310,11 @@ fn candidates(sessions: &Path, now_ms: i64, idle_ms: i64) -> Vec<Candidate> {
     out
 }
 
-/// The format of a vintage's line this krowk writes and reads.
+/// The format of a vintage's line this gruntas writes and reads.
 pub const LINE_V1: u32 = 1;
 
 /// One session inside a vintage: its log files, verbatim. A merge carries
-/// every line it read into the vintage it writes, so fields a later krowk
+/// every line it read into the vintage it writes, so fields a later gruntas
 /// added are kept as they came (`rest`). A line of a later format is
 /// refused whole rather than merged down into this one's.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -362,12 +362,12 @@ pub fn unpack(packed: &[u8]) -> Result<BTreeMap<String, Line>, String> {
         if line.trim().is_empty() {
             continue;
         }
-        let l: Line = serde_json::from_str(&line).map_err(|e| format!("the vintage holds a line this krowk does not read: {e}"))?;
+        let l: Line = serde_json::from_str(&line).map_err(|e| format!("the vintage holds a line this gruntas does not read: {e}"))?;
         if l.v > LINE_V1 {
-            return Err(format!("the vintage holds session {} in format {}, newer than this krowk reads — upgrade krowk", l.id, l.v));
+            return Err(format!("the vintage holds session {} in format {}, newer than this gruntas reads — upgrade gruntas", l.id, l.v));
         }
         if !log::valid_id(&l.id) {
-            return Err(format!("the vintage names a session {:?} that is no krowk session id", l.id));
+            return Err(format!("the vintage names a session {:?} that is no gruntas session id", l.id));
         }
         out.insert(l.id.clone(), l);
     }
@@ -417,7 +417,7 @@ pub struct Archived {
 
 /// What a run did: the sessions it archived, and why it stopped early
 /// when it did. The weeks before a failure stay archived and are reported,
-/// so the caller still drops their bodies from krowk.db.
+/// so the caller still drops their bodies from gruntas.db.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Run {
     pub archived: Vec<Archived>,
@@ -549,7 +549,7 @@ pub fn restore_kept(sessions: &Path, id: &str, waiting: &mut dyn FnMut()) -> Res
 /// restoring it would quietly drop what was said since. Restored from any
 /// vintage but the recorded one, it says so, and why each it passed over
 /// was — a digest or a seal that did not check out included.
-/// `waiting` is called before it waits for another krowk restoring it.
+/// `waiting` is called before it waits for another gruntas restoring it.
 pub fn restore(client: &Client, keys: &Keys, sessions: &Path, id: &str, waiting: &mut dyn FnMut()) -> Result<Restored, Error> {
     let Some(_held) = hold(sessions, id, waiting)? else { return restored_meanwhile(sessions, id) };
     let stub = read_stub(sessions, id).ok_or_else(|| restore_failed(format!("session {id} is not archived on this machine")))?;
@@ -606,16 +606,16 @@ fn failed(week: &str, id: &str, tried: &[(String, String)], more: &str) -> Strin
 pub struct Restored {
     pub vintage: String,
     pub warnings: Vec<String>,
-    /// Another krowk restored it while this one waited its turn: its files
-    /// are back, and krowk.db is that krowk's to bring up to date.
+    /// Another gruntas restored it while this one waited its turn: its files
+    /// are back, and gruntas.db is that gruntas's to bring up to date.
     pub already: bool,
 }
 
 /// The session's stub, locked for as long as it is held: one restore of a
-/// session at a time, across every krowk on the machine, so two never
+/// session at a time, across every gruntas on the machine, so two never
 /// write its files over each other. None when, the lock had, the session
 /// is no longer archived — another restore brought it back meanwhile.
-/// `waiting` is called first when another krowk holds it. The lock is on
+/// `waiting` is called first when another gruntas holds it. The lock is on
 /// the file opened, so it is checked to be the stub still at its path once
 /// had — a stub written again meanwhile is opened and locked afresh — and
 /// what a write cut short left beside the session's files is swept.
@@ -648,7 +648,7 @@ fn hold(sessions: &Path, id: &str, waiting: &mut dyn FnMut()) -> Result<Option<s
 /// crash left behind, rather than one being written.
 const STALE_TEMPORARY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
-/// Removes the temporaries `write_private` left in `dir` — a krowk killed
+/// Removes the temporaries `write_private` left in `dir` — a gruntas killed
 /// between writing one and renaming it — once they are past being written.
 fn sweep_temporaries(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
@@ -664,7 +664,7 @@ fn sweep_temporaries(dir: &Path) {
 /// What a restore that found the session already back says.
 fn restored_meanwhile(sessions: &Path, id: &str) -> Result<Restored, Error> {
     match log::valid_id(id) && sessions.join(id).join(EVENTS_FILE).is_file() {
-        true => Ok(Restored { already: true, warnings: vec![format!("session {id} was restored meanwhile by another krowk")], ..Restored::default() }),
+        true => Ok(Restored { already: true, warnings: vec![format!("session {id} was restored meanwhile by another gruntas")], ..Restored::default() }),
         false => Err(restore_failed(format!("session {id} is not archived on this machine"))),
     }
 }
@@ -677,7 +677,7 @@ pub fn restore_from(client: &Client, keys: &Keys, sessions: &Path, id: &str, slu
     let Some(_held) = hold(sessions, id, waiting)? else { return restored_meanwhile(sessions, id) };
     let stub = read_stub(sessions, id).ok_or_else(|| restore_failed(format!("session {id} is not archived on this machine")))?;
     let all = week_vintages(client, &stub.week)?;
-    let v = all.iter().find(|v| v.slug == slug).ok_or_else(|| restore_failed(format!("{slug} is no vintage of {} the registry keeps — `krowk sessions vintage {id}` lists them", stub.week)))?;
+    let v = all.iter().find(|v| v.slug == slug).ok_or_else(|| restore_failed(format!("{slug} is no vintage of {} the registry keeps — `gruntas sessions vintage {id}` lists them", stub.week)))?;
     let mut tried = Vec::new();
     let line = holding(client, keys, v, id, &mut tried).ok_or_else(|| restore_failed(format!("vintage {slug} {}", tried.pop().map(|(_, why)| why).unwrap_or_default())))?;
     let warnings = older_than_stub(&stub, &line).map(|why| format!("session {id} was restored from vintage {slug}, which {why}")).into_iter().collect();
@@ -691,7 +691,7 @@ fn current_enough(client: &Client, keys: &Keys, stub: &Stub, v: &Vintage, id: &s
     let line = holding(client, keys, v, id, tried)?;
     match older_than_stub(stub, &line) {
         Some(why) => {
-            tried.push((v.slug.clone(), format!("{why} — `krowk sessions restore {id} --from {}` restores it anyway", v.slug)));
+            tried.push((v.slug.clone(), format!("{why} — `gruntas sessions restore {id} --from {}` restores it anyway", v.slug)));
             None
         }
         None => Some(line),
@@ -814,7 +814,7 @@ mod tests {
         ruzstd::encoding::compress_to_vec(jsonl.as_bytes(), ruzstd::encoding::CompressionLevel::Fastest)
     }
 
-    /// A merge by this krowk keeps what a later one wrote into a line it
+    /// A merge by this gruntas keeps what a later one wrote into a line it
     /// does not know, and a line of a later format is refused, never
     /// merged down.
     #[test]
@@ -827,7 +827,7 @@ mod tests {
         assert_eq!(again[theirs].rest["forks"], serde_json::json!([{"head": "x"}]), "kept through the merge");
         assert_eq!(again[ours].v, LINE_V1);
         let newer = unpack(&packed(&format!("{{\"v\":2,\"id\":\"{theirs}\",\"events\":\"\",\"context\":\"\"}}\n"))).unwrap_err();
-        assert!(newer.contains("upgrade krowk"), "{newer}");
+        assert!(newer.contains("upgrade gruntas"), "{newer}");
     }
 
     fn idle_session(sessions: &Path, days: i64) -> String {

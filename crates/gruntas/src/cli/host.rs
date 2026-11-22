@@ -1,10 +1,10 @@
-//! `krowk host`: the per-user daemon sessions run in, so a session outlives
+//! `gruntas host`: the per-user daemon sessions run in, so a session outlives
 //! the terminal that started it (R-HOST-1). The daemon itself, its socket
 //! and its protocol are `gruntas_harness::daemon`; this is the command line
 //! around them.
 //!
-//! - `serve` (not listed): the daemon. The first `krowk` that needs it
-//!   (`krowk -p --daemon`) starts it detached; a service runs it too.
+//! - `serve` (not listed): the daemon. The first `gruntas` that needs it
+//!   (`gruntas -p --daemon`) starts it detached; a service runs it too.
 //! - `status`: whether it runs, and what it holds.
 //! - `attach <session>`: follows a session in it as stream-json — the log,
 //!   the turn so far, then live — until the running turn ends.
@@ -23,14 +23,14 @@ use gruntas_harness::{log, trust};
 use serde_json::json;
 use std::sync::Arc;
 
-/// Where the daemon's stdout and stderr go: `host.log` in krowk's home.
+/// Where the daemon's stdout and stderr go: `host.log` in gruntas's home.
 pub(super) fn log_path(ctx: &Ctx) -> Result<std::path::PathBuf, Error> {
     Ok(gruntas_api::home::dir(ctx.io.env)?.join("host.log"))
 }
 
 /// Starts the daemon, detached, from this very binary.
 pub(super) fn spawner(ctx: &Ctx) -> Result<impl Fn() -> Result<Option<std::process::Child>, String> + Send + Sync + use<>, Error> {
-    let exe = std::env::current_exe().map_err(|e| fail("host_unavailable", format!("krowk cannot find its own binary to start the host daemon: {e}")))?;
+    let exe = std::env::current_exe().map_err(|e| fail("host_unavailable", format!("gruntas cannot find its own binary to start the host daemon: {e}")))?;
     let log = log_path(ctx)?;
     Ok(move || daemon::spawn_detached(&exe, &["host", "serve"], &log).map(Some))
 }
@@ -39,12 +39,12 @@ fn engine(e: EngineError) -> Error {
     prompt::engine_error(&e.code, &e.message, e.status)
 }
 
-/// The daemon: every working directory's host made the way `krowk -p`
+/// The daemon: every working directory's host made the way `gruntas -p`
 /// makes its own, save what only a person at a terminal could answer. A
 /// repository is trusted for a backend only when it is on the trusted
 /// list — a daemon asks nobody — and a turn asks approval of the clients
 /// following its session only when the client that ran it answers them;
-/// a `krowk -p` client's turn refuses what would be asked, as
+/// a `gruntas -p` client's turn refuses what would be asked, as
 /// in-process `-p` does.
 pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     let config = prompt::config_json()?;
@@ -63,11 +63,11 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
             return Ok(());
         }
         if let Some(why) = store.refuses(root) {
-            return Err(trust::untrusted(root, &format!("It cannot be trusted for good — {why}. Run `krowk -p --trust` there, in this process rather than the daemon, for one run.")));
+            return Err(trust::untrusted(root, &format!("It cannot be trusted for good — {why}. Run `gruntas -p --trust` there, in this process rather than the daemon, for one run.")));
         }
-        Err(store.untrusted(root, "The host daemon asks nobody: run `krowk trust` in that repository, then send the prompt again."))
+        Err(store.untrusted(root, "The host daemon asks nobody: run `gruntas trust` in that repository, then send the prompt again."))
     });
-    // A session another device starts here runs in the mode `krowk -p`
+    // A session another device starts here runs in the mode `gruntas -p`
     // would with no `--permission-mode` (R-HOST-4): the most specific
     // `defaultMode`, a repository's once it is trusted. No sandbox's
     // upgrade: a remote start never runs looser than the default.
@@ -98,7 +98,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
         })
     });
     // Automatic sync (R-SYNC-3): every session a turn starts in, bridged
-    // as `krowk sync host` would, by a supervisor on a thread of its own —
+    // as `gruntas sync host` would, by a supervisor on a thread of its own —
     // never this one, nor the daemon's. Its checks run per turn, so a
     // machine that does not sync (or has turned it off) builds nothing and
     // asks the network nothing (R-SYNC-1).
@@ -116,7 +116,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     let introductions = gruntas_harness::sync::introduce::Introductions::new(Box::new(move || own_ctx(&introduce_flags, |ctx| super::pairing::introducer(ctx)).map_err(|e| (e.code(), gruntas_harness::sync::announce::words(&e)))));
     let auto = gruntas_harness::sync::auto::Supervisor::spawn(auto_sync(ctx, &socket, log::sessions_dir(ctx.io.env)?, bridged.clone(), announced_store, mode_for, introductions.clone()), turns_rx);
     let served = server::run(server::Options { socket, idle, krowk_version: super::VERSION.into(), websocket, turns: Some(turns_tx), bridged: Some(bridged), introductions: Some(introductions), ..Default::default() }, factory).map_err(|e| fail("host_failed", e));
-    // However the daemon ended — idle, `krowk host stop`, a signal — each
+    // However the daemon ended — idle, `gruntas host stop`, a signal — each
     // bridge ends its stream and gives its lease back before the process
     // exits, rather than leaving it to lapse. The daemon's runtime is gone,
     // and its signal handlers with nothing reading them: SIGTERM and SIGINT
@@ -152,10 +152,10 @@ fn raise_open_files(want: libc::rlim_t) {
 }
 
 /// The supervisor's config: the policy and whether sync is set up, read
-/// again for every session (an edit of config.json, a `krowk sync init`
+/// again for every session (an edit of config.json, a `gruntas sync init`
 /// since the daemon started, holds at the next turn), and each bridge's
-/// options built as `krowk sync host` builds them. And this host's
-/// announcement of itself (R-HOST-3): its instances checked as `krowk
+/// options built as `gruntas sync host` builds them. And this host's
+/// announcement of itself (R-HOST-3): its instances checked as `gruntas
 /// status` checks them, their models from the models.dev cache, and the
 /// repositories `trusted` lists. The sessions another device starts here
 /// (R-HOST-4) run in `mode_for`'s mode.
@@ -173,12 +173,12 @@ fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, 
         ready: Box::new(move || own_ctx(&f, |ctx| super::synced::ready(ctx)).map_err(|e| format!("{} ({})", e.fix(), e.code()))),
         build: Box::new(move |session: &str, cwd: &std::path::Path| {
             own_ctx(&f2, |ctx| {
-                // The workspace as `krowk sync host` run in the session's own
+                // The workspace as `gruntas sync host` run in the session's own
                 // directory would take it — its repository's config.json
                 // included — not as the daemon's `/` would. `GRUNTAS_TOKEN`
                 // names the key outright, and no config is read for it.
                 if ctx.env("GRUNTAS_TOKEN").is_empty() {
-                    let pinned = crate::config::load(&cwd.display().to_string(), ctx.io.env, &ctx.f.workspace).map_err(|e| fail("bad_config", format!("{e} — fix the file or remove it; `krowk config show` names every layer")))?;
+                    let pinned = crate::config::load(&cwd.display().to_string(), ctx.io.env, &ctx.f.workspace).map_err(|e| fail("bad_config", format!("{e} — fix the file or remove it; `gruntas config show` names every layer")))?;
                     ctx.f.workspace = pinned.workspace;
                 }
                 super::synced::options(ctx, session, cwd, None)
@@ -206,9 +206,9 @@ fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, 
 }
 
 /// How the daemon runs a take another device asks for (R-HAND-4): this
-/// very binary's `krowk sync take <session>` in the clone, detached, as the
+/// very binary's `gruntas sync take <session>` in the clone, detached, as the
 /// person would run it here, its output to `takes/<session>.log` under
-/// krowk's home, made afresh for each take. None when either can't be
+/// gruntas's home, made afresh for each take. None when either can't be
 /// found: this host then takes none.
 fn take_up(ctx: &Ctx) -> Option<gruntas_harness::sync::announce::TakeUp> {
     let exe = std::env::current_exe().ok()?;
@@ -260,14 +260,14 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
     let out = &mut *ctx.io.stdout;
     match &status {
         None => {
-            let _ = writeln!(out, "not running — the next `krowk -p --daemon` starts it");
+            let _ = writeln!(out, "not running — the next `gruntas -p --daemon` starts it");
             let _ = writeln!(out, "socket   {}", socket.display());
         }
         Some(s) => {
             let running = s.sessions.iter().filter(|x| x.running).count();
-            let _ = writeln!(out, "running  pid {}, krowk {}, up {}", s.pid, s.krowk_version, uptime(s.uptime_ms));
+            let _ = writeln!(out, "running  pid {}, gruntas {}, up {}", s.pid, s.krowk_version, uptime(s.uptime_ms));
             if s.krowk_version != super::VERSION {
-                let _ = writeln!(out, "! It runs krowk {}, and this is {} — `kill {}` once its sessions are done, and the next krowk starts this one", s.krowk_version, super::VERSION, s.pid);
+                let _ = writeln!(out, "! It runs gruntas {}, and this is {} — `kill {}` once its sessions are done, and the next gruntas starts this one", s.krowk_version, super::VERSION, s.pid);
             }
             let _ = writeln!(out, "socket   {}", s.socket);
             if let Some(ws) = &s.websocket {
@@ -296,7 +296,7 @@ fn uptime(ms: u64) -> String {
     }
 }
 
-/// `krowk host stop`: the daemon asked to exit — refused while a turn runs.
+/// `gruntas host stop`: the daemon asked to exit — refused while a turn runs.
 pub(super) fn stop(ctx: &mut Ctx) -> Result<(), Error> {
     let stopped = daemon::stop(ctx.io.env, super::VERSION, ctx.f.force).map_err(engine)?;
     let summary = match stopped {
@@ -313,7 +313,7 @@ pub(super) fn stop(ctx: &mut Ctx) -> Result<(), Error> {
 /// Every frame of the session as stream-json, until its running turn ends.
 pub(super) fn attach(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let [session] = args else {
-        return Err(fail("bad_args", "`krowk host attach` takes one session id — the sessionId a result names"));
+        return Err(fail("bad_args", "`gruntas host attach` takes one session id — the sessionId a result names"));
     };
     daemon::attach(ctx.io.env, super::VERSION, session, ctx.io.stdout).map_err(engine)
 }
@@ -328,7 +328,7 @@ pub(super) fn enable(ctx: &mut Ctx, on: bool) -> Result<(), Error> {
         return super::sessions::emit_data(ctx, data, summary);
     }
     if let Some(pid) = stopped {
-        let _ = writeln!(ctx.io.stdout, "stopped the host daemon krowk had started (pid {pid}); the service runs it from now on");
+        let _ = writeln!(ctx.io.stdout, "stopped the host daemon gruntas had started (pid {pid}); the service runs it from now on");
     }
     let _ = writeln!(ctx.io.stdout, "{summary}");
     Ok(())
@@ -342,7 +342,7 @@ pub(super) fn set_service(ctx: &mut Ctx, on: bool) -> Result<(std::path::PathBuf
     // SAFETY: getuid has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
     if on {
-        let exe = std::env::current_exe().map_err(|e| fail("host_unavailable", format!("krowk cannot find its own binary: {e}")))?;
+        let exe = std::env::current_exe().map_err(|e| fail("host_unavailable", format!("gruntas cannot find its own binary: {e}")))?;
         let text = service::render(platform, &exe, &log_path(ctx)?, ctx.io.env);
         if let Some(dir) = file.parent() {
             std::fs::create_dir_all(dir).map_err(|e| fail("write_failed", format!("{} could not be made: {e}", dir.display())))?;
@@ -367,7 +367,7 @@ pub(super) fn set_service(ctx: &mut Ctx, on: bool) -> Result<(std::path::PathBuf
             Ok(o) if o.status.success() => {}
             // Stopping one that is not loaded is no failure: it is stopped.
             Ok(_) | Err(_) if !on => {}
-            Ok(o) => return Err(fail("service_failed", format!("`{}` failed: {} — {} is written; fix that and run `krowk machines always-on on` again", c.join(" "), String::from_utf8_lossy(&o.stderr).trim(), file.display()))),
+            Ok(o) => return Err(fail("service_failed", format!("`{}` failed: {} — {} is written; fix that and run `gruntas machines always-on on` again", c.join(" "), String::from_utf8_lossy(&o.stderr).trim(), file.display()))),
             Err(e) => return Err(fail("service_failed", format!("`{}` could not run: {e} — {} is written; start it with your service manager", c.join(" "), file.display()))),
         }
     }

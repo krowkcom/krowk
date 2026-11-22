@@ -46,7 +46,7 @@
           ]
         },
         "effort": {
-          "description": "The reasoning effort for this turn, on krowk's ladder; the\ninstance's, else the provider's default, when absent.",
+          "description": "The reasoning effort for this turn, on gruntas's ladder; the\ninstance's, else the provider's default, when absent.",
           "anyOf": [
             {
               "$ref": "#/$defs/Effort"
@@ -317,7 +317,7 @@
       ]
     },
     "PermissionMode": {
-      "description": "Claude-Code-compatible permission modes (R-PERM-1): `default` asks\nbefore edits and commands, `acceptEdits` before commands, `plan` changes\nnothing, and `bypassPermissions` asks before nothing — though a deny\nrule, an ask rule and a hook's ask still hold in each of those. krowk's\nown `unhinged` holds nothing krowk's rules say: every call runs but one a\nhook blocks (`crate::permissions`).",
+      "description": "Claude-Code-compatible permission modes (R-PERM-1): `default` asks\nbefore edits and commands, `acceptEdits` before commands, `plan` changes\nnothing, and `bypassPermissions` asks before nothing — though a deny\nrule, an ask rule and a hook's ask still hold in each of those. gruntas's\nown `unhinged` holds nothing gruntas's rules say: every call runs but one a\nhook blocks (`crate::permissions`).",
       "type": "string",
       "enum": [
         "default",

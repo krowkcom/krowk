@@ -1,4 +1,4 @@
-//! MCP, the path a person takes with Mobbin, through the built `krowk`: it
+//! MCP, the path a person takes with Mobbin, through the built `gruntas`: it
 //! adds the server and signs in by pasting the address the browser lands
 //! on, and the token is stored. Against Mobbin-shaped fakes. Using the
 //! server in a turn, reusing its connection and refreshing its token are
@@ -15,7 +15,7 @@ use serde_json::Value;
 use std::io::{BufRead, Write};
 use std::process::{Command, Stdio};
 
-fn krowk(root: &std::path::Path, args: &[&str]) -> Command {
+fn gruntas(root: &std::path::Path, args: &[&str]) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
     c.args(args).env_clear().env("PATH", std::env::var("PATH").unwrap_or_default()).env("HOME", root.join("home")).env("GRUNTAS_NO_UPDATE_CHECK", "1").current_dir(root.join("repo"));
     c
@@ -24,23 +24,23 @@ fn krowk(root: &std::path::Path, args: &[&str]) -> Command {
 #[test]
 fn mobbin_add_and_login_with_a_pasted_address_store_its_token() {
     let f = mobbin::fake(mobbin::Knobs { registration: true, ..Default::default() });
-    let root = std::env::temp_dir().join(format!("krowk-mcp-mobbin-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("gruntas-mcp-mobbin-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("home")).unwrap();
     std::fs::create_dir_all(root.join("repo/.git")).unwrap();
     let root = root.canonicalize().unwrap();
     let url = format!("{}/mcp", f.mcp.url);
 
-    // krowk mcp add, then krowk mcp login --no-browser with the address pasted.
-    let out = krowk(&root, &["mcp", "add", "mobbin", &url, "--header", "X-Client: krowk-test"]).stdin(Stdio::null()).output().unwrap();
+    // gruntas mcp add, then gruntas mcp login --no-browser with the address pasted.
+    let out = gruntas(&root, &["mcp", "add", "mobbin", &url, "--header", "X-Client: krowk-test"]).stdin(Stdio::null()).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let config: Value = serde_json::from_slice(&std::fs::read(root.join("home/.gruntas/config.json")).unwrap()).unwrap();
     assert_eq!(config["mcpServers"]["mobbin"]["headers"]["X-Client"], "krowk-test");
-    let mut login = krowk(&root, &["mcp", "login", "mobbin", "--no-browser"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut login = gruntas(&root, &["mcp", "login", "mobbin", "--no-browser"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     let mut stderr = std::io::BufReader::new(login.stderr.take().unwrap());
     let page = loop {
         let mut line = String::new();
-        assert!(stderr.read_line(&mut line).unwrap() > 0, "krowk printed no sign-in page");
+        assert!(stderr.read_line(&mut line).unwrap() > 0, "gruntas printed no sign-in page");
         if line.starts_with("http") {
             break line.trim().to_string();
         }

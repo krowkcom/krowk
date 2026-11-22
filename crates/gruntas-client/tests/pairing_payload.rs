@@ -166,7 +166,7 @@ fn r_e2e_3_a_version_2_payload_is_refused() {
     let payload = seal(&all, &a.keys, next.generation(), &wrap_for(&batch, &b), &a.device.signing.public());
     let mut json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
     json["v"] = 2.into();
-    assert_eq!(refused(&serde_json::to_vec(&json).unwrap(), &a, &b), "the reply is from a newer krowk");
+    assert_eq!(refused(&serde_json::to_vec(&json).unwrap(), &a, &b), "the reply is from a newer gruntas");
 }
 
 #[test]
@@ -174,6 +174,6 @@ fn r_e2e_3_bytes_that_are_not_json_are_refused() {
     let a = a();
     let b = Device::new("b-macbook");
     for bytes in [&b"\x00\x01not json"[..], b"", b"{\"v\":1"] {
-        assert_eq!(refused(bytes, &a, &b), "the reply is not a payload krowk reads");
+        assert_eq!(refused(bytes, &a, &b), "the reply is not a payload gruntas reads");
     }
 }

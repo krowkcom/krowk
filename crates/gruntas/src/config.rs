@@ -65,7 +65,7 @@ fn read_file(path: &Path) -> Result<Option<String>, String> {
     }
 }
 
-/// `config.json` in krowk's home (`gruntas_api::home`), or why there is none.
+/// `config.json` in gruntas's home (`gruntas_api::home`), or why there is none.
 pub fn global_path() -> Result<PathBuf, gruntas_api::Error> {
     Ok(gruntas_api::home::get()?.join(gruntas_api::home::CONFIG))
 }
@@ -120,7 +120,7 @@ pub fn unset(path: &Path, key: &str) -> Result<(), String> {
 }
 
 /// Edits the file as a JSON object, keeping every key the edit does not
-/// touch: how `krowk providers` writes the harness's `instances`.
+/// touch: how `gruntas providers` writes the harness's `instances`.
 #[cfg(feature = "harness")]
 pub fn edit(path: &Path, edit: impl FnOnce(&mut Map<String, Value>)) -> Result<(), String> {
     rewrite(path, edit)

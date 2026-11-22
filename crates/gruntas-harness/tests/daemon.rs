@@ -73,7 +73,7 @@ impl Home {
         self.serve_as("test", idle, kick)
     }
 
-    /// `serve_with`, the daemon of krowk `version`.
+    /// `serve_with`, the daemon of gruntas `version`.
     fn serve_as(&self, version: &str, idle: Option<Duration>, kick: Option<Arc<tokio::sync::Notify>>) -> std::thread::JoinHandle<Result<(), String>> {
         self.serve_hooked(version, idle, kick, Hooks::default())
     }
@@ -220,7 +220,7 @@ fn r_host_1_a_turn_outlives_its_client_and_a_new_one_reattaches_mid_stream() {
         let session = first[0].session_id().to_string();
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // A new client, as `krowk` opened again, attaches mid-turn.
+        // A new client, as `gruntas` opened again, attaches mid-turn.
         let b = home.client().await;
         let (tx, mut rx) = mpsc::channel(1024);
         let running = b.attach(&session, None, tx).await.unwrap();
@@ -374,7 +374,7 @@ fn tool_result(lines: &[StreamLine]) -> Option<(String, bool)> {
     })
 }
 
-/// R-HOST-1: a `krowk -p` client answers no approval request, so its turn
+/// R-HOST-1: a `gruntas -p` client answers no approval request, so its turn
 /// in the daemon refuses what would be asked exactly as in-process `-p`
 /// does — never waiting on a person nobody will be.
 #[test]
@@ -435,8 +435,8 @@ fn r_host_1_a_request_left_with_no_client_to_answer_it_is_denied() {
     assert!(!home.repo().join("made-by-the-model").exists());
 }
 
-/// R-HOST-2: `krowk machines always-on on` hands the socket over to the service by
-/// asking the daemon krowk started to stop — refused while a turn runs.
+/// R-HOST-2: `gruntas machines always-on on` hands the socket over to the service by
+/// asking the daemon gruntas started to stop — refused while a turn runs.
 #[test]
 fn r_host_2_a_daemon_stops_when_asked_unless_a_turn_runs() {
     let home = Home::new("stop", Some(&slow()));
@@ -546,7 +546,7 @@ fn r_proto_1_a_client_in_two_sessions_keeps_their_streams_apart() {
     daemon.join().unwrap().unwrap();
 }
 
-/// `krowk connect` from another process: the daemon reads every host's instances again.
+/// `gruntas connect` from another process: the daemon reads every host's instances again.
 #[test]
 fn r_proto_1_reload_reads_every_hosts_instances_again() {
     let home = Home::new("reload", None);
@@ -600,7 +600,7 @@ fn r_proto_1_an_interrupt_is_answered_while_the_turns_stream_is_full() {
 }
 
 /// R-HOST-1: a client whose daemon went away reaches the next one on its
-/// next command — started when none runs — instead of failing until krowk
+/// next command — started when none runs — instead of failing until gruntas
 /// is restarted.
 #[test]
 fn r_host_1_a_remote_client_reconnects_when_its_daemon_goes() {
@@ -618,7 +618,7 @@ fn r_host_1_a_remote_client_reconnects_when_its_daemon_goes() {
         let r = daemon::remote::Remote::connect(Box::new(env), home.repo(), "test".into(), true, spawn).await.unwrap();
         let (tx, _rx) = mpsc::channel(1024);
         r.execute(home.prompt("hi"), tx).await.unwrap().unwrap();
-        // Stopped under it, as `krowk host stop --force` does.
+        // Stopped under it, as `gruntas host stop --force` does.
         let other = home.client().await;
         other.stop(true).await.unwrap();
         drop(other);
@@ -636,9 +636,9 @@ fn r_host_1_a_remote_client_reconnects_when_its_daemon_goes() {
     }
 }
 
-/// A daemon of an older krowk is replaced with one of the client's between
-/// turns, and its next prompt runs there; one of a newer krowk is left to
-/// run, so an older krowk still open never replaces it in turn.
+/// A daemon of an older gruntas is replaced with one of the client's between
+/// turns, and its next prompt runs there; one of a newer gruntas is left to
+/// run, so an older gruntas still open never replaces it in turn.
 #[test]
 fn r_host_1_an_older_daemon_is_replaced_and_a_newer_one_left() {
     let home = Arc::new(Home::new("renew", None));
@@ -656,7 +656,7 @@ fn r_host_1_an_older_daemon_is_replaced_and_a_newer_one_left() {
         assert!(r.renew().await, "replaced");
         assert_eq!(r.krowk_version(), "0.13.0");
         assert!(r.take_note().is_some_and(|n| n.contains("0.12.1") && n.contains("replaced")));
-        assert!(!r.renew().await, "the same krowk's is left");
+        assert!(!r.renew().await, "the same gruntas's is left");
         let (tx, _rx) = mpsc::channel(1024);
         assert_eq!(r.execute(home.prompt("hi"), tx).await.unwrap().unwrap().status, TurnStatus::Completed);
         assert_eq!(r.status().await.unwrap().background, Some(0), "it counts what runs in the background");
@@ -667,7 +667,7 @@ fn r_host_1_an_older_daemon_is_replaced_and_a_newer_one_left() {
     });
     drop(rt);
     old.join().unwrap().unwrap();
-    assert_eq!(started.lock().unwrap().len(), 1, "one daemon of this krowk started");
+    assert_eq!(started.lock().unwrap().len(), 1, "one daemon of this gruntas started");
     for d in started.lock().unwrap().drain(..) {
         d.join().unwrap().unwrap();
     }
@@ -937,7 +937,7 @@ fn r_host_1_a_background_client_does_not_hold_the_daemon_up() {
     drop(rt);
 }
 
-/// R-HOST-1: `krowk host stop` is not refused for a background client, and
+/// R-HOST-1: `gruntas host stop` is not refused for a background client, and
 /// `status` counts only the ordinary ones.
 #[test]
 fn r_host_1_stop_and_status_do_not_count_a_background_client() {

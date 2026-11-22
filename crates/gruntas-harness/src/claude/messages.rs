@@ -1,4 +1,4 @@
-//! Anthropic's Messages stream, decoded straight into krowk's items
+//! Anthropic's Messages stream, decoded straight into gruntas's items
 //! (R-PROV-1): one content block is one item, streamed under one id. Claude
 //! Code forwards this stream as its `stream_event` lines (`super::stream`).
 //!
@@ -22,7 +22,7 @@ enum Block {
     Thinking { id: String, text: String, signature: String },
     Redacted { id: String, data: String },
     ToolUse { id: String, call_id: String, name: String, json: String },
-    /// A block type krowk does not model (a server tool's, say): skipped
+    /// A block type gruntas does not model (a server tool's, say): skipped
     /// whole, so an unknown type never breaks the stream.
     Other,
 }

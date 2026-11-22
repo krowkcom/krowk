@@ -1,4 +1,4 @@
-$ krowk auth login --token nope
+$ gruntas auth login --token nope
 stdout:
 {
   "ok": true,
@@ -12,7 +12,7 @@ stdout:
   "breadcrumbs": [
     {
       "action": "push",
-      "cmd": "krowk push <file>",
+      "cmd": "gruntas push <file>",
       "description": "the key is stored and accepted, so nothing else is needed before uploading; <file> is the path to upload"
     }
   ]

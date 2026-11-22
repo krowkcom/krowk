@@ -12,7 +12,7 @@ use mock::{Mock, Reply, Seen};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
-const SIGN_IN: &str = "mobbin needs sign-in: run `krowk mcp login mobbin`";
+const SIGN_IN: &str = "mobbin needs sign-in: run `gruntas mcp login mobbin`";
 
 struct Fake {
     mcp: Mock,
@@ -57,7 +57,7 @@ fn fake() -> Fake {
 }
 
 fn sign_in(f: &Fake, name: &str, expires_at_ms: Option<i64>) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("krowk-mcp-tokens-{name}-{}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("gruntas-mcp-tokens-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let path = d.join("credentials.json");
@@ -116,7 +116,7 @@ async fn r_mcp_10_two_krowks_refreshing_a_rotating_token_at_once_both_end_with_a
     let ((p1, a), (p2, b)) = (open(&f, &path).await, open(&f, &path).await);
     let (x, y) = tokio::join!(call(&a), call(&b));
     assert_eq!((x, y), (("ok".into(), false), ("ok".into(), false)));
-    assert_eq!(*f.n.lock().unwrap(), 2, "one refresh spent the token; the other krowk read its result");
+    assert_eq!(*f.n.lock().unwrap(), 2, "one refresh spent the token; the other gruntas read its result");
     assert_eq!(stored_access(&path), "at-2");
     p1.close().await;
     p2.close().await;
@@ -126,7 +126,7 @@ async fn r_mcp_10_two_krowks_refreshing_a_rotating_token_at_once_both_end_with_a
 async fn r_mcp_10_11_12_no_tokens_or_a_failed_refresh_needs_sign_in_and_a_logout_closes_the_connection() {
     let f = fake();
     // No tokens at all.
-    let path = std::env::temp_dir().join(format!("krowk-mcp-tokens-none-{}.json", std::process::id()));
+    let path = std::env::temp_dir().join(format!("gruntas-mcp-tokens-none-{}.json", std::process::id()));
     let _ = std::fs::remove_file(&path);
     let (pool, mcp) = open(&f, &path).await;
     assert_eq!(call(&mcp).await, (SIGN_IN.into(), true));
@@ -149,7 +149,7 @@ async fn r_mcp_10_11_12_no_tokens_or_a_failed_refresh_needs_sign_in_and_a_logout
     assert_eq!(call(&mcp).await, (SIGN_IN.into(), true));
     assert!(gruntas_harness::mcp_oauth::load(&path, "mobbin", &format!("{}/mcp", f.mcp.url)).unwrap().is_none());
     pool.close().await;
-    // A logout from another krowk: this one notices on its next call.
+    // A logout from another gruntas: this one notices on its next call.
     let path = sign_in(&f, "elsewhere", Some(gruntas_store::now_ms() + 3_600_000));
     let (pool, mcp) = open(&f, &path).await;
     assert_eq!(call(&mcp).await, ("ok".into(), false));

@@ -3,10 +3,10 @@
 //! query — only what a turn's limits report said, kept where the next turn,
 //! of any session or process, can read it.
 //!
-//! One file, `usage.json` in krowk's home beside `sessions/` (not the XDG
+//! One file, `usage.json` in gruntas's home beside `sessions/` (not the XDG
 //! runtime directory, which a logout clears). Writers take `flock` on
 //! `usage.json.lock`, read the file again, change it and replace it by
-//! rename, so several krowk processes write at once without losing each
+//! rename, so several gruntas processes write at once without losing each
 //! other's reports. A file that cannot be read is an empty one: usage is a
 //! hint, never a reason to fail a turn.
 //!
@@ -23,7 +23,7 @@ const HOUR_MS: i64 = 3_600_000;
 const DAY_MS: i64 = 24 * HOUR_MS;
 
 /// How long a reading of `window` stays worth believing (D17): the window's
-/// own length — `five_hour` 5h, `seven_day*` 7d. For one krowk does not know,
+/// own length — `five_hour` 5h, `seven_day*` 7d. For one gruntas does not know,
 /// the time until its reset when first seen (`first`), else 24h.
 fn length_ms(window: &str, first: Option<i64>) -> i64 {
     match window {
@@ -42,10 +42,10 @@ pub struct Window {
     pub used_percent: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_at_ms: Option<i64>,
-    /// When krowk saw the report, in milliseconds since the Unix epoch.
+    /// When gruntas saw the report, in milliseconds since the Unix epoch.
     pub seen_at_ms: i64,
     /// The time until the reset when the window was first seen: the length
-    /// of a window krowk has no rule for.
+    /// of a window gruntas has no rule for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_span_ms: Option<i64>,
 }
@@ -231,7 +231,7 @@ impl Usage {
         Usage { path: path.into() }
     }
 
-    /// The store in `home` (krowk's home).
+    /// The store in `home` (gruntas's home).
     pub fn in_home(home: &Path) -> Usage {
         Usage::at(home.join(gruntas_api::home::USAGE))
     }
@@ -242,7 +242,7 @@ impl Usage {
     }
 
     /// Saves one limits report for `login`, seen at `now_ms`. A report that
-    /// krowk saw before the one already kept for its window is dropped
+    /// gruntas saw before the one already kept for its window is dropped
     /// (D13: the latest seen wins).
     pub fn record_limit(&self, login: &str, limit: &LimitStatus, now_ms: i64) -> Result<(), String> {
         let window = limit.window.clone().unwrap_or_default();
@@ -455,7 +455,7 @@ mod tests {
         assert_eq!(used(6 * HOUR_MS, "five_hour"), None);
         assert_eq!(used(6 * HOUR_MS, "seven_day"), Some(Some(50.0)));
         assert_eq!(used(8 * DAY_MS, "seven_day"), None);
-        // A window krowk has no rule for lasts as long as it had to its reset when first seen.
+        // A window gruntas has no rule for lasts as long as it had to its reset when first seen.
         assert_eq!(used(HOUR_MS, "300m"), Some(Some(30.0)));
         assert_eq!(used(2 * HOUR_MS + 1, "300m"), None);
         assert!(d.readings("nobody", 0).is_empty());

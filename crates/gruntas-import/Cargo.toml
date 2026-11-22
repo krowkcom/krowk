@@ -7,7 +7,7 @@ license-file.workspace = true
 publish.workspace = true
 
 [dependencies]
-# The ledger's place in krowk's home.
+# The ledger's place in gruntas's home.
 gruntas-api = { path = "../gruntas-api" }
 gruntas-store = { path = "../gruntas-store" }
 serde = { version = "1", features = ["derive"] }

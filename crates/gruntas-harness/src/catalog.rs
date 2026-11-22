@@ -1,4 +1,4 @@
-//! The model catalog, read from the models.dev cache krowk already keeps
+//! The model catalog, read from the models.dev cache gruntas already keeps
 //! for prices (R-PROV-2): a model's family, its context window and output
 //! cap, whether it reasons and at which efforts, whether it calls tools, and
 //! which wire API it is served on. Prices come from the same file through
@@ -15,7 +15,7 @@
 //! | `@ai-sdk/openai` | `openai-responses` |
 //! | `@ai-sdk/anthropic`, `…/anthropic` | `anthropic-messages` |
 //! | `@ai-sdk/xai`, `@ai-sdk/openai-compatible`, `@openrouter/ai-sdk-provider` | `chat-completions` |
-//! | anything else | none krowk speaks |
+//! | anything else | none gruntas speaks |
 
 use crate::protocol::{Effort, WireApi};
 use serde::Deserialize;
@@ -30,11 +30,11 @@ pub struct ModelInfo {
     pub context_window: Option<u64>,
     pub max_output: Option<u64>,
     pub reasoning: bool,
-    /// The efforts the model takes, on krowk's ladder. Empty for a model
+    /// The efforts the model takes, on gruntas's ladder. Empty for a model
     /// that reasons with no effort to choose.
     pub efforts: Vec<Effort>,
     pub tool_call: bool,
-    /// The wire API it is served on, when it is one krowk speaks.
+    /// The wire API it is served on, when it is one gruntas speaks.
     pub wire_api: Option<WireApi>,
     /// Whether it reads images; none when the catalog does not say.
     pub images: Option<bool>,
@@ -280,7 +280,7 @@ mod tests {
         // A model's own package and shape outrank its provider's.
         assert_eq!(lookup(DOC, "neon", "gpt-5-4-mini").unwrap().wire_api, Some(WireApi::OpenaiResponses));
         assert_eq!(lookup(DOC, "router", "house").unwrap().family, None, "an empty family is none");
-        assert_eq!(lookup(DOC, "google", "gemini-3").unwrap().wire_api, None, "a wire API krowk does not speak");
+        assert_eq!(lookup(DOC, "google", "gemini-3").unwrap().wire_api, None, "a wire API gruntas does not speak");
         // The same id under any provider, when its own does not list it —
         // its family and efforts, never its wire API.
         let borrowed = lookup(DOC, "openrouter", "grok-4.7").unwrap();

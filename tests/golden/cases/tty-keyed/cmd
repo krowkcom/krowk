@@ -1,8 +1,8 @@
 @registry
 @env GRUNTAS_TOKEN=krowk_sk_test
 @file a.txt hello
-@tty krowk push a.txt --title "a run"
-@tty krowk artifacts list
-@tty krowk runs list
-@tty krowk auth verify
-@tty krowk workspaces
+@tty gruntas push a.txt --title "a run"
+@tty gruntas artifacts list
+@tty gruntas runs list
+@tty gruntas auth verify
+@tty gruntas workspaces

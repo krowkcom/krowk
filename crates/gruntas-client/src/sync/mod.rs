@@ -114,7 +114,7 @@ pub struct Batch {
     pub head: Option<store::Head>,
 }
 
-/// The lines of a batch this krowk can read, in order, each decoded alone.
+/// The lines of a batch this gruntas can read, in order, each decoded alone.
 fn known_lines<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<crate::protocol::StreamLine>, D::Error> {
     let raw = Vec::<Value>::deserialize(d)?;
     Ok(raw.into_iter().filter_map(|l| serde_json::from_value(l).ok()).collect())
@@ -141,7 +141,7 @@ impl Candidate {
 }
 
 /// A machine's tailnet node, as its host keeps it in a session's sealed
-/// index for `krowk machines` to find on the tailnet.
+/// index for `gruntas machines` to find on the tailnet.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Tailnet {

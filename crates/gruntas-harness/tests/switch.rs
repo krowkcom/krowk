@@ -81,7 +81,7 @@ impl World {
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
         std::fs::create_dir_all(root.join("bin")).unwrap();
-        std::fs::write(root.join("repo/README.md"), "# krowk\n\nPermalinks for agent output.\n").unwrap();
+        std::fs::write(root.join("repo/README.md"), "# gruntas\n\nPermalinks for agent output.\n").unwrap();
         use std::os::unix::fs::PermissionsExt;
         for (dir, bin) in [("claude", "fake-claude"), ("codex", "fake-codex")] {
             let to = root.join("bin").join(dir);
@@ -176,7 +176,7 @@ impl World {
     }
 
     /// The prompts a fake Claude Code was sent, as the text of each `user`
-    /// line krowk wrote.
+    /// line gruntas wrote.
     fn claude_prompts(&self, dir: &str) -> Vec<String> {
         self.fake_log(dir)
             .lines()
@@ -278,7 +278,7 @@ fn round_trip(a: Eng, b: Eng) {
     let said = answers(&w.events(&id));
     let seen = w.seen_by(b);
     assert!(seen.contains(&ask[0]) && seen.contains(&said[0]), "{b:?} reads {a:?}'s turn — its prompt and its answer {:?}:\n{seen}", said[0]);
-    assert!(seen.starts_with("<handoff from krowk>\n") && seen.ends_with(&ask[1]), "into a backend, a handoff then the prompt (R-SWITCH-2): {seen}");
+    assert!(seen.starts_with("<handoff from gruntas>\n") && seen.ends_with(&ask[1]), "into a backend, a handoff then the prompt (R-SWITCH-2): {seen}");
     let (r3, _) = rt.block_on(run(&host, prompt(Some(&id), &ask[2], Some(a.model()))));
     assert_eq!(r3.status, TurnStatus::Completed, "{b:?} → {a:?}: {:?}", r3.error);
     let said = answers(&w.events(&id));
@@ -286,7 +286,7 @@ fn round_trip(a: Eng, b: Eng) {
     assert!(seen.contains(&ask[1]) && seen.contains(&said[1]), "{a:?} reads {b:?}'s turn on the way back — {:?}:\n{seen}", said[1]);
     // Its own thread, caught up on the turn it did not run — not told its
     // own turn again.
-    assert!(seen.starts_with("<handoff from krowk>\nWhile you were not running this conversation") && !seen.contains(&ask[0]), "{seen}");
+    assert!(seen.starts_with("<handoff from gruntas>\nWhile you were not running this conversation") && !seen.contains(&ask[0]), "{seen}");
     assert!(handoffs(&w.events(&id)).iter().any(|h| h.0 == HandoffKind::CatchUp));
     assert_eq!(said.len(), 3);
     drop(host);
@@ -328,7 +328,7 @@ fn r_inst_4_a_transcript_that_cannot_be_carried_falls_back_to_a_summary() {
     let (r2, _) = rt.block_on(run(&host, prompt(Some(&id), "step two on personal", Some(ModelRef { instance: "claude:personal".into(), model: "haiku".into() }))));
     assert_eq!(r2.status, TurnStatus::Completed, "{:?}", r2.error);
     let sent = w.claude_prompts("claude-personal");
-    assert!(sent[0].starts_with("<handoff from krowk>") && sent[0].contains("step one on work") && sent[0].contains("claude-code did step 1"), "{sent:?}");
+    assert!(sent[0].starts_with("<handoff from gruntas>") && sent[0].contains("step one on work") && sent[0].contains("claude-code did step 1"), "{sent:?}");
     let h = handoffs(&w.events(&id));
     assert!(matches!(&h[..], [(HandoffKind::Summary, None, Some(why))] if why.contains("could not be carried over")), "{h:?}");
 }
@@ -396,10 +396,10 @@ fn r_switch_4_a_switch_to_a_model_without_credentials_is_refused_and_the_session
     let (tx, _rx) = mpsc::channel(16);
     let e = rt.block_on(host.execute(Command::SwitchModel { session_id: Some(id.clone()), model: nologin.clone() }, tx)).unwrap_err();
     assert_eq!(e.code, "not_authenticated");
-    assert!(e.message.contains("sign in with `krowk connect anthropic --method subscription --name nologin`, which runs Claude's own login") && e.message.ends_with("the session stays on claude:work/haiku"), "{}", e.message);
+    assert!(e.message.contains("sign in with `gruntas connect anthropic --method subscription --name nologin`, which runs Claude's own login") && e.message.ends_with("the session stays on claude:work/haiku"), "{}", e.message);
     let (tx, _rx) = mpsc::channel(16);
     let e = rt.block_on(host.execute(prompt(Some(&id), "third", Some(nologin.clone())), tx)).unwrap_err();
-    assert!(e.message.contains("krowk connect anthropic --method subscription --name nologin") && e.message.ends_with("the session stays on claude:work/haiku"), "{}", e.message);
+    assert!(e.message.contains("gruntas connect anthropic --method subscription --name nologin") && e.message.ends_with("the session stays on claude:work/haiku"), "{}", e.message);
     let asked = w.fake_log("claude-nologin");
     assert!(asked.contains("argv auth status --json") && !asked.contains("argv -p"), "status asked, no turn process: {asked}");
     // One that fails only once it runs — a Claude Code login gone stale
@@ -412,7 +412,7 @@ fn r_switch_4_a_switch_to_a_model_without_credentials_is_refused_and_the_session
     assert_eq!(r2.status, TurnStatus::Failed);
     let err = r2.error.unwrap();
     assert_eq!(err.code, "not_authenticated");
-    assert!(err.message.contains("krowk connect anthropic --method subscription --name stale") && err.message.ends_with("the session continues on claude:work/haiku"), "{}", err.message);
+    assert!(err.message.contains("gruntas connect anthropic --method subscription --name stale") && err.message.ends_with("the session continues on claude:work/haiku"), "{}", err.message);
     let back = w.events(&id).into_iter().find_map(|e| match e.body {
         LogBody::ModelSwitched { from, to, reason, .. } => Some((from, to, reason)),
         _ => None,
@@ -470,7 +470,7 @@ fn r_inst_7_a_limited_instance_offers_the_next_one_and_a_yes_continues_there() {
     let err = r1.error.unwrap();
     // Detected with when it lifts.
     assert_eq!((err.code.as_str(), err.resets_at_ms), ("rate_limited", Some(1_790_431_200_000)));
-    assert!(err.message.contains(&format!("continue on claude:personal/haiku with `krowk -p --resume {} --model claude:personal/haiku`", r1.session_id)), "{}", err.message);
+    assert!(err.message.contains(&format!("continue on claude:personal/haiku with `gruntas -p --resume {} --model claude:personal/haiku`", r1.session_id)), "{}", err.message);
     assert!(lines.iter().any(|l| matches!(l, StreamLine::Live(LiveEvent::Limits { instance, limit, .. }) if instance == "claude:work" && limit.status == LimitState::Limited)));
     assert!(w.events(&r1.session_id).iter().all(|e| !matches!(e.body, LogBody::ModelSwitched { .. })), "offered, never taken by itself");
     // The yes: switch, and the prompt again.
@@ -997,7 +997,7 @@ fn a_bare_model_goes_to_the_one_ready_instance() {
     let mut w = World::new("routing");
     let rt = rt();
     // Only one instance connected: no model at all runs on its default,
-    // asked of the vendor in krowk's own directory for routing and in the
+    // asked of the vendor in gruntas's own directory for routing and in the
     // repository, once trusted, for the turn.
     w.instances.retain(|(n, _)| n == "claude:work");
     let host = w.host();

@@ -11,20 +11,20 @@
 @env GITHUB_REF_TYPE=branch
 @env GITHUB_SERVER_URL=https://github.com
 @env GITHUB_RUN_ID=999
-krowk push a.txt --jq '.data.artifacts[0].metadata'
-krowk push a.txt --jq '.data.run.metadata'
+gruntas push a.txt --jq '.data.artifacts[0].metadata'
+gruntas push a.txt --jq '.data.run.metadata'
 @env CLAUDECODE=1
 @env CLAUDE_CODE_SESSION_ID=sess-123
 @env ANTHROPIC_MODEL=claude-opus-5
-krowk push a.txt --jq '.data.artifacts[0].metadata'
+gruntas push a.txt --jq '.data.artifacts[0].metadata'
 @unenv CLAUDECODE
 @unenv CLAUDE_CODE_SESSION_ID
 @unenv ANTHROPIC_MODEL
 @env CURSOR_TRACE_ID=trace-1
-krowk push a.txt --jq '.data.artifacts[0].metadata'
+gruntas push a.txt --jq '.data.artifacts[0].metadata'
 @env GRUNTAS_AGENT=my-agent
 @env GRUNTAS_MODEL=gpt-5.5
 @env GRUNTAS_SESSION=s-9
-krowk push a.txt --jq '.data.artifacts[0].metadata'
-krowk push a.txt --jq '.data.run.metadata'
-krowk doctor
+gruntas push a.txt --jq '.data.artifacts[0].metadata'
+gruntas push a.txt --jq '.data.run.metadata'
+gruntas doctor

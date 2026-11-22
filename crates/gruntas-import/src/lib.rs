@@ -1,4 +1,4 @@
-//! Reading agent transcripts on this machine into krowk.db's shape.
+//! Reading agent transcripts on this machine into gruntas.db's shape.
 //!
 //! Each harness is a `Source`: it discovers the transcripts it knows about
 //! and reads one into a `Thread`, resuming from a cursor so a sync reads only
@@ -200,7 +200,7 @@ impl ReadResult {
     }
 
     /// A part as its source typed it, counted as unknown when its type is
-    /// not one krowk knows.
+    /// not one gruntas knows.
     pub fn normalize_part(&mut self, raw_type: &str, raw: Option<&serde_json::Value>) -> gruntas_store::Part {
         let (part, known) = normalize_part(raw_type, raw);
         if !known {

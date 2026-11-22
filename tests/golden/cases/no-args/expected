@@ -1,20 +1,20 @@
-$ krowk
+$ gruntas
 stdout:
-█  █  Krowk 0.0.0-golden
+█  █  Gruntas 0.0.0-golden
 █▀▀▄  Permalinks for agent output
 
 Usage
-  krowk <command> [flags]
-  krowk push shot.png        Upload a file, get a link
+  gruntas <command> [flags]
+  gruntas push shot.png      Upload a file, get a link
 
 Examples
-  krowk push shot.png        Upload a screenshot and get a link to paste
-  krowk push shot.png --json
+  gruntas push shot.png      Upload a screenshot and get a link to paste
+  gruntas push shot.png --json
                              The same, as JSON for a script or an agent
-  krowk login                Add a key, so uploads keep and group under runs
+  gruntas login              Add a key, so uploads keep and group under runs
 
 Accounts
-  login         Sign in to your krowk account
+  login         Sign in to your gruntas account
   whoami        Show the key and its workspace
   billing       Choose or manage the workspace's plan
 
@@ -26,16 +26,17 @@ Publish
 
 Health
   doctor        Check this machine's setup
-  upgrade       Upgrade krowk
+  upgrade       Upgrade gruntas
   config        Show or set configuration
 
 Flags
   --json · --jq <expr>       Output as JSON, or filter it
   -h, --help · -v, --version
 
-krowk help <command>  A command's own flags
-krowk help --all      Every command and subcommand
-krowk help topics     Flags, exit codes, environment, workspaces, links
-krowk help agents     For AI agents and scripts: the output contract
+gruntas help <command>
+                      A command's own flags
+gruntas help --all    Every command and subcommand
+gruntas help topics   Flags, exit codes, environment, workspaces, links
+gruntas help agents   For AI agents and scripts: the output contract
 exit: 0
 

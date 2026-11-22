@@ -1,16 +1,16 @@
-$ krowk push --help
+$ gruntas push --help
 stdout:
-krowk push — Upload files, get a link for each
+gruntas push — Upload files, get a link for each
 
 Usage
-  krowk push <file...> [flags]
+  gruntas push <file...> [flags]
 
-The short form of `krowk artifacts create`.
+The short form of `gruntas artifacts create`.
 
 Run metadata — the pull request, the links, the references, the session — is
 recorded on a run, and a run belongs to a workspace, so it needs an API key.
 Without one an upload still works: it lands anonymously, expires within a
-day, and comes back with a claim token that `krowk claim` spends to move it
+day, and comes back with a claim token that `gruntas claim` spends to move it
 into a workspace — where a paid plan keeps it and a free one gives it another
 day.
 
@@ -24,10 +24,11 @@ Flags
                            `krowk.caption` and used wherever it is pasted.
                            Repeat to caption several files, in the order they
                            are given
-  --destination <string>   Print what this tool wants pasted into it: the krowk
-                           block for github, linear and the like, the bare link
-                           for the ones that unfurl it themselves, like slack. A
-                           tool krowk has not been told about gets the block
+  --destination <string>   Print what this tool wants pasted into it: the
+                           gruntas block for github, linear and the like, the
+                           bare link for the ones that unfurl it themselves,
+                           like slack. A tool gruntas has not been told about
+                           gets the block
   --private                Upload where only this workspace can read it. The
                            image still embeds — the byte URL is the capability —
                            but the card opens only for a signed-in member, reads
@@ -60,12 +61,12 @@ Flags
 Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
 exit: 0
 
-$ krowk runs start --help
+$ gruntas runs start --help
 stdout:
-krowk runs start — Open a run to group uploads under
+gruntas runs start — Open a run to group uploads under
 
 Usage
-  krowk runs start [flags]
+  gruntas runs start [flags]
 
 Flags
   --pull-request <string>  Pull request the work belongs to
@@ -95,12 +96,12 @@ Flags
 Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
 exit: 0
 
-$ krowk sessions import --help
+$ gruntas sessions import --help
 stdout:
-krowk sessions import — Import this machine's agent transcripts
+gruntas sessions import — Import this machine's agent transcripts
 
 Usage
-  krowk sessions import --from <provider|all> [--dry-run] [--limit N]
+  gruntas sessions import --from <provider|all> [--dry-run] [--limit N]
 
 Flags
   --from <string>            Which transcripts to read: claude, cursor,
@@ -113,32 +114,32 @@ Flags
 Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
 exit: 0
 
-$ krowk artifacts --help
+$ gruntas artifacts --help
 stdout:
-krowk artifacts — Create, list, show, attach, delete or claim artifacts
+gruntas artifacts — Create, list, show, attach, delete or claim artifacts
 
-An artifact is a file published to a link. `krowk push` and `krowk claim`
+An artifact is a file published to a link. `gruntas push` and `gruntas claim`
 are the short forms of `create` and `claim`; `uploads` is an older name.
 
-Commands (krowk artifacts …)
-  create <file...> [flags]    Upload files: the long form of `krowk push`
-  list [flags]                List artifacts, newest first: a run's, or the
-                              workspace's
+Commands (gruntas artifacts …)
+  create <file...> [flags]    Upload files: the long form of `gruntas push`
+  list [flags]                List artifacts, newest first, of a run or the
+                              workspace
   show <artifact>             Read one artifact back
   attach <art> --run <run>    Put an artifact under a run afterwards
   delete <art> [token]        Take an artifact down — immediate, cannot be
                               undone
   claim <art> <token> [--run]
-                              The long form of `krowk claim`
+                              The long form of `gruntas claim`
 
 Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
 exit: 0
 
-$ krowk push --help --json
+$ gruntas push --help --json
 stdout:
 {
   "name": "push",
-  "usage": "krowk push <file...> [flags]",
+  "usage": "gruntas push <file...> [flags]",
   "summary": "Upload files, get a link for each",
   "args": [
     {
@@ -166,7 +167,7 @@ stdout:
       "name": "destination",
       "type": "string",
       "default": "",
-      "usage": "Print what this tool wants pasted into it: the krowk block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool krowk has not been told about gets the block"
+      "usage": "Print what this tool wants pasted into it: the gruntas block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool gruntas has not been told about gets the block"
     },
     {
       "name": "private",
@@ -250,7 +251,7 @@ stdout:
 }
 exit: 0
 
-$ krowk artifacts --help --json
+$ gruntas artifacts --help --json
 stdout:
 {
   "name": "artifacts",
@@ -258,8 +259,8 @@ stdout:
   "subcommands": [
     {
       "name": "create",
-      "usage": "krowk artifacts create <file...> [flags]",
-      "summary": "Upload files: the long form of `krowk push`",
+      "usage": "gruntas artifacts create <file...> [flags]",
+      "summary": "Upload files: the long form of `gruntas push`",
       "args": [
         {
           "name": "file",
@@ -286,7 +287,7 @@ stdout:
           "name": "destination",
           "type": "string",
           "default": "",
-          "usage": "Print what this tool wants pasted into it: the krowk block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool krowk has not been told about gets the block"
+          "usage": "Print what this tool wants pasted into it: the gruntas block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool gruntas has not been told about gets the block"
         },
         {
           "name": "private",
@@ -370,8 +371,8 @@ stdout:
     },
     {
       "name": "list",
-      "usage": "krowk artifacts list [flags]",
-      "summary": "List artifacts, newest first: a run's, or the workspace's",
+      "usage": "gruntas artifacts list [flags]",
+      "summary": "List artifacts, newest first, of a run or the workspace",
       "flags": [
         {
           "name": "limit",
@@ -396,7 +397,7 @@ stdout:
     },
     {
       "name": "show",
-      "usage": "krowk artifacts show <artifact>",
+      "usage": "gruntas artifacts show <artifact>",
       "summary": "Read one artifact back",
       "args": [
         {
@@ -409,7 +410,7 @@ stdout:
     },
     {
       "name": "attach",
-      "usage": "krowk artifacts attach <art> --run <run>",
+      "usage": "gruntas artifacts attach <art> --run <run>",
       "summary": "Put an artifact under a run afterwards",
       "args": [
         {
@@ -430,7 +431,7 @@ stdout:
     },
     {
       "name": "delete",
-      "usage": "krowk artifacts delete <art> [token]",
+      "usage": "gruntas artifacts delete <art> [token]",
       "summary": "Take an artifact down — immediate, cannot be undone",
       "args": [
         {
@@ -448,8 +449,8 @@ stdout:
     },
     {
       "name": "claim",
-      "usage": "krowk artifacts claim <art> <token> [--run]",
-      "summary": "The long form of `krowk claim`",
+      "usage": "gruntas artifacts claim <art> <token> [--run]",
+      "summary": "The long form of `gruntas claim`",
       "args": [
         {
           "name": "artifact",

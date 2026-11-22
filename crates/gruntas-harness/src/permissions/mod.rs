@@ -1,27 +1,27 @@
 //! Claude-Code-compatible permissions (R-PERM-1, R-PERM-2): the modes
-//! `default`, `acceptEdits`, `plan` and `bypassPermissions`, krowk's own
+//! `default`, `acceptEdits`, `plan` and `bypassPermissions`, gruntas's own
 //! `unhinged`, the rules of
 //! `permissions.allow`, `ask` and `deny` in Claude Code's syntax (`rules`),
 //! the places they are read from (`settings`), grants remembered for a
 //! session or a project, and approval requests any client can answer.
 //!
-//! One evaluator judges every call krowk is asked about: what a backend
+//! One evaluator judges every call gruntas is asked about: what a backend
 //! (Claude Code's `can_use_tool`, Codex's approval requests) asks, and
-//! krowk's own bridged tools. The order, for a call:
+//! gruntas's own bridged tools. The order, for a call:
 //!
 //! 0. **`unhinged` allows it**, and none of what follows is read: no deny
 //!    rule, no fence, no ask rule. The person chose to trust the model with
 //!    everything this process can reach.
 //! 1. **A deny rule that matches denies it**, in every mode —
 //!    `bypassPermissions` too. Deny always wins.
-//! 2. What needs no permission (krowk's own bridged tools) runs.
+//! 2. What needs no permission (gruntas's own bridged tools) runs.
 //! 3. **Plan mode refuses** everything that is not reading: edits,
 //!    commands, MCP tools.
 //! 4. **A file tool reaching into `.git`, `.claude`, `.codex`, `.gruntas` or
-//!    a directory krowk keeps its own settings in is asked about**, unless
+//!    a directory gruntas keeps its own settings in is asked about**, unless
 //!    permissions are bypassed — never allowed by a rule or a remembered
 //!    grant, since what is written there decides what runs next (git's
-//!    hooks, Claude Code's and Codex's settings, krowk's own rules).
+//!    hooks, Claude Code's and Codex's settings, gruntas's own rules).
 //! 5. An ask rule that matches asks.
 //! 6. `bypassPermissions` allows the rest.
 //! 7. An allow rule, or a grant remembered for the session or the project,
@@ -35,7 +35,7 @@
 //!
 //! **Asking** is an `approval.requested` frame on the session's stream,
 //! answered by `Command::Approve` from whichever client is attached (R-PERM-2). A host no
-//! client answers for — `krowk -p` — never waits: the call is refused, and
+//! client answers for — `gruntas -p` — never waits: the call is refused, and
 //! the result says what to allow or which mode to rerun in.
 //!
 //! The same frame carries the agent's **questions** (`Gate::ask`): which
@@ -91,7 +91,7 @@ pub struct Policy {
     /// Directories no file tool changes without a person's say: Claude
     /// Code's, a backend instance's own home.
     pub protected: Vec<PathBuf>,
-    /// What no file tool reads, searches or changes unasked: krowk's whole
+    /// What no file tool reads, searches or changes unasked: gruntas's whole
     /// home, its keys, logins, sessions and settings (`Scope::secrets`).
     pub secrets: Vec<PathBuf>,
     /// The OS sandbox the session's tools run in (R-PERM-3).
@@ -110,12 +110,12 @@ impl Policy {
         let protected: Vec<PathBuf> = cfg.claude_home().into_iter().collect();
         // The home in use and the default one (a GRUNTAS_HOME elsewhere does
         // not open `~/.gruntas`), each with its migration staging directory
-        // and lock (`gruntas_api::home::siblings`), and krowk's home, which
+        // and lock (`gruntas_api::home::siblings`), and gruntas's home, which
         // holds the same keys once copied — as named and, when they exist,
         // as they lead (`Scope::secret`).
         let default = cfg.home.as_ref().map(|h| gruntas_api::home::lexical(h).join(".gruntas"));
-        let krowk = default.as_deref().map(gruntas_api::migrate::krowk_home);
-        let secrets = cfg.krowk_dir.iter().chain(default.iter()).chain(krowk.iter()).flat_map(|d| gruntas_api::home::siblings(d)).flat_map(|d| [d.canonicalize().ok(), Some(d)]).flatten().collect();
+        let gruntas = default.as_deref().map(gruntas_api::migrate::krowk_home);
+        let secrets = cfg.krowk_dir.iter().chain(default.iter()).chain(gruntas.iter()).flat_map(|d| gruntas_api::home::siblings(d)).flat_map(|d| [d.canonicalize().ok(), Some(d)]).flatten().collect();
         Ok(Policy { loaded, cwd: cwd.to_path_buf(), home: cfg.home.clone(), read_dirs: Vec::new(), protected, secrets, sandbox: cfg.sandbox, walk: Default::default(), rules_cwd: None })
     }
 
@@ -183,7 +183,7 @@ impl Policy {
         };
         if let Some(sandbox) = self.sandbox {
             let plan = crate::sandbox::Plan::new_with(sandbox, &scope.cwd, &scope.roots, &scope.read_roots, &scope.protected, &scope.secrets, self.home.as_deref(), self.walk.clone());
-            // What the sandbox hides, a search skips as it skips krowk's home.
+            // What the sandbox hides, a search skips as it skips gruntas's home.
             scope.secrets.extend(plan.hidden.iter().cloned());
             scope.sandbox = Some(Arc::new(plan));
         }
@@ -397,7 +397,7 @@ impl Gate {
     pub fn scope(&self, opens: Opens) -> Scope {
         let mut s = self.0.policy.scope(opens);
         let (me, secrets) = (self.clone(), Scope { secrets: s.secrets.clone(), ..Scope::within(&s.cwd) });
-        // A search skips krowk's home as it skips what a deny rule hides —
+        // A search skips gruntas's home as it skips what a deny rule hides —
         // except under unhinged, which no fence and no rule holds.
         if self.0.mode != PermissionMode::Unhinged && (!s.secrets.is_empty() || self.0.policy.loaded.rules.iter().any(|(k, _)| *k == Kind::Deny)) {
             s.hidden = Hidden(Some(Arc::new(move |p: &Path| secrets.secret(p) || me.denies_read(p))));
@@ -472,7 +472,7 @@ impl Gate {
         if call.access == Access::Free {
             return Verdict::Allow(Opens::default());
         }
-        // krowk's own session tools: no mode, plan's included, holds them,
+        // gruntas's own session tools: no mode, plan's included, holds them,
         // but an ask rule does — in bypassPermissions too, as for any call.
         if call.access == Access::Session {
             if let Some((_, r)) = p.loaded.rules.iter().find(|(k, r)| *k == Kind::Ask && rules::matches(r, call, &at, false)) {
@@ -492,7 +492,7 @@ impl Gate {
         if let Some((_, r)) = p.loaded.rules.iter().find(|(k, r)| *k == Kind::Ask && rules::matches(r, call, &at, false)) {
             return Verdict::Ask { reason: format!("the rule `{}` in {} asks first", r.text, r.source), remember: remember(call) };
         }
-        // A command line whose program the shell computes, or that krowk
+        // A command line whose program the shell computes, or that gruntas
         // cannot follow, cannot be held to a deny rule: where one applies,
         // it is asked about — in bypassPermissions too, and refused where
         // nobody can be asked.
@@ -500,7 +500,7 @@ impl Gate {
             && p.loaded.rules.iter().any(|(k, r)| *k == Kind::Deny && r.tool == "Bash")
             && rules::split(cmd).opaque
         {
-            return Verdict::Ask { reason: "krowk cannot tell which program it runs (a name the shell expands, a quote it cannot follow), so a deny rule could not hold it".into(), remember: Vec::new() };
+            return Verdict::Ask { reason: "gruntas cannot tell which program it runs (a name the shell expands, a quote it cannot follow), so a deny rule could not hold it".into(), remember: Vec::new() };
         }
         if bypass {
             return Verdict::Allow(Opens { outside: true, fences: true });
@@ -642,7 +642,7 @@ impl Gate {
         // A session tool is asked about only by an ask rule, which no allow
         // rule and no mode but unhinged gets past.
         if call.access == Access::Session {
-            return format!("{what} needs approval — {reason} — and nobody is here to give it: this session cannot ask. Run it where someone can answer (bare `krowk`), remove what asks, or rerun with `--permission-mode unhinged`.");
+            return format!("{what} needs approval — {reason} — and nobody is here to give it: this session cannot ask. Run it where someone can answer (bare `gruntas`), remove what asks, or rerun with `--permission-mode unhinged`.");
         }
         // What bypassPermissions would still ask about — an ask rule, a line
         // a deny rule could not see into — only unhinged runs.
@@ -656,9 +656,9 @@ impl Gate {
             _ => "bypassPermissions",
         };
         // No allow rule gets past what only unhinged runs.
-        let rule = remember.first().filter(|_| !past_bypass).map(|r| format!("an allow rule such as `{r}` in `permissions.allow` of .claude/settings.json or krowk's config.json, or ")).unwrap_or_default();
+        let rule = remember.first().filter(|_| !past_bypass).map(|r| format!("an allow rule such as `{r}` in `permissions.allow` of .claude/settings.json or gruntas's config.json, or ")).unwrap_or_default();
         let hint = match untrusted.filter(|_| !past_bypass) {
-            Some(r) => format!(" ({} allows it with `{}`, but a repository's own allow rules apply only once it is trusted — run `krowk trust` in that repository, or pass --trust.)", r.source, r.text),
+            Some(r) => format!(" ({} allows it with `{}`, but a repository's own allow rules apply only once it is trusted — run `gruntas trust` in that repository, or pass --trust.)", r.source, r.text),
             None => String::new(),
         };
         format!("{what} needs approval — {reason} — and nobody is here to give it: this session cannot ask. It is allowed by {rule}rerunning with `--permission-mode {mode}`.{hint}")

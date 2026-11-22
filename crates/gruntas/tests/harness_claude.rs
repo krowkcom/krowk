@@ -1,8 +1,8 @@
-//! `krowk providers add claude` and `krowk -p` on a Claude Code instance,
+//! `gruntas providers add claude` and `gruntas -p` on a Claude Code instance,
 //! the built binary against a fake `claude` on PATH (a script replaying
 //! recorded stream-json; no real login anywhere): two accounts signed in
 //! through Claude's own flow, each running a session; a tool-using turn
-//! that lands in the log and in `krowk sessions`; Ctrl-C mid-turn and a
+//! that lands in the log and in `gruntas sessions`; Ctrl-C mid-turn and a
 //! resume; and the trust prompt, headless and on a terminal.
 
 #![cfg(all(feature = "harness", unix))]
@@ -30,7 +30,7 @@ impl Sandbox {
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
         std::fs::create_dir_all(root.join("bin")).unwrap();
-        std::fs::write(root.join("repo/README.md"), "# krowk\n").unwrap();
+        std::fs::write(root.join("repo/README.md"), "# gruntas\n").unwrap();
         let bin = root.join("bin/claude");
         // Linked, not copied: a copy is a file open for writing that a test
         // forking beside it can inherit, and running it then fails with
@@ -46,7 +46,7 @@ impl Sandbox {
         let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
         c.args(args)
             .env_clear()
-            // The fake comes first on PATH: it is the `claude` krowk finds.
+            // The fake comes first on PATH: it is the `claude` gruntas finds.
             .env("PATH", format!("{}:{}", self.root.join("bin").display(), std::env::var("PATH").unwrap_or_default()))
             .env("HOME", self.root.join("home"))
             .env("GRUNTAS_NO_UPDATE_CHECK", "1")
@@ -59,15 +59,15 @@ impl Sandbox {
         c
     }
 
-    fn krowk(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
+    fn gruntas(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         self.command(args, env).output().unwrap()
     }
 
     fn json(&self, args: &[&str], env: &[(&str, &str)]) -> Value {
-        let out = self.krowk(args, env);
+        let out = self.gruntas(args, env);
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-        assert!(out.status.success(), "krowk {args:?}: {stdout}{}", String::from_utf8_lossy(&out.stderr));
-        serde_json::from_str(stdout.trim()).unwrap_or_else(|e| panic!("krowk {args:?}: {e}: {stdout}"))
+        assert!(out.status.success(), "gruntas {args:?}: {stdout}{}", String::from_utf8_lossy(&out.stderr));
+        serde_json::from_str(stdout.trim()).unwrap_or_else(|e| panic!("gruntas {args:?}: {e}: {stdout}"))
     }
 
     fn fake_log(&self) -> String {
@@ -114,7 +114,7 @@ fn r_inst_2_two_claude_accounts_sign_in_through_claudes_own_flow_and_each_runs_a
     assert_eq!(b.fake_log().lines().filter(|l| *l == "argv auth login").count(), 2);
 
     // Status comes from `claude auth status`, per instance, through the
-    // readiness check `krowk status` prints.
+    // readiness check `gruntas status` prints.
     let listed = b.json(&["providers", "list", "--json"], &[]);
     let rows = listed["data"]["instances"].as_array().unwrap();
     let row = |n: &str| rows.iter().find(|r| r["instance"] == n).unwrap_or_else(|| panic!("{n} in {rows:?}")).clone();
@@ -123,7 +123,7 @@ fn r_inst_2_two_claude_accounts_sign_in_through_claudes_own_flow_and_each_runs_a
         assert_eq!((row(n)["state"].as_str(), row(n)["source"].as_str()), (Some("ready"), Some(format!("Claude Code's own login in {} (signed in with a Claude max subscription)", dir.display()).as_str())));
     }
     assert_eq!(row("claude")["state"], "not_signed_in", "the default account, in the sandbox's ~/.claude, has no login");
-    assert_eq!(row("claude")["fix"], "sign in with `krowk connect anthropic --method subscription`, which runs Claude's own login");
+    assert_eq!(row("claude")["fix"], "sign in with `gruntas connect anthropic --method subscription`, which runs Claude's own login");
 
     // Each account runs a session, in its own config directory.
     for name in ["personal", "work"] {
@@ -136,7 +136,7 @@ fn r_inst_2_two_claude_accounts_sign_in_through_claudes_own_flow_and_each_runs_a
     assert_eq!(sessions["data"]["sessions"].as_array().unwrap().iter().filter(|s| s["harness"] == "gruntas").count(), 2);
 
     // A login given up on adds nothing and leaves no directory behind.
-    let out = b.krowk(&["providers", "add", "claude", "--name", "broken"], &[("FAKE_CLAUDE_LOGIN", "fail")]);
+    let out = b.gruntas(&["providers", "add", "claude", "--name", "broken"], &[("FAKE_CLAUDE_LOGIN", "fail")]);
     assert_eq!(out.status.code(), Some(3), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(String::from_utf8_lossy(&out.stderr).contains("claude auth login"));
     assert!(!b.data().join("accounts/claude-broken").exists());
@@ -170,7 +170,7 @@ fn r_back_1_a_tool_using_claude_turn_is_in_the_log_and_in_krowk_sessions() {
     b.json(&["providers", "add", "claude", "--json"], &[]);
     // The native instance's key and base URL are exported, as on a machine
     // set up for the API: they are not Claude Code's, and stay out of it.
-    let out = b.krowk(
+    let out = b.gruntas(
         &["-p", "what session is this?", "--model", "claude/sonnet", "--trust", "--output-format", "stream-json"],
         &[("FAKE_CLAUDE_SCENARIO", &scenario("session_info.jsonl")), ("ANTHROPIC_API_KEY", "sk-ant-api-test"), ("ANTHROPIC_BASE_URL", "http://127.0.0.1:9")],
     );
@@ -179,9 +179,9 @@ fn r_back_1_a_tool_using_claude_turn_is_in_the_log_and_in_krowk_sessions() {
     let result = lines.last().unwrap();
     assert_eq!((result["type"].as_str(), result["status"].as_str()), (Some("result"), Some("completed")));
     let session = result["sessionId"].as_str().unwrap();
-    // The injected tool ran inside krowk and answered for this session.
+    // The injected tool ran inside gruntas and answered for this session.
     let tool_result = lines.iter().find(|l| l["type"] == "item.completed" && l["item"]["kind"] == "toolResult").unwrap();
-    assert!(tool_result["item"]["output"].as_str().unwrap().contains(&format!("krowk session: {session}")), "{tool_result}");
+    assert!(tool_result["item"]["output"].as_str().unwrap().contains(&format!("gruntas session: {session}")), "{tool_result}");
     // R-BACK-5, R-INST-3: the Claude session and its transcript, and what
     // it is billed to, are on the session's record.
     let backend = lines.iter().find(|l| l["type"] == "backend.session").unwrap();
@@ -232,7 +232,7 @@ fn r_back_1_ctrl_c_interrupts_a_claude_turn_and_the_session_resumes() {
     assert!(b.fake_log().contains("\ninterrupt\n"), "the interrupt went over the control protocol, not as a signal");
     let session = result["sessionId"].as_str().unwrap().to_string();
 
-    // The session continues: a new krowk, a new claude on --resume.
+    // The session continues: a new gruntas, a new claude on --resume.
     let r = b.json(&["-p", "go on", "--resume", &session, "--trust", "--output-format", "json"], &[]);
     assert_eq!((r["status"].as_str(), r["sessionId"].as_str()), (Some("completed"), Some(session.as_str())));
     assert_eq!(r["model"]["instance"], "claude", "a resumed session keeps its instance");
@@ -246,7 +246,7 @@ fn r_back_6_headless_refuses_an_untrusted_repository_before_claude_is_spawned() 
     let b = Sandbox::new("trust");
     b.json(&["providers", "add", "claude", "--json"], &[]);
     std::fs::write(b.root.join("repo/.mcp.json"), "{}").unwrap();
-    let out = b.krowk(&["-p", "hello", "--model", "claude/sonnet"], &[]);
+    let out = b.gruntas(&["-p", "hello", "--model", "claude/sonnet"], &[]);
     assert_eq!(out.status.code(), Some(4), "refused");
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("untrusted_directory") && err.contains(".mcp.json") && err.contains("--trust"), "{err}");
@@ -257,7 +257,7 @@ fn r_back_6_headless_refuses_an_untrusted_repository_before_claude_is_spawned() 
     assert!(!b.root.join("home/.gruntas/trusted.json").exists(), "--trust is not remembered");
     // A repository trusted before (a yes at the prompt) needs no flag, and
     // covers its subdirectories.
-    assert!(err.contains("`krowk trust`"), "the refusal names the fix: {err}");
+    assert!(err.contains("`gruntas trust`"), "the refusal names the fix: {err}");
     let granted = b.json(&["trust", "--json"], &[]);
     assert_eq!(granted["data"]["trusted"], true, "{granted}");
     std::fs::create_dir_all(b.root.join("repo/src")).unwrap();
@@ -278,8 +278,8 @@ fn r_back_6_headless_refuses_an_untrusted_repository_before_claude_is_spawned() 
     let out = b.command(&["-p", "hello", "--model", "claude/sonnet"], &[]).current_dir(b.root.join("repo/vendor/lib")).output().unwrap();
     assert_eq!(out.status.code(), Some(4), "{}", String::from_utf8_lossy(&out.stderr));
     // The native engine runs nothing of the repository's and never asks.
-    let out = b.krowk(&["sessions", "--trust"], &[]);
-    assert!(String::from_utf8_lossy(&out.stderr).contains("only a flag of `krowk -p`"));
+    let out = b.gruntas(&["sessions", "--trust"], &[]);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("only a flag of `gruntas -p`"));
 }
 
 #[test]
@@ -304,7 +304,7 @@ fn r_inst_1_providers_add_claude_with_a_router_hands_it_the_named_key_and_nothin
     assert!(fake.contains("env ANTHROPIC_AUTH_TOKEN=sk-or-live\n") && fake.contains("env ANTHROPIC_API_KEY= ANTHROPIC_BASE_URL=https://router.example/api\n"), "{fake}");
     assert!(!fake.contains("ambient"), "{fake}");
     // Without the router's variable, it says which one to set.
-    let out = b.krowk(&["-p", "hello", "--model", "claude:router/x", "--trust"], &[]);
+    let out = b.gruntas(&["-p", "hello", "--model", "claude:router/x", "--trust"], &[]);
     assert_eq!(out.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&out.stderr).contains("ROUTER_KEY"));
     // A plain Claude account never sees the ambient key either.
@@ -314,7 +314,7 @@ fn r_inst_1_providers_add_claude_with_a_router_hands_it_the_named_key_and_nothin
     assert_eq!(last, "env ANTHROPIC_AUTH_TOKEN=");
 }
 
-/// `krowk -p` on a terminal, on a Claude Code instance, in a repository
+/// `gruntas -p` on a terminal, on a Claude Code instance, in a repository
 /// nobody trusted: what it would run, then `Trust <repo>? [y/N]` in plain
 /// text. A `y` remembers the repository and runs the prompt on the fake
 /// claude; anything else refuses, with nothing spawned and nothing recorded.
@@ -333,7 +333,7 @@ fn r_cut_5_p_on_a_terminal_asks_in_plain_text_before_claude_runs() {
         assert!(text.contains("Trust ") && text.contains("? [y/N]"), "{text:?}");
         assert!(!b.fake_log().contains("argv -p"), "nothing spawned before the answer");
         t.write(if yes { b"y\r" } else { b"n\r" });
-        let st = t.wait(std::time::Duration::from_secs(10)).expect("krowk -p exits");
+        let st = t.wait(std::time::Duration::from_secs(10)).expect("gruntas -p exits");
         let trusted = b.root.join("home/.gruntas/trusted.json");
         if yes {
             assert!(st.success(), "{st}: {:?}", t.text());
@@ -347,7 +347,7 @@ fn r_cut_5_p_on_a_terminal_asks_in_plain_text_before_claude_runs() {
     }
 }
 
-/// R-EASE-7, D8: a repository trusted with `krowk trust` is asked about
+/// R-EASE-7, D8: a repository trusted with `gruntas trust` is asked about
 /// again once a file that can run code changes, and both the headless
 /// refusal and the plain-text prompt name the file.
 #[test]
@@ -360,7 +360,7 @@ fn r_ease_7_a_changed_hook_asks_again_and_the_prompt_names_it() {
     assert_eq!(granted["data"]["trusted"], true, "{granted}");
     b.json(&["-p", "hello", "--model", "claude/sonnet", "--output-format", "json"], &[]);
     std::fs::write(b.root.join("repo/.claude/hooks/pre.sh"), "echo two\n").unwrap();
-    let out = b.krowk(&["-p", "hello", "--model", "claude/sonnet"], &[]);
+    let out = b.gruntas(&["-p", "hello", "--model", "claude/sonnet"], &[]);
     assert_eq!(out.status.code(), Some(4), "asked again");
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("It was trusted before, but .claude/hooks/pre.sh changed since."), "{err}");
@@ -425,7 +425,7 @@ fn r_back_1_a_second_ctrl_c_leaves_at_once_and_kills_claude_codes_process_group(
     let started = std::time::Instant::now();
     assert_eq!(child.wait().unwrap().code(), Some(130));
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
-    assert!(gone(server) && gone(grandchild), "Claude Code's group outlived krowk -p");
+    assert!(gone(server) && gone(grandchild), "Claude Code's group outlived gruntas -p");
 }
 
 /// A recording of Claude Code (`recorded/<name>`) as a scenario for the
@@ -457,7 +457,7 @@ fn recorded_pausing(b: &Sandbox, name: &str, pause: Option<u32>) -> (String, Vec
     (path.display().to_string(), agents)
 }
 
-/// The children `krowk sessions` lists under `parent`, by krowk session id.
+/// The children `gruntas sessions` lists under `parent`, by gruntas session id.
 fn listed_children(b: &Sandbox, parent: &str) -> Vec<String> {
     let home = b.root.join("home").display().to_string();
     let env = move |k: &str| if k == "HOME" { home.clone() } else { String::new() };
@@ -470,19 +470,19 @@ fn listed_children(b: &Sandbox, parent: &str) -> Vec<String> {
 }
 
 /// R-SUB-7, R-SUB-8, R-SUB-6: the two agents of the recorded parallel turn
-/// are two child sessions of it, as krowk's own are: each its own log under
+/// are two child sessions of it, as gruntas's own are: each its own log under
 /// `sessions/`, its root naming the parent and the parent's
 /// `subagent.started` naming it with `ranBy: claude` and its `task_id`;
 /// the prompt first, its items, its end; its lines on the parent's stream
 /// under its own id; no usage of its own. Listed under the parent, and
-/// listed there again by `krowk sessions rebuild` from the logs alone.
+/// listed there again by `gruntas sessions rebuild` from the logs alone.
 #[test]
 fn r_sub_7_claude_codes_parallel_agents_are_child_sessions_their_prompt_first_and_rebuild_restores_the_tree() {
     let b = Sandbox::new("agents");
     b.json(&["providers", "add", "claude", "--json"], &[]);
     let (scenario, agents) = recorded(&b, "agents_parallel.txt");
     assert_eq!(agents.len(), 2);
-    let out = b.krowk(&["-p", "run two agents", "--model", "claude/sonnet", "--trust", "--output-format", "stream-json"], &[("FAKE_CLAUDE_SCENARIO", &scenario)]);
+    let out = b.gruntas(&["-p", "run two agents", "--model", "claude/sonnet", "--trust", "--output-format", "stream-json"], &[("FAKE_CLAUDE_SCENARIO", &scenario)]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let lines: Vec<Value> = String::from_utf8_lossy(&out.stdout).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     let result = lines.last().unwrap();
@@ -521,9 +521,9 @@ fn r_sub_7_claude_codes_parallel_agents_are_child_sessions_their_prompt_first_an
     kids.sort();
     // The parent's own spend still counts each agent's calls, once.
     assert!(parent.iter().any(|e| e["type"] == "subagent.response"));
-    assert_eq!(listed_children(&b, &session), kids, "`krowk -p` lists them under it at once");
+    assert_eq!(listed_children(&b, &session), kids, "`gruntas -p` lists them under it at once");
     std::fs::remove_file(b.data().join("sessions/gruntas.db")).unwrap();
-    let out = b.krowk(&["sessions", "rebuild", "--yes"], &[]);
+    let out = b.gruntas(&["sessions", "rebuild", "--yes"], &[]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(listed_children(&b, &session), kids, "the children hang from the parent again");
 }

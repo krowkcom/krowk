@@ -1,5 +1,5 @@
-# The engine behind `krowk -p`: one model loop, its event model, the session
-# log and the in-process client protocol. Compiled into `krowk` only by the
+# The engine behind `gruntas -p`: one model loop, its event model, the session
+# log and the in-process client protocol. Compiled into `gruntas` only by the
 # `harness` feature, so the agent build links none of what is below — every
 # dependency here pays rent against the size and RSS budgets, and says what
 # it buys.
@@ -12,19 +12,19 @@ license-file.workspace = true
 publish.workspace = true
 
 [dependencies]
-# krowk's home and its one credentials file, shared with the lean build.
+# gruntas's home and its one credentials file, shared with the lean build.
 gruntas-api = { path = "../gruntas-api" }
-# The log projects into krowk.db through the same writer the importers use.
+# The log projects into gruntas.db through the same writer the importers use.
 gruntas-store = { path = "../gruntas-store" }
 gruntas-import = { path = "../gruntas-import" }
 # The end-to-end constructions: the relay checks a device's join signature
 # with them (engineering/relay.md), and ticket 19 seals frames with them.
 # The only crate that may call a primitive (tests/crypto_boundary.rs), and
-# linked into the full build already by `krowk sync`, so it costs nothing.
+# linked into the full build already by `gruntas sync`, so it costs nothing.
 gruntas-client = { path = "../gruntas-client" }
 serde = { version = "1", features = ["derive"] }
 # A pasted or attached image made small enough for every provider (`pasted`),
-# shared by an interactive client, `krowk -p --image` and `krowk sync attach`.
+# shared by an interactive client, `gruntas -p --image` and `gruntas sync attach`.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 # raw_value: the catalog reads one model out of the megabytes of the
 # models.dev cache without building the rest (the CLI already enables it).
@@ -38,7 +38,7 @@ schemars = { version = "1", default-features = false, features = ["derive", "std
 tokio = { version = "1", default-features = false, features = ["rt", "time", "process", "io-util", "sync", "signal", "macros", "net"] }
 # HTTP for MCP servers, OAuth sign-ins and the registry. rustls on ring and
 # the platform verifier: the TLS stack the lean build's ureq already
-# carries, so the certificates krowk trusts are the same on both paths.
+# carries, so the certificates gruntas trusts are the same on both paths.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-manual-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-platform-verifier = "0.7"
@@ -100,7 +100,7 @@ ruzstd = { version = "0.9", default-features = false, features = ["std"] }
 
 [features]
 # Hooks for the integration tests only (`log::simulate_slow_disk`): turned
-# on by the dev-dependency below, never in a build krowk ships.
+# on by the dev-dependency below, never in a build gruntas ships.
 test-hooks = []
 
 [dev-dependencies]

@@ -1,9 +1,9 @@
 @registry
 @file a.txt hello
-krowk push a.txt --format json
-krowk push a.txt --json
-krowk push a.txt --quiet
-krowk push a.txt --format human
-krowk push a.txt --format markdown
-krowk push a.txt --format url
-krowk push a.txt --format yaml
+gruntas push a.txt --format json
+gruntas push a.txt --json
+gruntas push a.txt --quiet
+gruntas push a.txt --format human
+gruntas push a.txt --format markdown
+gruntas push a.txt --format url
+gruntas push a.txt --format yaml

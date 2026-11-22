@@ -49,7 +49,7 @@
 //! `interrupted`, or a collab call of the session's (a `wait`, say) whose
 //! `agentsStates` says it ended: `completed` done, `interrupted` and
 //! `shutdown` interrupted, `errored` and `notFound` failed — whichever
-//! comes first. krowk reads Codex only while a turn runs, and sends Codex
+//! comes first. gruntas reads Codex only while a turn runs, and sends Codex
 //! nothing for a child at the turn's end: a child the parent's turn did not
 //! see end is no longer followed from there — ended in its log as
 //! interrupted, saying so (`UNFINISHED`) — though Codex may still be
@@ -68,7 +68,7 @@
 //! `turn/interrupt` with its thread and the turn it runs: the last `turnId`
 //! its own lines named, none once its own `turn/completed` said that turn
 //! is over (`turn_of`). A child lent to answer its own request still runs,
-//! and is stopped the same way, its question taken back. Once krowk has
+//! and is stopped the same way, its question taken back. Once gruntas has
 //! sent that, its own `turn/completed` `interrupted` ends it interrupted,
 //! unless the session said it ended first.
 
@@ -85,13 +85,13 @@ pub const HOLD: usize = 256;
 pub const WAITING: usize = 32;
 
 /// Why a child still open at its parent's turn's end is no longer followed.
-pub const UNFINISHED: &str = "krowk stopped following it when the turn that ran it ended, before Codex said it finished — Codex may still be running it; what it does after this is not shown here, and its spend is still counted";
+pub const UNFINISHED: &str = "gruntas stopped following it when the turn that ran it ended, before Codex said it finished — Codex may still be running it; what it does after this is not shown here, and its spend is still counted";
 
 /// How many evicted threads' dropped lines are remembered.
 const LOST: usize = 256;
 
 /// The note in a child's transcript where lines held for it were dropped:
-/// krowk's words, not the child's.
+/// gruntas's words, not the child's.
 pub const DROPPED: &str = "<dropped-lines>";
 
 struct Child {
@@ -109,7 +109,7 @@ struct Child {
     turn: Option<String>,
     /// A turn of it completed: with none running, it has none to stop.
     idle: bool,
-    /// krowk sent it `turn/interrupt`.
+    /// gruntas sent it `turn/interrupt`.
     stopping: bool,
 }
 
@@ -396,7 +396,7 @@ impl Children {
         if c.ended {
             return;
         }
-        // Stopped by krowk: its turn's end is its own.
+        // Stopped by gruntas: its turn's end is its own.
         if finished && c.stopping && params.pointer("/turn/status").and_then(Value::as_str) == Some("interrupted") {
             self.end(thread, ChildState::Interrupted, None, out);
             return;
@@ -436,7 +436,7 @@ impl Children {
         self.waiting.retain(|w| w != thread);
         let dropped = h.dropped + lost;
         if dropped > 0 {
-            let note = format!("{DROPPED}{} of this agent's first lines came before Codex said it started, more than krowk holds, and are not in this transcript.</dropped-lines>", dropped);
+            let note = format!("{DROPPED}{} of this agent's first lines came before Codex said it started, more than gruntas holds, and are not in this transcript.</dropped-lines>", dropped);
             out.extend(item(thread, Item::user(note)));
         }
         for (method, params) in h.lines {
@@ -473,7 +473,7 @@ impl Children {
     /// there is none.
     pub fn turn_of(&self, thread: &str) -> Result<String, String> {
         match self.kids.get(thread) {
-            None => Err("krowk does not follow that agent in this turn".into()),
+            None => Err("gruntas does not follow that agent in this turn".into()),
             Some(c) if c.ended => Err("it has ended".into()),
             Some(Child { turn: None, idle: true, .. }) => Err("no turn of it is running — Codex said its last one completed, so there is nothing to interrupt".into()),
             Some(Child { turn: None, .. }) => Err("Codex has not said which turn it runs yet — try again in a moment, or interrupt the session that started it".into()),
@@ -481,7 +481,7 @@ impl Children {
         }
     }
 
-    /// krowk sent `thread` its `turn/interrupt`.
+    /// gruntas sent `thread` its `turn/interrupt`.
     pub fn stopping(&mut self, thread: &str) {
         if let Some(c) = self.kids.get_mut(thread) {
             c.stopping = true;
@@ -645,7 +645,7 @@ mod tests {
         let wait = json!({"type": "collabAgentToolCall", "id": "w", "tool": "wait", "senderThreadId": OWN, "receiverThreadIds": ["kid-a"], "status": "completed", "agentsStates": {"kid-a": {"status": "errored", "message": "model refused"}}});
         let evs = feed(&mut c, &[note("item/completed", OWN, wait)]);
         assert!(matches!(evs.last(), Some(EngineEvent::BackendChildEnded { status: ChildState::Failed, error: Some(e), .. }) if e == "model refused"), "{evs:?}");
-        // More than krowk holds of one thread: the oldest go, and it says so.
+        // More than gruntas holds of one thread: the oldest go, and it says so.
         let lines: Vec<(String, Value)> = (0..HOLD + 2).map(|i| said("kid-b", i)).collect();
         assert!(feed(&mut c, &lines).is_empty());
         let got = items(&feed(&mut c, &[note("item/completed", OWN, spawn("call-b", OWN, &["kid-b"], "tidy up"))]), "kid-b");
@@ -682,7 +682,7 @@ mod tests {
 
     /// R-SUB-10: a child is stopped on the turn its own lines last named,
     /// none before they name one, nor once that turn completed; lent to
-    /// answer its own request, it is still stopped. Once krowk sent it
+    /// answer its own request, it is still stopped. Once gruntas sent it
     /// `turn/interrupt`, its turn's `interrupted` end is its end — not
     /// before — and an ended child, or a thread that is none, has nothing
     /// to stop or lend.
@@ -700,7 +700,7 @@ mod tests {
         assert_eq!(c.turn_of("kid").as_deref(), Ok("t"), "lent is not ended");
         c.give_back("kid", lent);
         let interrupted = |turn: &str| ("turn/completed".to_string(), json!({"threadId": "kid", "turn": {"id": turn, "items": [], "status": "interrupted"}}));
-        assert!(ends(&feed(&mut c, &[interrupted("t")])).is_empty(), "not stopped by krowk: Codex's own say ends it");
+        assert!(ends(&feed(&mut c, &[interrupted("t")])).is_empty(), "not stopped by gruntas: Codex's own say ends it");
         assert!(c.turn_of("kid").unwrap_err().contains("no turn of it is running"), "its turn completed: nothing to interrupt");
         feed(&mut c, &[("item/started".into(), json!({"threadId": "kid", "turnId": "t2", "item": {"type": "reasoning", "id": "r2", "summary": [], "content": []}}))]);
         assert_eq!(c.turn_of("kid").as_deref(), Ok("t2"), "a later turn of it");

@@ -1,4 +1,4 @@
-//! `krowk worktrees` (worktrees WT9), the built binary over worktrees made
+//! `gruntas worktrees` (worktrees WT9), the built binary over worktrees made
 //! through `gruntas_harness::worktree`, in a stand-in home and data
 //! directory: `list --json` flags a clean, a dirty and an ahead one;
 //! `remove` refuses a dirty one with exit 4 and changes nothing, and
@@ -34,7 +34,7 @@ impl Sandbox {
         self.root.join("repo")
     }
 
-    /// Where krowk keeps worktrees for this sandbox's `XDG_DATA_HOME`.
+    /// Where gruntas keeps worktrees for this sandbox's `XDG_DATA_HOME`.
     fn worktrees(&self) -> PathBuf {
         self.root.join("data/gruntas/worktrees")
     }
@@ -43,7 +43,7 @@ impl Sandbox {
         gruntas_harness::worktree::create(&self.repo(), &self.worktrees(), owner).unwrap()
     }
 
-    fn krowk(&self, args: &[&str]) -> Output {
+    fn gruntas(&self, args: &[&str]) -> Output {
         self.command(args).output().unwrap()
     }
 
@@ -64,8 +64,8 @@ impl Sandbox {
     }
 
     fn json(&self, args: &[&str]) -> Value {
-        let o = self.krowk(args);
-        assert!(o.status.success(), "krowk {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        let o = self.gruntas(args);
+        assert!(o.status.success(), "gruntas {args:?}: {}", String::from_utf8_lossy(&o.stderr));
         serde_json::from_slice(&o.stdout).unwrap()
     }
 }
@@ -76,7 +76,7 @@ impl Drop for Sandbox {
     }
 }
 
-/// git in `dir`, through krowk's own git, with none of this machine's
+/// git in `dir`, through gruntas's own git, with none of this machine's
 /// config: what it prints, trimmed.
 fn git(dir: &Path, args: &[&str]) -> String {
     let o = gruntas_api::git::command(dir).unwrap().args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
@@ -130,7 +130,7 @@ fn wt9_list_json_flags_clean_dirty_and_ahead() {
         v
     };
     assert_eq!(ageless(&b.json(&["worktrees", "list", "--json"])), ageless(&listed));
-    let human = String::from_utf8(b.krowk(&["worktrees", "--format", "human"]).stdout).unwrap();
+    let human = String::from_utf8(b.gruntas(&["worktrees", "--format", "human"]).stdout).unwrap();
     assert!(human.starts_with("WORKTREE") && human.contains(&dirty.hex) && human.ends_with("3 worktrees (0 live)\n"), "{human}");
 }
 
@@ -146,7 +146,7 @@ fn wt9_remove_refuses_a_dirty_worktree_and_force_keeps_a_snapshot() {
     let state = || (git(&b.repo(), &["worktree", "list", "--porcelain"]), git(&w.path, &["status", "--porcelain"]), git(&b.repo(), &["for-each-ref"]));
     let before = state();
 
-    let o = b.krowk(&["worktrees", "remove", &w.hex]);
+    let o = b.gruntas(&["worktrees", "remove", &w.hex]);
     assert_eq!(o.status.code(), Some(4), "refused: {}", String::from_utf8_lossy(&o.stderr));
     let err: Value = serde_json::from_slice(&o.stderr).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&o.stderr)));
     assert_eq!(err["error"]["error"], "worktree_has_changes");
@@ -164,10 +164,10 @@ fn wt9_remove_refuses_a_dirty_worktree_and_force_keeps_a_snapshot() {
     assert_eq!(std::fs::read_to_string(w.path.join("a.txt")).unwrap(), "changed\n");
     assert_eq!(std::fs::read_to_string(w.path.join("new.txt")).unwrap(), "new\n");
 
-    let o = b.krowk(&["worktrees", "remove", "0badf00d"]);
+    let o = b.gruntas(&["worktrees", "remove", "0badf00d"]);
     assert_eq!(o.status.code(), Some(2));
     // `--force` belongs to `remove` (and `host stop`), nowhere else here.
-    assert_eq!(b.krowk(&["worktrees", "prune", "--force"]).status.code(), Some(1));
+    assert_eq!(b.gruntas(&["worktrees", "prune", "--force"]).status.code(), Some(1));
 }
 
 #[test]
@@ -218,7 +218,7 @@ fn wt13_apply_brings_a_kept_worktree_into_a_checkout_and_refuses_while_live() {
     // Held by a live session: refused, nothing changed.
     let (live, held) = gruntas_harness::worktree::create_held(&b.repo(), &b.worktrees(), "s2").unwrap();
     std::fs::write(live.path.join("a.txt"), "live\n").unwrap();
-    let o = b.krowk(&["worktrees", "apply", &live.hex]);
+    let o = b.gruntas(&["worktrees", "apply", &live.hex]);
     assert_eq!(o.status.code(), Some(4), "{}", String::from_utf8_lossy(&o.stderr));
     let err: Value = serde_json::from_slice(&o.stderr).unwrap();
     assert_eq!(err["error"]["error"], "worktree_live");
@@ -227,13 +227,13 @@ fn wt13_apply_brings_a_kept_worktree_into_a_checkout_and_refuses_while_live() {
 
     // The main checkout by default; a file it changed too conflicts.
     std::fs::write(b.repo().join("a.txt"), "mine\n").unwrap();
-    let o = b.krowk(&["worktrees", "apply", &live.hex]);
+    let o = b.gruntas(&["worktrees", "apply", &live.hex]);
     assert_eq!(o.status.code(), Some(4), "{}", String::from_utf8_lossy(&o.stderr));
     let err: Value = serde_json::from_slice(&o.stderr).unwrap();
     assert_eq!((&err["error"]["error"], &err["error"]["details"]["files"]), (&Value::from("worktree_conflicts"), &serde_json::json!(["a.txt"])));
     assert!(live.path.exists());
     std::fs::write(b.repo().join("a.txt"), "a\n").unwrap();
-    let human = b.krowk(&["worktrees", "apply", live.path.to_str().unwrap(), "--format", "human"]);
+    let human = b.gruntas(&["worktrees", "apply", live.path.to_str().unwrap(), "--format", "human"]);
     assert!(human.status.success(), "{}", String::from_utf8_lossy(&human.stderr));
     assert!(String::from_utf8_lossy(&human.stdout).starts_with("applied  a.txt\nApplied 1 changed file from "));
     assert_eq!(std::fs::read_to_string(b.repo().join("a.txt")).unwrap(), "live\n");
@@ -244,13 +244,13 @@ fn wt13_apply_brings_a_kept_worktree_into_a_checkout_and_refuses_while_live() {
     std::fs::create_dir_all(&other).unwrap();
     git(&other, &["init", "-q", "-b", "main"]);
     git(&other, &["commit", "-q", "--allow-empty", "-m", "other"]);
-    let o = b.krowk(&["worktrees", "apply", &w.hex, "--to", other.to_str().unwrap()]);
+    let o = b.gruntas(&["worktrees", "apply", &w.hex, "--to", other.to_str().unwrap()]);
     assert_eq!(o.status.code(), Some(1), "{}", String::from_utf8_lossy(&o.stderr));
     let err: Value = serde_json::from_slice(&o.stderr).unwrap();
     assert_eq!(err["error"]["error"], "worktree_other_repository");
     assert!(!other.join("a.txt").exists() && w.path.is_dir());
     // `--to` belongs to `apply`.
-    assert_eq!(b.krowk(&["worktrees", "prune", "--to", "x"]).status.code(), Some(1));
+    assert_eq!(b.gruntas(&["worktrees", "prune", "--to", "x"]).status.code(), Some(1));
 }
 
 /// `add` makes a worktree from the working state, uncommitted changes
@@ -292,12 +292,12 @@ fn add_makes_a_worktree_an_agent_works_in_from_the_working_state_or_a_ref() {
     assert_eq!(std::fs::read_to_string(b.repo().join("work.txt")).unwrap(), "done\n");
 
     let before = b.json(&["worktrees", "--json"])["data"]["worktrees"].as_array().unwrap().len();
-    let bad = b.krowk(&["worktrees", "add", "--from", "no-such-ref", "--json"]);
+    let bad = b.gruntas(&["worktrees", "add", "--from", "no-such-ref", "--json"]);
     assert_eq!(bad.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&bad.stdout).contains("worktree_failed") || String::from_utf8_lossy(&bad.stderr).contains("worktree_failed"));
     assert_eq!(b.json(&["worktrees", "--json"])["data"]["worktrees"].as_array().unwrap().len(), before);
     // `--from` is `add`'s here.
-    assert_eq!(b.krowk(&["worktrees", "prune", "--from", "x"]).status.code(), Some(1));
+    assert_eq!(b.gruntas(&["worktrees", "prune", "--from", "x"]).status.code(), Some(1));
 }
 
 /// A `--from` the checkout has runs the person's setup command; one it does
@@ -332,7 +332,7 @@ fn add_runs_no_setup_for_a_ref_on_neither_the_checkout_nor_origin() {
     assert!(!PathBuf::from(foreign["data"]["path"].as_str().unwrap()).join("ran").exists(), "{foreign}");
 
     let before = b.json(&["worktrees", "--json"])["data"]["worktrees"].as_array().unwrap().len();
-    assert_eq!(b.krowk(&["worktrees", "add", "origin/main"]).status.code(), Some(1));
-    assert_eq!(b.krowk(&["worktrees", "add", "--from", " "]).status.code(), Some(1));
+    assert_eq!(b.gruntas(&["worktrees", "add", "origin/main"]).status.code(), Some(1));
+    assert_eq!(b.gruntas(&["worktrees", "add", "--from", " "]).status.code(), Some(1));
     assert_eq!(b.json(&["worktrees", "--json"])["data"]["worktrees"].as_array().unwrap().len(), before);
 }

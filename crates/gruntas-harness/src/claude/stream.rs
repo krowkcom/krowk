@@ -1,4 +1,4 @@
-//! Claude Code's stream-json, translated into krowk's events (R-BACK-5).
+//! Claude Code's stream-json, translated into gruntas's events (R-BACK-5).
 //!
 //! With `--include-partial-messages`, `claude -p` forwards the Messages API
 //! stream it reads as `stream_event` lines — `message_start`, the content
@@ -42,7 +42,7 @@ pub struct Init {
     pub capabilities: Vec<String>,
     /// Where its API credential comes from: `none` for a Claude login.
     pub api_key_source: String,
-    /// Each MCP server and its status, e.g. `krowk` / `connected`.
+    /// Each MCP server and its status, e.g. `gruntas` / `connected`.
     pub mcp_servers: Vec<(String, String)>,
     /// The permission mode it runs the turn in, e.g. `default`.
     pub permission_mode: String,
@@ -60,7 +60,7 @@ pub struct Outcome {
     /// The HTTP status of an API failure, when Claude Code reports one.
     pub api_status: Option<u16>,
     /// The result closes a turn Claude Code began by itself (its `origin`,
-    /// e.g. `task-notification`), not the one krowk prompted.
+    /// e.g. `task-notification`), not the one gruntas prompted.
     pub unprompted: bool,
 }
 
@@ -119,7 +119,7 @@ pub struct Translator {
 /// Image references by the tool call they belong to.
 pub type Kept = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<crate::protocol::ImageRef>>>>;
 
-/// A `rate_limit_event`'s `rate_limit_info`, as krowk's limit statuses:
+/// A `rate_limit_event`'s `rate_limit_info`, as gruntas's limit statuses:
 /// `allowed`, `allowed_warning` (near it) or `rejected` (reached), over a
 /// window such as `five_hour`, with when it resets (seconds since the
 /// epoch) and how much is used (`utilization`, 0–1), when it says. Below
@@ -449,7 +449,7 @@ fn init(msg: &Value) -> Init {
     }
 }
 
-/// A Messages API usage block in krowk's five columns, reasoning split out
+/// A Messages API usage block in gruntas's five columns, reasoning split out
 /// of output where Claude Code says how much of it was thinking.
 fn usage(u: &Value) -> Usage {
     let n = |k: &str| u.get(k).and_then(Value::as_i64).unwrap_or(0);
@@ -520,7 +520,7 @@ mod tests {
 {"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"mcp__gruntas__session_info","input":{}}},"parent_tool_use_id":null}
 {"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}},"parent_tool_use_id":null}
 {"type":"stream_event","event":{"type":"content_block_stop","index":1},"parent_tool_use_id":null}
-{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":[{"type":"text","text":"krowk session: s-1"}]}]},"parent_tool_use_id":null}
+{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":[{"type":"text","text":"gruntas session: s-1"}]}]},"parent_tool_use_id":null}
 {"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":10,"cache_read_input_tokens":100,"cache_creation_input_tokens":5,"output_tokens":40,"output_tokens_details":{"thinking_tokens":12}}},"parent_tool_use_id":null}
 {"type":"stream_event","event":{"type":"message_stop"},"parent_tool_use_id":null}
 {"type":"assistant","message":{"id":"msg_sub","content":[{"type":"text","text":"a subagent's words"}]},"parent_tool_use_id":"toolu_task"}
@@ -575,7 +575,7 @@ mod tests {
         let Item::Reasoning { blob: Some(b), .. } = &items[0] else { panic!("{items:?}") };
         assert_eq!((b.wire_api, b.data["signature"].as_str()), (WireApi::ClaudeCode, Some("c2ln")), "the signature whole, replayable only to Claude Code");
         assert!(matches!(&items[1], Item::ToolCall { name, call_id, .. } if name == "mcp__gruntas__session_info" && call_id == "toolu_1"));
-        assert_eq!(items[2], Item::ToolResult { call_id: "toolu_1".into(), output: "krowk session: s-1".into(), is_error: false, images: Vec::new() });
+        assert_eq!(items[2], Item::ToolResult { call_id: "toolu_1".into(), output: "gruntas session: s-1".into(), is_error: false, images: Vec::new() });
         assert_eq!(items[3], Item::AssistantText { text: "s-1".into() });
         // The result is logged after the response that called the tool.
         let order: Vec<&str> = evs

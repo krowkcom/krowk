@@ -2,9 +2,9 @@
 # command under it still runs, and its help is the help of `artifacts`.
 @registry
 @file a.txt hello
-krowk uploads create a.txt --quiet
-krowk uploads show art_000000000000000000000000
-krowk uploads
-krowk help uploads --format human
-krowk uplods list
-krowk help uploads bogus --format human
+gruntas uploads create a.txt --quiet
+gruntas uploads show art_000000000000000000000000
+gruntas uploads
+gruntas help uploads --format human
+gruntas uplods list
+gruntas help uploads bogus --format human

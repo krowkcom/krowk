@@ -1,12 +1,12 @@
-krowk bogus
-krowk artifacts bogus
-krowk runs
-krowk auth
-krowk config
-krowk pussh a.txt
-krowk artifacts lsit
-krowk help pussh
-@tty krowk runs
-krowk login extra --format human
-krowk logout extra --format human
-krowk pussh --format human
+gruntas bogus
+gruntas artifacts bogus
+gruntas runs
+gruntas auth
+gruntas config
+gruntas pussh a.txt
+gruntas artifacts lsit
+gruntas help pussh
+@tty gruntas runs
+gruntas login extra --format human
+gruntas logout extra --format human
+gruntas pussh --format human

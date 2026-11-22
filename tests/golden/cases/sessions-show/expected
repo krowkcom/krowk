@@ -1,4 +1,4 @@
-$ krowk sessions import --from all --quiet
+$ gruntas sessions import --from all --quiet
 stdout:
 {
   "dry_run": false,
@@ -78,7 +78,7 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions --format url
+$ gruntas sessions --format url
 stdout:
 {
   "ok": true,
@@ -225,7 +225,7 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions show <uuid_4>
+$ gruntas sessions show <uuid_4>
 stderr:
 {
   "ok": false,
@@ -237,7 +237,7 @@ stderr:
 }
 exit: 1
 
-$ krowk sessions show <uuid_4> --thinking
+$ gruntas sessions show <uuid_4> --thinking
 stderr:
 {
   "ok": false,
@@ -249,7 +249,7 @@ stderr:
 }
 exit: 1
 
-$ krowk sessions show <uuid_4> --format human
+$ gruntas sessions show <uuid_4> --format human
 stderr:
 ✗ Store: "<uuid_4>" is ambiguous (2 sessions):
   <uuid_9>  claude
@@ -257,7 +257,7 @@ stderr:
   Code: ambiguous_session
 exit: 1
 
-$ krowk sessions show <uuid_4> --format markdown
+$ gruntas sessions show <uuid_4> --format markdown
 stderr:
 ✗ Store: "<uuid_4>" is ambiguous (2 sessions):
   <uuid_9>  claude
@@ -265,7 +265,7 @@ stderr:
   Code: ambiguous_session
 exit: 1
 
-$ krowk sessions show 22222222
+$ gruntas sessions show 22222222
 stderr:
 {
   "ok": false,
@@ -277,13 +277,13 @@ stderr:
 }
 exit: 2
 
-$ krowk sessions show
+$ gruntas sessions show
 stderr:
 {
   "ok": false,
   "error": {
     "error": "no_session",
-    "fix": "pass the session: `krowk sessions show <id>`",
+    "fix": "pass the session: `gruntas sessions show <id>`",
     "retryable": false
   }
 }

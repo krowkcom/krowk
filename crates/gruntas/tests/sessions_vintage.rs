@@ -26,7 +26,7 @@ fn session(sessions: &Path, cwd: &Path, prompt: &str, age_days: i64) -> String {
 }
 
 /// `session`, the prompt in a turn of its own when `turned`, as a real
-/// one is: what leaves its stub a stand-in row per turn in krowk.db.
+/// one is: what leaves its stub a stand-in row per turn in gruntas.db.
 fn session_of(sessions: &Path, cwd: &Path, prompt: &str, age_days: i64, turned: bool) -> String {
     let (mut l, root) = SessionLog::create(sessions, cwd, "test").unwrap();
     if turned {
@@ -58,7 +58,7 @@ struct Machine {
 }
 
 impl Machine {
-    fn krowk(&self, args: &[&str]) -> (bool, Value, String) {
+    fn gruntas(&self, args: &[&str]) -> (bool, Value, String) {
         let out = Command::new(env!("CARGO_BIN_EXE_gruntas"))
             .args(args)
             .arg("--json")
@@ -84,27 +84,27 @@ impl Machine {
 /// waits a week to run again; the bodies leave, and it stays listed, a
 /// rebuild included.
 fn archived_and_listed(m: &Machine, sessions: &Path, old: &str, pinned: &str, fresh: &str) {
-    let (ok, v, out) = m.krowk(&["sessions", "archive", "--weekly"]);
+    let (ok, v, out) = m.gruntas(&["sessions", "archive", "--weekly"]);
     assert!(ok, "{out}");
     let archived: Vec<String> = v["data"]["archived"].as_array().into_iter().flatten().filter_map(|a| a["id"].as_str().map(str::to_owned)).collect();
     assert_eq!(archived, vec![old.to_owned()], "{out}");
     assert!(!out.contains("On Free"), "a paid plan says nothing of Free: {out}");
     assert!(sessions.join(pinned).join(log::EVENTS_FILE).is_file(), "a pinned session is never archived");
     assert!(sessions.join(fresh).join(log::EVENTS_FILE).is_file(), "a recent one stays");
-    let (ok, v, out) = m.krowk(&["sessions", "archive", "--weekly"]);
+    let (ok, v, out) = m.gruntas(&["sessions", "archive", "--weekly"]);
     assert!(ok && v["data"]["due"] == false, "the weekly job waits a week: {out}");
 
     // R-VINT-3: the bodies left; the index row did not.
     assert!(!sessions.join(old).join(log::EVENTS_FILE).exists() && !sessions.join(old).join(log::CONTEXT_FILE).exists());
     assert!(!sessions.join(old).join(gruntas_harness::vintage::KEPT_DIR).exists(), "a paid plan keeps no local copy");
     assert!(sessions.join(old).join(gruntas_harness::vintage::STUB_FILE).is_file());
-    let (ok, v, out) = m.krowk(&["sessions"]);
+    let (ok, v, out) = m.gruntas(&["sessions"]);
     assert!(ok, "{out}");
     let listed = v["data"]["sessions"].as_array().unwrap().iter().find(|s| s.to_string().contains(old)).cloned().unwrap_or_else(|| panic!("still listed: {out}"));
     assert!(listed.to_string().contains("secret prompt"), "under its title: {listed}");
-    let (ok, _, out) = m.krowk(&["sessions", "rebuild", "--yes"]);
+    let (ok, _, out) = m.gruntas(&["sessions", "rebuild", "--yes"]);
     assert!(ok, "{out}");
-    let (_, v, out) = m.krowk(&["sessions"]);
+    let (_, v, out) = m.gruntas(&["sessions"]);
     assert!(v.to_string().contains(old), "a rebuild keeps it listed from its stub: {out}");
 }
 
@@ -120,10 +120,10 @@ fn r_vint_1_r_vint_2_r_vint_3_r_vint_4_an_idle_session_is_archived_listed_and_re
     let registry = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
     let m = Machine { home: root.clone(), api_url: format!("{}/v1", registry.url()), token: TOKEN };
 
-    // Ticket 41: this machine set sync up with `krowk sync init` and
+    // Ticket 41: this machine set sync up with `gruntas sync init` and
     // nothing else — a user key and a device list, no account key.
     let kit = root.join("kit.txt");
-    let (ok, _, out) = m.krowk(&["sync", "init", "--save", kit.to_str().unwrap()]);
+    let (ok, _, out) = m.gruntas(&["sync", "init", "--save", kit.to_str().unwrap()]);
     assert!(ok, "{out}");
     let ks = Keystore::new(&root.join(".gruntas"));
     assert!(ks.account().unwrap().is_none(), "no account key: the clean break");
@@ -139,9 +139,9 @@ fn r_vint_1_r_vint_2_r_vint_3_r_vint_4_an_idle_session_is_archived_listed_and_re
     std::fs::write(sessions.join(&old).join(log::CONTEXT_FILE), "{\"system\":\"the old session's system prompt\",\"tools\":[]}\n").unwrap();
     let original = std::fs::read(sessions.join(&old).join(log::EVENTS_FILE)).unwrap();
     let original_context = std::fs::read(sessions.join(&old).join(log::CONTEXT_FILE)).unwrap();
-    let (ok, _, out) = m.krowk(&["sessions", "import", "--from", "all"]);
+    let (ok, _, out) = m.gruntas(&["sessions", "import", "--from", "all"]);
     assert!(ok, "{out}");
-    let (ok, _, out) = m.krowk(&["sessions", "pin", &pinned]);
+    let (ok, _, out) = m.gruntas(&["sessions", "pin", &pinned]);
     assert!(ok, "{out}");
 
     archived_and_listed(&m, &sessions, &old, &pinned, &fresh);
@@ -160,7 +160,7 @@ fn r_vint_1_r_vint_2_r_vint_3_r_vint_4_an_idle_session_is_archived_listed_and_re
     assert!(e2e::open_vintage(&sealed, &week, &stranger).is_err(), "only the person's user key opens it");
 
     // R-VINT-4: opening it brings it back, byte for byte.
-    let (ok, v, out) = m.krowk(&["sessions", "show", &old]);
+    let (ok, v, out) = m.gruntas(&["sessions", "show", &old]);
     assert!(ok, "{out}");
     assert!(v.to_string().contains("answering the idle session"), "shown in full: {out}");
     assert_eq!(std::fs::read(sessions.join(&old).join(log::EVENTS_FILE)).unwrap(), original);
@@ -170,7 +170,7 @@ fn r_vint_1_r_vint_2_r_vint_3_r_vint_4_an_idle_session_is_archived_listed_and_re
     // R-VINT-1: a second session last active in the same week joins the
     // week's vintage: the old one is read and merged, then replaced.
     let sibling = session(&sessions, &root, "a sibling from the same week", 20);
-    let (ok, v, out) = m.krowk(&["sessions", "archive"]);
+    let (ok, v, out) = m.gruntas(&["sessions", "archive"]);
     assert!(ok, "{out}");
     assert!(v.to_string().contains(&sibling) && v.to_string().contains(&old), "{out}");
     let merged = api.week_vintage(&week).unwrap().expect("the week's vintage");
@@ -195,7 +195,7 @@ fn synced_machine_on(root: &Path, token: &'static str) -> (gruntas_devregistry::
     std::fs::create_dir_all(root).unwrap();
     let registry = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
     let m = Machine { home: root.to_path_buf(), api_url: format!("{}/v1", registry.url()), token };
-    let (ok, _, out) = m.krowk(&["sync", "init", "--save", root.join("kit.txt").to_str().unwrap()]);
+    let (ok, _, out) = m.gruntas(&["sync", "init", "--save", root.join("kit.txt").to_str().unwrap()]);
     assert!(ok, "{out}");
     let ks = Keystore::new(&root.join(".gruntas"));
     let keys = ks.user_keys().unwrap().expect("a user key");
@@ -206,7 +206,7 @@ fn synced_machine_on(root: &Path, token: &'static str) -> (gruntas_devregistry::
 /// R-VINT-4: a restore reads the vintage the session went into, by the
 /// slug its stub recorded, even once a replacement that lost it took the
 /// week's place; a stub that recorded none falls back from the week's
-/// current vintage to its replaced ones. `krowk sessions vintage` lists
+/// current vintage to its replaced ones. `gruntas sessions vintage` lists
 /// both, and `--from` restores from the one named.
 #[test]
 fn r_vint_4_a_restore_finds_the_session_in_the_vintage_it_went_into_when_a_replacement_lost_it() {
@@ -215,9 +215,9 @@ fn r_vint_4_a_restore_finds_the_session_in_the_vintage_it_went_into_when_a_repla
     let sessions = root.join(".gruntas").join("sessions");
     let a = session(&sessions, &root, "the first of the week", 20);
     let b = session(&sessions, &root, "the second of the week", 20);
-    let (ok, _, out) = m.krowk(&["sessions", "import", "--from", "all"]);
+    let (ok, _, out) = m.gruntas(&["sessions", "import", "--from", "all"]);
     assert!(ok, "{out}");
-    let (ok, _, out) = m.krowk(&["sessions", "archive"]);
+    let (ok, _, out) = m.gruntas(&["sessions", "archive"]);
     assert!(ok, "{out}");
     let stub = gruntas_harness::vintage::read_stub(&sessions, &a).unwrap();
     let (week, kept) = (stub.week.clone(), stub.vintage.clone());
@@ -232,22 +232,22 @@ fn r_vint_4_a_restore_finds_the_session_in_the_vintage_it_went_into_when_a_repla
     unrecorded["vintage"] = Value::String(String::new());
     std::fs::write(&b_stub, serde_json::to_vec(&unrecorded).unwrap()).unwrap();
 
-    let (ok, v, out) = m.krowk(&["sessions", "vintage", &a]);
+    let (ok, v, out) = m.gruntas(&["sessions", "vintage", &a]);
     assert!(ok, "{out}");
     let listed: Vec<(String, bool, bool)> = v["data"]["vintages"].as_array().unwrap().iter().map(|r| (r["slug"].as_str().unwrap().to_owned(), r["current"] == true, r["recorded"] == true)).collect();
     assert_eq!(listed, vec![(lost.clone(), true, false), (kept.clone(), false, true)], "the current one, then the one it replaced, which the stub names: {out}");
-    let (ok, v, out) = m.krowk(&["sessions", "vintage"]);
+    let (ok, v, out) = m.gruntas(&["sessions", "vintage"]);
     assert!(ok && v["data"]["vintages"].as_array().unwrap().len() == 2, "every week's, replaced ones included: {out}");
 
-    let (ok, v, out) = m.krowk(&["sessions", "restore", &a]);
+    let (ok, v, out) = m.gruntas(&["sessions", "restore", &a]);
     assert!(ok, "{out}");
     assert_eq!(v["data"]["vintage"], kept.as_str(), "from the vintage it went into: {out}");
     assert_eq!(v["data"]["warnings"], serde_json::json!([]), "the recorded one, so nothing to say: {out}");
     assert!(sessions.join(&a).join(log::EVENTS_FILE).is_file());
 
-    let (ok, _, out) = m.krowk(&["sessions", "restore", &b, "--from", &lost]);
+    let (ok, _, out) = m.gruntas(&["sessions", "restore", &b, "--from", &lost]);
     assert!(!ok && out.contains("does not hold session"), "the vintage named is the one read: {out}");
-    let (ok, v, out) = m.krowk(&["sessions", "restore", &b]);
+    let (ok, v, out) = m.gruntas(&["sessions", "restore", &b]);
     assert!(ok, "{out}");
     assert_eq!(v["data"]["vintage"], kept.as_str(), "the week's current one lost it, so a replaced one is read: {out}");
     let warned = v["data"]["warnings"].to_string();
@@ -272,7 +272,7 @@ fn r_vint_3_an_archived_session_opened_without_sync_shows_its_stub_and_says_why(
     let (_registry, m, _, _) = synced_machine(&root);
     let sessions = root.join(".gruntas").join("sessions");
     let id = session(&sessions, &root, "asked on the synced machine", 20);
-    let (ok, _, out) = m.krowk(&["sessions", "archive"]);
+    let (ok, _, out) = m.gruntas(&["sessions", "archive"]);
     assert!(ok, "{out}");
 
     // Its stub, on a machine that never set sync up.
@@ -280,9 +280,9 @@ fn r_vint_3_an_archived_session_opened_without_sync_shows_its_stub_and_says_why(
     let dir = bare.home.join(".gruntas").join("sessions").join(&id);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::copy(sessions.join(&id).join(gruntas_harness::vintage::STUB_FILE), dir.join(gruntas_harness::vintage::STUB_FILE)).unwrap();
-    let (ok, _, out) = bare.krowk(&["sessions", "import", "--from", "all"]);
+    let (ok, _, out) = bare.gruntas(&["sessions", "import", "--from", "all"]);
     assert!(ok, "{out}");
-    let (ok, v, out) = bare.krowk(&["sessions", "show", &id]);
+    let (ok, v, out) = bare.gruntas(&["sessions", "show", &id]);
     assert!(ok, "shown, not refused: {out}");
     assert_eq!(v["data"]["archived"]["restored"], false, "{out}");
     assert_eq!(v["data"]["archived"]["error"]["code"], "not_set_up", "{out}");
@@ -293,7 +293,7 @@ fn r_vint_3_an_archived_session_opened_without_sync_shows_its_stub_and_says_why(
 
 /// Sync paywall ticket 08: on Free, whose vintages expire after 7 days,
 /// archiving keeps the session's log on the machine, takes it out of
-/// `krowk sessions` and says so once; restoring brings it back from that
+/// `gruntas sessions` and says so once; restoring brings it back from that
 /// copy, with no registry to read the vintage from.
 #[test]
 fn on_free_archiving_keeps_the_local_copy_hides_the_session_and_restore_brings_it_back() {
@@ -305,10 +305,10 @@ fn on_free_archiving_keeps_the_local_copy_hides_the_session_and_restore_brings_i
     std::fs::write(sessions.join(&a).join(log::CONTEXT_FILE), "{\"system\":\"kept\",\"tools\":[]}\n").unwrap();
     let original = std::fs::read(sessions.join(&a).join(log::EVENTS_FILE)).unwrap();
     let original_context = std::fs::read(sessions.join(&a).join(log::CONTEXT_FILE)).unwrap();
-    let (ok, _, out) = m.krowk(&["sessions", "import", "--from", "all"]);
+    let (ok, _, out) = m.gruntas(&["sessions", "import", "--from", "all"]);
     assert!(ok, "{out}");
 
-    let (ok, v, out) = m.krowk(&["sessions", "archive"]);
+    let (ok, v, out) = m.gruntas(&["sessions", "archive"]);
     assert!(ok, "{out}");
     assert_eq!(v["data"]["archived"].as_array().map(Vec::len), Some(2), "{out}");
     assert_eq!(out.matches("On Free, archived sessions stay on this machine; the synced copy expires after 7 days.").count(), 1, "said once a run: {out}");
@@ -317,20 +317,20 @@ fn on_free_archiving_keeps_the_local_copy_hides_the_session_and_restore_brings_i
     assert_eq!(std::fs::read(kept.join(log::CONTEXT_FILE)).unwrap(), original_context);
     let week = gruntas_harness::vintage::read_stub(&sessions, &a).unwrap().week;
     assert!(api.week_vintage(&week).unwrap().is_some(), "the vintage is still written");
-    let (ok, v, out) = m.krowk(&["sessions"]);
+    let (ok, v, out) = m.gruntas(&["sessions"]);
     assert!(ok && !v.to_string().contains(&a) && !v.to_string().contains(&b), "hidden from the list: {out}");
 
     // No registry at all, as good as the vintage expired: the copy restores.
     let offline = Machine { home: root.clone(), api_url: "http://127.0.0.1:9/v1".into(), token: FREE_TOKEN };
-    let (ok, v, out) = offline.krowk(&["sessions", "restore", &a]);
+    let (ok, v, out) = offline.gruntas(&["sessions", "restore", &a]);
     assert!(ok && v["data"]["vintage"] == "", "no vintage read: {out}");
     assert_eq!(std::fs::read(sessions.join(&a).join(log::EVENTS_FILE)).unwrap(), original);
     assert_eq!(std::fs::read(sessions.join(&a).join(log::CONTEXT_FILE)).unwrap(), original_context, "and its context");
     assert!(!kept.exists() && !sessions.join(&a).join(gruntas_harness::vintage::STUB_FILE).exists());
-    let (ok, v, out) = m.krowk(&["sessions"]);
+    let (ok, v, out) = m.gruntas(&["sessions"]);
     assert!(ok && v.to_string().contains(&a) && !v.to_string().contains(&b), "listed again, the other still hidden: {out}");
     // Opening one restores it too.
-    let (ok, v, out) = offline.krowk(&["sessions", "show", &b]);
+    let (ok, v, out) = offline.gruntas(&["sessions", "show", &b]);
     assert!(ok && v.to_string().contains("answering another free idle session"), "{out}");
 
     // A copy kept from an archive before is older than the log, and an
@@ -339,7 +339,7 @@ fn on_free_archiving_keeps_the_local_copy_hides_the_session_and_restore_brings_i
     std::fs::write(kept.join(log::EVENTS_FILE), "stale\n").unwrap();
     std::fs::write(kept.join(log::CONTEXT_FILE), "stale\n").unwrap();
     std::fs::remove_file(sessions.join(&a).join(log::CONTEXT_FILE)).unwrap();
-    let (ok, _, out) = m.krowk(&["sessions", "archive"]);
+    let (ok, _, out) = m.gruntas(&["sessions", "archive"]);
     assert!(ok, "{out}");
     assert_eq!(std::fs::read(kept.join(log::EVENTS_FILE)).unwrap(), original, "{out}");
     assert!(!kept.join(log::CONTEXT_FILE).exists(), "nor its stale context");
@@ -356,9 +356,9 @@ fn r_vint_4_a_copy_older_than_the_stub_is_refused_unless_named() {
     let (_registry, m, _, _) = synced_machine(&root);
     let sessions = root.join(".gruntas").join("sessions");
     let id = session(&sessions, &root, "continued after it was restored", 20);
-    let (ok, _, out) = m.krowk(&["sessions", "import", "--from", "all"]);
+    let (ok, _, out) = m.gruntas(&["sessions", "import", "--from", "all"]);
     assert!(ok, "{out}");
-    let (ok, _, out) = m.krowk(&["sessions", "archive"]);
+    let (ok, _, out) = m.gruntas(&["sessions", "archive"]);
     assert!(ok, "{out}");
     let old = gruntas_harness::vintage::read_stub(&sessions, &id).unwrap().vintage;
     // As if it was restored, continued a day, and archived again into a
@@ -369,21 +369,21 @@ fn r_vint_4_a_copy_older_than_the_stub_is_refused_unless_named() {
     newer["vintage"] = Value::String("art_gone".into());
     std::fs::write(&stub_path, serde_json::to_vec(&newer).unwrap()).unwrap();
 
-    let (ok, _, out) = m.krowk(&["sessions", "restore", &id]);
+    let (ok, _, out) = m.gruntas(&["sessions", "restore", &id]);
     assert!(!ok && out.contains("older copy") && out.contains(&old), "refused, naming the vintage and what is older: {out}");
-    assert!(out.contains(&format!("krowk sessions restore {id} --from {old}")), "and how to restore it anyway: {out}");
-    let (ok, _, out) = m.krowk(&["sessions", "show", &id]);
+    assert!(out.contains(&format!("gruntas sessions restore {id} --from {old}")), "and how to restore it anyway: {out}");
+    let (ok, _, out) = m.gruntas(&["sessions", "show", &id]);
     assert!(!ok && out.contains("\"restore_failed\""), "not shown past as a stub: {out}");
     assert!(stub_path.is_file() && !sessions.join(&id).join(log::EVENTS_FILE).exists(), "left archived");
 
-    let (ok, v, out) = m.krowk(&["sessions", "restore", &id, "--from", &old]);
+    let (ok, v, out) = m.gruntas(&["sessions", "restore", &id, "--from", &old]);
     assert!(ok, "{out}");
     assert!(v["data"]["warnings"].to_string().contains("older copy"), "restored as asked, and said to be older: {out}");
     let _ = std::fs::remove_dir_all(&root);
 }
 
 /// R-VINT-4: a restore stopped after putting the session's log back but
-/// before projecting it — krowk quit under it — leaves krowk.db holding the
+/// before projecting it — gruntas quit under it — leaves gruntas.db holding the
 /// stub's stand-ins. Opening the session projects its log in their place.
 #[test]
 fn r_vint_4_a_session_left_unprojected_by_a_cut_short_restore_is_projected_when_opened() {
@@ -392,12 +392,12 @@ fn r_vint_4_a_session_left_unprojected_by_a_cut_short_restore_is_projected_when_
     let sessions = root.join(".gruntas").join("sessions");
     let id = session_of(&sessions, &root, "a turn of its own", 20, true);
     let log_before = std::fs::read(sessions.join(&id).join(log::EVENTS_FILE)).unwrap();
-    let (ok, _, out) = m.krowk(&["sessions", "import", "--from", "all"]);
+    let (ok, _, out) = m.gruntas(&["sessions", "import", "--from", "all"]);
     assert!(ok, "{out}");
-    let (ok, _, out) = m.krowk(&["sessions", "archive"]);
+    let (ok, _, out) = m.gruntas(&["sessions", "archive"]);
     assert!(ok, "{out}");
 
-    // Unpacked, not projected: the log back, the stub gone, krowk.db as
+    // Unpacked, not projected: the log back, the stub gone, gruntas.db as
     // the stub left it.
     std::fs::write(sessions.join(&id).join(log::EVENTS_FILE), &log_before).unwrap();
     std::fs::remove_file(sessions.join(&id).join(gruntas_harness::vintage::STUB_FILE)).unwrap();
@@ -406,7 +406,7 @@ fn r_vint_4_a_session_left_unprojected_by_a_cut_short_restore_is_projected_when_
     assert!(gruntas_store::holds_stand_ins(&conn, gruntas_harness::project::HARNESS, &id).unwrap(), "the stub's rows");
     drop(conn);
 
-    let (ok, v, out) = m.krowk(&["sessions", "show", &id]);
+    let (ok, v, out) = m.gruntas(&["sessions", "show", &id]);
     assert!(ok, "{out}");
     assert!(v.to_string().contains("answering a turn of its own"), "shown from its log: {out}");
     let conn = gruntas_store::open(&env).unwrap();

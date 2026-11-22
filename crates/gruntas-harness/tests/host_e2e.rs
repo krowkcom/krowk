@@ -1,6 +1,6 @@
 //! A whole headless session against the fake `claude` (`common/fake.rs`):
 //! a prompt that reads a file, a resumed follow-up, and what both leave
-//! behind — the log and the rows krowk.db derives from it — and an image
+//! behind — the log and the rows gruntas.db derives from it — and an image
 //! kept beside the log.
 
 #[path = "common/fake.rs"]
@@ -28,7 +28,7 @@ impl Home {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
-        std::fs::write(root.join("repo/README.md"), "# krowk\n\nPermalinks for agent output.\n").unwrap();
+        std::fs::write(root.join("repo/README.md"), "# gruntas\n\nPermalinks for agent output.\n").unwrap();
         Home { root, instances: InstancesConfig::default() }
     }
 
@@ -118,20 +118,20 @@ fn schema(name: &str) -> jsonschema::Validator {
 /// answer (in the resumed process, which plays the scenario afresh).
 fn reads_the_readme() -> String {
     let call = serde_json::json!({"type": "assistant", "message": {"id": "msg_read", "model": "{{MODEL}}", "role": "assistant", "content": [{"type": "tool_use", "id": "toolu_read", "name": "Read", "input": {"file_path": "README.md"}}], "usage": {"input_tokens": 9, "output_tokens": 20}}, "parent_tool_use_id": null, "session_id": "{{SESSION}}"});
-    let read = serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": "toolu_read", "type": "tool_result", "content": "# krowk\n\nPermalinks for agent output.\n"}]}, "parent_tool_use_id": null, "session_id": "{{SESSION}}"});
-    format!("@when what language\n{}\n---\n{call}\n{read}\n{}", fake::answer("It is written in Rust."), fake::answer("krowk turns agent output into permalinks."))
+    let read = serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": "toolu_read", "type": "tool_result", "content": "# gruntas\n\nPermalinks for agent output.\n"}]}, "parent_tool_use_id": null, "session_id": "{{SESSION}}"});
+    format!("@when what language\n{}\n---\n{call}\n{read}\n{}", fake::answer("It is written in Rust."), fake::answer("gruntas turns agent output into permalinks."))
 }
 
 /// R-LOG-1, R-LOG-2, R-LOG-5: a session on Claude Code, through the host:
 /// its turn streams items, a resume continues it, every log line validates
-/// and hangs from the one before, and the log projects into krowk.db, a
+/// and hangs from the one before, and the log projects into gruntas.db, a
 /// rebuild from the JSONL alone giving the same rows.
 #[test]
 fn a_session_streams_its_items_resumes_and_projects_its_log_into_krowk_db() {
     let home = Home::fake("session-fake", Some(&reads_the_readme()));
     let (lines, first) = home.run_on("read README.md and summarise it in one line", None, "claude/sonnet", None);
     assert_eq!(first.status, TurnStatus::Completed, "{:?}", first.error);
-    assert_eq!(first.result, "krowk turns agent output into permalinks.");
+    assert_eq!(first.result, "gruntas turns agent output into permalinks.");
     assert!(matches!(lines.last(), Some(StreamLine::Live(LiveEvent::Result(r))) if *r == first), "the stream ends with the result");
     let read = lines.iter().any(|l| matches!(l, StreamLine::Log(LogEvent { body: LogBody::ItemCompleted { item: Item::ToolResult { output, is_error: false, .. }, .. }, .. }) if output.contains("Permalinks for agent output.")));
     assert!(read, "the read's result is logged");

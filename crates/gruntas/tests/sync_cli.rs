@@ -1,18 +1,18 @@
-//! `krowk sync host` and `krowk sync attach` as a person runs them, two
-//! machines in one test: A hosts a session it made with `krowk -p`, B
+//! `gruntas sync host` and `gruntas sync attach` as a person runs them, two
+//! machines in one test: A hosts a session it made with `gruntas -p`, B
 //! attaches it and answers A's approvals and interrupts its turn by typing
 //! slash commands on stdin (todo 22a). And `sync host` for a session A does
 //! not have fails at once, saying so, rather than hanging (todo 22b). And
 //! the direct path with no setup (ticket 42): the host goes direct with the
 //! registry's published ticket keys, or says in one line why it does not.
-//! And `krowk machines` listing the machines that host, with no Tailscale tag
+//! And `gruntas machines` listing the machines that host, with no Tailscale tag
 //! (ticket 43). And a subagent of A's turn stopped alone from B by its id,
 //! and opened by `sync attach` on a third machine, which reads its
-//! history there and stops it (R-SUB-12). And `krowk sync new`
+//! history there and stops it (R-SUB-12). And `gruntas sync new`
 //! from B starting a session on A's host daemon and following it, or
 //! refusing, with nothing sent, a host that is offline, a directory it did
 //! not offer and a model it cannot run (R-HOST-4). And automatic
-//! allocation's machines (`alloc_…`): `krowk machines`, krowk-mcp's
+//! allocation's machines (`alloc_…`): `gruntas machines`, gruntas-mcp's
 //! delegate and collect, and a target that drops mid-task.
 //! Against the stand-in registry, the reference relay and the fake
 //! `claude` beside the Claude Code tests.
@@ -270,7 +270,7 @@ impl Drop for Machine {
     }
 }
 
-/// A running `krowk`, its stdout and stderr read line by line.
+/// A running `gruntas`, its stdout and stderr read line by line.
 struct Running {
     child: Child,
     out: mpsc::Receiver<String>,
@@ -356,7 +356,7 @@ fn is(kind: &'static str) -> impl Fn(&serde_json::Value) -> bool {
     move |v| v["type"] == kind
 }
 
-/// R-PERM-2 through the command line (todo 22a): B, attached with `krowk
+/// R-PERM-2 through the command line (todo 22a): B, attached with `gruntas
 /// sync attach`, allows one of A's tool calls with `/approve`, refuses
 /// another with `/deny`, and stops a turn with `/interrupt`. Each
 /// `approval.requested` line carries its requestId, and stderr says what
@@ -411,7 +411,7 @@ fn r_perm_2_sync_attach_approves_denies_and_interrupts_from_stdin() {
     assert!(host.child.try_wait().unwrap().is_none(), "A still hosts: {:?}", host.stderr());
 }
 
-/// R-SUB-12 through the command line: B, attached with `krowk sync
+/// R-SUB-12 through the command line: B, attached with `gruntas sync
 /// attach`, stops one of the agents of A's turn with `/interrupt` and the
 /// id its `subagent.started` line names, and the turn goes on to its answer.
 #[test]
@@ -433,7 +433,7 @@ fn r_sub_12_sync_attach_stops_one_subagent_by_its_id() {
     assert_eq!(result["status"], "completed", "the turn went on past its stopped subagent: {result}");
 }
 
-/// Todo 29b: a prompt from `krowk sync attach` that A's daemon refuses
+/// Todo 29b: a prompt from `gruntas sync attach` that A's daemon refuses
 /// before its turn starts — a Claude Code session made with `-p --trust`,
 /// its repository on no trusted list — is acked with the refusal, not
 /// acked as taken and then never heard of again. Once A trusts the
@@ -474,7 +474,7 @@ fn sync_attach_hears_a_prompt_the_host_refuses_as_untrusted_and_the_next_runs_on
     assert_eq!(result["status"], "completed", "the turn ran once A trusted the repository: {result}");
 }
 
-/// R-SWITCH-4, R-INST-7, R-CRED-1: a turn B prompts with `krowk sync
+/// R-SWITCH-4, R-INST-7, R-CRED-1: a turn B prompts with `gruntas sync
 /// attach` that hits the limit of A's instance is named on B's stderr with
 /// the instance A offers, and `/switch` takes it as the terminal does: a
 /// `switchModel` to it, then, once A has taken that, the prompt again,
@@ -490,11 +490,11 @@ fn r_switch_4_sync_attach_names_a_limits_offer_and_switch_takes_it() {
     view.until("the host", |v| v["type"] == "sync.host" && v["present"] == true);
 
     view.type_line("/switch");
-    view.said("the refusal", |l| l == "krowk: no switch offer is waiting");
+    view.said("the refusal", |l| l == "gruntas: no switch offer is waiting");
     view.type_line(&format!("say {LIMITED}"));
     let result = view.until("the limited turn's end", |v| v["type"] == "result" && v["sessionId"] == session.as_str());
     assert_eq!(result["switchOffer"]["to"]["instance"], "claude:personal", "{result}");
-    view.said("the offer", |l| l == "krowk: claude/sonnet is at its limit — type /switch to continue on claude:personal/sonnet");
+    view.said("the offer", |l| l == "gruntas: claude/sonnet is at its limit — type /switch to continue on claude:personal/sonnet");
 
     view.type_line("/switch");
     let result = view.until("the turn again", |v| v["type"] == "result" && v["sessionId"] == session.as_str());
@@ -536,7 +536,7 @@ fn r_roll_12_sync_attach_switch_takes_an_early_offer_without_sending_again() {
     view.type_line(&format!("say {NEARLY_OUT}"));
     let result = view.until("the turn's end", |v| v["type"] == "result" && v["sessionId"] == session.as_str());
     assert_eq!((result["status"].as_str(), result["switchOffer"]["early"].as_bool()), (Some("completed"), Some(true)), "{result}");
-    view.said("the offer", |l| l.starts_with("krowk: claude/sonnet is running low — type /switch to continue on claude:personal/sonnet ("));
+    view.said("the offer", |l| l.starts_with("gruntas: claude/sonnet is running low — type /switch to continue on claude:personal/sonnet ("));
     view.type_line("/switch");
     view.until("the switch", |v| v["type"] == "model.switched" && v["to"]["instance"] == "claude:personal");
     std::thread::sleep(Duration::from_millis(500));
@@ -566,7 +566,7 @@ fn prompts(log: &std::path::Path) -> Vec<String> {
     std::fs::read_to_string(log).unwrap_or_default().lines().filter_map(|l| l.strip_prefix("in ")).filter(|l| l.starts_with(r#"{"type":"user""#)).map(String::from).collect()
 }
 
-/// A's session made with `krowk -p` and hosted by `krowk sync host`, synced
+/// A's session made with `gruntas -p` and hosted by `gruntas sync host`, synced
 /// to the registry: the host's process, and the session's id.
 fn hosted(w: &World, a: &Machine) -> (Running, String) {
     let _ = w;
@@ -587,7 +587,7 @@ fn hosted_on(a: &Machine, model: &str) -> (Running, String) {
     (host, session)
 }
 
-/// R-CUT-9, D3: `krowk sync attach` on a terminal prints stream-json as it
+/// R-CUT-9, D3: `gruntas sync attach` on a terminal prints stream-json as it
 /// does without one — the session's history, the host's presence — takes a
 /// prompt typed on stdin (acked), and ends with stdin once it is answered.
 #[test]
@@ -610,7 +610,7 @@ fn r_cut_9_sync_attach_on_a_terminal_prints_stream_json_and_takes_stdin_commands
     assert!(t.wait(Duration::from_secs(20)).is_some_and(|s| s.success()), "attach ends with stdin: {:?}", t.text());
 }
 
-/// R-CUT-9: `krowk --resume` of a session only another machine holds, on a
+/// R-CUT-9: `gruntas --resume` of a session only another machine holds, on a
 /// terminal, follows it through sync as stream-json and says so on stderr.
 #[test]
 fn r_cut_9_resume_of_a_synced_session_on_a_terminal_follows_it_as_stream_json() {
@@ -628,7 +628,7 @@ fn r_cut_9_resume_of_a_synced_session_on_a_terminal_follows_it_as_stream_json() 
     assert!(t.wait(Duration::from_secs(20)).is_some_and(|s| s.success()), "B leaves: {:?}", t.text());
 }
 
-/// D11: `krowk sync attach` printing stream-json ends when its stdin does,
+/// D11: `gruntas sync attach` printing stream-json ends when its stdin does,
 /// once the command sent before it ended has been answered.
 #[test]
 fn d11_sync_attach_as_jsonl_ends_with_stdin_once_its_commands_are_answered() {
@@ -652,7 +652,7 @@ fn d11_sync_attach_as_jsonl_ends_with_stdin_once_its_commands_are_answered() {
     assert!(status.success(), "{status:?}: {:?}", view.stderr());
 }
 
-/// Todo 22b: `krowk sync host` for a session this machine has no log of
+/// Todo 22b: `gruntas sync host` for a session this machine has no log of
 /// ends at once with the fix, and writes nothing to the registry — before,
 /// it took the session's lease and then waited, silent, forever.
 #[test]
@@ -666,7 +666,7 @@ fn sync_host_of_a_session_this_machine_does_not_have_fails_fast() {
     assert!(started.elapsed() < Duration::from_secs(10), "it did not wait: {:?}", started.elapsed());
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
-    assert!(err.contains("no session") && err.contains("krowk sync host"), "says why and what to do: {err}");
+    assert!(err.contains("no session") && err.contains("gruntas sync host"), "says why and what to do: {err}");
     assert_eq!(a.api.show_sync_session(id).unwrap_err().status, 404, "nothing was made in the registry");
 }
 
@@ -694,7 +694,7 @@ fn sync_host_refuses_when_the_registry_cannot_give_it_the_device_list() {
     assert_eq!(a.api.show_sync_session(id).unwrap_err().status, 404, "nothing was sealed or made in the registry");
 }
 
-/// A native session stored before its krowk.db row took its log's id is
+/// A native session stored before its gruntas.db row took its log's id is
 /// listed under another id; `sync host` takes that one too, and hosts the
 /// log it binds to rather than refusing it as unknown.
 #[test]
@@ -749,7 +749,7 @@ fn on_tailscale(m: &mut Machine, status: serde_json::Value) {
     m.env.push(("GRUNTAS_TAILSCALE_SOCKET".into(), socket.display().to_string()));
 }
 
-/// Ticket 43: on a tailnet with no tags and no policy, `krowk machines` on B
+/// Ticket 43: on a tailnet with no tags and no policy, `gruntas machines` on B
 /// lists A — the machine of B's person that hosts a synced session — by
 /// its device list name, hosting, and reachable directly over the node A
 /// kept in the session's sealed index. A peer on the tailnet that is not
@@ -807,7 +807,7 @@ fn path_until(view: &mut Running, want: &str) -> serde_json::Value {
     view.until(want, |v| v["type"] == "sync.path" && v["path"] == want)
 }
 
-/// Ticket 42: with Tailscale up and no krowk variable set, the host fetches
+/// Ticket 42: with Tailscale up and no gruntas variable set, the host fetches
 /// the registry's ticket keys itself, keeps them, and B's session moves to
 /// the direct path. It fetches at every hosting: keys kept from before — a
 /// key since rotated out — give way to what the registry publishes now.
@@ -901,7 +901,7 @@ fn a_lease(m: &Machine, session: &str) -> Option<String> {
     m.api.show_sync_session(session).ok().and_then(|s| s.lease).map(|l| l.device)
 }
 
-/// `krowk sync status --json`'s data on `m`, with `env` added.
+/// `gruntas sync status --json`'s data on `m`, with `env` added.
 fn sync_status(m: &Machine, env: &[(&str, &str)]) -> serde_json::Value {
     let out = m.command(&["sync", "status", "--json"]).envs(env.iter().copied()).stdin(Stdio::null()).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -910,11 +910,11 @@ fn sync_status(m: &Machine, env: &[(&str, &str)]) -> serde_json::Value {
 }
 
 /// R-SYNC-3, R-HOST-2 (ticket 95): A runs a turn in its host daemon with no
-/// sync command — kept up as `krowk machines always-on on` keeps it, with no idle
+/// sync command — kept up as `gruntas machines always-on on` keeps it, with no idle
 /// exit — and B lists the session within 5 seconds of the command's start,
-/// then follows a prompt it sends to its result. `krowk sync status` on A
-/// counts the bridge, `krowk sync host` of the session says it is synced
-/// already, and `krowk host stop` gives the lease back as the daemon exits.
+/// then follows a prompt it sends to its result. `gruntas sync status` on A
+/// counts the bridge, `gruntas sync host` of the session says it is synced
+/// already, and `gruntas host stop` gives the lease back as the daemon exits.
 #[test]
 fn r_sync_3_a_daemon_session_is_listed_elsewhere_with_no_sync_command() {
     let w = World::new("auto");
@@ -968,7 +968,7 @@ fn r_sync_3_a_daemon_session_is_listed_elsewhere_with_no_sync_command() {
     no_lease(&a, &session, Duration::from_secs(15));
 }
 
-/// R-SYNC-3 (ticket 95): `krowk sync status` says whether automatic sync is
+/// R-SYNC-3 (ticket 95): `gruntas sync status` says whether automatic sync is
 /// on and why not, whether this directory is synced or what opts it out,
 /// and how many sessions the host daemon bridges — none running here.
 #[test]
@@ -1021,7 +1021,7 @@ fn counting() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
 
 /// R-SYNC-1 (ticket 95): a machine that has not set sync up runs a turn in
 /// its host daemon as before, and neither the registry nor the relay hears
-/// from it — not one connection. `krowk sync status` fails `not_set_up`,
+/// from it — not one connection. `gruntas sync status` fails `not_set_up`,
 /// saying automatic sync is off until it is.
 #[test]
 fn r_sync_1_a_machine_without_sync_makes_no_sync_call() {
@@ -1084,7 +1084,7 @@ fn r_sync_3_the_daemon_syncs_nothing_the_policy_leaves_out() {
 }
 
 /// R-HOST-3, R-NET-4: A's host daemon runs with sync set up and no
-/// Tailscale anywhere; B's `krowk machines --json` lists A as announced and
+/// Tailscale anywhere; B's `gruntas machines --json` lists A as announced and
 /// online, with its instances and its trusted repository, and the text
 /// says so under A's line.
 #[test]
@@ -1123,12 +1123,12 @@ fn r_host_3_krowk_hosts_shows_an_announced_host_online_with_no_tailscale() {
     assert!(lines.next().is_some_and(|l| l.starts_with("a  online  ")), "{human}");
     // Hosting or not: its daemon's automatic sync may have taken the turn's session up.
     assert!(lines.next().is_some_and(|l| l.contains("  Tailscale is not running here  ")), "{human}");
-    assert!(lines.next().is_some_and(|l| l.starts_with("  online · krowk ")), "{human}");
+    assert!(lines.next().is_some_and(|l| l.starts_with("  online · gruntas ")), "{human}");
     assert!(human.contains("  ready: claude (") && human.contains("  directories: "), "{human}");
 }
 
 /// A with sync set up, its repository trusted and its host daemon kept up
-/// by `krowk host serve`, announced; and B, a second home on the same
+/// by `gruntas host serve`, announced; and B, a second home on the same
 /// person's list, which has seen A's announcement.
 fn serving(w: &World) -> (Machine, Machine, Running) {
     let mut a = w.machine("a");
@@ -1141,7 +1141,7 @@ fn serving(w: &World) -> (Machine, Machine, Running) {
     (a, b, serve)
 }
 
-/// A's row in B's `krowk machines --json`, once it passes `want`.
+/// A's row in B's `gruntas machines --json`, once it passes `want`.
 fn a_as_b_sees_it(b: &Machine, a: &Machine, want: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
@@ -1162,7 +1162,7 @@ fn commands_held(w: &World) -> Vec<serde_json::Value> {
     serde_json::from_str::<serde_json::Value>(&body).unwrap()["commands"].as_array().cloned().unwrap()
 }
 
-/// `krowk sync new` on B, run to its end, refused: its stderr.
+/// `gruntas sync new` on B, run to its end, refused: its stderr.
 fn sync_new_refused(w: &World, b: &Machine, args: &[&str]) -> String {
     let out = b.command(&[&["sync", "new"], args].concat()).stdin(Stdio::null()).output().unwrap();
     let err = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -1171,8 +1171,8 @@ fn sync_new_refused(w: &World, b: &Machine, args: &[&str]) -> String {
     err
 }
 
-/// R-HOST-4, R-SYNC-2: B starts a session on A with `krowk sync new` and
-/// follows it as stream-json; the turn runs on A, which holds it — `krowk
+/// R-HOST-4, R-SYNC-2: B starts a session on A with `gruntas sync new` and
+/// follows it as stream-json; the turn runs on A, which holds it — `gruntas
 /// sync sessions` on A lists it — and its lines reach B.
 #[test]
 fn r_host_4_sync_new_starts_a_session_on_a_and_b_follows_it_live() {
@@ -1180,7 +1180,7 @@ fn r_host_4_sync_new_starts_a_session_on_a_and_b_follows_it_live() {
     let (a, b, _serve) = serving(&w);
     let repo = a.repo.display().to_string();
     let mut view = Running::spawn(b.command(&["sync", "new", "--host", "A", "--cwd", &repo, "--json", "say hi"]));
-    view.said("the wait", |l| l == "krowk: asked a to start the session — waiting for it (up to 10 s)…");
+    view.said("the wait", |l| l == "gruntas: asked a to start the session — waiting for it (up to 10 s)…");
     // A's next refresh takes the command up, within 10 s, and its
     // automatic sync the session; a loaded runner is given room for both.
     let started = view.heard_within("the turn", true, Duration::from_secs(45), |v| v["type"] == "turn.started");
@@ -1203,8 +1203,8 @@ fn r_host_4_sync_new_starts_a_session_on_a_and_b_follows_it_live() {
     assert_eq!(a.session(), session);
 }
 
-/// R-EASE-10: `krowk sessions new --on` starts a session on A as `sync new
-/// --host` does; `krowk sessions` on B then lists it after B's own, under A's
+/// R-EASE-10: `gruntas sessions new --on` starts a session on A as `sync new
+/// --host` does; `gruntas sessions` on B then lists it after B's own, under A's
 /// name, as data too, and `sessions attach` follows it.
 #[test]
 fn r_ease_10_sessions_lists_every_machine_and_new_on_and_attach_work() {
@@ -1248,7 +1248,7 @@ fn r_ease_10_the_old_forms_stay_but_are_hidden() {
     let (sessions, sync, all) = (help(&["help", "sessions"]), help(&["help", "sync"]), help(&["help", "--all"]));
     let has = |text: &str, usage: &str| text.lines().any(|l| l.trim_start().starts_with(usage));
     assert!(has(&sessions, "attach <id>") && has(&sessions, "take <id>") && has(&sessions, "new --on"), "{sessions}");
-    assert!(!sessions.contains("krowk sessions sync") && !has(&sessions, "sync [--no-network]"), "{sessions}");
+    assert!(!sessions.contains("gruntas sessions sync") && !has(&sessions, "sync [--no-network]"), "{sessions}");
     assert!(!has(&sync, "sessions") && !has(&sync, "attach") && !has(&sync, "take") && !has(&sync, "new") && has(&sync, "status"), "{sync}");
     for old in ["sync sessions", "sync attach", "sync take", "sync new", "sessions sync"] {
         assert!(has(&all, old), "{old} is in help --all: {all}");
@@ -1282,9 +1282,9 @@ fn r_host_4_an_offline_host_is_refused_and_nothing_is_sent() {
         std::thread::sleep(Duration::from_millis(100));
     }
     let err = sync_new_refused(&w, &b, &["--host", "a", "--cwd", &a.repo.display().to_string(), "say hi"]);
-    assert!(err.contains("a is offline (") && err.contains("): start krowk there, or krowk machines always-on on"), "{err}");
+    assert!(err.contains("a is offline (") && err.contains("): start gruntas there, or gruntas machines always-on on"), "{err}");
     let err = sync_new_refused(&w, &b, &["--host", "nobody", "--cwd", "/x", "say hi"]);
-    assert!(err.contains("no machine named 'nobody' — krowk machines lists yours"), "{err}");
+    assert!(err.contains("no machine named 'nobody' — gruntas machines lists yours"), "{err}");
 }
 
 /// R-HOST-4: a directory A did not announce — its home, untrusted — is
@@ -1322,7 +1322,7 @@ fn r_host_4_sync_new_offers_no_permission_mode() {
     let w = World::new("newmode");
     let b = w.machine("b");
     let err = sync_new_refused(&w, &b, &["--host", "a", "--cwd", "/x", "--permission-mode", "unhinged", "say hi"]);
-    assert!(err.contains("unknown flag --permission-mode for `krowk sync new`"), "{err}");
+    assert!(err.contains("unknown flag --permission-mode for `gruntas sync new`"), "{err}");
     let help = b.command(&["help", "sync", "new"]).stdin(Stdio::null()).output().unwrap();
     let help = String::from_utf8_lossy(&help.stdout);
     assert!(help.contains("--host") && help.contains("--cwd") && help.contains("--model") && !help.lines().any(|l| l.trim_start().starts_with("--permission-mode")), "{help}");
@@ -1334,7 +1334,7 @@ fn git(dir: &std::path::Path, args: &[&str]) {
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
 }
 
-/// Kills every `krowk sync take <session>` still running: the take a host
+/// Kills every `gruntas sync take <session>` still running: the take a host
 /// ran for a `take` command hosts the session until stopped, detached from
 /// the daemon that started it.
 struct Takes(String);
@@ -1366,7 +1366,7 @@ impl Drop for Takes {
 /// A, B and C on one person's list. A and B hold clones of one repository
 /// with a commit, and B's host daemon is kept up offering its clone, with
 /// `b_env` its environment's change; A hosts a session it made in its
-/// clone with `krowk sync host`. C, a third home that never hosts (as a
+/// clone with `gruntas sync host`. C, a third home that never hosts (as a
 /// viewer would), sees B announced.
 struct Moving {
     // Dropped first, in this order: the take B ran, then the hosts, then
@@ -1448,7 +1448,7 @@ impl Moving {
 /// R-HAND-4, R-HAND-1, R-SYNC-2, R-HOST-4: C, a third device that never
 /// hosts (as a viewer), moves A's session to B. A directory B does not
 /// offer is refused first, and nothing moves. Then a `take` into B's clone
-/// of the session's repository: B runs `krowk sync take` itself and answers
+/// of the session's repository: B runs `gruntas sync take` itself and answers
 /// `taken`; the lease is B's, B's log has `session.moved`, and the next
 /// prompt, sent from C, runs on B.
 #[test]
@@ -1526,7 +1526,7 @@ fn allocating(w: &World) -> (Machine, Machine, Running) {
     (a, b, serve)
 }
 
-/// `name`'s row in `m`'s `krowk machines --json`, once it passes `want`.
+/// `name`'s row in `m`'s `gruntas machines --json`, once it passes `want`.
 fn machines_row(m: &Machine, name: &str, want: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -1541,7 +1541,7 @@ fn machines_row(m: &Machine, name: &str, want: impl Fn(&serde_json::Value) -> bo
     }
 }
 
-/// krowk-mcp on `m`, in its repository, spoken to a line at a time.
+/// gruntas-mcp on `m`, in its repository, spoken to a line at a time.
 struct Mcp {
     child: Child,
     stdin: std::process::ChildStdin,
@@ -1568,7 +1568,7 @@ impl Mcp {
     fn ask(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
         self.next += 1;
         writeln!(self.stdin, "{}", serde_json::json!({"jsonrpc": "2.0", "id": self.next, "method": method, "params": params})).unwrap();
-        self.out.recv_timeout(Duration::from_secs(400)).expect("krowk-mcp answered")
+        self.out.recv_timeout(Duration::from_secs(400)).expect("gruntas-mcp answered")
     }
 
     /// A tool's result: its text, and whether it is an error.
@@ -1591,9 +1591,9 @@ fn all_build_slots(m: &Machine) -> Vec<gruntas_harness::slots::Slot> {
     std::iter::from_fn(|| pool.try_take().unwrap()).collect()
 }
 
-/// Slice 03 (R-ALLOC-2, D16): B's `krowk machines` lists A with its
+/// Slice 03 (R-ALLOC-2, D16): B's `gruntas machines` lists A with its
 /// capacity, repository and acceptance and, for the current repository,
-/// ready; `--json` carries the same; `krowk machines` prints the same.
+/// ready; `--json` carries the same; `gruntas machines` prints the same.
 #[test]
 fn alloc_03_krowk_machines_lists_each_machine_and_hosts_is_its_alias() {
     let w = World::new("machines");
@@ -1606,12 +1606,12 @@ fn alloc_03_krowk_machines_lists_each_machine_and_hosts_is_its_alias() {
         let v: serde_json::Value = serde_json::from_slice(&b.command(args).stdin(Stdio::null()).output().unwrap().stdout).unwrap();
         v["machines"].as_array().unwrap().iter().map(|m| (m["name"].clone(), m.as_object().unwrap().keys().cloned().collect::<Vec<_>>())).map(|(n, k)| serde_json::json!([n, k])).collect()
     };
-    assert_eq!(shape(&["hosts", "--json"]), shape(&["machines", "--json"]), "krowk machines is krowk machines");
+    assert_eq!(shape(&["hosts", "--json"]), shape(&["machines", "--json"]), "gruntas machines is gruntas machines");
     let human = String::from_utf8_lossy(&b.command(&["machines", "--format", "human"]).stdin(Stdio::null()).output().unwrap().stdout).into_owned();
     assert!(human.lines().any(|l| l.starts_with("a ") && l.contains("accepting")) && human.contains("ready"), "{human}");
 }
 
-/// Slice 08 (R-ALLOC-11, D18): from krowk-mcp on B, a task pinned to A is
+/// Slice 08 (R-ALLOC-11, D18): from gruntas-mcp on B, a task pinned to A is
 /// delegated, collected while it runs, and collected again once done, its
 /// file (the fake's `@touch`, empty) landed in B's working tree.
 #[test]
@@ -1646,7 +1646,7 @@ fn mid_work(m: &Machine) -> String {
     git(&["rev-parse", "HEAD"])
 }
 
-/// gruntas_machines is `krowk machines --json`: the same machines with the
+/// gruntas_machines is `gruntas machines --json`: the same machines with the
 /// same fields (their readings move, so the values are not compared).
 #[test]
 fn krowk_mcp_machines_lists_what_krowk_machines_json_does() {
@@ -1680,7 +1680,7 @@ fn krowk_mcp_runs_a_task_pinned_here_in_a_worktree() {
     assert_eq!(std::fs::read_to_string(b.repo.join("delegated.txt")).unwrap(), "", "{said}");
 }
 
-/// Slice 10, the CI case through krowk-mcp: B has every build slot held,
+/// Slice 10, the CI case through gruntas-mcp: B has every build slot held,
 /// A is idle; a task delegated with no host runs on A from B's exact
 /// state, an unpushed commit and an uncommitted change included, and its
 /// file lands in B's working tree.

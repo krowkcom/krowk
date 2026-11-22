@@ -9,7 +9,7 @@ use serde_json::json;
 use std::time::{Duration, Instant};
 
 /// A browser login's window and pace are the registry's to set, and bounded
-/// here, so an absurd answer can neither make krowk hammer it nor leave a
+/// here, so an absurd answer can neither make gruntas hammer it nor leave a
 /// forgotten terminal polling all afternoon.
 const DEFAULT_WINDOW: Duration = Duration::from_secs(15 * 60);
 const MIN_WINDOW: Duration = Duration::from_secs(60);
@@ -31,7 +31,7 @@ pub struct LoginPoll {
     /// When the wait under way ends.
     due: Instant,
     /// The last poll that got no answer: if the window closes with one
-    /// outstanding, krowk could not ask, and "nobody approved it" would blame
+    /// outstanding, gruntas could not ask, and "nobody approved it" would blame
     /// a person for a question that never got out.
     unanswered: Option<Error>,
 }
@@ -102,13 +102,13 @@ impl LoginPoll {
                 if granted.token.is_empty() {
                     return Some(Err(fail(
                         "malformed_response",
-                        "the registry approved this login without handing over a key — run `krowk login` again, and report it if it repeats",
+                        "the registry approved this login without handing over a key — run `gruntas login` again, and report it if it repeats",
                     )));
                 }
                 Some(Ok(granted))
             }
             Ok(granted) if granted.state == AUTHORIZATION_DENIED => {
-                Some(Err(fail("authorization_denied", "this login was denied in the browser — run `krowk login` to ask again")))
+                Some(Err(fail("authorization_denied", "this login was denied in the browser — run `gruntas login` to ask again")))
             }
             // Pending, or a state this build has no word for: still inside the window.
             Ok(_) => {
@@ -121,7 +121,7 @@ impl LoginPoll {
 
 fn window_closed(unanswered: Option<Error>) -> Error {
     unanswered.unwrap_or_else(|| {
-        fail("authorization_expired", "nobody approved this login before it lapsed — run `krowk login` to ask again")
+        fail("authorization_expired", "nobody approved this login before it lapsed — run `gruntas login` to ask again")
     })
 }
 
@@ -133,9 +133,9 @@ fn worth_another_poll(e: &Error) -> bool {
 /// nonsense to someone trying to log in.
 fn login_fix(mut e: Error) -> Error {
     let fix = match (e.code().as_str(), e.status) {
-        ("expired", _) => "this login lapsed before it was approved — run `krowk login` to ask again",
-        ("spent", _) => "this login's key was already collected, and the registry keeps no second copy — run `krowk login` for a new one",
-        (_, 404) => "the registry does not know this login — it may have lapsed and been swept; run `krowk login` to ask again",
+        ("expired", _) => "this login lapsed before it was approved — run `gruntas login` to ask again",
+        ("spent", _) => "this login's key was already collected, and the registry keeps no second copy — run `gruntas login` for a new one",
+        (_, 404) => "the registry does not know this login — it may have lapsed and been swept; run `gruntas login` to ask again",
         _ => return e,
     };
     e.body.insert("fix".into(), json!(fix));
@@ -184,14 +184,14 @@ pub fn browsable_url(raw: &str, api_insecure: bool) -> Result<String, Error> {
         "http" => {
             return Err(fail(
                 "refused_verification_url",
-                "the registry named an http page for this login while the API itself is https — krowk will not open it; check GRUNTAS_API_URL",
+                "the registry named an http page for this login while the API itself is https — gruntas will not open it; check GRUNTAS_API_URL",
             ))
         }
         "" => return Err(malformed("named a page for this login with no scheme")),
         other => {
             return Err(fail(
                 "refused_verification_url",
-                format!("the registry named a {other}: page for this login, and krowk only opens http and https"),
+                format!("the registry named a {other}: page for this login, and gruntas only opens http and https"),
             ))
         }
     }

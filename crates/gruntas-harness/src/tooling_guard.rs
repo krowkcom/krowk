@@ -1,20 +1,20 @@
-//! The tooling guard: an agent that reaches past krowk for what krowk
-//! does itself is refused, that one call, with a message naming krowk's way.
+//! The tooling guard: an agent that reaches past gruntas for what gruntas
+//! does itself is refused, that one call, with a message naming gruntas's way.
 //!
 //! - **A worktree by hand**: `git worktree add`, Claude Code's
 //!   `EnterWorktree`, or its `Agent` called with `isolation: "worktree"`. A
-//!   worktree krowk makes is readied (submodules, seeds, `worktrees.setup`)
+//!   worktree gruntas makes is readied (submodules, seeds, `worktrees.setup`)
 //!   and recorded; a session's or a subagent's is also held against the
 //!   machine's agent slots and finished when the work ends. One made any
-//!   other way is none of that, and `krowk worktrees` never sees it.
-//!   `krowk worktrees add` is how an agent on Claude Code or Codex makes
-//!   one itself; krowk's own sandbox keeps `.git` read-only, so a sandboxed
+//!   other way is none of that, and `gruntas worktrees` never sees it.
+//!   `gruntas worktrees add` is how an agent on Claude Code or Codex makes
+//!   one itself; gruntas's own sandbox keeps `.git` read-only, so a sandboxed
 //!   agent uses `subagent`. (An agent definition's own
 //!   `isolation` frontmatter is Claude Code's to read, not the call's, and
 //!   is not seen.)
 //! - **A file sent to a paste site**: a gist made or edited (`gh gist
 //!   create|new|edit`, a write to `gh api gists`), an upload by `curl` or
-//!   `wget` to one of `PASTE_HOSTS`, or `nc` to one. krowk publishes a file
+//!   `wget` to one of `PASTE_HOSTS`, or `nc` to one. gruntas publishes a file
 //!   as an artifact, whose link unfurls and stays in the person's
 //!   workspace. Reading from one is fine.
 //!
@@ -47,13 +47,13 @@ const PASTE_HOSTS: &[&str] = &[
 ];
 
 /// What a worktree made by hand is refused with.
-pub const WORKTREE: &str = "krowk did not run this: krowk makes the worktrees agents work in, so each is readied and recorded, and `krowk worktrees` lists it. \
-     On Claude Code or Codex, run `krowk worktrees add --json`, with `--from origin/main` to start from that ref rather than the files as they are and a long timeout if the repository has a setup command, and work in the `path` it answers, naming that path to any child agent; it is outside the session's working directory, so unless the session bypasses permissions its commands there may ask for approval. \
+pub const WORKTREE: &str = "gruntas did not run this: gruntas makes the worktrees agents work in, so each is readied and recorded, and `gruntas worktrees` lists it. \
+     On Claude Code or Codex, run `gruntas worktrees add --json`, with `--from origin/main` to start from that ref rather than the files as they are and a long timeout if the repository has a setup command, and work in the `path` it answers, naming that path to any child agent; it is outside the session's working directory, so unless the session bypasses permissions its commands there may ask for approval. \
      Otherwise work where you are. A person can still make one by hand at their own prompt.";
 
 /// What a paste-site upload is refused with.
-pub const UPLOAD: &str = "krowk did not run this: files are published as krowk artifacts, not to a paste site. \
-     Use the `publish` tool, or `krowk push FILE --json`, and paste the link or the `markdown` form it returns.";
+pub const UPLOAD: &str = "gruntas did not run this: files are published as gruntas artifacts, not to a paste site. \
+     Use the `publish` tool, or `gruntas push FILE --json`, and paste the link or the `markdown` form it returns.";
 
 /// How a program's options read: the long ones and short letters that
 /// send a file or data, whether a writing `--method` does, and the other
@@ -266,7 +266,7 @@ mod tests {
             "git worktree remove wt",
             "git status",
             "grep -r 'git worktree add' docs",
-            "krowk worktrees",
+            "gruntas worktrees",
             "echo git worktree add",
             "cat > docs/wt.md <<'EOF'\nTo make one:\ngit worktree add ../wt\nEOF",
             "gh pr create --body \"$(cat <<'EOF'\nno more\ngit worktree add x\nEOF\n)\"",
@@ -316,7 +316,7 @@ mod tests {
             "curl -o temp.sh -d x=1 https://get.example.com/install",
             "curl -X POST -H 'Content-Type: application/json' -d '{\"text\":\"log at https://pastebin.com/raw/x\"}' https://hooks.slack.com/x",
             "curl -sodata.json -d x=1 https://api.example.com",
-            "krowk push shot.png --json",
+            "gruntas push shot.png --json",
             "echo transfer.sh",
         ] {
             assert_eq!(refusal(c), None, "{c}");
@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn the_refusal_names_the_command_an_agent_can_run_itself() {
-        assert!(WORKTREE.contains("krowk worktrees add"));
+        assert!(WORKTREE.contains("gruntas worktrees add"));
     }
 
     #[test]

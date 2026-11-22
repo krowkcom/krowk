@@ -1,12 +1,12 @@
-//! `krowk status`: whether each Claude Code or Codex account can run a turn
+//! `gruntas status`: whether each Claude Code or Codex account can run a turn
 //! here — the implicit ones and the configured ones, one row each (an
-//! instance krowk would run itself is not offered: D6): its name, its
+//! instance gruntas would run itself is not offered: D6): its name, its
 //! kind, its readiness, where its credential comes from, and what fixes it.
 //! The answer is `gruntas_harness::readiness`, the same check `providers
 //! list`, `doctor` and a model switch use, so the three never disagree.
 //!
 //! It exits 0 when at least one instance is ready, and 3 (`none_ready`)
-//! when none is, so a script can ask "can krowk run anything here?" in one
+//! when none is, so a script can ask "can gruntas run anything here?" in one
 //! call. `--json` is the table as data:
 //!
 //! ```json
@@ -38,7 +38,7 @@ pub(super) fn reports(ctx: &Ctx) -> Result<(InstancesConfig, Registry, Vec<Repor
     Ok((cfg, reg, reports))
 }
 
-/// Where a vendor is asked when no repository is trusted: krowk's own
+/// Where a vendor is asked when no repository is trusted: gruntas's own
 /// `0700` directory, never the working directory (whose project settings
 /// nobody trusted) nor the shared temporary directory (where anyone could
 /// plant settings that make a signed-out account look signed in).

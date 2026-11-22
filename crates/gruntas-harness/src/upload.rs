@@ -1,6 +1,6 @@
 //! Sending a prompt's or steer's images ahead of it, one `put_image` after
-//! another: what a client's link, `krowk -p` on a daemon and the typed line
-//! of `krowk sync attach` share (R-IMG-2, R-IMG-5, R-IMG-7).
+//! another: what a client's link, `gruntas -p` on a daemon and the typed line
+//! of `gruntas sync attach` share (R-IMG-2, R-IMG-5, R-IMG-7).
 
 use crate::engine::EngineError;
 use crate::protocol::{Command, LiveEvent, RunResult, StreamLine};
@@ -60,7 +60,7 @@ where
         // Headroom for the rest of the message.
         return match total > MESSAGE_CAP - 64 * 1024 {
             false => Ok(cmd),
-            true => Err(EngineError::new(IMAGE_NOT_SENT, format!("{} runs krowk {}, which takes a prompt's images only in one message, and these come to {:.1} MB; update krowk there or send fewer images", host.name, host.krowk_version, total as f64 / (1024.0 * 1024.0)))),
+            true => Err(EngineError::new(IMAGE_NOT_SENT, format!("{} runs gruntas {}, which takes a prompt's images only in one message, and these come to {:.1} MB; update gruntas there or send fewer images", host.name, host.krowk_version, total as f64 / (1024.0 * 1024.0)))),
         };
     }
     let n = images.len();

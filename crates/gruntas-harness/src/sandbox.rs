@@ -1,7 +1,7 @@
 //! The OS sandbox (R-PERM-3): the boundary a permission prompt is not.
 //! A command the `bash` tool runs is started inside it, so what the
 //! command does — and whatever it starts — meets the kernel's refusal,
-//! not krowk's judgement of a command line it cannot fully read.
+//! not gruntas's judgement of a command line it cannot fully read.
 //!
 //! What it lets a command see is allowed, not listed: the person's home
 //! is replaced by an empty directory, and only the workspace and the Rust
@@ -28,7 +28,7 @@
 //! `.claude/settings.json` could run anything the next time git or an
 //! agent starts.
 //!
-//! One workspace gets more: a worktree krowk made for an agent (worktrees
+//! One workspace gets more: a worktree gruntas made for an agent (worktrees
 //! WT4), which the agent must be able to commit in. A commit in a linked
 //! worktree writes objects and refs into the repository's common git
 //! directory, outside the workspace, so when the workspace is one
@@ -92,9 +92,9 @@
 //! Windows there is none. Both refuse.
 //!
 //! Inside a container (`By::Container`) the container holds the commands,
-//! and krowk adds only the file tools' fences.
+//! and gruntas adds only the file tools' fences.
 //!
-//! The file tools run in krowk's own process, not in the sandbox: under
+//! The file tools run in gruntas's own process, not in the sandbox: under
 //! one they hold the same lines themselves (`permissions::scope::Scope::edit_path`,
 //! `permissions::scope::Scope::path`, the same fences via `Plan::fences`), open exactly
 //! the path they checked (`tools::exact`), and no rule, grant, person or
@@ -146,7 +146,7 @@ impl Profile {
 pub enum By {
     /// bubblewrap, around every command; the file tools hold the same lines.
     Bubblewrap,
-    /// The container krowk runs in, which is the command's boundary: the
+    /// The container gruntas runs in, which is the command's boundary: the
     /// commands run as they are, and the file tools hold the profile's
     /// lines themselves all the same — the container does not keep them
     /// out of `.git/hooks` or the person's credentials.
@@ -169,7 +169,7 @@ pub const HOME: &str = "/tmp/home";
 const CREDENTIALS: [&str; 8] = [".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker", ".config/gcloud", ".config/gh"];
 
 /// The directories inside a writable one that stay read-only: what git,
-/// Claude Code, Codex and krowk run what they name from.
+/// Claude Code, Codex and gruntas run what they name from.
 const FENCED: [&str; 4] = [".git", ".claude", ".codex", ".gruntas"];
 
 /// One sandbox, laid out: what a call may write, what it may only read,
@@ -188,7 +188,7 @@ struct Inputs {
     toolchains: Vec<(&'static str, PathBuf)>,
     worktrees: Option<PathBuf>,
     /// Where git finds the person's own config (`GIT_CONFIG_ENV`), as
-    /// krowk's environment names it: a krowk worktree's identity is read
+    /// gruntas's environment names it: a gruntas worktree's identity is read
     /// with it.
     config_env: Vec<(&'static str, Option<std::ffi::OsString>)>,
     walk: Walk,
@@ -202,12 +202,12 @@ pub struct Plan {
     inputs: Inputs,
     pub profile: Profile,
     /// Whether commands run inside bubblewrap; false inside a container,
-    /// where only the file tools' own fences are krowk's to add.
+    /// where only the file tools' own fences are gruntas's to add.
     pub kernel: bool,
     pub cwd: PathBuf,
     /// Bound read-write (read-only under the read-only profile).
     pub writable: Vec<PathBuf>,
-    /// A krowk worktree's common git directory (`managed_worktree`), in
+    /// A gruntas worktree's common git directory (`managed_worktree`), in
     /// the order it is bound after `writable` and before `read_only`: the
     /// directory read-only, then what a commit writes in it (`true`)
     /// writable. Empty for every other workspace. Not the file tools' to
@@ -220,7 +220,7 @@ pub struct Plan {
     /// and whether all of it (`true`) or only what is in it.
     pub swept: Vec<(PathBuf, bool)>,
     /// The person's `user.name` and `user.email` as git resolves them in a
-    /// krowk worktree, handed to its commands as `GIT_AUTHOR_*` and
+    /// gruntas worktree, handed to its commands as `GIT_AUTHOR_*` and
     /// `GIT_COMMITTER_*`: the config that names them is in the hidden home.
     pub identity: Option<(String, String)>,
     /// Bound read-only over what `writable` and `git` opened: `.git` and
@@ -254,7 +254,7 @@ impl Plan {
     /// The plan for `profile` over a session's reach: its working
     /// directory and added directories (`roots`), the skills it reads
     /// (`readable`), the settings directories it keeps (`protected`) and
-    /// krowk's home (`secrets`).
+    /// gruntas's home (`secrets`).
     pub fn new(sandbox: Sandbox, cwd: &Path, roots: &[PathBuf], readable: &[PathBuf], protected: &[PathBuf], secrets: &[PathBuf], home: Option<&Path>) -> Plan {
         Plan::new_in(sandbox, cwd, roots, readable, protected, secrets, home, &|k| std::env::var_os(k))
     }
@@ -308,7 +308,7 @@ impl Plan {
         };
         let repos = fences.repos.clone();
         read_only.extend(fences.all());
-        // A worktree krowk made, as it is now: its common git directory's
+        // A worktree gruntas made, as it is now: its common git directory's
         // parts a commit writes, the fences on top of them, and who the
         // commit is by.
         let (mut git, mut swept, mut identity) = (Vec::new(), Vec::new(), None);
@@ -448,7 +448,7 @@ impl Plan {
         }
         a.extend(["--dir".into(), HOME.into()]);
         // A session of its own, so it cannot push keystrokes into the
-        // terminal krowk runs in (TIOCSTI); its own IPC, host name and
+        // terminal gruntas runs in (TIOCSTI); its own IPC, host name and
         // cgroup view.
         a.extend(["--new-session", "--unshare-ipc", "--unshare-uts", "--unshare-cgroup-try"].map(String::from));
         a.extend(["--unshare-pid", "--die-with-parent", "--chdir"].map(String::from));
@@ -534,7 +534,7 @@ impl Unfenced {
             // contents are removed without following the links in it.
             match if m.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) } {
                 Ok(()) => out.push(p),
-                Err(e) => eprintln!("krowk: a sandboxed command left {} and it could not be removed ({e}) — it may hold hooks git would run: remove it yourself before running git there", p.display()),
+                Err(e) => eprintln!("gruntas: a sandboxed command left {} and it could not be removed ({e}) — it may hold hooks git would run: remove it yourself before running git there", p.display()),
             }
         }
         out
@@ -659,7 +659,7 @@ impl WalkCache {
                 seen += s.entries;
                 if seen > WALK_BUDGET {
                     return Err(format!(
-                        "the workspace holds more than {seen} files and directories, over the {WALK_BUDGET} the sandbox searches for repositories to fence, so it cannot fence them all — run krowk in a smaller directory, or pass --sandbox off to run without the sandbox"
+                        "the workspace holds more than {seen} files and directories, over the {WALK_BUDGET} the sandbox searches for repositories to fence, so it cannot fence them all — run gruntas in a smaller directory, or pass --sandbox off to run without the sandbox"
                     ));
                 }
                 stack.extend(s.subdirs.iter().cloned());
@@ -820,7 +820,7 @@ fn worktrees_root(env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Option<Pa
     gruntas_api::home::worktrees_root(&|k| env(k).map(|v| v.to_string_lossy().into_owned()).unwrap_or_default())
 }
 
-/// A worktree krowk made for an agent, as the sandbox opens it to a
+/// A worktree gruntas made for an agent, as the sandbox opens it to a
 /// commit: the repository's common git directory and the worktree's admin
 /// directory in it, both as they lead.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -831,7 +831,7 @@ pub struct ManagedWorktree {
     pub hex: String,
 }
 
-/// Whether `top`, a workspace, is a worktree krowk made under `root`
+/// Whether `top`, a workspace, is a worktree gruntas made under `root`
 /// (`gruntas_api::home::worktrees_root`), and where its git directories are.
 /// The root is named by the environment, so being under it is not enough:
 /// `top/.git` must be a gitdir file leading to `<common>/worktrees/<name>`,
@@ -882,7 +882,7 @@ impl ManagedWorktree {
     /// admin directory. Not the rest of `logs`: git appends to a reflog
     /// outside the sandbox too, so one a command made a symlink would have
     /// the person's next commit append to whatever it leads to. The two
-    /// `krowk` directories are made here when missing, and left read-only
+    /// `gruntas` directories are made here when missing, and left read-only
     /// when one is not a directory of its own.
     fn binds(&self) -> Vec<(PathBuf, bool)> {
         let c = &self.common;
@@ -943,7 +943,7 @@ fn own_dir(base: &Path, rel: &str) -> Option<PathBuf> {
 /// Removes from `dir`, recursively when `deep` and following no link,
 /// everything that is not a regular file or a directory — a symlink, a
 /// FIFO, a socket — and names it in `out`. git outside the sandbox writes
-/// through what is in a krowk worktree's writable git directories (it
+/// through what is in a gruntas worktree's writable git directories (it
 /// appends to a reflog in place), so a link a command left there would
 /// have it write wherever the link leads. Every directory is opened
 /// relative to its parent's handle without following a link, and every
@@ -1033,7 +1033,7 @@ fn entries(fd: &std::os::fd::OwnedFd) -> Vec<std::ffi::CString> {
 
 /// `user.name` and `user.email` as git resolves them in `top`, with
 /// `config_env` saying where the person's own config is; none unless both
-/// are set. Read by git outside the sandbox, through krowk's git (hooks
+/// are set. Read by git outside the sandbox, through gruntas's git (hooks
 /// and fsmonitor off): `git config` reads config and runs nothing.
 fn git_identity(top: &Path, config_env: &[(&'static str, Option<std::ffi::OsString>)]) -> Option<(String, String)> {
     let mut c = gruntas_api::git::query(top).ok()?;
@@ -1059,7 +1059,7 @@ fn git_identity(top: &Path, config_env: &[(&'static str, Option<std::ffi::OsStri
 }
 
 /// The Rust toolchain's homes that exist: `RUSTUP_HOME` and `CARGO_HOME`
-/// as krowk's environment names them, else `~/.rustup` and `~/.cargo`, as
+/// as gruntas's environment names them, else `~/.rustup` and `~/.cargo`, as
 /// they lead. rustup finds its toolchains only there, so a sandbox with a
 /// private `HOME` and without them cannot run `cargo`.
 fn toolchains(home: Option<&Path>, env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Vec<(&'static str, PathBuf)> {
@@ -1073,10 +1073,10 @@ fn toolchains(home: Option<&Path>, env: &dyn Fn(&str) -> Option<std::ffi::OsStri
 }
 
 /// The environment a sandboxed command gets, and bubblewrap itself: the
-/// search path, the terminal, the locale and the user's name from krowk's
+/// search path, the terminal, the locale and the user's name from gruntas's
 /// own, the private home and `/tmp`. Everything else — `*_API_KEY`,
 /// `*_TOKEN`, `GRUNTAS_*`, `AWS_*`, `SSH_AUTH_SOCK`, `GPG_AGENT_INFO` — is
-/// left out, allowlisted rather than denylisted, so a variable krowk has
+/// left out, allowlisted rather than denylisted, so a variable gruntas has
 /// never heard of is left out too.
 pub fn env() -> Vec<(String, String)> {
     let keep = |k: &str| matches!(k, "PATH" | "TERM" | "LANG" | "USER" | "LOGNAME") || k.starts_with("LC_");
@@ -1134,7 +1134,7 @@ fn probe() -> Result<PathBuf, String> {
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn probe() -> Result<PathBuf, String> {
-    Err("krowk has no sandbox on this platform yet, so a sandboxed run cannot start here — run without --sandbox, or on Linux with bubblewrap".into())
+    Err("gruntas has no sandbox on this platform yet, so a sandboxed run cannot start here — run without --sandbox, or on Linux with bubblewrap".into())
 }
 
 /// The program and arguments that run `bash -c <command>` inside `plan`,
@@ -1151,7 +1151,7 @@ pub fn bash(plan: &Plan, command: &str, env: &[(String, String)]) -> Result<(Pat
 }
 
 /// Marks every descriptor past stdio close-on-exec: called in a child
-/// between fork and exec, after its stdio is in place, so nothing krowk
+/// between fork and exec, after its stdio is in place, so nothing gruntas
 /// holds open without `O_CLOEXEC` — a descriptor a library opened, one
 /// another thread is about to mark — reaches a sandboxed command. The bash
 /// tool and the worktree setup command (`worktree::setup`) both start
@@ -1175,7 +1175,7 @@ pub(crate) fn cloexec_past_stdio() {
     }
 }
 
-/// Whether krowk runs inside a container, which is a sandbox of its own:
+/// Whether gruntas runs inside a container, which is a sandbox of its own:
 /// Docker's and Podman's markers, which only the container's root writes.
 pub fn in_container() -> bool {
     cfg!(target_os = "linux") && (Path::new("/.dockerenv").exists() || Path::new("/run/.containerenv").exists())

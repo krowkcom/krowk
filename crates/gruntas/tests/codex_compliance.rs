@@ -1,5 +1,5 @@
-//! R-BACK-3, non-negotiable: krowk drives the official `codex app-server`,
-//! the person signs in with `codex login`, and krowk never reuses Codex's
+//! R-BACK-3, non-negotiable: gruntas drives the official `codex app-server`,
+//! the person signs in with `codex login`, and gruntas never reuses Codex's
 //! OAuth client id, never runs an OAuth flow against OpenAI's sign-in
 //! server, never reads Codex's login file, and never passes itself off as a
 //! Codex client. Two checks hold every build to it:
@@ -104,7 +104,7 @@ fn r_back_3_no_source_file_names_codexs_login_file_or_its_oauth_client() {
     let ws = workspace();
     let roots: Vec<PathBuf> = ["crates", "tests", "scripts", "npm", "skills"].iter().map(|d| ws.join(d)).collect();
     let found = scan(&roots);
-    assert!(found.is_empty(), "R-BACK-3: krowk never reads Codex's login, reuses its OAuth client or poses as a Codex client:\n{}", found.join("\n"));
+    assert!(found.is_empty(), "R-BACK-3: gruntas never reads Codex's login, reuses its OAuth client or poses as a Codex client:\n{}", found.join("\n"));
 
     // The check itself: a file that reads the login, or names the client,
     // is caught.
@@ -200,7 +200,7 @@ fn r_back_3_a_whole_codex_workflow_never_opens_codexs_login_file() {
     assert!(wire.hits().contains(&own), "the tripwire did not see a read");
     wire.reset();
 
-    let krowk = |args: &[&str]| {
+    let gruntas = |args: &[&str]| {
         let out = Command::new(env!("CARGO_BIN_EXE_gruntas"))
             .args(args)
             .env_clear()
@@ -225,9 +225,9 @@ fn r_back_3_a_whole_codex_workflow_never_opens_codexs_login_file() {
         (vec!["providers", "remove", "codex:work", "--json"], true),
     ];
     for (args, must_succeed) in steps {
-        let (ok, said) = krowk(&args);
-        assert!(ok || !must_succeed, "krowk {args:?}: {said}");
-        assert!(wire.hits().is_empty(), "R-BACK-3: `krowk {}` opened Codex's login file: {:?}", args.join(" "), wire.hits());
+        let (ok, said) = gruntas(&args);
+        assert!(ok || !must_succeed, "gruntas {args:?}: {said}");
+        assert!(wire.hits().is_empty(), "R-BACK-3: `gruntas {}` opened Codex's login file: {:?}", args.join(" "), wire.hits());
     }
     drop(wire);
     let _ = std::fs::remove_dir_all(&root);

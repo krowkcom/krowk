@@ -1,6 +1,6 @@
 //! Slugs, and the links that carry them. Wherever an artifact or a run is
 //! named, a link that carries one does just as well — the card page, the CDN
-//! URL, anything krowk printed.
+//! URL, anything gruntas printed.
 
 use crate::error::{fail, Error};
 
@@ -23,7 +23,7 @@ fn failure(kind: &str) -> String {
 
 fn example(kind: &str) -> String {
     if kind == KIND_ARTIFACT {
-        return "the artifact slug, like art_…, or the link krowk handed back, like https://krowk.com/a/art_…".into();
+        return "the artifact slug, like art_…, or the link gruntas handed back, like https://krowk.com/a/art_…".into();
     }
     format!("the {} slug, like {kind}_…, or a link carrying it", noun(kind))
 }

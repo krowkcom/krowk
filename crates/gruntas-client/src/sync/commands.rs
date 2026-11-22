@@ -156,7 +156,7 @@ mod tests {
         assert_eq!((b.unacked(), b.queued()), (1, 1));
 
         // Settled by the host's ack, by the same id it was shown under (what
-        // `krowk sync attach` waits on); an id the book never held shows too.
+        // `gruntas sync attach` waits on); an id the book never held shows too.
         assert!(matches!(b.acked(now.id.clone(), None), Update::Acked { id, error: None } if id == now.id));
         assert_eq!(b.unacked(), 0);
         assert!(matches!(b.acked("elsewhere-1".into(), Some("no".into())), Update::Acked { id, error: Some(_) } if id == "elsewhere-1"));

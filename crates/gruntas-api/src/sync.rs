@@ -813,7 +813,7 @@ impl Client {
         Ok(all)
     }
 
-    /// `krowk sync init`'s post: seq 0, signed by the first device. Once: an
+    /// `gruntas sync init`'s post: seq 0, signed by the first device. Once: an
     /// init that landed and is sent again is refused as `chain_exists`.
     /// A start-over (`post.start_over`) goes to `…/devices/reset`.
     pub fn init_device_list(&self, post: &ListPost) -> Result<Value, Error> {
@@ -941,7 +941,7 @@ impl Client {
     pub fn show_pairing(&self, id: &str) -> Result<Pairing, Error> {
         let p: Pairing = self.get(&format!("{}/pairing", self.user_path()?))?;
         if p.id != id {
-            return Err(crate::fail("pairing_gone", format!("{id} has ended — run `krowk machines add` again for a new code")));
+            return Err(crate::fail("pairing_gone", format!("{id} has ended — run `gruntas machines add` again for a new code")));
         }
         Ok(p)
     }
@@ -1018,7 +1018,7 @@ impl Client {
     }
 
     /// The registry's relay ticket public keys (`GET /v1/relay/ticket_keys`),
-    /// `{"ticketKeys": {"<kid>": "<key>"}}` as `krowk relay serve
+    /// `{"ticketKeys": {"<kid>": "<key>"}}` as `gruntas relay serve
     /// --ticket-keys` reads them: what a host's direct listener checks a
     /// viewer's ticket with. Keyless, since they are public, tried once and
     /// given five seconds: a host without them goes by the relay.
@@ -1043,14 +1043,14 @@ pub fn machine_limit_fix(details: Option<&Value>) -> String {
     let names: Vec<String> = d.and_then(|d| d.get("machines")).and_then(Value::as_array).map_or_else(Vec::new, |m| m.iter().filter_map(Value::as_str).map(|n| n.chars().filter(|c| !c.is_control()).collect()).collect());
     let then = if plan == "free" { "upgrade" } else { "change plan" };
     let Some(limit) = limit.filter(|_| !plan.is_empty()) else {
-        return format!("This machine is over your plan's limit of machines that run sessions. You can still follow from here, or run krowk billing to {then}.");
+        return format!("This machine is over your plan's limit of machines that run sessions. You can still follow from here, or run gruntas billing to {then}.");
     };
     let mut name: Vec<char> = plan.chars().collect();
     name[0] = name[0].to_ascii_uppercase();
     let name: String = name.into_iter().collect();
     let machines = if limit == 1 { "one machine".to_string() } else { format!("{} machines", number(limit)) };
     let named = if names.is_empty() { String::new() } else { format!(" ({})", names.join(", ")) };
-    format!("{name} syncs sessions from {machines}, and this would be {}{named}. You can still follow from here, or run krowk billing to {then}.", ordinal(limit.saturating_add(1)))
+    format!("{name} syncs sessions from {machines}, and this would be {}{named}. You can still follow from here, or run gruntas billing to {then}.", ordinal(limit.saturating_add(1)))
 }
 
 /// A count in words up to twenty, as the pricing card says them.
@@ -1079,10 +1079,10 @@ mod machine_limit_tests {
     #[test]
     fn r_sync_17_the_refusal_names_the_plan_its_count_and_the_machines() {
         let free = json!({"plan": "free", "limit": 2, "machines": ["mbp", "desktop"]});
-        assert_eq!(machine_limit_fix(Some(&free)), "Free syncs sessions from two machines, and this would be a third (mbp, desktop). You can still follow from here, or run krowk billing to upgrade.");
+        assert_eq!(machine_limit_fix(Some(&free)), "Free syncs sessions from two machines, and this would be a third (mbp, desktop). You can still follow from here, or run gruntas billing to upgrade.");
         let pro = json!({"plan": "pro", "limit": 10, "machines": ["a"]});
-        assert_eq!(machine_limit_fix(Some(&pro)), "Pro syncs sessions from ten machines, and this would be an eleventh (a). You can still follow from here, or run krowk billing to change plan.");
-        assert!(machine_limit_fix(None).ends_with("or run krowk billing to change plan."));
+        assert_eq!(machine_limit_fix(Some(&pro)), "Pro syncs sessions from ten machines, and this would be an eleventh (a). You can still follow from here, or run gruntas billing to change plan.");
+        assert!(machine_limit_fix(None).ends_with("or run gruntas billing to change plan."));
         assert_eq!(ordinal(23), "a 23rd");
         assert_eq!(ordinal(112), "a 112th");
         let hostile = json!({"plan": "free", "limit": u64::MAX, "machines": ["a\u{1b}[2Jb\nc"]});

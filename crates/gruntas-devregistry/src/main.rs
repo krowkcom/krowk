@@ -1,7 +1,7 @@
 //! devregistry runs the local stand-in for api.krowk.com, so developing against
 //! a registry needs neither the network nor a checkout of the registry itself.
 //! Built by no release: `cargo run -p gruntas-devregistry`, then
-//! `krowk push screenshot.png --dev`.
+//! `gruntas push screenshot.png --dev`.
 
 use gruntas_devregistry::Config;
 use std::fmt;
@@ -163,12 +163,12 @@ fn serve(w: &mut dyn Write, ln: TcpListener, asked: &str, site: &str, limit_byte
 /// this machine — that it is open to anyone who can reach it.
 fn banner(bound: &str, asked: &str) -> String {
     let base = local_base(bound, asked);
-    let mut lines = vec![format!("krowk registry listening on {base}")];
+    let mut lines = vec![format!("gruntas registry listening on {base}")];
     if reachable_by_dev(asked) {
-        lines.push("  krowk push screenshot.png --dev".into());
+        lines.push("  gruntas push screenshot.png --dev".into());
     } else {
         // --dev only knows the default address, so say what to use instead.
-        lines.push(format!("  GRUNTAS_API_URL={base}/v1 krowk push screenshot.png"));
+        lines.push(format!("  GRUNTAS_API_URL={base}/v1 gruntas push screenshot.png"));
     }
     let host = listen_host(asked);
     if !is_loopback_host(&host) {

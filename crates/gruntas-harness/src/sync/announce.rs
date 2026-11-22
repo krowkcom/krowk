@@ -1,6 +1,6 @@
 //! The host daemon announces itself to the person's other devices (R-HOST-3;
 //! engineering/harness.md → Sync → Hosts announce themselves): that it is
-//! online, its krowk version, its instances and their models, the
+//! online, its gruntas version, its instances and their models, the
 //! directories it starts sessions in and the sessions it holds — sealed to
 //! the person's devices (`gruntas_client::presence`), so the registry holds
 //! only bytes.
@@ -78,7 +78,7 @@ pub struct Options {
     /// `true`, the device list brought up to date from the registry first.
     /// Blocking. Errors are `(code, message)`.
     pub keys: Keys,
-    /// This host's instances and each one's readiness, as `krowk status`
+    /// This host's instances and each one's readiness, as `gruntas status`
     /// checks them. Blocking: a vendor's login may be asked.
     pub instances: Box<dyn Fn() -> (Registry, Vec<Report>) + Send + Sync>,
     /// The models.dev cache the catalog reads, if there is one.
@@ -87,12 +87,12 @@ pub struct Options {
     /// policy opts out.
     pub trusted: trust::Store,
     /// The permission mode a session another device starts here runs in
-    /// (R-HOST-4): the host's own default for the directory, as `krowk -p`
+    /// (R-HOST-4): the host's own default for the directory, as `gruntas -p`
     /// with no `--permission-mode` resolves it. Never anything a command
     /// carries. Errors are `(code, message)`, and refuse the start.
     pub mode_for: ModeFor,
     /// How this host takes up a session another holds, as a `take` command
-    /// asks (R-HAND-1, R-HAND-4): `krowk sync take <session>` run in the
+    /// asks (R-HAND-1, R-HAND-4): `gruntas sync take <session>` run in the
     /// directory, detached, as the target's own take. None takes none.
     pub take: Option<TakeUp>,
     /// The pairings this host opens when a new machine asks the person's
@@ -104,7 +104,7 @@ pub struct Options {
 /// The host's default permission mode for a directory.
 pub type ModeFor = Box<dyn Fn(&Path) -> Result<crate::protocol::PermissionMode, (String, String)> + Send + Sync>;
 
-/// Starts `krowk sync take <session>` in `cwd`, detached from the daemon
+/// Starts `gruntas sync take <session>` in `cwd`, detached from the daemon
 /// (it hosts the session once moved, so outlives it), stdin closed, its
 /// stdout and stderr to a file of its own: the child, and that file.
 pub type TakeUp = Box<dyn Fn(&str, &Path) -> Result<(std::process::Child, std::path::PathBuf), String> + Send + Sync>;
@@ -327,7 +327,7 @@ impl Publisher {
         let spawned = std::thread::Builder::new().name("gruntas-presence".into()).spawn(move || {
             let _done = done_tx;
             let revoked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| publish(&c, &stop_rx, stopping, &commands))).unwrap_or_else(|_| {
-                eprintln!("krowk: this machine stopped announcing itself to your other devices: its publisher panicked");
+                eprintln!("gruntas: this machine stopped announcing itself to your other devices: its publisher panicked");
                 false
             });
             let mut run = me2.lock();
@@ -408,7 +408,7 @@ impl Ticks {
 fn publish(c: &Arc<Config>, stop: &Receiver<End>, stopping: Arc<std::sync::atomic::AtomicBool>, commands: &Arc<Commands>) -> bool {
     let Some(o) = c.announce.as_ref() else { return false };
     let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
-        eprintln!("krowk: this machine cannot announce itself to your other devices: no async runtime for it");
+        eprintln!("gruntas: this machine cannot announce itself to your other devices: no async runtime for it");
         return false;
     };
     let mut t = Ticks { published: false, said: HashSet::new(), fresh_at: None, instances: Vec::new(), pools: None, paused: None, daemon: None, stop: stopping };
@@ -555,7 +555,7 @@ const REVOKED: [&str; 3] = ["device_revoked", "device_removed", "device_list_res
 
 /// How long a key the registry refuses (`unauthorized`) is left before it
 /// is tried again: a key revoked with its device, or one rotated, which a
-/// `krowk login` mends with no restart.
+/// `gruntas login` mends with no restart.
 pub const UNAUTHORIZED_PAUSE: Duration = Duration::from_secs(5 * 60);
 
 /// A registry error in a person's words: its message, and its fix.
@@ -594,7 +594,7 @@ fn refused(c: &Config, o: &Options, t: &mut Ticks, code: &str, message: &str) ->
             _ if code == "unauthorized" => "it tries again in five minutes".to_string(),
             _ => "it tries again shortly".to_string(),
         };
-        eprintln!("krowk: this machine could not announce itself to your other devices: {message} ({code}); {then}");
+        eprintln!("gruntas: this machine could not announce itself to your other devices: {message} ({code}); {then}");
     }
     next
 }

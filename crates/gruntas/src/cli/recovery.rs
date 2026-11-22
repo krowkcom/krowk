@@ -1,4 +1,4 @@
-//! `krowk sync init`, `status`, `recover` and `recovery new|check`: a
+//! `gruntas sync init`, `status`, `recover` and `recovery new|check`: a
 //! person's device list begun, checked, got back into, and its recovery kit
 //! replaced (canon, engineering/devices.md → Recovery, Replacing the kit,
 //! Starting over).
@@ -37,15 +37,15 @@ use serde_json::json;
 /// What skipping the kit risks, said where the person decides and on every
 /// device until there is one. A second device is no backup: it's another
 /// thing to lose.
-pub(super) const NO_KIT: &str = "no recovery kit: if you lose every device you lose every session, and a stolen device that removes the others first can lock you out — `krowk machines recovery new` makes one";
+pub(super) const NO_KIT: &str = "no recovery kit: if you lose every device you lose every session, and a stolen device that removes the others first can lock you out — `gruntas machines recovery new` makes one";
 
 /// What to do with a lost kit and working devices: start over from one of
 /// them, which brings their sessions along.
-const LOST_KIT: &str = "a kit on your list is replaced only with its words; if they are lost, start over from this device with `krowk sync init --start-over`, which makes a new kit and keeps the sessions this device can open";
+const LOST_KIT: &str = "a kit on your list is replaced only with its words; if they are lost, start over from this device with `gruntas sync init --start-over`, which makes a new kit and keeps the sessions this device can open";
 
 /// What the recovery kit is, said where the first machine's setup offers it
 /// (D5).
-pub(super) const KIT_EXPLAINED: &str = "Your recovery kit is 12 words that stand in for a device of yours. If every device you own is lost or stolen, the words are the only way to read your sessions again and to remove the lost devices. Nobody else can do this for you, krowk included.";
+pub(super) const KIT_EXPLAINED: &str = "Your recovery kit is 12 words that stand in for a device of yours. If every device you own is lost or stolen, the words are the only way to read your sessions again and to remove the lost devices. Nobody else can do this for you, gruntas included.";
 
 /// Whether a device on the list is a machine: phones are devices, but they
 /// cannot add devices yet, so they are no second machine to fall back on.
@@ -59,11 +59,11 @@ pub(super) fn machines_on(chain: &Chain) -> usize {
 }
 
 /// The reminder while a person has one machine and no recovery kit (D5),
-/// in `krowk machines` and the overview bare `krowk` prints.
-pub(super) const REMINDER: &str = "One machine, no recovery kit: losing it loses your sessions. krowk machines recovery.";
+/// in `gruntas machines` and the overview bare `gruntas` prints.
+pub(super) const REMINDER: &str = "One machine, no recovery kit: losing it loses your sessions. gruntas machines recovery.";
 
-/// D5's rule for a device list (`krowk machines`, the overview,
-/// `krowk doctor`): remind while the person has fewer than two machines and
+/// D5's rule for a device list (`gruntas machines`, the overview,
+/// `gruntas doctor`): remind while the person has fewer than two machines and
 /// the list has no recovery kit. The rule itself is `health::reminder_due`.
 pub(super) fn reminder_due(chain: &Chain) -> bool {
     super::health::reminder_due(machines_on(chain), chain.recovery().is_some())
@@ -100,7 +100,7 @@ fn hand_over_kit(ctx: &mut Ctx, kit: &RecoveryKit, skippable: bool, offered: boo
         // puts the kit off rather than putting words nobody wrote down on the list.
         let later = !chain::ask_key(ctx, "Saved the words?", &[("Enter", "saved"), ("s", "later")]).trim().is_empty();
         if later {
-            let _ = writeln!(ctx.io.stderr, "Later: `krowk machines recovery` makes one when you want it.");
+            let _ = writeln!(ctx.io.stderr, "Later: `gruntas machines recovery` makes one when you want it.");
         }
         return Ok(!later);
     }
@@ -165,10 +165,10 @@ fn post_init(client: Client, me: &Me, batch: &Batch, start_over: bool) -> Result
 }
 
 pub(super) fn init(ctx: &mut Ctx) -> Result<(), Error> {
-    need_person(ctx, "`krowk sync init` shows your recovery kit", false)?;
+    need_person(ctx, "`gruntas sync init` shows your recovery kit", false)?;
     let home = chain::home(ctx)?;
     if !ctx.f.start_over {
-        refuse_if_set_up(ctx, "sync is set up on this machine already — `krowk sync status` shows its device list. Only if every device and the kit are lost, or the kit alone: `krowk sync init --start-over`")?;
+        refuse_if_set_up(ctx, "sync is set up on this machine already — `gruntas sync status` shows its device list. Only if every device and the kit are lost, or the kit alone: `gruntas sync init --start-over`")?;
     }
     let old = if ctx.f.start_over { held_old(ctx)? } else { None };
     let action = if ctx.f.start_over { LoginAction::StartOver } else { LoginAction::Login };
@@ -177,7 +177,7 @@ pub(super) fn init(ctx: &mut Ctx) -> Result<(), Error> {
         return finish_start_over(ctx, client, aside, served);
     }
     if !served.is_empty() && !ctx.f.start_over {
-        return Err(fail("chain_exists", "you already have a device list — add this machine from one of your devices with `krowk sync join`, or back in with the kit's words with `krowk sync recover`. Only if every device and the kit are lost: `krowk sync init --start-over`"));
+        return Err(fail("chain_exists", "you already have a device list — add this machine from one of your devices with `gruntas sync join`, or back in with the kit's words with `gruntas sync recover`. Only if every device and the kit are lost: `gruntas sync init --start-over`"));
     }
     let start_over = ctx.f.start_over && !served.is_empty();
     if start_over {
@@ -217,7 +217,7 @@ pub(super) enum Registered {
 /// The first-machine flow's registration (the effect of `sync init` with no
 /// kit, and no prompt): `client`, a key naming the person, starts the list
 /// with this machine. The kit is offered afterwards, not here
-/// (`krowk machines recovery new` makes one on a list without).
+/// (`gruntas machines recovery new` makes one on a list without).
 pub(super) fn register_first_device(ctx: &Ctx, client: &Client) -> Result<Registered, Error> {
     let store = super::sync::keystore(ctx)?;
     let holds = |slot| store.holds(slot).map_err(|e| fail("keys_unreadable", e));
@@ -252,7 +252,7 @@ fn keep_list(ctx: &Ctx, entries: &[SignedEntry]) -> Result<(), Error> {
 /// A re-seal the network or the registry cut short: the device syncs, and
 /// running the start-over again goes on from where this stopped.
 fn unfinished(e: Error) -> Error {
-    fail(&e.code(), format!("{} — the new list is in place and this device syncs; run `krowk sync init --start-over` again to go on sealing your old sessions under it", e.fix()))
+    fail(&e.code(), format!("{} — the new list is in place and this device syncs; run `gruntas sync init --start-over` again to go on sealing your old sessions under it", e.fix()))
 }
 
 /// A start-over run again, the new list already posted: this device on it
@@ -273,14 +273,14 @@ fn finish_start_over(ctx: &mut Ctx, client: Client, old: Old, served: Vec<Signed
     let count = reseal::run(ctx, &client, &me, &old, &keys, &new).map_err(unfinished)?;
     // While the old keys are kept, every `--start-over` lands here: said, so
     // a person who meant to start over again knows nothing new was started.
-    let summary = format!("{}. This went on with the start-over already made; nothing new was started — a new start-over needs `krowk machines recovery discard-old` first", resealed(&count));
+    let summary = format!("{}. This went on with the start-over already made; nothing new was started — a new start-over needs `gruntas machines recovery discard-old` first", resealed(&count));
     say(ctx, json!({ "resealed": count.sealed, "already": count.already, "left": count.left, "continued": true }), summary)
 }
 
 fn resealed(c: &reseal::Count) -> String {
     let left = match c.left {
         0 => String::new(),
-        _ => " — run `krowk sync init --start-over` again under that workspace's key to finish, and `krowk machines recovery discard-old` once none is left".to_string(),
+        _ => " — run `gruntas sync init --start-over` again under that workspace's key to finish, and `gruntas machines recovery discard-old` once none is left".to_string(),
     };
     format!("{} re-sealed, {} left (other workspaces or refused){left}", c.sealed, c.left)
 }
@@ -291,23 +291,23 @@ fn init_summary(name: &str, start_over: bool, kept: bool, count: Option<&reseal:
     let sessions = count.map(|c| format!("; old sessions: {}", resealed(c))).unwrap_or_default();
     let with_kit = if kept { " and your recovery kit" } else { "" };
     match (start_over, kept) {
-        (true, _) => format!("started over: a new device list with '{name}'{with_kit}; pair your other devices again with `krowk sync join`{sessions}"),
+        (true, _) => format!("started over: a new device list with '{name}'{with_kit}; pair your other devices again with `gruntas sync join`{sessions}"),
         (false, true) => format!("sync is set up: '{name}' is your first device, and your recovery kit is on the list"),
         (false, false) => format!("sync is set up: '{name}' is your first device"),
     }
 }
 
-/// `krowk machines recovery discard-old`: drops the old keys a start-over kept
+/// `gruntas machines recovery discard-old`: drops the old keys a start-over kept
 /// aside, once the person says so — after being told how many sessions in
 /// this workspace only they still open.
 pub(super) fn discard_old(ctx: &mut Ctx) -> Result<(), Error> {
-    need_person(ctx, "`krowk machines recovery discard-old` throws away the keys that open your old sessions", false)?;
+    need_person(ctx, "`gruntas machines recovery discard-old` throws away the keys that open your old sessions", false)?;
     let home = chain::home(ctx)?;
     let Some(old) = reseal::set_aside(&home)? else {
         return say(ctx, json!({ "discarded": false }), "nothing is set aside here — no start-over left old keys behind".into());
     };
     let me = Me::load(ctx)?;
-    let client = super::sync::keyed_client(ctx, "`krowk machines recovery discard-old`")?;
+    let client = super::sync::keyed_client(ctx, "`gruntas machines recovery discard-old`")?;
     let v = chain::verified(ctx, &client, &me)?;
     let keys = chain::held_keys(ctx)?.ok_or_else(chain::not_set_up)?;
     let left = reseal::still_left(ctx, &client, &me, &old, &keys, &v.chain)?;
@@ -325,7 +325,7 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
         fail(&e.code(), format!("{} — automatic sync is off until sync is set up here", e.fix()))
     })?;
     let me = Me::load(ctx)?;
-    let client = super::sync::keyed_client(ctx, "`krowk sync status`")?;
+    let client = super::sync::keyed_client(ctx, "`gruntas sync status`")?;
     let v = match chain::verified(ctx, &client, &me) {
         Ok(v) => v,
         // Only the network or the registry's own failure reads as offline:
@@ -363,7 +363,7 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
     Ok(())
 }
 
-/// What automatic sync does here (R-SYNC-3), for `krowk sync status`:
+/// What automatic sync does here (R-SYNC-3), for `gruntas sync status`:
 /// whether it is on, whether this directory is synced, and how many
 /// sessions this machine's host daemon bridges now.
 struct AutoSync {
@@ -415,7 +415,7 @@ fn bridged(ctx: &Ctx) -> (Option<usize>, Option<String>) {
         Ok(Some(s)) => match s.bridged {
             Some(b) => (Some(b.len()), None),
             // A daemon from before automatic sync, or one without it.
-            None => (Some(0), Some(format!("the host daemon runs krowk {}, which does not sync by itself", s.krowk_version))),
+            None => (Some(0), Some(format!("the host daemon runs gruntas {}, which does not sync by itself", s.krowk_version))),
         },
         Err(e) => (None, Some(format!("the host daemon could not be asked: {}", e.message))),
     }
@@ -450,7 +450,7 @@ impl AutoSync {
         // environment it was started with, and keeps a bridge it started
         // until it exits.
         if let (Err(_), Some(n @ 1..)) = (&self.on, self.bridged) {
-            lines.push(format!("! the running host daemon still syncs {n} session(s): it reads the environment it was started with, and keeps what it started until it exits — `krowk host stop` ends them"));
+            lines.push(format!("! the running host daemon still syncs {n} session(s): it reads the environment it was started with, and keeps what it started until it exits — `gruntas host stop` ends them"));
         }
         lines.join("\n")
     }
@@ -475,7 +475,7 @@ fn status_lines(v: &chain::Verified, me: &Me, revoked: &[&Device]) -> Vec<String
     }
     for r in revoked {
         let name = super::sync::printable(&r.name);
-        lines.push(format!("'{name}' was revoked on the dashboard but is still on your device list — finish removing it with `krowk machines remove '{name}'`, which rotates your key away from it"));
+        lines.push(format!("'{name}' was revoked on the dashboard but is still on your device list — finish removing it with `gruntas machines remove '{name}'`, which rotates your key away from it"));
     }
     lines
 }
@@ -488,7 +488,7 @@ pub(super) fn check(ctx: &mut Ctx) -> Result<(), Error> {
     }
     let why = match kept.recovery() {
         Some(_) => "these words are not the recovery kit on your device list — check each word against where you wrote it down; a kit replaced since is no longer yours",
-        None => "your device list has no recovery kit to check against — `krowk machines recovery new` makes one",
+        None => "your device list has no recovery kit to check against — `gruntas machines recovery new` makes one",
     };
     Err(fail("kit_not_on_list", why))
 }
@@ -508,7 +508,7 @@ fn read_kit(ctx: &mut Ctx, prompt: &str) -> Result<Option<RecoveryKit>, Error> {
 /// that reads like it (`confusable_names`).
 fn joining(ctx: &Ctx, chain: &Chain, me: &Me) -> Result<Subject, Error> {
     if chain.devices().iter().any(|d| d.id() == me.device.id()) {
-        return Err(fail("already_on_list", "this machine's device key is already on your list — run `krowk sync status` here instead"));
+        return Err(fail("already_on_list", "this machine's device key is already on your list — run `gruntas sync status` here instead"));
     }
     let subject = this_subject(ctx, &me.device, &me.signing);
     if let Some(d) = chain.devices().iter().find(|d| gruntas_client::device_chain::confusable_names(&d.name, &subject.name)) {
@@ -537,12 +537,12 @@ fn review(ctx: &mut Ctx, chain: &Chain, entries: &[SignedEntry], revoked: &[&Dev
 
 pub(super) fn recover(ctx: &mut Ctx) -> Result<(), Error> {
     let piped = !ctx.io.stdin_tty;
-    need_person(ctx, "`krowk sync recover` goes through every device on your list with you", piped)?;
-    refuse_if_set_up(ctx, "this machine is already set up for sync — `krowk sync recover` is for a new machine; `krowk machines remove` takes a lost device off from here")?;
+    need_person(ctx, "`gruntas sync recover` goes through every device on your list with you", piped)?;
+    refuse_if_set_up(ctx, "this machine is already set up for sync — `gruntas sync recover` is for a new machine; `gruntas machines remove` takes a lost device off from here")?;
     let rdev = read_kit(ctx, "Recovery kit (12 words):")?.ok_or_else(|| fail("bad_recovery_kit", "no words were entered, so nothing was done"))?.device();
     let (client, entries) = chain::signed_in_list(ctx, LoginAction::Login)?;
     if entries.is_empty() {
-        return Err(fail("no_device_list", "you have no device list to recover — `krowk sync init` sets sync up"));
+        return Err(fail("no_device_list", "you have no device list to recover — `gruntas sync init` sets sync up"));
     }
     // A new machine keeps no list yet: the whole of it, verified from seq 0.
     let chain = Chain::verify(&entries, None).map_err(|e| fail("device_list_refused", format!("{} — nothing was changed", e.0)))?;
@@ -595,7 +595,7 @@ pub(super) fn offer_kit(ctx: &mut Ctx) -> Result<bool, Error> {
 }
 
 fn make_kit(ctx: &mut Ctx, offered: bool) -> Result<bool, Error> {
-    need_person(ctx, "`krowk machines recovery new` shows a new recovery kit", false)?;
+    need_person(ctx, "`gruntas machines recovery new` shows a new recovery kit", false)?;
     let me = Me::load(ctx)?;
     let client = chain::signed_in(ctx, LoginAction::ReplaceKit)?;
     let v = chain::verified(ctx, &client, &me)?;

@@ -1,4 +1,4 @@
-//! `krowk sync take <id>` on a machine that cannot run the session: it
+//! `gruntas sync take <id>` on a machine that cannot run the session: it
 //! refuses with a fix before asking the host for anything, and the session
 //! stays where it is (R-INST-5, R-CRED-1). Against the stand-in registry.
 
@@ -70,7 +70,7 @@ fn r_inst_5_take_refuses_with_a_fix_when_the_sessions_instance_is_missing_and_th
         .unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "refused: {err}");
-    assert!(err.contains("work-claude") && err.contains("krowk connect") && err.contains("stays where it is"), "a fix naming the instance: {err}");
+    assert!(err.contains("work-claude") && err.contains("gruntas connect") && err.contains("stays where it is"), "a fix naming the instance: {err}");
     let held = api.show_sync_session(&id).unwrap().lease.expect("still leased");
     assert_eq!(held.device, a.id().to_string(), "the session stayed on A");
     let _ = std::fs::remove_dir_all(&root);

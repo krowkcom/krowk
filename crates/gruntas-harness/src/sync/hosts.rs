@@ -1,4 +1,4 @@
-//! `krowk machines` (R-NET-4): the machines of yours that host synced
+//! `gruntas machines` (R-NET-4): the machines of yours that host synced
 //! sessions, found with no step in the Tailscale admin console. The
 //! registry's sessions say which of your devices host — each sealed index
 //! names the machine that last took its session up, and the lease which one
@@ -111,14 +111,14 @@ pub fn hosts(listed: &[Listed], announced: &[Announced], chain: &Chain, me: &str
 
 /// Whether the machine that announced `a` would take a task in the
 /// repository with normalised origin `origin` (R-ALLOC-2, D7): none when
-/// ready, else the fix, in the order a person meets them: `krowk machines
+/// ready, else the fix, in the order a person meets them: `gruntas machines
 /// accept on` when it is not accepting, `run: git clone <clone_url>` when it
 /// has no clone, and the instance's own fix line when no account there is
 /// ready. `clone_url` is the origin as this machine's clone has it; the
 /// fix shows it with any user or password left out.
 pub fn fix(a: &Announcement, origin: &str, clone_url: &str) -> Option<String> {
     if !a.accepting {
-        return Some("krowk machines accept on".into());
+        return Some("gruntas machines accept on".into());
     }
     if !a.repositories.iter().any(|r| r.origin == origin) {
         return Some(format!("run: git clone {}", without_credentials(clone_url)));
@@ -127,7 +127,7 @@ pub fn fix(a: &Announcement, origin: &str, clone_url: &str) -> Option<String> {
         return None;
     }
     Some(match a.instances.first() {
-        None => "sign in an account: run krowk connect there".into(),
+        None => "sign in an account: run gruntas connect there".into(),
         Some(i) => i.fix.clone().map_or_else(|| format!("{} is not ready ({})", i.name, i.state), |f| format!("{}: {f}", i.name)),
     })
 }
@@ -163,7 +163,7 @@ mod tests {
         assert_eq!(fix(&unclone, origin, url).as_deref(), Some("run: git clone git@github.com:acme/app.git"));
         assert_eq!(fix(&unclone, origin, "https://ann:ghp_secret@github.com/acme/app.git").as_deref(), Some("run: git clone https://github.com/acme/app.git"), "never a credential");
         let off = Announcement { accepting: false, ..a.clone() };
-        assert_eq!(fix(&off, origin, url).as_deref(), Some("krowk machines accept on"));
+        assert_eq!(fix(&off, origin, url).as_deref(), Some("gruntas machines accept on"));
         let signed_out = Announcement { instances: vec![AnnouncedInstance { ready: false, state: "loggedOut".into(), fix: Some("run claude /login".into()), ..ready }], ..a };
         assert!(fix(&signed_out, origin, url).unwrap().contains("claude /login"));
     }
@@ -174,7 +174,7 @@ mod tests {
     fn a_fix_never_carries_a_credential_and_a_machine_with_no_account_says_so() {
         use gruntas_client::presence::AnnouncedRepository;
         let a = Announcement { device: "d".into(), name: "desktop".into(), os: "linux".into(), version: "dev".into(), online_since_ms: 0, instances: Vec::new(), directories: Vec::new(), sessions: Vec::new(), capacity: None, repositories: vec![AnnouncedRepository { directory: "/w".into(), origin: "github.com/acme/app".into() }], accepting: true };
-        assert_eq!(fix(&a, "github.com/acme/app", "u").as_deref(), Some("sign in an account: run krowk connect there"));
+        assert_eq!(fix(&a, "github.com/acme/app", "u").as_deref(), Some("sign in an account: run gruntas connect there"));
         for (url, shown) in [
             ("https://tok@github.com/acme/app.git", "https://github.com/acme/app.git"),
             ("https://ann:p%40ss@github.com:8443/acme/app", "https://github.com:8443/acme/app"),

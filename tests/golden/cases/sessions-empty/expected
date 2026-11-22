@@ -1,4 +1,4 @@
-$ krowk sessions
+$ gruntas sessions
 stdout:
 {
   "ok": true,
@@ -9,12 +9,12 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions --format human
+$ gruntas sessions --format human
 stdout:
-No sessions yet — `krowk sessions import --from all` brings in the ones your agents keep.
+No sessions yet — `gruntas sessions import --from all` brings in the ones your agents keep.
 exit: 0
 
-$ krowk sessions show nope
+$ gruntas sessions show nope
 stderr:
 {
   "ok": false,
@@ -26,7 +26,7 @@ stderr:
 }
 exit: 2
 
-$ krowk sessions sync --no-network
+$ gruntas sessions sync --no-network
 stdout:
 {
   "ok": true,
@@ -108,7 +108,7 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions
+$ gruntas sessions
 stdout:
 {
   "ok": true,

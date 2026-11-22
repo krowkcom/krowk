@@ -1,13 +1,13 @@
-# Bare `krowk` prints the overview whether or not a person is at a terminal;
+# Bare `gruntas` prints the overview whether or not a person is at a terminal;
 # on a terminal it is the same page, and the flags that once opened the
-# agent's screen are refused with a hint to use `-p`. Piped, bare `krowk`
+# agent's screen are refused with a hint to use `-p`. Piped, bare `gruntas`
 # prints the overview rather than the catalog, which takes --json.
-krowk
-krowk --json
-krowk --format human
+gruntas
+gruntas --json
+gruntas --format human
 @stdin hello\n
-krowk
-@tty krowk
-@tty krowk --json
-@tty krowk --resume
-@tty krowk --model claude-x
+gruntas
+@tty gruntas
+@tty gruntas --json
+@tty gruntas --resume
+@tty gruntas --model claude-x

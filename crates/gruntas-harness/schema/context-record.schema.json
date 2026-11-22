@@ -35,7 +35,7 @@
       }
     },
     "systemTokens": {
-      "description": "The system prompt's size in tokens, estimated at four bytes a token:\nno provider's tokenizer ships with krowk, and a budget compares the\nestimate with itself, so growth shows whatever the true ratio is.",
+      "description": "The system prompt's size in tokens, estimated at four bytes a token:\nno provider's tokenizer ships with gruntas, and a budget compares the\nestimate with itself, so growth shows whatever the true ratio is.",
       "type": "integer",
       "format": "uint64",
       "minimum": 0,
@@ -104,12 +104,12 @@
           "const": "chat-completions"
         },
         {
-          "description": "The `claude` binary's stream-json protocol: Claude Code runs the\nloop and krowk drives it. A thinking signature it streams is\nClaude Code's to replay, never sent to the Messages API by krowk.",
+          "description": "The `claude` binary's stream-json protocol: Claude Code runs the\nloop and gruntas drives it. A thinking signature it streams is\nClaude Code's to replay, never sent to the Messages API by gruntas.",
           "type": "string",
           "const": "claude-code"
         },
         {
-          "description": "`codex app-server`'s JSON-RPC: Codex runs the loop, on its own\nlogin, and krowk drives it. Codex keeps its reasoning to itself, so\nnothing streamed here is ever replayed as a blob.",
+          "description": "`codex app-server`'s JSON-RPC: Codex runs the loop, on its own\nlogin, and gruntas drives it. Codex keeps its reasoning to itself, so\nnothing streamed here is ever replayed as a blob.",
           "type": "string",
           "const": "codex-app-server"
         }

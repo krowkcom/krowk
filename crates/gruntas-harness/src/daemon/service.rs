@@ -10,7 +10,7 @@
 //! names.
 //!
 //! A service does not start from a shell, so it has none of the shell's
-//! variables: a provider's key the daemon is to use is one `krowk connect`
+//! variables: a provider's key the daemon is to use is one `gruntas connect`
 //! stored, not one exported in a shell profile. `GRUNTAS_HOME`, when set, is
 //! carried into the unit so the daemon keeps the same home.
 

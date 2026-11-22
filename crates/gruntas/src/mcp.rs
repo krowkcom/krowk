@@ -1,4 +1,4 @@
-//! krowk over MCP stdio, for agents that cannot shell out. A client, not a
+//! gruntas over MCP stdio, for agents that cannot shell out. A client, not a
 //! second implementation: every tool goes through the same registry client
 //! and renderers the CLI uses, and a failure comes back as a tool result with
 //! the registry's fix line rather than as a transport error.
@@ -35,7 +35,7 @@ pub struct Server<'a> {
 
 fn instructions() -> String {
     format!(
-        "krowk turns local files into permalinks, one artifact per file, grouped under a
+        "gruntas turns local files into permalinks, one artifact per file, grouped under a
 run that carries the metadata about where they came from.
 
 Call gruntas_push with the paths you want to share. Every artifact comes back in
@@ -57,7 +57,7 @@ nowhere. Read the labels on the result rather than these two lines — and never
 tell somebody a link will preview without having read them.
 
 If a push comes back anonymous, each artifact carries a claim_token. Spending it
-— gruntas_claim_artifact, or `krowk claim <slug> <token>` — is the only way to
+— gruntas_claim_artifact, or `gruntas claim <slug> <token>` — is the only way to
 keep that upload past its expiry, and anyone holding the token can do it. Treat
 it as a secret: give it to the human, never paste it into a pull request, an
 issue or a chat message. An anonymous upload belongs to no run, so pass the run
@@ -84,7 +84,7 @@ const SECRET_NAMES: &[&str] = &[
 ];
 
 /// gruntas's home, wherever `GRUNTAS_HOME` put it, the default `~/.gruntas`,
-/// krowk's `~/.krowk`, and a move's staging directory and lock beside
+/// gruntas's `~/.krowk`, and a move's staging directory and lock beside
 /// each: their keys, logins and sessions are never published, whatever the
 /// path is called.
 fn in_krowk_home(real: &Path) -> bool {
@@ -121,7 +121,7 @@ impl Server<'_> {
             ));
         }
         if in_krowk_home(&abs) {
-            return Err(fail("root_too_broad", "the upload root is inside krowk's home, which holds its keys and logins — start the server in a project directory, or pass --root"));
+            return Err(fail("root_too_broad", "the upload root is inside gruntas's home, which holds its keys and logins — start the server in a project directory, or pass --root"));
         }
         if let Some(name) = secret_component(&abs) {
             return Err(fail(
@@ -151,7 +151,7 @@ fn permit(root: &Path, base: &Path, path: &str) -> Result<String, Error> {
         return Err(fail("secret_path", format!("`{path}` is a credential file (`{name}`) — refusing to publish it at a public URL")));
     }
     if in_krowk_home(&real) {
-        return Err(fail("secret_path", format!("`{path}` is inside krowk's home, which holds its keys and logins — refusing to publish it at a public URL")));
+        return Err(fail("secret_path", format!("`{path}` is inside gruntas's home, which holds its keys and logins — refusing to publish it at a public URL")));
     }
     #[cfg(unix)]
     if let Ok(meta) = std::fs::metadata(&real) {
@@ -283,7 +283,7 @@ impl Server<'_> {
     }
 }
 
-/// `publish`, the harness's evidence tool (R-EVID-1): gruntas_push for a krowk
+/// `publish`, the harness's evidence tool (R-EVID-1): gruntas_push for a gruntas
 /// session, run with the session's working directory as the root, so its
 /// confinement, its credential-file and hard-link refusals are gruntas_push's
 /// own, unchanged. With a key, the session's first publish opens its run —
@@ -326,14 +326,14 @@ impl Server<'_> {
                     metadata.insert(key, value.clone());
                 }
             }
-            // Pushed by krowk's engine, through its MCP server's code.
+            // Pushed by gruntas's engine, through its MCP server's code.
             metadata.insert("krowk.client", format!("gruntas/{}", self.version));
             if let Some(c) = &req.caption {
                 metadata.insert("krowk.caption", c.clone());
             }
         }
         // The harness is gruntas, as on the run: left to detection it names
-        // whatever shell krowk was started from, and the artifact's key wins
+        // whatever shell gruntas was started from, and the artifact's key wins
         // over the run's on a card, so it would contradict `krowk.engine`.
         let args = json!({ "files": req.files, "run": run.clone().unwrap_or_default(), "metadata": metadata, "agent": "gruntas" });
         let (_, pushed) = self.push_from(&req.root, &args)?;
@@ -357,8 +357,8 @@ impl Server<'_> {
             text += "\n\nThe command that keeps this anonymous upload past its expiry carries a secret, so it was shown to the person rather than to you.";
         }
         match &run {
-            Some(r) => text += &format!("\n\nGrouped under run {r}, this krowk session's run."),
-            None => text += "\n\nNo API key was found, so this upload is anonymous and belongs to no run — `krowk doctor` shows where krowk looks for one.",
+            Some(r) => text += &format!("\n\nGrouped under run {r}, this gruntas session's run."),
+            None => text += "\n\nNo API key was found, so this upload is anonymous and belongs to no run — `gruntas doctor` shows where gruntas looks for one.",
         }
         Ok(gruntas_harness::evidence::Published { text, run, for_person })
     }
@@ -375,7 +375,7 @@ fn tool_result(text: &str, structured: Option<Value>, is_error: bool) -> Value {
 /// A failure for an agent to read: the code, the status, the fix, and
 /// whether a retry could help.
 fn describe_error(e: &Error) -> String {
-    let mut first = format!("krowk failed: {}", e.code());
+    let mut first = format!("gruntas failed: {}", e.code());
     if e.status != 0 {
         first += &format!(" (HTTP {})", e.status);
     }
@@ -535,7 +535,7 @@ impl Server<'_> {
                     }
                     if own_run {
                         e.body.insert("run".into(), json!(run_slug));
-                        let finish = format!("the run is still open — close it with `krowk runs finish {run_slug}`");
+                        let finish = format!("the run is still open — close it with `gruntas runs finish {run_slug}`");
                         let fix = if e.fix().is_empty() { finish } else { format!("{}; {finish}", e.fix()) };
                         e.body.insert("fix".into(), json!(fix));
                     }
@@ -546,7 +546,7 @@ impl Server<'_> {
         if own_run {
             match self.client.finish_run(&run_slug) {
                 Ok(finished) => run = Some(finished),
-                Err(_) => notes.push(format!("run {run_slug} could not be finished — retry `krowk runs finish {run_slug}`")),
+                Err(_) => notes.push(format!("run {run_slug} could not be finished — retry `gruntas runs finish {run_slug}`")),
             }
         }
         Ok(render_push(&artifacts, run.as_ref(), &notes))
@@ -666,7 +666,7 @@ impl Server<'_> {
         if !self.authenticated() {
             return Ok((
                 "No API key is configured, so pushes will be anonymous: they expire within a day and come back with a claim token.\n\n\
-                 Set GRUNTAS_TOKEN, or run `krowk login --token krowk_sk_...`."
+                 Set GRUNTAS_TOKEN, or run `gruntas login --token krowk_sk_...`."
                     .into(),
                 json!({ "authenticated": false }),
             ));
@@ -753,8 +753,8 @@ fn render_push(artifacts: &[Artifact], run: Option<&Run>, notes: &[String]) -> (
 
 /// gruntas_delegate, gruntas_collect and gruntas_machines (R-ALLOC-11, D18): the
 /// supervisor's side of automatic allocation for a Claude Code or Codex that
-/// runs with krowk-mcp added. Placement, the job, the child's result and its
-/// landing in the working tree are `Placer`'s, the one krowk's own agent
+/// runs with gruntas-mcp added. Placement, the job, the child's result and its
+/// landing in the working tree are `Placer`'s, the one gruntas's own agent
 /// places its subagents with; this is the tools around it. Tasks live in this
 /// process: they do not survive a restart.
 #[cfg(all(feature = "harness", unix))]
@@ -789,7 +789,7 @@ mod delegation {
     }
 
     fn no_sync() -> Error {
-        fail("no_machines", "krowk is not set up to sync on this machine, so there is nowhere else to run a task: `krowk sync init` on this machine, `krowk sync join` on your others")
+        fail("no_machines", "gruntas is not set up to sync on this machine, so there is nowhere else to run a task: `gruntas sync init` on this machine, `gruntas sync join` on your others")
     }
 
     pub fn delegate(args: &Value) -> Outcome {
@@ -813,7 +813,7 @@ mod delegation {
     pub fn collect(args: &Value) -> Outcome {
         let a: CollectArgs = arguments(args, "gruntas_collect takes a task_id, and optionally wait_seconds")?;
         let h = handle(a.task_id.trim())?;
-        let unknown = || fail("unknown_task", Failure::Unknown(h.id.clone()).to_string() + " Tasks live in the krowk-mcp process that started them, so a restart forgets them (the child keeps running on its machine, and its work stays in that machine's worktree).");
+        let unknown = || fail("unknown_task", Failure::Unknown(h.id.clone()).to_string() + " Tasks live in the gruntas-mcp process that started them, so a restart forgets them (the child keeps running on its machine, and its work stays in that machine's worktree).");
         let placer = crate::cli::placer().ok_or_else(unknown)?;
         let most = Duration::from_secs(a.wait_seconds.unwrap_or(WAIT).min(WAIT_MOST));
         let progress = placer.wait(&h, most).map_err(|f| match f {
@@ -925,11 +925,11 @@ fn delegation_schemas() -> Vec<Value> {
     vec![
         json!({
             "name": "gruntas_delegate",
-            "description": "Hand a self-contained task to a krowk agent that runs on whichever of your machines has room, and return a task_id at once. Use it instead of your own subagent tool when the task should run on whichever of your machines has room, for example when this machine is busy with builds or tests; for a quick task that can run here, use your own subagent tool. The task runs on this machine unless it is busy, otherwise on another of your machines that has a clone of this repository and a ready account, starting from this working tree's exact state: your uncommitted changes and unpushed commits included. The other agent has none of this conversation, so the task must say everything it needs. It runs one turn and cannot ask questions: what it would have asked is refused. Call gruntas_collect with the task_id to wait for it. Its changes are applied to this working tree when it finishes, or kept in a worktree that the result names when they conflict, so do not edit the files it was asked to change while it runs; gruntas_collect reports what landed. Tasks live in this krowk-mcp process: restarting the MCP server forgets them (the child keeps running on its machine, and its work stays in that machine's worktree). gruntas_machines says what each machine has room for.",
+            "description": "Hand a self-contained task to a gruntas agent that runs on whichever of your machines has room, and return a task_id at once. Use it instead of your own subagent tool when the task should run on whichever of your machines has room, for example when this machine is busy with builds or tests; for a quick task that can run here, use your own subagent tool. The task runs on this machine unless it is busy, otherwise on another of your machines that has a clone of this repository and a ready account, starting from this working tree's exact state: your uncommitted changes and unpushed commits included. The other agent has none of this conversation, so the task must say everything it needs. It runs one turn and cannot ask questions: what it would have asked is refused. Call gruntas_collect with the task_id to wait for it. Its changes are applied to this working tree when it finishes, or kept in a worktree that the result names when they conflict, so do not edit the files it was asked to change while it runs; gruntas_collect reports what landed. Tasks live in this gruntas-mcp process: restarting the MCP server forgets them (the child keeps running on its machine, and its work stays in that machine's worktree). gruntas_machines says what each machine has room for.",
             "inputSchema": { "type": "object", "required": ["task"], "properties": {
                 "task": { "type": "string", "description": "What the agent should do, in full." },
-                "host": { "type": "string", "description": "Run it on this machine, by the name gruntas_machines gives, or `any` for any other machine than a busy one, or `any:macos`, `any:linux` or `any:windows` for one of that kind. Without it krowk picks: this machine unless it is busy." },
-                "model": { "type": "string", "description": "The model or account to run it on: `<instance>/<model>`, an account such as `claude:work`, or a model id. Without it krowk picks one that is ready." }
+                "host": { "type": "string", "description": "Run it on this machine, by the name gruntas_machines gives, or `any` for any other machine than a busy one, or `any:macos`, `any:linux` or `any:windows` for one of that kind. Without it gruntas picks: this machine unless it is busy." },
+                "model": { "type": "string", "description": "The model or account to run it on: `<instance>/<model>`, an account such as `claude:work`, or a model id. Without it gruntas picks one that is ready." }
             }, "additionalProperties": false }
         }),
         json!({
@@ -942,7 +942,7 @@ fn delegation_schemas() -> Vec<Value> {
         }),
         json!({
             "name": "gruntas_machines",
-            "description": "List your machines as `krowk machines --json` does: each one's name, whether it is online, its capacity (cores, load, free memory, build and agent slots), the repositories it has, whether it accepts work, and whether it is ready for this repository or what would make it ready.",
+            "description": "List your machines as `gruntas machines --json` does: each one's name, whether it is online, its capacity (cores, load, free memory, build and agent slots), the repositories it has, whether it accepts work, and whether it is ready for this repository or what would make it ready.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }),
     ]

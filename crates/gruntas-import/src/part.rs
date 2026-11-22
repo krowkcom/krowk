@@ -42,7 +42,7 @@ pub fn new_tool_result_text_part(call_id: &str, output: &str, is_error: bool) ->
     new_tool_result_part(call_id, Some(&Value::String(output.into())), is_error)
 }
 
-/// A part as its source typed it: kept as it is when krowk knows the type,
+/// A part as its source typed it: kept as it is when gruntas knows the type,
 /// wrapped as `unknown` with the source's type and raw payload when not.
 /// The bool says whether the type was known.
 pub fn normalize_part(raw_type: &str, raw: Option<&Value>) -> (Part, bool) {

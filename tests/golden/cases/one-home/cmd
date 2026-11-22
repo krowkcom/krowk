@@ -6,16 +6,16 @@
 @env XDG_CONFIG_HOME={home}/cfg
 @env XDG_DATA_HOME={home}/data
 @env XDG_CACHE_HOME={home}/cache
-krowk auth login --token krowk_sk_test
-krowk config set workspace ws_x --global
-krowk sessions import --from claude --quiet
+gruntas auth login --token krowk_sk_test
+gruntas config set workspace ws_x --global
+gruntas sessions import --from claude --quiet
 @ls {home}/.gruntas
 @sh test ! -e {home}/cfg && test ! -e {home}/data && test ! -e {home}/cache && test ! -e {home}/.config/krowk && test ! -e {home}/.local/share/krowk
 @sh [ "$(ls -ld {home}/.gruntas | cut -c1-10)" = drwx------ ]
 @env GRUNTAS_HOME={home}/elsewhere
-krowk auth login --token krowk_sk_test
-krowk sessions --quiet
+gruntas auth login --token krowk_sk_test
+gruntas sessions --quiet
 @ls {home}/elsewhere
 @env GRUNTAS_HOME=relative/home
-krowk sessions --quiet
-krowk doctor
+gruntas sessions --quiet
+gruntas doctor

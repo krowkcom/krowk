@@ -1,6 +1,6 @@
 //! The session log: the source of truth for a native session (R-LOG-1).
 //!
-//! Each session is a directory in krowk's home, beside krowk.db:
+//! Each session is a directory in gruntas's home, beside gruntas.db:
 //!
 //! ```text
 //! ~/.gruntas/sessions/<session-id>/events.jsonl  the log
@@ -14,7 +14,7 @@
 //! The head is the last line until forks exist to name another.
 //!
 //! One writer per session: the log is locked while a turn appends to it, so
-//! a second `krowk -p --resume` of the same session is refused rather than
+//! a second `gruntas -p --resume` of the same session is refused rather than
 //! interleaved. Directories are 0700 and files 0600 — a log holds what an
 //! agent was told and read, secrets included.
 
@@ -29,15 +29,15 @@ pub const EVENTS_FILE: &str = "events.jsonl";
 pub const CONTEXT_FILE: &str = "context.jsonl";
 
 /// What a note of background work that ended started with, in logs from
-/// krowk's own engine: krowk's words in a user item, not the person's, as
+/// gruntas's own engine: gruntas's words in a user item, not the person's, as
 /// a log read later shows them.
 pub const BACKGROUND_DONE: &str = "<background-done ";
 
-/// What a reminder krowk added to a user item started with, in logs from
-/// its own engine: krowk's words, not the person's.
+/// What a reminder gruntas added to a user item started with, in logs from
+/// its own engine: gruntas's words, not the person's.
 pub const REMINDER: &str = "<system-reminder>";
 
-/// `sessions/` in krowk's home, where krowk.db is too.
+/// `sessions/` in gruntas's home, where gruntas.db is too.
 pub fn sessions_dir(env: &dyn Fn(&str) -> String) -> Result<PathBuf, gruntas_api::Error> {
     Ok(gruntas_api::home::dir(env)?.join(gruntas_api::home::SESSIONS))
 }
@@ -119,7 +119,7 @@ impl SessionLog {
     pub fn open(sessions: &Path, session_id: &str) -> Result<(SessionLog, Vec<LogEvent>), LogError> {
         let dir = sessions.join(session_id);
         if !valid_id(session_id) || !dir.join(EVENTS_FILE).is_file() {
-            return Err(LogError::NotFound(format!("no krowk session {session_id:?} in {}", sessions.display())));
+            return Err(LogError::NotFound(format!("no gruntas session {session_id:?} in {}", sessions.display())));
         }
         let mut log = SessionLog::open_files(session_id.to_string(), dir)?;
         let events = read_events(&log.dir.join(EVENTS_FILE))?;
@@ -132,7 +132,7 @@ impl SessionLog {
         match events.try_lock() {
             Ok(()) => {}
             Err(std::fs::TryLockError::WouldBlock) => {
-                return Err(LogError::Busy(format!("session {session_id} is running in another krowk — wait for its turn to finish")));
+                return Err(LogError::Busy(format!("session {session_id} is running in another gruntas — wait for its turn to finish")));
             }
             Err(std::fs::TryLockError::Error(e)) => return Err(io(format_args!("lock {}", dir.join(EVENTS_FILE).display()), e)),
         }
@@ -178,7 +178,7 @@ impl SessionLog {
     // busy disk, or a directory made, would stall every other session's
     // stream and heartbeats with it (R-LAG-9). Each is awaited before its
     // event is sent anywhere, so no client ever sees an event the log does
-    // not have. A process with one session and no heartbeats (`krowk -p`,
+    // not have. A process with one session and no heartbeats (`gruntas -p`,
     // an interactive client on its own host) does them where it is: a blocking pool's
     // thread there would outlive the work and wake the idle process.
 
@@ -472,7 +472,7 @@ pub fn branch<'a>(events: &'a [LogEvent], head: &str) -> Vec<&'a LogEvent> {
     out
 }
 
-/// Session ids are UUIDv7s krowk minted: anything else never names a
+/// Session ids are UUIDv7s gruntas minted: anything else never names a
 /// directory, so no id can walk out of the sessions directory.
 pub fn valid_id(id: &str) -> bool {
     id.len() == 36
@@ -500,7 +500,7 @@ pub fn list(sessions: &Path) -> std::io::Result<Vec<(String, PathBuf)>> {
     Ok(out)
 }
 
-/// A session as `krowk sessions` lists it, read from the head of its log.
+/// A session as `gruntas sessions` lists it, read from the head of its log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recent {
     pub id: String,
@@ -591,7 +591,7 @@ mod tests {
 
     /// A turn's sync handed to a blocking pool that is busy is still run
     /// before the daemon's runtime goes: `synced` waits for it, where a
-    /// runtime dropped would have dropped it unrun — a `krowk host stop`
+    /// runtime dropped would have dropped it unrun — a `gruntas host stop`
     /// right after a turn leaves the turn on the disk (R-LAG-9's syncs off
     /// the thread, made durable).
     #[test]
@@ -743,7 +743,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// R-VINT-4: `krowk sessions` lists an archived session of this directory
+    /// R-VINT-4: `gruntas sessions` lists an archived session of this directory
     /// from its stub, by its first prompt and when it was last active,
     /// marked archived, among the others by that time; an archived
     /// subagent's, or another directory's, is not listed.

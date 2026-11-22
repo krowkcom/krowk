@@ -6,7 +6,7 @@
 use serde_json::Value;
 use std::time::Duration;
 
-/// The events krowk runs hooks for.
+/// The events gruntas runs hooks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
     SessionStart,
@@ -79,7 +79,7 @@ impl Hooks {
     }
 }
 
-/// Reads a settings file's `hooks`. Events krowk does not run
+/// Reads a settings file's `hooks`. Events gruntas does not run
 /// (`Notification`, `PreCompact`, …) and hook types other
 /// than `command` are skipped: a file written for a newer Claude Code still
 /// loads.

@@ -1,4 +1,4 @@
-//! A pseudo-terminal to run krowk on, for the tests and the budgets: the
+//! A pseudo-terminal to run gruntas on, for the tests and the budgets: the
 //! child gets the slave side as its stdin, stdout, stderr and controlling
 //! terminal, and everything it draws is collected from the master side.
 //!

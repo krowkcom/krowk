@@ -1,4 +1,4 @@
-//! Slots shared by every krowk process on the machine: a pool of `N` lock
+//! Slots shared by every gruntas process on the machine: a pool of `N` lock
 //! files, `<runtime dir>/<pool>/<n>.lock`, each held by at most one process
 //! at a time. Taking a slot is `File::try_lock` on each file in turn, the
 //! lowest free one won; a process that holds one and dies — killed,
@@ -14,9 +14,9 @@
 //! (canon `engineering/harness.md` → Where it listens):
 //! `$XDG_RUNTIME_DIR/gruntas`, else `$TMPDIR/gruntas-<uid>`, else
 //! `/tmp/gruntas-<uid>`; on Windows `%LOCALAPPDATA%\gruntas\run`. Made `0700`
-//! and refused when a symlink or another user's, as krowk's home is
+//! and refused when a symlink or another user's, as gruntas's home is
 //! (`gruntas_api::home::own`). Slots are the user's, machine-wide: unlike the
-//! daemon's directory they are not keyed by krowk's home, since two homes
+//! daemon's directory they are not keyed by gruntas's home, since two homes
 //! still build on one machine. A pool is per runtime directory, though:
 //! krowks that name different ones — one started over ssh with no login
 //! session, so no `XDG_RUNTIME_DIR`, beside one on the desktop — do not
@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 /// How often a full pool is tried again.
 pub const RETRY: Duration = Duration::from_millis(250);
 
-/// krowk's runtime directory, as `env` names it: where the host daemon
+/// gruntas's runtime directory, as `env` names it: where the host daemon
 /// listens and the slots are. Only named here; `Pool` makes it when a slot
 /// is first taken.
 pub fn runtime_dir(env: &dyn Fn(&str) -> String) -> PathBuf {
@@ -92,8 +92,8 @@ impl Pool {
     /// The lowest free slot, or none when every one is held. Never blocks,
     /// so an async caller can poll it and still hear an interrupt.
     pub fn try_take(&self) -> Result<Option<Slot>, String> {
-        // The runtime directory's parents are not krowk's to hold to its
-        // rules, only to make when missing: `%LOCALAPPDATA%\krowk` before
+        // The runtime directory's parents are not gruntas's to hold to its
+        // rules, only to make when missing: `%LOCALAPPDATA%\gruntas` before
         // its `run`.
         if let Some(parent) = self.runtime.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("{} could not be made: {e}", parent.display()))?;
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn a_runtime_dir_whose_parents_are_missing_is_made() {
-        // As `%LOCALAPPDATA%\krowk\run` is on a first run: `krowk` not there yet.
+        // As `%LOCALAPPDATA%\gruntas\run` is on a first run: `gruntas` not there yet.
         let d = dir("parents");
         let pool = Pool::new(d.join("local").join("gruntas").join("run"), "build-slots", 1);
         assert_eq!(pool.try_take().unwrap().expect("a free slot").index(), 0);

@@ -190,7 +190,7 @@ pub fn signed_device(s: &mut SyncStore, req: &Req, caller: &Caller, body: &[u8])
 /// (Api::Sync#refuse_key_without_an_active_device).
 pub fn key_device(s: &SyncStore, caller: &Caller) -> Result<String, Resp> {
     let Some(bound) = s.bindings.get(&caller.key) else {
-        return Err(error(403, "key_has_no_device", "this key speaks for no device yet — set sync up with `krowk sync init`, or join with `krowk sync join`", None));
+        return Err(error(403, "key_has_no_device", "this key speaks for no device yet — set sync up with `gruntas sync init`, or join with `gruntas sync join`", None));
     };
     match s.people.get(&caller.person).and_then(|p| p.device(bound)) {
         Some(d) if d.active() => Ok(bound.clone()),
@@ -323,7 +323,7 @@ pub fn presences_seen(app: &App) -> Resp {
 }
 
 pub fn no_device_list() -> Resp {
-    error(409, "no_device_list", "you have no device list yet — set sync up with `krowk sync init`", None)
+    error(409, "no_device_list", "you have no device list yet — set sync up with `gruntas sync init`", None)
 }
 
 fn read_body(req: &mut Req) -> Result<Vec<u8>, Resp> {
@@ -427,7 +427,7 @@ fn post(body: &[u8]) -> Result<Post, Resp> {
     Ok(Post { entries, links, wraps, start_over: false })
 }
 
-/// POST /v1/users/:user_id/devices for a person with no list yet: `krowk
+/// POST /v1/users/:user_id/devices for a person with no list yet: `gruntas
 /// sync init`; and POST …/devices/reset (`start_over`), which replaces the
 /// person's list with a new epoch. Signed by the first device the first
 /// entry adds, whose key the registry has only from the entry; always a
@@ -513,7 +513,7 @@ fn append(s: &mut SyncStore, caller: &Caller, p: Post, signer: Option<String>, i
     let mut spare = false;
     if init && !person.entries.is_empty() {
         if !p.start_over {
-            return Err(error(409, "chain_exists", "you already have a device list — add this machine from one of your devices with `krowk sync join`, or start over with `krowk sync init --start-over` if every device and the kit are lost", None));
+            return Err(error(409, "chain_exists", "you already have a device list — add this machine from one of your devices with `gruntas sync join`, or start over with `gruntas sync init --start-over` if every device and the kit are lost", None));
         }
         // A new chain, never a shorter one: the old devices are refused and
         // their keys revoked, but for the key doing it.

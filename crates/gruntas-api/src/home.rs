@@ -46,7 +46,7 @@ pub fn process_env(k: &str) -> String {
 }
 
 fn no_home() -> Error {
-    fail("no_home", "there is no home directory to keep krowk's files in — set HOME, or GRUNTAS_HOME to an absolute path")
+    fail("no_home", "there is no home directory to keep gruntas's files in — set HOME, or GRUNTAS_HOME to an absolute path")
 }
 
 /// Where the home is, by the environment alone: `$GRUNTAS_HOME` when set,

@@ -1,4 +1,4 @@
-krowk config set
-krowk config set onlykey
-krowk config unset
-krowk config show extra
+gruntas config set
+gruntas config set onlykey
+gruntas config unset
+gruntas config show extra
