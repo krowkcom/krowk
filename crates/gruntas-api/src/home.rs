@@ -210,7 +210,7 @@ pub fn make(dir: &Path) -> Result<(), String> {
 /// to this user, and `0700` (made so when it is looser).
 pub fn own(dir: &Path, m: &std::fs::Metadata) -> Result<(), String> {
     if m.file_type().is_symlink() {
-        return Err(format!("{} is a symlink — krowk keeps its keys there and follows no link to them; move it aside", dir.display()));
+        return Err(format!("{} is a symlink — gruntas keeps its keys there and follows no link to them; move it aside", dir.display()));
     }
     if !m.is_dir() {
         return Err(format!("{} is not a directory — move it aside", dir.display()));
