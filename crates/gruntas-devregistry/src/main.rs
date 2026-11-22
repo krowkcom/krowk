@@ -1,4 +1,4 @@
-//! devregistry runs the local stand-in for api.krowk.com, so developing against
+//! devregistry runs the local stand-in for api.gruntas.com, so developing against
 //! a registry needs neither the network nor a checkout of the registry itself.
 //! Built by no release: `cargo run -p gruntas-devregistry`, then
 //! `gruntas push screenshot.png --dev`.

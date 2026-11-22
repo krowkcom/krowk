@@ -365,10 +365,10 @@ mod tests {
 
     #[test]
     fn r_client_1_the_approval_page_is_http_s_only_and_plain_http_only_beside_a_plain_api() {
-        let prod = Client::new("https://api.krowk.com/v1", "").insecure();
+        let prod = Client::new("https://api.gruntas.com/v1", "").insecure();
         let local = Client::new("http://127.0.0.1:8787/v1", "").insecure();
-        assert!(browsable_url("https://app.krowk.com/cli/ABCD", prod).is_ok());
-        assert_eq!(browsable_url("http://app.krowk.com/x", prod).unwrap_err().code(), "refused_verification_url");
+        assert!(browsable_url("https://app.gruntas.com/cli/ABCD", prod).is_ok());
+        assert_eq!(browsable_url("http://app.gruntas.com/x", prod).unwrap_err().code(), "refused_verification_url");
         assert!(browsable_url("http://127.0.0.1:8787/x", local).is_ok());
         assert_eq!(browsable_url("file:///etc/passwd", prod).unwrap_err().code(), "refused_verification_url");
         assert_eq!(browsable_url("https:///nohost", prod).unwrap_err().code(), "malformed_response");

@@ -1,4 +1,4 @@
-<a href="https://krowk.com"><img src=".github/logo.svg" alt="Gruntas" width="56" /></a>
+<a href="https://gruntas.com"><img src=".github/logo.svg" alt="Gruntas" width="56" /></a>
 
 # Gruntas
 
@@ -16,12 +16,12 @@ Sessions follow you across machines, end-to-end encrypted, and your machines sha
 ## Install
 
 ```bash
-curl -fsSL https://krowk.com/install | bash
+curl -fsSL https://gruntas.com/install | bash
 npx @gruntas/cli
 cargo install --locked --git https://github.com/gruntas/gruntas --features harness gruntas
 ```
 
-Builds are published for Linux and macOS (amd64/arm64) and Windows (amd64). On a workstation the installer gives you the full build, with the agent. In CI and containers it gives you the lean build, which only publishes. `--full` and `--lean` choose; see [the install docs](https://krowk.com/docs#install).
+Builds are published for Linux and macOS (amd64/arm64) and Windows (amd64). On a workstation the installer gives you the full build, with the agent. In CI and containers it gives you the lean build, which only publishes. `--full` and `--lean` choose; see [the install docs](https://gruntas.com/docs#install).
 
 **Coming from krowk?** Install gruntas fresh (a krowk binary can't upgrade itself into it). The first `gruntas` run copies `~/.krowk` into `~/.gruntas` once, so you stay signed in with your sessions and accounts. Old `krowk@krowk` plugin installs reinstall as `gruntas@gruntas`. [CHANGELOG.md](CHANGELOG.md) has the full list.
 
@@ -43,19 +43,19 @@ gruntas -p --resume <id> "go on" # continue an earlier session
 
 ## More
 
-- **Sessions.** The full build keeps a local store of every agent session on the machine, whether it came from gruntas, Claude Code, Cursor or opencode, and lists the ones on your other machines too. `gruntas sessions` lists them and `gruntas -p --resume` continues one. [Sessions](https://krowk.com/docs#sessions)
-- **Machines.** `gruntas machines` shows each machine's load, free memory and slots, and whether it accepts work from your others. `always-on` keeps one available and `recovery` guards your recovery kit. [Machines](https://krowk.com/docs#machines)
-- **Worktrees.** Agents running at once each work in a git worktree of their own, so they never overwrite each other. `gruntas worktrees` lists, applies and removes them. [Worktrees](https://krowk.com/docs#worktrees)
-- **Publishing.** `gruntas push screenshot.png` uploads a file and prints a link whose card shows the repo, commit, branch, PR and session. It works without an account for a day. In CI, this repository is also a GitHub Action (`uses: gruntas/gruntas@v0`). [Publishing](https://krowk.com/docs#first-push)
-- **MCP.** Claude Code and Codex get, through gruntas's bridge, the MCP servers you set up for Claude Code. `gruntas mcp add`, `login` and `list` manage them, and `gruntas-mcp` serves gruntas itself to other MCP clients. [MCP servers](https://krowk.com/docs#mcp), [signing in to OAuth servers](https://krowk.com/docs#mcp-sign-in)
+- **Sessions.** The full build keeps a local store of every agent session on the machine, whether it came from gruntas, Claude Code, Cursor or opencode, and lists the ones on your other machines too. `gruntas sessions` lists them and `gruntas -p --resume` continues one. [Sessions](https://gruntas.com/docs#sessions)
+- **Machines.** `gruntas machines` shows each machine's load, free memory and slots, and whether it accepts work from your others. `always-on` keeps one available and `recovery` guards your recovery kit. [Machines](https://gruntas.com/docs#machines)
+- **Worktrees.** Agents running at once each work in a git worktree of their own, so they never overwrite each other. `gruntas worktrees` lists, applies and removes them. [Worktrees](https://gruntas.com/docs#worktrees)
+- **Publishing.** `gruntas push screenshot.png` uploads a file and prints a link whose card shows the repo, commit, branch, PR and session. It works without an account for a day. In CI, this repository is also a GitHub Action (`uses: gruntas/gruntas@v0`). [Publishing](https://gruntas.com/docs#first-push)
+- **MCP.** Claude Code and Codex get, through gruntas's bridge, the MCP servers you set up for Claude Code. `gruntas mcp add`, `login` and `list` manage them, and `gruntas-mcp` serves gruntas itself to other MCP clients. [MCP servers](https://gruntas.com/docs#mcp), [signing in to OAuth servers](https://gruntas.com/docs#mcp-sign-in)
 - **Accounts.** gruntas no longer runs models itself, and the SuperGrok sign-in is gone: every session runs in Claude Code or Codex. API keys and gateways keep working as Claude Code or Codex accounts, which `gruntas connect` makes of them, and `gruntas providers` lists and renames them.
-- **Configuration.** Everything lives in `~/.gruntas/`, and a repository can commit `.gruntas/config.json`. `gruntas config` reads and sets it, environment variables are `GRUNTAS_*`, `gruntas status` and `gruntas doctor` check health and `gruntas upgrade` updates. [Configuration](https://krowk.com/docs#configuration)
+- **Configuration.** Everything lives in `~/.gruntas/`, and a repository can commit `.gruntas/config.json`. `gruntas config` reads and sets it, environment variables are `GRUNTAS_*`, `gruntas status` and `gruntas doctor` check health and `gruntas upgrade` updates. [Configuration](https://gruntas.com/docs#configuration)
 
 `gruntas help` lists the commands, `gruntas help --all` every one, and `--json` gives them as data. [`skills/gruntas/SKILL.md`](skills/gruntas/SKILL.md) teaches another agent to use gruntas, and in Claude Code `/plugin marketplace add gruntas/gruntas` and `/plugin install gruntas@gruntas` add the skill and the MCP server.
 
 ## Development
 
-Build, test and benchmark instructions are in [the development docs](https://krowk.com/docs#development). See [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
+Build, test and benchmark instructions are in [the development docs](https://gruntas.com/docs#development). See [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
 
 ## Who uses Gruntas?
 

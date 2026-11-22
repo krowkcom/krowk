@@ -151,7 +151,7 @@ dev: ## Fast build, linked into ~/.cargo/bin: the latest gruntas from this check
 	for b in gruntas gruntas-mcp; do ln -sfn "$(CURDIR)/target/quick/$$b" "$(DEV_BIN_DIR)/$$b"; done
 	@echo "$(DEV_BIN_DIR)/gruntas -> $(CURDIR)/target/quick/gruntas"
 
-mock: ## Local stand-in for api.krowk.com on :8787
+mock: ## Local stand-in for api.gruntas.com on :8787
 	cargo run --release -p gruntas-devregistry --bin devregistry
 
 release-check: ## Validate the release layout, the npm launchers and the installer, offline

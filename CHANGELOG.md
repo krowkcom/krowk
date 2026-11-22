@@ -92,6 +92,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **gruntas now runs on gruntas.com.** It talks to `api.gruntas.com` and
+  syncs through `relay.gruntas.com` by default, and links, the installer,
+  docs and the security contact (`security@gruntas.com`) point at
+  gruntas.com. Your account, keys and devices are unchanged. Pointing
+  `GRUNTAS_API_URL` at the old `https://api.krowk.com/v1` still counts as
+  production and syncs through `relay.krowk.com`, and krowk.com links
+  redirect to gruntas.com, so the bare-link guard for agents treats a bare
+  `gruntas.com/a/…` or `krowk.com/a/…` link alike.
+
 - **The help text, the greeting and every message say gruntas.** Hints
   print `gruntas <command>`, `gruntas help` and `gruntas-mcp` describe
   themselves as gruntas, and no `krowk` binary is built any more.

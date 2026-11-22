@@ -32,8 +32,8 @@ triggers:
   - take this down
   - delete the upload
   # Domains
-  - krowk.com
-  - cdn.krowk.com
+  - gruntas.com
+  - cdn.krowkusercontent.com
 invocable: true
 argument-hint: "[push <file> | runs start | claim <artifact> <token> | doctor]"
 ---
@@ -42,7 +42,7 @@ argument-hint: "[push <file> | runs start | claim <artifact> <token> | doctor]"
 
 gruntas turns a local file into a URL that unfurls in GitHub, Slack, Basecamp and
 Linear. One file, one artifact, one link. That link is a card page —
-`krowk.com/a/{slug}` — carrying the file and its run metadata; the bytes on the
+`gruntas.com/a/{slug}` — carrying the file and its run metadata; the bytes on the
 CDN are `file_url`, which only an image embed should ever name. What groups
 several links together is a **run**, not an artifact.
 
@@ -154,7 +154,7 @@ environment variable — so never guess at a spelling this file does not carry.
 | One run's artifacts | `gruntas artifacts list --run run_8Kd2wq --json` |
 | Next page of a listing | `gruntas artifacts list --before <next> --json` |
 | Read one artifact back | `gruntas artifacts show art_2e1d --json` |
-| Read one back from a pasted link | `gruntas artifacts show https://krowk.com/a/art_6jqi53mmiey1tuxpdo7bbknq --json` |
+| Read one back from a pasted link | `gruntas artifacts show https://gruntas.com/a/art_6jqi53mmiey1tuxpdo7bbknq --json` |
 | Keep an anonymous artifact | `gruntas claim art_2e1d <claim-token> --json` |
 | Keep it and group it at once | `gruntas claim art_2e1d <claim-token> --run run_8Kd2wq --json` |
 | Group an artifact afterwards | `gruntas artifacts attach art_2e1d --run run_8Kd2wq --json` |
@@ -354,11 +354,11 @@ quarter of an hour, so a login started on your own initiative is a session that
 looks hung. A keyless push works now; reach for this only when the person asked
 for a key, or asked for something a key is required for.
 
-**It does not work against `api.krowk.com` yet.** The endpoints and the approval
+**It does not work against `api.gruntas.com` yet.** The endpoints and the approval
 page are not built there, so the command answers `404 no_such_endpoint` with a fix
 line saying so. Against production, `--token` is the only way in. Use this flow
 against a registry that serves it — the repository's dev stand-in
-(`make mock` in a checkout, then `--dev`), or `api.krowk.com` once the gap
+(`make mock` in a checkout, then `--dev`), or `api.gruntas.com` once the gap
 closes. With only an installed gruntas there is no local registry to point at:
 don't try to host one, run the flow with `--token` or not at all.
 
@@ -422,7 +422,7 @@ repository. Then tell the person exactly what was exposed, and rotate it.
 | Variable | Does |
 |----------|------|
 | `GRUNTAS_TOKEN` | API key, e.g. `krowk_sk_…`. Outranks the stored credentials file |
-| `GRUNTAS_API_URL` | Base URL of the registry. Default `https://api.krowk.com/v1` |
+| `GRUNTAS_API_URL` | Base URL of the registry. Default `https://api.gruntas.com/v1` |
 | `GRUNTAS_WORKSPACE` | Workspace whose stored key to use, as if by `--workspace` |
 | `GRUNTAS_AGENT` | Harness name recorded as `krowk.harness`. Detected otherwise |
 | `GRUNTAS_SESSION` | Session ID recorded as `krowk.session`. Detected otherwise |

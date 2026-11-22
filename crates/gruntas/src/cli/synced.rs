@@ -84,11 +84,8 @@ fn signed(ctx: &Ctx, k: &Keys, what: &str) -> Result<Client, Error> {
     Ok(keyed_client(ctx, what)?.signed_by(gruntas_client::e2e::DeviceSigner::new(k.device, key).shared()))
 }
 
-/// The relay hosted beside the production registry.
-const HOSTED_RELAY: &str = "wss://relay.krowk.com";
-
 /// The relay a sync link dials: `GRUNTAS_RELAY_URL` when set, else the hosted
-/// relay for the production registry, else the local stand-in (`gruntas relay
+/// relay beside a production registry (`gruntas_api::hosted_relay`), else the local stand-in (`gruntas relay
 /// serve`) that a stand-in or custom registry is run beside.
 fn relay(ctx: &Ctx, base_url: &str) -> String {
     relay_for(&ctx.env("GRUNTAS_RELAY_URL"), base_url)
@@ -98,7 +95,7 @@ fn relay_for(asked: &str, base_url: &str) -> String {
     if !asked.trim().is_empty() {
         return asked.trim().to_string();
     }
-    if base_url.trim_end_matches('/') == gruntas_api::DEFAULT_BASE_URL { HOSTED_RELAY.to_string() } else { format!("ws://{}", super::relay::DEFAULT_ADDR) }
+    gruntas_api::hosted_relay(base_url).map_or_else(|| format!("ws://{}", super::relay::DEFAULT_ADDR), str::to_string)
 }
 
 /// Direct paths beside the relay (R-NET-1): offered whenever the local
@@ -1115,16 +1112,17 @@ mod tests {
         }
     }
 
-    /// The production registry's devices dial the hosted relay with no
-    /// `GRUNTAS_RELAY_URL`; a stand-in or custom registry keeps the local
+    /// A production registry's devices dial the hosted relay on its domain
+    /// with no `GRUNTAS_RELAY_URL`; a stand-in or custom registry keeps the local
     /// relay, and `GRUNTAS_RELAY_URL` always wins.
     #[test]
     fn r_relay_1_the_production_registry_defaults_to_the_hosted_relay() {
+        assert_eq!(relay_for("", "https://api.gruntas.com/v1"), "wss://relay.gruntas.com");
+        assert_eq!(relay_for(" ", "https://api.gruntas.com/v1/"), "wss://relay.gruntas.com");
         assert_eq!(relay_for("", "https://api.krowk.com/v1"), "wss://relay.krowk.com");
-        assert_eq!(relay_for(" ", "https://api.krowk.com/v1/"), "wss://relay.krowk.com");
         assert_eq!(relay_for("", "http://127.0.0.1:3000/v1"), "ws://127.0.0.1:7790");
         assert_eq!(relay_for("", "https://staging.example.com/v1"), "ws://127.0.0.1:7790");
-        assert_eq!(relay_for("ws://10.0.0.2:7790", "https://api.krowk.com/v1"), "ws://10.0.0.2:7790");
+        assert_eq!(relay_for("ws://10.0.0.2:7790", "https://api.gruntas.com/v1"), "ws://10.0.0.2:7790");
     }
 
     /// Ticket 42: kept ticket keys stand in only for the registry they came
@@ -1132,7 +1130,7 @@ mod tests {
     #[test]
     fn kept_ticket_keys_are_read_back_only_for_their_registry_and_within_a_day() {
         use super::{kept_keys, TICKET_KEYS_KEPT_MS};
-        let (registry, fetched) = ("https://api.krowk.com/v1", 1_790_000_000_000_i64);
+        let (registry, fetched) = ("https://api.gruntas.com/v1", 1_790_000_000_000_i64);
         let kept = |registry: &str| serde_json::json!({"registry": registry, "fetchedMs": fetched, "ticketKeys": {"00000000000000aa": "ab".repeat(32)}}).to_string();
 
         let roster = kept_keys(&kept(registry), registry, fetched + 1000).expect("the same registry's, a second later");
