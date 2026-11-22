@@ -146,6 +146,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
   the steering itself, so a long silent turn costs no CPU, and steering is
   passed on the moment you send it rather than within a tenth of a second.
 
+### Security
+
+- **The threat model now covers agents in other harnesses.**
+  `docs/security/threat-model.md` has a new section, "Agents in other
+  harnesses", for Claude Code and Codex agents that run under gruntas: an
+  agent can reach what you can, gruntas limits what its own tools let it do,
+  reading is open to every agent, and steering another session is limited by
+  the `steer` setting. It also lists the risks that remain and the hard
+  boundary to use if gruntas ever runs other people's work.
+
 ## [0.18.0] - 2026-11-20
 
 ### Added
