@@ -1,19 +1,19 @@
 ---
-name: krowk
+name: gruntas
 description: |
   Publish agent output — screenshots, logs, diffs, build artifacts — to a permalink
-  with the krowk CLI, and paste that link where a person will read it. Uploading
+  with the gruntas CLI, and paste that link where a person will read it. Uploading
   needs no account; an API key adds runs, listings and permanence.
   Use for ANY request to share, upload, host or link a local file produced during a session.
 triggers:
   # Direct invocations
-  - krowk
-  - /krowk
-  - krowk push
-  - krowk runs
-  - krowk claim
-  - krowk artifacts
-  - krowk doctor
+  - gruntas
+  - /gruntas
+  - gruntas push
+  - gruntas runs
+  - gruntas claim
+  - gruntas artifacts
+  - gruntas doctor
   # What the person actually asks for
   - push a screenshot
   - upload artifact
@@ -433,7 +433,7 @@ repository. Then tell the person exactly what was exposed, and rotate it.
 A stored key lives at `~/.krowk/credentials.json`, mode 0600, written by
 `krowk login`, in the `0700` directory where krowk keeps everything else too.
 Never read it or anything else in `~/.krowk` out to show a person, never
-push it — `krowk_push` refuses — and never put a token on a command line in
+push it — `gruntas_push` refuses — and never put a token on a command line in
 a shared shell: `GRUNTAS_TOKEN` in the environment is better.
 
 ## Error Handling

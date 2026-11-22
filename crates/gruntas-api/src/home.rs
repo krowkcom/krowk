@@ -86,7 +86,7 @@ fn user_home(env: Env, windows: bool) -> Option<PathBuf> {
     Some(PathBuf::from(user)).filter(|p| p.is_absolute()).map(|p| lexical(&p))
 }
 
-/// Everything the file tools and `krowk_push` keep away from: the home in
+/// Everything the file tools and `gruntas_push` keep away from: the home in
 /// use and the default one (`~/.gruntas`, when `GRUNTAS_HOME` names
 /// another), each with the staging directory and lock a move into it uses
 /// beside it, and krowk's own home (`~/.krowk`), which holds the same keys

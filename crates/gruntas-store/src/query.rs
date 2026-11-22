@@ -5,7 +5,25 @@ use crate::{other, StoreError};
 use rusqlite::{Connection, OptionalExtension, Row};
 use std::collections::HashMap;
 
-const SESSION_LIST: &str = "WITH page AS (SELECT s.id AS pid FROM session s LEFT JOIN worktree w ON w.id = s.worktree_id LEFT JOIN (SELECT session_id, MIN(id) AS id FROM session_binding GROUP BY session_id) one ON one.session_id = s.id LEFT JOIN session_binding b ON b.id = one.id WHERE (?1 = '' OR COALESCE(b.harness, s.harness) = ?1) AND (?2 = '' OR w.path = ?2) ORDER BY s.time_updated DESC LIMIT ?3) SELECT s.id, s.title, s.model, s.provider, s.harness, s.directory, s.time_created, s.time_updated, w.path, b.harness, b.provider, b.foreign_session_id, COALESCE(t.n, 0), COALESCE(t.sum_in, 0), COALESCE(t.sum_out, 0), COALESCE(t.sum_total, 0), COALESCE(t.sum_cread, 0), COALESCE(t.sum_cwrite, 0), COALESCE(t.sum_reason, 0) FROM session s JOIN page ON page.pid = s.id LEFT JOIN worktree w ON w.id = s.worktree_id LEFT JOIN (SELECT session_id, MIN(id) AS id FROM session_binding GROUP BY session_id) one ON one.session_id = s.id LEFT JOIN session_binding b ON b.id = one.id LEFT JOIN (SELECT session_id, COUNT(*) AS n, SUM(cost_input_tokens) AS sum_in, SUM(cost_output_tokens) AS sum_out, SUM(cost_total_tokens) AS sum_total, SUM(cost_cache_read_tokens) AS sum_cread, SUM(cost_cache_write_tokens) AS sum_cwrite, SUM(cost_reasoning_tokens) AS sum_reason FROM turn WHERE session_id IN (SELECT pid FROM page) GROUP BY session_id) t ON t.session_id = s.id ORDER BY s.time_updated DESC";
+/// The names a harness or provider was stored under before the rename
+/// (D14), new name first: a row written under the old one reads as the new.
+/// `krowk` is historical — gruntas's own sessions, stored before it was
+/// renamed — and is never written again.
+const RENAMED: &[(&str, &str)] = &[("gruntas", "krowk")];
+
+/// The name rows written before the rename hold for `name`: its old name,
+/// or `name` itself when it never had another.
+pub fn former_name(name: &str) -> &str {
+    RENAMED.iter().find(|(now, _)| *now == name).map_or(name, |(_, was)| was)
+}
+
+/// The name a stored harness or provider reads as: its new name when it is
+/// an old one, else itself.
+pub fn current_name(name: &str) -> &str {
+    RENAMED.iter().find(|(_, was)| *was == name).map_or(name, |(now, _)| now)
+}
+
+const SESSION_LIST: &str = "WITH page AS (SELECT s.id AS pid FROM session s LEFT JOIN worktree w ON w.id = s.worktree_id LEFT JOIN (SELECT session_id, MIN(id) AS id FROM session_binding GROUP BY session_id) one ON one.session_id = s.id LEFT JOIN session_binding b ON b.id = one.id WHERE (?1 = '' OR COALESCE(b.harness, s.harness) IN (?1, ?4)) AND (?2 = '' OR w.path = ?2) ORDER BY s.time_updated DESC LIMIT ?3) SELECT s.id, s.title, s.model, s.provider, s.harness, s.directory, s.time_created, s.time_updated, w.path, b.harness, b.provider, b.foreign_session_id, COALESCE(t.n, 0), COALESCE(t.sum_in, 0), COALESCE(t.sum_out, 0), COALESCE(t.sum_total, 0), COALESCE(t.sum_cread, 0), COALESCE(t.sum_cwrite, 0), COALESCE(t.sum_reason, 0) FROM session s JOIN page ON page.pid = s.id LEFT JOIN worktree w ON w.id = s.worktree_id LEFT JOIN (SELECT session_id, MIN(id) AS id FROM session_binding GROUP BY session_id) one ON one.session_id = s.id LEFT JOIN session_binding b ON b.id = one.id LEFT JOIN (SELECT session_id, COUNT(*) AS n, SUM(cost_input_tokens) AS sum_in, SUM(cost_output_tokens) AS sum_out, SUM(cost_total_tokens) AS sum_total, SUM(cost_cache_read_tokens) AS sum_cread, SUM(cost_cache_write_tokens) AS sum_cwrite, SUM(cost_reasoning_tokens) AS sum_reason FROM turn WHERE session_id IN (SELECT pid FROM page) GROUP BY session_id) t ON t.session_id = s.id ORDER BY s.time_updated DESC";
 
 pub const DEFAULT_SESSION_PAGE: i64 = 50;
 
@@ -132,7 +150,7 @@ pub fn list_sessions(conn: &Connection, harness: &str, worktree: &str, limit: i6
     };
     let mut stmt = conn.prepare(SESSION_LIST).map_err(|e| other("list sessions", e))?;
     let rows = stmt
-        .query_map(rusqlite::params![harness, worktree, limit], |r| {
+        .query_map(rusqlite::params![current_name(harness), worktree, limit, former_name(current_name(harness))], |r| {
             let mut row = SessionRow {
                 id: r.get(0)?,
                 title: r.get(1)?,
@@ -157,6 +175,8 @@ pub fn list_sessions(conn: &Connection, harness: &str, worktree: &str, limit: i6
             if !row.binding_harness.is_empty() {
                 row.harness = row.binding_harness.clone();
             }
+            row.harness = current_name(&row.harness).to_string();
+            row.binding_provider = current_name(&row.binding_provider).to_string();
             Ok(row)
         })
         .map_err(|e| other("list sessions", e))?;
@@ -172,8 +192,8 @@ fn escape_like(s: &str) -> String {
 /// log's id, the log id `krowk sync host` and `--resume` need.
 pub fn foreign_session_id(conn: &Connection, session_id: &str, provider: &str) -> Result<Option<String>, StoreError> {
     conn.query_row(
-        "SELECT foreign_session_id FROM session_binding WHERE session_id = ? AND provider = ? ORDER BY id LIMIT 1",
-        [session_id, provider],
+        "SELECT foreign_session_id FROM session_binding WHERE session_id = ? AND provider IN (?, ?) ORDER BY id LIMIT 1",
+        [session_id, provider, former_name(provider)],
         |r| r.get(0),
     )
     .optional()
@@ -344,6 +364,8 @@ pub fn load_session_detail(conn: &Connection, session_id: &str) -> Result<Sessio
     if !session.binding_harness.is_empty() {
         session.harness = session.binding_harness.clone();
     }
+    session.harness = current_name(&session.harness).to_string();
+    session.binding_provider = current_name(&session.binding_provider).to_string();
 
     let turns: Vec<TurnDetail> = tx
         .prepare(&format!("SELECT t.seq, t.status, t.cost_input_tokens, t.cost_output_tokens, t.cost_total_tokens, t.cost_cache_read_tokens, t.cost_cache_write_tokens, t.cost_reasoning_tokens, t.cost_usd_micros, t.time_created, t.time_updated, \

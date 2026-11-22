@@ -1,7 +1,7 @@
 //! Placement (R-ALLOC-7 … R-ALLOC-11; engineering/harness.md → Automatic
 //! allocation): which of the person's machines runs a task a supervisor
 //! hands over, and the task's way there and back. krowk's own `subagent`
-//! tool and krowk-mcp's `krowk_delegate` and `krowk_collect` are its two
+//! tool and krowk-mcp's `gruntas_delegate` and `gruntas_collect` are its two
 //! callers, and share all of it.
 //!
 //! **It runs on the supervisor's machine** (D3), from the announcements
@@ -62,7 +62,7 @@
 //! for `OFFLINE_AFTER` and no stream from the child has gone (R-ALLOC-9).
 //!
 //! krowk's own agent places its subagents with the `Placer`, and krowk-mcp
-//! its `krowk_delegate` tasks (`Here::Worktree`).
+//! its `gruntas_delegate` tasks (`Here::Worktree`).
 
 use super::announce::Announcer;
 use gruntas_client::host_command::{key_shaped, slug_shaped, HostAnswer, JobRef, ModelChoice, RunTask};
@@ -441,7 +441,7 @@ pub enum Here {
     Worktree,
 }
 
-/// A task started: its id, `krowk_collect`'s argument, minted at once, and
+/// A task started: its id, `gruntas_collect`'s argument, minted at once, and
 /// the working tree its result lands in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Handle {
@@ -452,7 +452,7 @@ pub struct Handle {
 /// Where a task is.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Progress {
-    /// Still being placed. `krowk_collect` says it is still running, as it
+    /// Still being placed. `gruntas_collect` says it is still running, as it
     /// does for `Running`.
     Placing,
     /// Placed on this machine, for the caller to run (`Here::Caller`).

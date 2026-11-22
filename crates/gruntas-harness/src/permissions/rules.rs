@@ -155,11 +155,11 @@ pub fn parse(text: &str, source: &str, root: &Path) -> Result<Rule, String> {
 /// from, which a command-line rule has none of, so a project-root rule is
 /// handed over anchored absolutely (`//<root>/path`). What Claude Code has
 /// no tool for — krowk's own `Publish` (Claude Code's is
-/// `mcp__krowk__publish`, judged in krowk's bridge whatever Claude Code
+/// `mcp__gruntas__publish`, judged in krowk's bridge whatever Claude Code
 /// decides) and "every MCP tool", which would take krowk's own tools with
 /// it — is left out: krowk holds those itself.
 pub fn claude_spelling(r: &Rule) -> Option<String> {
-    if r.tool == "Publish" || r.tool == "mcp__*" || r.tool.starts_with("mcp__krowk") {
+    if r.tool == "Publish" || r.tool == "mcp__*" || r.tool.starts_with("mcp__gruntas") {
         return None;
     }
     let path_tool = matches!(r.tool.as_str(), "Read" | "Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "NotebookRead" | "Grep" | "Glob" | "LS");

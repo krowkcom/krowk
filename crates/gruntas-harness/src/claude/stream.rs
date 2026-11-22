@@ -511,13 +511,13 @@ mod tests {
     }
 
     const TOOL_TURN: &str = r#"
-{"type":"system","subtype":"init","cwd":"/repo","session_id":"cc-1","tools":["Read","mcp__krowk__session_info"],"mcp_servers":[{"name":"krowk","status":"connected"}],"model":"claude-haiku-4-5","apiKeySource":"none","capabilities":["interrupt_receipt_v1"]}
+{"type":"system","subtype":"init","cwd":"/repo","session_id":"cc-1","tools":["Read","mcp__gruntas__session_info"],"mcp_servers":[{"name":"gruntas","status":"connected"}],"model":"claude-haiku-4-5","apiKeySource":"none","capabilities":["interrupt_receipt_v1"]}
 {"type":"stream_event","event":{"type":"message_start","message":{"id":"msg_1","model":"claude-haiku-4-5","usage":{"input_tokens":10,"cache_read_input_tokens":100,"cache_creation_input_tokens":5,"output_tokens":1}}},"parent_tool_use_id":null}
 {"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}},"parent_tool_use_id":null}
 {"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"c2ln"}},"parent_tool_use_id":null}
 {"type":"assistant","message":{"id":"msg_1","model":"claude-haiku-4-5","content":[{"type":"thinking","thinking":"","signature":"c2ln"}]},"parent_tool_use_id":null}
 {"type":"stream_event","event":{"type":"content_block_stop","index":0},"parent_tool_use_id":null}
-{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"mcp__krowk__session_info","input":{}}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"mcp__gruntas__session_info","input":{}}},"parent_tool_use_id":null}
 {"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}},"parent_tool_use_id":null}
 {"type":"stream_event","event":{"type":"content_block_stop","index":1},"parent_tool_use_id":null}
 {"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":[{"type":"text","text":"krowk session: s-1"}]}]},"parent_tool_use_id":null}
@@ -569,12 +569,12 @@ mod tests {
         let init = t.init.clone().unwrap();
         assert_eq!((init.session_id.as_str(), init.api_key_source.as_str()), ("cc-1", "none"));
         assert_eq!(init.capabilities, ["interrupt_receipt_v1"]);
-        assert_eq!(init.mcp_servers, [("krowk".to_string(), "connected".to_string())]);
+        assert_eq!(init.mcp_servers, [("gruntas".to_string(), "connected".to_string())]);
         let items = completed(&evs);
         assert_eq!(items.len(), 4, "{items:?}");
         let Item::Reasoning { blob: Some(b), .. } = &items[0] else { panic!("{items:?}") };
         assert_eq!((b.wire_api, b.data["signature"].as_str()), (WireApi::ClaudeCode, Some("c2ln")), "the signature whole, replayable only to Claude Code");
-        assert!(matches!(&items[1], Item::ToolCall { name, call_id, .. } if name == "mcp__krowk__session_info" && call_id == "toolu_1"));
+        assert!(matches!(&items[1], Item::ToolCall { name, call_id, .. } if name == "mcp__gruntas__session_info" && call_id == "toolu_1"));
         assert_eq!(items[2], Item::ToolResult { call_id: "toolu_1".into(), output: "krowk session: s-1".into(), is_error: false, images: Vec::new() });
         assert_eq!(items[3], Item::AssistantText { text: "s-1".into() });
         // The result is logged after the response that called the tool.

@@ -241,16 +241,16 @@ fn sandbox_rank(kind: &str) -> u8 {
     }
 }
 
-/// `initialize`'s parameters: krowk as itself, never as a Codex client.
-pub fn initialize_params(krowk_version: &str) -> Value {
-    json!({"clientInfo": {"name": "krowk", "title": "krowk", "version": krowk_version}, "capabilities": {"experimentalApi": true}})
+/// `initialize`'s parameters: gruntas as itself, never as a Codex client.
+pub fn initialize_params(gruntas_version: &str) -> Value {
+    json!({"clientInfo": {"name": "gruntas", "title": "gruntas", "version": gruntas_version}, "capabilities": {"experimentalApi": true}})
 }
 
-/// krowk's tools, as the thread's dynamic tools: one `krowk` namespace
+/// gruntas's tools, as the thread's dynamic tools: one `gruntas` namespace
 /// holding every tool the bridge exposes.
 pub fn dynamic_tools() -> Value {
     let tools: Vec<Value> = bridge::EXPOSED.iter().map(|t| json!({"type": "function", "name": t.name, "description": t.description, "inputSchema": (t.input_schema)()})).collect();
-    json!([{"type": "namespace", "name": bridge::SERVER, "description": "krowk's own tools: what krowk knows about this session, and what it can do beyond this agent.", "tools": tools}])
+    json!([{"type": "namespace", "name": bridge::SERVER, "description": "gruntas's own tools: what gruntas knows about this session, and what it can do beyond this agent.", "tools": tools}])
 }
 
 /// The effort a turn is sent: the rung asked for, mapped onto the ones
@@ -777,7 +777,9 @@ impl Answers {
     async fn tool_call(&self, params: &Value, asking: Asking<'_>) -> Value {
         let namespace = params.get("namespace").and_then(Value::as_str).unwrap_or_default();
         let tool = str_of(params, "tool");
-        if namespace != bridge::SERVER {
+        // A thread started before the rename keeps the namespace it was
+        // given then: Codex resumes a thread with its own dynamic tools.
+        if gruntas_store::current_name(namespace) != bridge::SERVER {
             return json!({"contentItems": [{"type": "inputText", "text": format!("krowk has no tool {tool:?} in the namespace {namespace:?} — its tools are in {:?}", bridge::SERVER)}], "success": false});
         }
         let env = BridgeEnv {
@@ -1622,9 +1624,9 @@ mod tests {
         assert_eq!(policy(PermissionMode::Unhinged), policy(PermissionMode::BypassPermissions));
         assert!(sandbox_rank("workspaceWrite") > sandbox_rank("read-only") && sandbox_rank("dangerFullAccess") > sandbox_rank("workspace-write") && sandbox_rank("somethingNew") == sandbox_rank("danger-full-access"));
         let init = initialize_params("1.2.3");
-        assert_eq!((init["clientInfo"]["name"].as_str(), init["capabilities"]["experimentalApi"].as_bool()), (Some("krowk"), Some(true)), "krowk as itself");
+        assert_eq!((init["clientInfo"]["name"].as_str(), init["capabilities"]["experimentalApi"].as_bool()), (Some("gruntas"), Some(true)), "gruntas as itself");
         let tools = dynamic_tools();
-        assert_eq!((tools[0]["type"].as_str(), tools[0]["name"].as_str(), tools[0]["tools"][0]["name"].as_str()), (Some("namespace"), Some("krowk"), Some("session_info")));
+        assert_eq!((tools[0]["type"].as_str(), tools[0]["name"].as_str(), tools[0]["tools"][0]["name"].as_str()), (Some("namespace"), Some("gruntas"), Some("session_info")));
         // The environment: the native openai instance's key never reaches a
         // ChatGPT account, unless the instance names it.
         let mut b = Backend { binary: "codex".into(), path: None, config_dir: Some("/data/codex-team".into()), home: None, env: Default::default(), args: vec![], key: None, shared_home: None };
@@ -1800,10 +1802,12 @@ mod tests {
             evidence: None,
         };
         let mut t = Translator::default();
-        let a = ask.answer("item/tool/call", &json!({"threadId": "th", "turnId": "tu", "callId": "c", "namespace": "krowk", "tool": "session_info", "arguments": {}}), &mut t, None).await.unwrap();
+        let a = ask.answer("item/tool/call", &json!({"threadId": "th", "turnId": "tu", "callId": "c", "namespace": "gruntas", "tool": "session_info", "arguments": {}}), &mut t, None).await.unwrap();
         assert_eq!(a["success"], true);
         let text = a["contentItems"][0]["text"].as_str().unwrap();
         assert!(text.contains("krowk session: s-1") && text.contains("instance: codex:team") && text.contains("backend: codex-app-server"), "{text}");
+        let resumed = json!({"threadId": "th", "turnId": "tu", "callId": "c", "namespace": "krowk", "tool": "session_info", "arguments": {}});
+        assert_eq!(ask.answer("item/tool/call", &resumed, &mut t, None).await.unwrap()["success"], true, "a thread started before the rename keeps its namespace");
         assert_eq!(ask.answer("item/tool/call", &json!({"namespace": "other", "tool": "x", "arguments": {}}), &mut t, None).await.unwrap()["success"], false);
         assert_eq!(ask.answer("item/commandExecution/requestApproval", &json!({"itemId": "c1"}), &mut t, None).await.unwrap()["decision"], "decline");
         assert!(t.declined["c1"].contains("needs approval"), "the reason is kept for the call's result");
@@ -1814,7 +1818,7 @@ mod tests {
         assert!(q["answers"]["q1"]["answers"][0].as_str().unwrap().contains("Decide"), "nobody to ask: the model is told to decide");
         assert_eq!(ask.answer("execCommandApproval", &json!({}), &mut t, None).await.unwrap()["decision"], "denied");
         // publish is offered too, and judged by the one evaluator.
-        let refused = ask.answer("item/tool/call", &json!({"namespace": "krowk", "tool": "publish", "arguments": {"files": ["a.png"]}}), &mut t, None).await.unwrap();
+        let refused = ask.answer("item/tool/call", &json!({"namespace": "gruntas", "tool": "publish", "arguments": {"files": ["a.png"]}}), &mut t, None).await.unwrap();
         assert_eq!(refused["success"], false);
         assert!(refused["contentItems"][0]["text"].as_str().unwrap().contains("needs approval"), "{refused}");
         assert_eq!(ask.answer("account/chatgptAuthTokens/refresh", &json!({}), &mut t, None).await.unwrap_err().0, -32601, "krowk never handles Codex's tokens");

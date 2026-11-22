@@ -6,7 +6,7 @@
 //! ```text
 //! claude -p --input-format stream-json --output-format stream-json --verbose
 //!        --include-partial-messages --replay-user-messages --permission-prompt-tool stdio
-//!        --mcp-config '{"mcpServers":{"krowk":{"type":"sdk","name":"krowk"}}}' --strict-mcp-config
+//!        --mcp-config '{"mcpServers":{"gruntas":{"type":"sdk","name":"gruntas"}}}' --strict-mcp-config
 //!        --model <model> --permission-mode default|plan
 //!        [--resume <claude session>] [--effort <level>]
 //! ```
@@ -41,7 +41,7 @@
 //! | `initialize` | krowk → claude | first, on every process, registering the paste guard as a `PreToolUse` hook on `Bash`, `EnterWorktree`, `Agent` and `Task` and asking for agents' own text (`forwardSubagentText`); its answer lists the `models`, which is how in-place model switching is detected |
 //! | `can_use_tool` | claude → krowk | judged by krowk's permission evaluator (`crate::permissions`), asking the person when a client is attached; `AskUserQuestion` is the person's to answer (`crate::ask`), its answers returned in `updatedInput`; one an agent asks (`agent_id`, else the call's `tool_use_id`) is asked as that agent's child session |
 //! | `hook_callback` | claude → krowk | the paste guard (`crate::paste_guard`) and the tooling guard (`crate::tooling_guard`): a `gh` post carrying a bare krowk card link, a worktree made by hand or a paste-site upload is denied, whatever the mode and the person's allow rules |
-//! | `mcp_message` | claude → krowk | a JSON-RPC message for the `krowk` MCP server, answered by `crate::bridge` |
+//! | `mcp_message` | claude → krowk | a JSON-RPC message for the `gruntas` MCP server, answered by `crate::bridge` |
 //! | `interrupt` | krowk → claude | a `Command::Interrupt`; the turn ends at the next `result` and the process lives on |
 //! | `set_model` | krowk → claude | a turn on another model of the same instance, when `initialize` listed models; otherwise a new process on `--resume` |
 //! | `stop_task` | krowk → claude | a `Command::Interrupt` of one agent's child session: the agent alone stops (`task_updated` `killed`, `task_notification` `stopped`), then the answer; the parent's turn goes on |
@@ -1985,7 +1985,7 @@ async fn announce(events: &Events, init: &Init, b: &Backend, instance: &str) -> 
     if let Some((_, status)) = init.mcp_servers.iter().find(|(n, _)| n == bridge::SERVER)
         && status != "connected"
     {
-        return Err(EngineError::new("backend_failed", format!("Claude Code on {instance} did not connect krowk's tools (the krowk MCP server is {status})")));
+        return Err(EngineError::new("backend_failed", format!("Claude Code on {instance} did not connect gruntas's tools (the gruntas MCP server is {status})")));
     }
     let billing = match init.api_key_source.as_str() {
         "" => None,
@@ -2050,7 +2050,7 @@ mod tests {
         let s = a.join(" ");
         assert!(s.starts_with("-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --replay-user-messages --permission-prompt-tool stdio --mcp-config "), "{s}");
         let rest = format!("--strict-mcp-config --settings {SETTINGS} --model haiku --resume cc-1 --effort high --permission-mode default --add-dir /x");
-        assert!(s.contains(&format!(r#"{{"mcpServers":{{"krowk":{{"name":"krowk","type":"sdk"}}}}}} {rest}"#)) || s.contains(&format!(r#"{{"mcpServers":{{"krowk":{{"type":"sdk","name":"krowk"}}}}}} {rest}"#)), "{s}");
+        assert!(s.contains(&format!(r#"{{"mcpServers":{{"gruntas":{{"name":"gruntas","type":"sdk"}}}}}} {rest}"#)) || s.contains(&format!(r#"{{"mcpServers":{{"gruntas":{{"type":"sdk","name":"gruntas"}}}}}} {rest}"#)), "{s}");
         // Commits and pull requests made through Claude Code carry no Claude attribution.
         let settings: Value = serde_json::from_str(SETTINGS).unwrap();
         assert_eq!(settings, json!({"attribution": {"commit": "", "pr": ""}, "includeCoAuthoredBy": false}));
@@ -2078,7 +2078,7 @@ mod tests {
         let judge = |m, t: &str, i: &Value, protected: &[PathBuf]| crate::permissions::judge(m, Ok(call_of(t, i, &cwd)), &cwd, protected);
         let approve = |m, t: &str, i: &Value| judge(m, t, i, &[]);
         let d = PermissionMode::Default;
-        assert!(approve(d, "mcp__krowk__session_info", &json!({})).is_ok());
+        assert!(approve(d, "mcp__gruntas__session_info", &json!({})).is_ok());
         assert!(approve(d, "Read", &json!({"file_path": "README.md"})).is_ok());
         assert!(approve(d, "Read", &json!({"file_path": "/etc/passwd"})).unwrap_err().contains("outside the working directory"));
         assert!(approve(d, "Edit", &json!({"file_path": "a.txt"})).unwrap_err().contains("default mode"));

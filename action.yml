@@ -1,14 +1,14 @@
-# action.yml — the GitHub Action face of the CLI: `uses: krowkcom/krowk@v0`,
+# action.yml — the GitHub Action face of the CLI: `uses: gruntas/gruntas@v0`,
 # or a release tag where a workflow wants the version frozen.
 #
 # It is a composite of two bash steps, install then push, because that is all
-# the action does: put the binary on the runner and run the same `krowk push`
+# the action does: put the binary on the runner and run the same `gruntas push`
 # a person would. Everything the CLI detects on its own — repo, commit, branch,
 # the pull request from GITHUB_REF, the agent, the session from GITHUB_RUN_ID —
 # it detects here too, so the useful invocation is just `files:`.
-name: Krowk
+name: Gruntas
 description: >-
-  Upload screenshots, videos and other agent output to Krowk and get permalinks
+  Upload screenshots, videos and other agent output to Gruntas and get permalinks
   back — ready to paste into a pull request comment.
 branding:
   icon: upload
@@ -57,7 +57,7 @@ outputs:
     value: ${{ steps.push.outputs.run-slug }}
   json:
     description: >-
-      The JSON envelope from `krowk push --json`, with claim tokens and
+      The JSON envelope from `gruntas push --json`, with claim tokens and
       breadcrumbs stripped so it is safe to paste.
     value: ${{ steps.push.outputs.json }}
 
@@ -88,7 +88,7 @@ runs:
         fi
         # Whose releases to install. A remote `uses: owner/repo@ref` names its
         # repository in GITHUB_ACTION_REPOSITORY, and that is the answer — never
-        # the calling workflow's repository, which has no krowk releases. The
+        # the calling workflow's repository, which has no gruntas releases. The
         # runner fetches the whole repository for it, so the checkout test below
         # would pass there too, which is why it comes second. `uses: ./` and a
         # `run:` step name no action repository: a checkout of this project
@@ -160,14 +160,14 @@ runs:
         # self-hosted runner may not, and the failure should say so.
         command -v jq >/dev/null || { echo "::error::jq is required and is not on this runner" >&2; exit 1; }
 
-        # Mask the token even when it did not come from a secret, so a krowk
+        # Mask the token even when it did not come from a secret, so a gruntas
         # error that echoes configuration cannot surface it in the log.
         [ -n "$GRUNTAS_TOKEN" ] && echo "::add-mask::$GRUNTAS_TOKEN"
 
         # Split the input into patterns with globbing off, so an unmatched
         # pattern survives to be named in the error instead of vanishing under
         # nullglob; then expand each one with globbing back on. The input is
-        # whitespace-separated — a path with a space in it reaches krowk
+        # whitespace-separated — a path with a space in it reaches gruntas
         # through a glob.
         set -f
         read -d '' -ra patterns <<<"$INPUT_FILES" || true
@@ -184,9 +184,9 @@ runs:
             exit 1
           fi
           # nullglob only drops unmatched *globs* — a literal path survives
-          # expansion whether it exists or not. And what krowk pushes is
+          # expansion whether it exists or not. And what gruntas pushes is
           # files, so a directory a glob swept up is an error here, where the
-          # pattern can be named, not later in krowk's own words.
+          # pattern can be named, not later in gruntas's own words.
           for f in "${matched[@]}"; do
             if [ -f "$f" ]; then
               continue
@@ -236,7 +236,7 @@ runs:
 
         # The summary makes the links clickable without a PR comment step.
         {
-          echo "### Krowk uploads"
+          echo "### Gruntas uploads"
           echo
           jq -r '.data.artifacts[]? | "- \(.url)"' <<<"$out"
         } >> "$GITHUB_STEP_SUMMARY"

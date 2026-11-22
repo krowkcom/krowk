@@ -9,7 +9,7 @@
 //! Claude Code is started `--strict-mcp-config` with only krowk's bridge,
 //! so every server here is krowk's to start, judge and close: the model's
 //! `mcp_search` and `mcp_call` are Claude Code's calls of
-//! `mcp__krowk__mcp_search` and `mcp__krowk__mcp_call`, asked about with
+//! `mcp__gruntas__mcp_search` and `mcp__gruntas__mcp_call`, asked about with
 //! `can_use_tool` and run over the bridge (`mcp_message`).
 #![cfg(unix)]
 
@@ -147,10 +147,10 @@ fn prompt(mode: PermissionMode) -> Command {
 /// runs it over the bridge when `runs`, and the model reads what came back
 /// — the bridge's answer, or the denial's message.
 fn bridged(id: &str, tool: &str, input: Value, runs: bool) -> String {
-    let name = format!("mcp__krowk__{tool}");
+    let name = format!("mcp__gruntas__{tool}");
     let call = json!({"type": "assistant", "message": {"id": format!("msg_{id}"), "model": "{{MODEL}}", "role": "assistant", "content": [{"type": "tool_use", "id": id, "name": name, "input": input}]}, "parent_tool_use_id": null, "session_id": "{{SESSION}}"});
-    let ask = json!({"subtype": "can_use_tool", "tool_name": name, "mcp_server": {"name": "krowk", "source": "sdk"}, "input": input, "tool_use_id": id});
-    let run = json!({"subtype": "mcp_message", "server_name": "krowk", "message": {"method": "tools/call", "params": {"name": tool, "arguments": input, "_meta": {"claudecode/toolUseId": id}}, "jsonrpc": "2.0", "id": 2}});
+    let ask = json!({"subtype": "can_use_tool", "tool_name": name, "mcp_server": {"name": "gruntas", "source": "sdk"}, "input": input, "tool_use_id": id});
+    let run = json!({"subtype": "mcp_message", "server_name": "gruntas", "message": {"method": "tools/call", "params": {"name": tool, "arguments": input, "_meta": {"claudecode/toolUseId": id}}, "jsonrpc": "2.0", "id": 2}});
     if runs { format!("{call}\n@ask {ask}\n@ask {run}\n@tool_result {id}") } else { format!("{call}\n@ask {ask}\n@tool_result {id}") }
 }
 

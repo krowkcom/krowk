@@ -288,10 +288,10 @@ impl Usage {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum RanBy {
-    /// krowk's own loop, through its `subagent` tool, in logs from before
-    /// that engine went.
+    /// gruntas's own loop, through its `subagent` tool, in logs from before
+    /// that engine went. Logs written before the rename say `krowk`.
     #[default]
-    #[serde(rename = "krowk")]
+    #[serde(rename = "gruntas", alias = "krowk")]
     Gruntas,
     /// Claude Code's `Agent` tool.
     Claude,
@@ -859,8 +859,8 @@ pub enum LogBody {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<String>,
         model: ModelRef,
-        /// Who runs its loop (R-SUB-7): krowk's own, or a backend's agent.
-        /// A log written before the field existed reads as `krowk`.
+        /// Who runs its loop (R-SUB-7): gruntas's own, or a backend's agent.
+        /// A log written before the field existed reads as `gruntas`.
         #[serde(default)]
         ran_by: RanBy,
         /// The backend's own id for it: Claude Code's `task_id`, Codex's

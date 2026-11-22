@@ -12,7 +12,7 @@
 //!   what it is, and a `toolResult` when Codex says how it came out — a
 //!   command as `shell`, a patch as `apply_patch`, an MCP tool as
 //!   `mcp__<server>__<tool>`, krowk's own bridged tools as
-//!   `mcp__krowk__<tool>` like every backend's;
+//!   `mcp__gruntas__<tool>` like every backend's;
 //! - a token-usage update closes one model call: `response.completed`
 //!   names the model output that completed since the last one.
 //!
@@ -539,7 +539,7 @@ mod tests {
             json!({"type": "commandExecution", "id": "c2", "command": "rm -rf /", "cwd": "/", "status": "declined"}),
             json!({"type": "fileChange", "id": "f1", "status": "completed", "changes": [{"path": "/repo/a.txt", "kind": {"type": "update"}, "diff": ""}]}),
             json!({"type": "mcpToolCall", "id": "m1", "server": "docs", "tool": "search", "arguments": {}, "status": "failed", "error": {"message": "server gone"}}),
-            json!({"type": "dynamicToolCall", "id": "d1", "namespace": "krowk", "tool": "session_info", "arguments": {}, "status": "completed", "success": true, "contentItems": [{"type": "inputText", "text": "krowk session: s"}]}),
+            json!({"type": "dynamicToolCall", "id": "d1", "namespace": "gruntas", "tool": "session_info", "arguments": {}, "status": "completed", "success": true, "contentItems": [{"type": "inputText", "text": "krowk session: s"}]}),
         ]
         .iter()
         .filter_map(|item| {
@@ -557,14 +557,14 @@ mod tests {
         assert_eq!(results[4], ("krowk session: s".to_string(), false));
         assert_eq!(t.changes["f1"], ["/repo/a.txt"]);
         let mut named = Vec::new();
-        for item in [json!({"type": "dynamicToolCall", "id": "d2", "namespace": "krowk", "tool": "session_info", "arguments": {}}), json!({"type": "mcpToolCall", "id": "m2", "server": "docs", "tool": "search", "arguments": {}})] {
+        for item in [json!({"type": "dynamicToolCall", "id": "d2", "namespace": "gruntas", "tool": "session_info", "arguments": {}}), json!({"type": "mcpToolCall", "id": "m2", "server": "docs", "tool": "search", "arguments": {}})] {
             for e in t.apply("item/started", &json!({ "item": item })) {
                 if let EngineEvent::ItemCompleted { item: Item::ToolCall { name, .. }, .. } = e {
                     named.push(name);
                 }
             }
         }
-        assert_eq!(named, ["mcp__krowk__session_info", "mcp__docs__search"], "bridged tools are named as on every backend");
+        assert_eq!(named, ["mcp__gruntas__session_info", "mcp__docs__search"], "bridged tools are named as on every backend");
         assert!(capped(&"x".repeat(OUTPUT_CAP + 10)).ends_with("[10 more bytes in Codex's transcript]"));
     }
 

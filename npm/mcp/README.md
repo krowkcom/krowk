@@ -1,8 +1,8 @@
 # @gruntas/mcp
 
-The gruntas MCP server. It gives an agent `krowk_push`, `krowk_list_artifacts`,
-`krowk_get_artifact`, `krowk_claim_artifact`, `krowk_get_run` and
-`krowk_verify_key` over stdio, so output from a task becomes a permalink without
+The gruntas MCP server. It gives an agent `gruntas_push`, `gruntas_list_artifacts`,
+`gruntas_get_artifact`, `gruntas_claim_artifact`, `gruntas_get_run` and
+`gruntas_verify_key` over stdio, so output from a task becomes a permalink without
 anybody shelling out.
 
 ```json

@@ -73,16 +73,16 @@ jobs:
           cp shots/smoke.png shots/deep/nested.png
 
       - uses: ./
-        id: krowk
+        id: gruntas
         with:
           files: ${{ matrix.files }}
           title: action smoke test (${{ matrix.os }})
 
       - name: Assert the outputs
         env:
-          URLS: ${{ steps.krowk.outputs.urls }}
-          MD: ${{ steps.krowk.outputs.markdown }}
-          JSON: ${{ steps.krowk.outputs.json }}
+          URLS: ${{ steps.gruntas.outputs.urls }}
+          MD: ${{ steps.gruntas.outputs.markdown }}
+          JSON: ${{ steps.gruntas.outputs.json }}
         run: |
           set -euo pipefail
           [ -n "$URLS" ] || { echo "::error::urls output is empty" >&2; exit 1; }

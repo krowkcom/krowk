@@ -44,7 +44,7 @@ pub struct Report<'a> {
     pub msg: &'a str,
 }
 
-/// `ESC ] 7501 ; state=…:kind=…:app=krowk:id=…:title=…:msg=… ESC \`, or
+/// `ESC ] 7501 ; state=…:kind=…:app=gruntas:id=…:title=…:msg=… ESC \`, or
 /// `None` for an id outside the grammar or the limits: such a report is
 /// dropped, never sent to the root record in its place. A clear carries
 /// no title or msg.
@@ -66,7 +66,7 @@ pub fn encode(r: &Report) -> Option<String> {
             Kind::Auth => ":kind=auth",
         });
     }
-    out.push_str(":app=krowk");
+    out.push_str(":app=gruntas");
     if let Some(id) = id {
         out.push_str(":id=");
         out.push_str(&id);
@@ -152,32 +152,32 @@ mod tests {
         assert_eq!(terraform, "Apply 3 to add, 1 to change, 0 to destroy?");
         assert_eq!(
             root(State::Blocked(Kind::Permission), &terraform),
-            "\x1b]7501;state=blocked:kind=permission:app=krowk:msg=QXBwbHkgMyB0byBhZGQsIDEgdG8gY2hhbmdlLCAwIHRvIGRlc3Ryb3k/\x1b\\"
+            "\x1b]7501;state=blocked:kind=permission:app=gruntas:msg=QXBwbHkgMyB0byBhZGQsIDEgdG8gY2hhbmdlLCAwIHRvIGRlc3Ryb3k/\x1b\\"
         );
         let installing = decode("SW5zdGFsbGluZyB1cGRhdGVz");
-        assert_eq!(root(State::Working, &installing), "\x1b]7501;state=working:app=krowk:msg=SW5zdGFsbGluZyB1cGRhdGVz\x1b\\");
+        assert_eq!(root(State::Working, &installing), "\x1b]7501;state=working:app=gruntas:msg=SW5zdGFsbGluZyB1cGRhdGVz\x1b\\");
         let password = decode("UGFzc3dvcmQgcmVxdWlyZWQgdG8gaW5zdGFsbCB1cGRhdGVz");
         assert_eq!(
             root(State::Blocked(Kind::Auth), &password),
-            "\x1b]7501;state=blocked:kind=auth:app=krowk:msg=UGFzc3dvcmQgcmVxdWlyZWQgdG8gaW5zdGFsbCB1cGRhdGVz\x1b\\"
+            "\x1b]7501;state=blocked:kind=auth:app=gruntas:msg=UGFzc3dvcmQgcmVxdWlyZWQgdG8gaW5zdGFsbCB1cGRhdGVz\x1b\\"
         );
         let upgraded = decode("VXBncmFkZWQgMTIgcGFja2FnZXM=");
-        assert_eq!(root(State::Done, &upgraded), "\x1b]7501;state=done:app=krowk:msg=VXBncmFkZWQgMTIgcGFja2FnZXM=\x1b\\", "padding kept");
+        assert_eq!(root(State::Done, &upgraded), "\x1b]7501;state=done:app=gruntas:msg=VXBncmFkZWQgMTIgcGFja2FnZXM=\x1b\\", "padding kept");
     }
 
     #[test]
     fn r_pres_1_each_state_and_kind_has_its_own_bytes() {
-        assert_eq!(root(State::Idle, ""), "\x1b]7501;state=idle:app=krowk\x1b\\", "an empty msg is left out");
-        assert_eq!(root(State::Working, ""), "\x1b]7501;state=working:app=krowk\x1b\\");
-        assert_eq!(root(State::Blocked(Kind::Permission), ""), "\x1b]7501;state=blocked:kind=permission:app=krowk\x1b\\");
-        assert_eq!(root(State::Blocked(Kind::Question), ""), "\x1b]7501;state=blocked:kind=question:app=krowk\x1b\\");
-        assert_eq!(root(State::Blocked(Kind::Auth), ""), "\x1b]7501;state=blocked:kind=auth:app=krowk\x1b\\");
-        assert_eq!(root(State::Done, ""), "\x1b]7501;state=done:app=krowk\x1b\\");
-        assert_eq!(root(State::Error, "boom"), "\x1b]7501;state=error:app=krowk:msg=Ym9vbQ==\x1b\\");
-        assert_eq!(root(State::Clear, "ignored"), "\x1b]7501;state=clear:app=krowk\x1b\\", "a clear with no id clears every record");
+        assert_eq!(root(State::Idle, ""), "\x1b]7501;state=idle:app=gruntas\x1b\\", "an empty msg is left out");
+        assert_eq!(root(State::Working, ""), "\x1b]7501;state=working:app=gruntas\x1b\\");
+        assert_eq!(root(State::Blocked(Kind::Permission), ""), "\x1b]7501;state=blocked:kind=permission:app=gruntas\x1b\\");
+        assert_eq!(root(State::Blocked(Kind::Question), ""), "\x1b]7501;state=blocked:kind=question:app=gruntas\x1b\\");
+        assert_eq!(root(State::Blocked(Kind::Auth), ""), "\x1b]7501;state=blocked:kind=auth:app=gruntas\x1b\\");
+        assert_eq!(root(State::Done, ""), "\x1b]7501;state=done:app=gruntas\x1b\\");
+        assert_eq!(root(State::Error, "boom"), "\x1b]7501;state=error:app=gruntas:msg=Ym9vbQ==\x1b\\");
+        assert_eq!(root(State::Clear, "ignored"), "\x1b]7501;state=clear:app=gruntas\x1b\\", "a clear with no id clears every record");
         let child = |state| encode(&Report { state, id: &["0f3a9c1d2e4b", "a1b2c3d4e5f6"], title: "US East", msg: "" }).unwrap();
-        assert_eq!(child(State::Working), "\x1b]7501;state=working:app=krowk:id=0f3a9c1d2e4b/a1b2c3d4e5f6:title=VVMgRWFzdA==\x1b\\");
-        assert_eq!(child(State::Clear), "\x1b]7501;state=clear:app=krowk:id=0f3a9c1d2e4b/a1b2c3d4e5f6\x1b\\");
+        assert_eq!(child(State::Working), "\x1b]7501;state=working:app=gruntas:id=0f3a9c1d2e4b/a1b2c3d4e5f6:title=VVMgRWFzdA==\x1b\\");
+        assert_eq!(child(State::Clear), "\x1b]7501;state=clear:app=gruntas:id=0f3a9c1d2e4b/a1b2c3d4e5f6\x1b\\");
     }
 
     #[test]
@@ -199,7 +199,7 @@ mod tests {
         let r = encode(&Report { state: State::Working, title: "first\nsecond", msg: "fix the test\r\nand more\n", ..Default::default() }).unwrap();
         assert_eq!(field(&r, "title").as_deref(), Some("first"));
         assert_eq!(field(&r, "msg").as_deref(), Some("fix the test"), "a multi-line text keeps its first line");
-        assert_eq!(root(State::Working, "\u{202E}\x1b\n"), "\x1b]7501;state=working:app=krowk\x1b\\", "a text empty once cleaned is left out");
+        assert_eq!(root(State::Working, "\u{202E}\x1b\n"), "\x1b]7501;state=working:app=gruntas\x1b\\", "a text empty once cleaned is left out");
     }
 
     #[test]

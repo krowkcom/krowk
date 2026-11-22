@@ -317,9 +317,9 @@
               "$ref": "#/$defs/ModelRef"
             },
             "ranBy": {
-              "description": "Who runs its loop (R-SUB-7): krowk's own, or a backend's agent.\nA log written before the field existed reads as `krowk`.",
+              "description": "Who runs its loop (R-SUB-7): gruntas's own, or a backend's agent.\nA log written before the field existed reads as `gruntas`.",
               "$ref": "#/$defs/RanBy",
-              "default": "krowk"
+              "default": "gruntas"
             },
             "backendId": {
               "description": "The backend's own id for it: Claude Code's `task_id`, Codex's\nthread id. Absent for krowk's own.",
@@ -934,9 +934,9 @@
       "description": "Who runs a subagent's loop (R-SUB-7).",
       "oneOf": [
         {
-          "description": "krowk's own loop, through its `subagent` tool, in logs from before\nthat engine went.",
+          "description": "gruntas's own loop, through its `subagent` tool, in logs from before\nthat engine went. Logs written before the rename say `krowk`.",
           "type": "string",
-          "const": "krowk"
+          "const": "gruntas"
         },
         {
           "description": "Claude Code's `Agent` tool.",

@@ -1,14 +1,14 @@
 //! krowk.db as a projection of the session logs (R-LOG-2): native sessions
 //! are one more `Source`, read by the same import, sync and rebuild as
 //! Claude's, Cursor's and opencode's transcripts, and written by the same
-//! store writer — so they list beside them with harness `krowk` (R-LOG-5),
+//! store writer — so they list beside them with harness `gruntas` (R-LOG-5),
 //! and `krowk sessions rebuild` re-derives them from the JSONL alone.
 //!
 //! The mapping, event by event, along the head branch:
 //!
 //! | log                         | krowk.db                                             |
 //! |-----------------------------|------------------------------------------------------|
-//! | `session.started`           | `session` (its id = the session id, directory, worktree) and its `session_binding` (provider and harness `krowk`, foreign id = the session id) |
+//! | `session.started`           | `session` (its id = the session id, directory, worktree) and its `session_binding` (provider and harness `gruntas`, foreign id = the session id) |
 //! | `turn.started` … `turn.completed` | one `turn`: status, and the token columns summed over the turn's responses |
 //! | `item.completed` userText   | a `user` message, one `text` part; a note of krowk's (a background job's end, the todo reminder) a `system` one |
 //! | `response.completed`        | one `assistant` message holding the items it names: `thinking` (the signature in `part.signature`), `text`, `tool_call` parts |
@@ -26,7 +26,9 @@ use gruntas_store::{Binding, Message, Part, Role, Session, Thread, Turn};
 use serde_json::json;
 use std::path::Path;
 
-pub const HARNESS: &str = "krowk";
+/// The harness and provider native sessions are stored under. Sessions
+/// stored before the rename say `krowk`; the store reads them as this.
+pub const HARNESS: &str = "gruntas";
 
 pub struct Gruntas;
 
@@ -36,8 +38,8 @@ impl Source for Gruntas {
     }
 
     fn discover(&self, env: Env) -> Result<Vec<Ref>, ImportError> {
-        let dir = log::sessions_dir(env).map_err(|e| ImportError::NoHome(format!("krowk: {}", e.fix())))?;
-        let mut found = log::list(&dir).map_err(|e| ImportError::Other(format!("krowk: list {}: {e}", dir.display())))?;
+        let dir = log::sessions_dir(env).map_err(|e| ImportError::NoHome(format!("gruntas: {}", e.fix())))?;
+        let mut found = log::list(&dir).map_err(|e| ImportError::Other(format!("gruntas: list {}: {e}", dir.display())))?;
         // An archived session is its stub until it is restored: listed and
         // found from that alone (R-VINT-3).
         #[cfg(unix)]
@@ -50,16 +52,16 @@ impl Source for Gruntas {
     /// foreign id, so the re-read inserts only what is new.
     fn read(&self, _env: Env, r: &Ref, _cursor: &str) -> Result<(Thread, String, ReadResult), ImportError> {
         let path = Path::new(&r.path);
-        let size = std::fs::metadata(path).map_err(|e| ImportError::Other(format!("krowk: stat {}: {e}", r.path)))?.len();
+        let size = std::fs::metadata(path).map_err(|e| ImportError::Other(format!("gruntas: stat {}: {e}", r.path)))?.len();
         #[cfg(unix)]
         if path.file_name().is_some_and(|f| f == crate::vintage::STUB_FILE) {
-            let stub: crate::vintage::Stub = serde_json::from_slice(&std::fs::read(path).map_err(|e| ImportError::Other(format!("krowk: read {}: {e}", r.path)))?)
-                .map_err(|e| ImportError::Other(format!("krowk: {} is not a stub this krowk reads: {e}", r.path)))?;
+            let stub: crate::vintage::Stub = serde_json::from_slice(&std::fs::read(path).map_err(|e| ImportError::Other(format!("gruntas: read {}: {e}", r.path)))?)
+                .map_err(|e| ImportError::Other(format!("gruntas: {} is not a stub this gruntas reads: {e}", r.path)))?;
             return Ok((stub_thread(&r.id, &stub), encode_cursor(&JsonlCursor { offset: size, size }), ReadResult::default()));
         }
-        let events = log::read_events(path).map_err(|e| ImportError::Other(format!("krowk: {}", e.message())))?;
+        let events = log::read_events(path).map_err(|e| ImportError::Other(format!("gruntas: {}", e.message())))?;
         let mut res = ReadResult { lines: events.len(), ..ReadResult::default() };
-        let th = thread(&events, &mut res).ok_or_else(|| ImportError::Other(format!("krowk: {} has no session.started event", r.path)))?;
+        let th = thread(&events, &mut res).ok_or_else(|| ImportError::Other(format!("gruntas: {} has no session.started event", r.path)))?;
         Ok((th, encode_cursor(&JsonlCursor { offset: size, size }), res))
     }
 
@@ -79,7 +81,7 @@ pub fn stub_thread(session_id: &str, stub: &crate::vintage::Stub) -> Thread {
     Thread {
         worktree: gruntas_import::worktree_for(&stub.directory),
         session: Session { id: session_id.into(), directory: stub.directory.clone(), title: stub.title.clone(), model: stub.model.clone(), provider: stub.provider.clone(), harness: HARNESS.into() },
-        binding: binding(session_id, format!("krowk -p --resume {session_id}")),
+        binding: binding(session_id, format!("gruntas -p --resume {session_id}")),
         parent: stub.parent_session_id.as_deref().map(|p| binding(p, String::new())),
         turns: stub
             .turns
@@ -116,7 +118,7 @@ pub fn thread(events: &[LogEvent], res: &mut ReadResult) -> Option<Thread> {
             provider: HARNESS.into(),
             harness: HARNESS.into(),
             foreign_session_id: session_id.clone(),
-            resume_cmd: format!("krowk -p --resume {session_id}"),
+            resume_cmd: format!("gruntas -p --resume {session_id}"),
         },
         // A subagent names the session that spawned it, so krowk.db's
         // session tree — and `krowk sessions budget` — counts its spend there.

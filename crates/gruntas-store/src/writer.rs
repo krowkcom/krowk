@@ -338,15 +338,21 @@ fn find_or_create_session(
     // Trimmed after the fallback is cut, as Go does: a prompt whose 80th
     // character is a space stores 79.
     let s = &Session { title: s.title.trim().to_string(), ..s.clone() };
-    let found: Option<String> = tx
+    let found: Option<(String, String, String)> = tx
         .query_row(
-            "SELECT session_id FROM session_binding WHERE provider = ? AND foreign_session_id = ?",
-            params![b.provider, b.foreign_session_id],
-            |r| r.get(0),
+            "SELECT id, session_id, provider FROM session_binding WHERE provider IN (?, ?) AND foreign_session_id = ? ORDER BY provider = ? DESC LIMIT 1",
+            params![b.provider, crate::former_name(&b.provider), b.foreign_session_id, b.provider],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()
         .map_err(e("find binding"))?;
-    if let Some(id) = found {
+    if let Some((binding_id, id, provider)) = found {
+        // A binding stored under the name its source had before the rename
+        // (D14) is the same session: it takes the new name, not a second row.
+        if provider != b.provider {
+            tx.execute("UPDATE session_binding SET provider = ?, harness = ?, time_updated = ? WHERE id = ?", params![b.provider, b.harness, now, binding_id])
+                .map_err(e("rename binding"))?;
+        }
         let title = if from_fallback {
             stored_title_or(tx, &id, &s.title, true)?
         } else if s.title.is_empty() {
@@ -394,8 +400,8 @@ impl Writer<'_> {
         let child_id: Option<String> = self
             .conn
             .query_row(
-                "SELECT session_id FROM session_binding WHERE provider = ? AND foreign_session_id = ?",
-                params![child.provider, child.foreign_session_id],
+                "SELECT session_id FROM session_binding WHERE provider IN (?, ?) AND foreign_session_id = ?",
+                params![child.provider, crate::former_name(&child.provider), child.foreign_session_id],
                 |r| r.get(0),
             )
             .optional()
@@ -413,8 +419,8 @@ fn link_parent(tx: &Connection, session_id: &str, parent: Option<&Binding>) -> R
     let Some(parent) = parent.filter(|p| !p.foreign_session_id.is_empty()) else { return Ok(()) };
     let parent_id: Option<String> = tx
         .query_row(
-            "SELECT session_id FROM session_binding WHERE provider = ? AND foreign_session_id = ?",
-            params![parent.provider, parent.foreign_session_id],
+            "SELECT session_id FROM session_binding WHERE provider IN (?, ?) AND foreign_session_id = ?",
+            params![parent.provider, crate::former_name(&parent.provider), parent.foreign_session_id],
             |r| r.get(0),
         )
         .optional()
@@ -528,7 +534,11 @@ pub fn title_for(msgs: &[Message]) -> String {
 pub fn drop_bodies(conn: &Connection, provider: &str, foreign_session_id: &str) -> Result<(), StoreError> {
     let tx = conn.unchecked_transaction().map_err(e("begin"))?;
     let id: Option<String> = tx
-        .query_row("SELECT session_id FROM session_binding WHERE provider = ? AND foreign_session_id = ?", params![provider, foreign_session_id], |r| r.get(0))
+        .query_row(
+            "SELECT session_id FROM session_binding WHERE provider IN (?, ?) AND foreign_session_id = ?",
+            params![provider, crate::former_name(provider), foreign_session_id],
+            |r| r.get(0),
+        )
         .optional()
         .map_err(e("find binding"))?;
     if let Some(id) = id {
@@ -549,8 +559,8 @@ pub const STAND_IN: &str = "archived:";
 /// the log's own rows must replace, not join. One indexed lookup.
 pub fn holds_stand_ins(conn: &Connection, provider: &str, foreign_session_id: &str) -> Result<bool, StoreError> {
     conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM session_binding b JOIN message m ON m.session_id = b.session_id WHERE b.provider = ? AND b.foreign_session_id = ? AND substr(m.foreign_id, 1, ?) = ?)",
-        params![provider, foreign_session_id, STAND_IN.len() as i64, STAND_IN],
+        "SELECT EXISTS (SELECT 1 FROM session_binding b JOIN message m ON m.session_id = b.session_id WHERE b.provider IN (?, ?) AND b.foreign_session_id = ? AND substr(m.foreign_id, 1, ?) = ?)",
+        params![provider, crate::former_name(provider), foreign_session_id, STAND_IN.len() as i64, STAND_IN],
         |r| r.get(0),
     )
     .map_err(e("find stand-ins"))
@@ -660,5 +670,36 @@ mod tests {
             let stored: String = conn.query_row("SELECT session_id FROM session_binding WHERE foreign_session_id = ?", [foreign], |r| r.get(0)).unwrap();
             assert!(clock::is_id(&stored) && stored != id, "{foreign}: minted, not {id:?}");
         }
+    }
+
+    /// D14: a session bound under the harness's old name is found under the
+    /// new one — re-imported, linked, listed and filtered as the same.
+    #[test]
+    fn a_binding_under_the_old_name_is_the_same_session_under_the_new() {
+        let home = Home::new("renamed");
+        let env = home.env();
+        let conn = crate::open(&env).unwrap();
+        let w = Writer::new(&conn);
+        let mut old = thread("before", &["hi"]);
+        (old.session.harness, old.binding.provider, old.binding.harness) = ("krowk".into(), "krowk".into(), "krowk".into());
+        w.ingest(&old).unwrap();
+        let mut now = old.clone();
+        (now.session.harness, now.binding.provider, now.binding.harness) = ("gruntas".into(), "gruntas".into(), "gruntas".into());
+        w.ingest(&now).unwrap();
+        let rows: Vec<(String, String)> = conn.prepare("SELECT provider, harness FROM session_binding").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect();
+        assert_eq!(rows, [("gruntas".to_string(), "gruntas".to_string())], "renamed in place, not stored twice");
+
+        let mut older = thread("older", &["hey"]);
+        older.binding.foreign_session_id = "s9".into();
+        (older.session.harness, older.binding.provider, older.binding.harness) = ("krowk".into(), "krowk".into(), "krowk".into());
+        w.ingest(&older).unwrap();
+        let listed = crate::list_sessions(&conn, "gruntas", "", -1).unwrap();
+        assert_eq!(listed.len(), 2, "--harness gruntas lists both");
+        assert!(listed.iter().all(|r| r.harness == "gruntas"), "and reads krowk as gruntas: {listed:?}");
+        assert_eq!(crate::list_sessions(&conn, "krowk", "", -1).unwrap().len(), 2, "the old name is the same harness");
+        let id = listed.iter().find(|r| r.foreign_session_id == "s9").unwrap().id.clone();
+        let detail = crate::load_session_detail(&conn, &id).unwrap().session;
+        assert_eq!((detail.harness.as_str(), detail.binding_provider.as_str()), ("gruntas", "gruntas"));
+        assert_eq!(crate::foreign_session_id(&conn, &id, "gruntas").unwrap().as_deref(), Some("s9"));
     }
 }

@@ -413,3 +413,45 @@ fn r_vint_4_a_session_left_unprojected_by_a_cut_short_restore_is_projected_when_
     assert!(!gruntas_store::holds_stand_ins(&conn, gruntas_harness::project::HARNESS, &id).unwrap(), "the stand-ins replaced");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// D14: a native session stored before the rename, under `krowk`, is the
+/// same harness as one stored now: `--harness gruntas` lists both, as
+/// `gruntas`, and the next import renames its binding rather than storing
+/// the session twice.
+#[test]
+fn harness_gruntas_lists_a_session_stored_as_krowk_and_a_new_one() {
+    let home = std::env::temp_dir().join(format!("gruntas-vintage-renamed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    let sessions = home.join(".gruntas/sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let old = session(&sessions, &home, "from before the rename", 0);
+    let new = session(&sessions, &home, "from after it", 0);
+    let h = home.display().to_string();
+    let env = move |k: &str| if k == "HOME" { h.clone() } else { String::new() };
+    {
+        let conn = gruntas_store::open(&env).unwrap();
+        let binding = gruntas_store::Binding { provider: "krowk".into(), harness: "krowk".into(), foreign_session_id: old.clone(), ..Default::default() };
+        let session = gruntas_store::Session { id: old.clone(), harness: "krowk".into(), ..Default::default() };
+        let worktree = gruntas_store::Worktree { path: home.display().to_string(), ..Default::default() };
+        gruntas_store::Writer::new(&conn).ingest(&gruntas_store::Thread { worktree, session, binding, ..Default::default() }).unwrap();
+    }
+    let m = Machine { home: home.clone(), api_url: "http://127.0.0.1:9/v1".into(), token: FREE_TOKEN };
+    let (ok, _, out) = m.krowk(&["sessions", "--harness", "gruntas"]);
+    assert!(ok && out.contains(&old) && !out.contains(&new), "the old session, before any import: {out}");
+    let (ok, _, out) = m.krowk(&["sessions", "import", "--from", "gruntas"]);
+    assert!(ok, "{out}");
+    let (ok, v, out) = m.krowk(&["sessions", "--harness", "gruntas"]);
+    assert!(ok, "{out}");
+    let listed = v["data"]["sessions"].as_array().unwrap_or_else(|| panic!("{out}"));
+    let mut got: Vec<(String, String)> = listed.iter().map(|s| (s["id"].as_str().unwrap().to_string(), s["harness"].as_str().unwrap().to_string())).collect();
+    got.sort();
+    let mut want = vec![(old.clone(), "gruntas".to_string()), (new.clone(), "gruntas".to_string())];
+    want.sort();
+    assert_eq!(got, want, "{out}");
+    let conn = gruntas_store::open(&env).unwrap();
+    let rows: Vec<(String, String)> = conn.prepare("SELECT provider, foreign_session_id FROM session_binding ORDER BY foreign_session_id").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect();
+    assert_eq!(rows.len(), 2, "one binding each: {rows:?}");
+    assert!(rows.iter().all(|(p, _)| p == "gruntas"), "the old binding took the new name: {rows:?}");
+    drop(conn);
+    let _ = std::fs::remove_dir_all(&home);
+}
