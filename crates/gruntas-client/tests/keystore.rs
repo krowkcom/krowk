@@ -1,4 +1,4 @@
-//! The device key and the wrapped account key in a krowk home (R-E2E-3). Each test gets homes of its own under a scratch directory.
+//! The device key and the wrapped account key in a gruntas home (R-E2E-3). Each test gets homes of its own under a scratch directory.
 //!
 //! The rules hold on any storage (R-CLIENT-4): the policy tests run once on
 //! files in a scratch home and once in memory, through the one `Keystore`.
@@ -291,7 +291,7 @@ fn r_client_4_a_memory_lock_holds_its_slot_until_dropped() {
     waiter.join().unwrap();
 }
 
-/// R-CLIENT-4: storage that is not a key file krowk reads is named by the
+/// R-CLIENT-4: storage that is not a key file gruntas reads is named by the
 /// storage's own words, with a line and column and never the value — and
 /// `FileStorage` keeps today's file names, so a home's files do not move.
 #[test]

@@ -2,6 +2,6 @@
 @file a.txt hello
 @file b.md # title\n
 @file c.json {}
-krowk push a.txt b.md c.json
-krowk push a.txt b.md --format markdown
-krowk push a.txt b.md --format url
+gruntas push a.txt b.md c.json
+gruntas push a.txt b.md --format markdown
+gruntas push a.txt b.md --format url

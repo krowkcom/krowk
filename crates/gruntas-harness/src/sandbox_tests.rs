@@ -1,7 +1,7 @@
 //! R-PERM-3: escapes from the OS sandbox, tried for real. Each test runs
 //! only where bubblewrap can make a sandbox, and says why it skipped
 //! where it cannot — CI's Ubuntu runners forbid the user namespaces it
-//! needs. Commands run as krowk starts one in the sandbox (`bash`, below);
+//! needs. Commands run as gruntas starts one in the sandbox (`bash`, below);
 //! what the file tools may reach is asked of the scope, which holds the
 //! sandbox's lines for them.
 
@@ -58,7 +58,7 @@ fn setup_by(name: &str, profile: Profile, by: By) -> (PathBuf, PathBuf, Scope) {
     (base, ws, scope)
 }
 
-/// `command` run in `scope`'s sandbox as krowk starts a command there
+/// `command` run in `scope`'s sandbox as gruntas starts a command there
 /// (`worktree::setup` does): `sandbox::bash` over the plan as the workspace
 /// is now, bubblewrap's own environment the allowlist, nothing inherited
 /// past stdio, a session of its own, stdin null, stdout and stderr on one
@@ -254,7 +254,7 @@ fn r_perm_3_a_sandboxed_command_gets_only_the_allowlisted_environment() {
     let (base, ws, scope) = setup("sbx-env", Profile::Workspace);
     let dump = "env; tr '\\0' '\\n' < /proc/1/environ";
     // bubblewrap started with a parent's keys in its environment, as
-    // krowk's would be: none reaches the command (`--clearenv`). Set on the
+    // gruntas's would be: none reaches the command (`--clearenv`). Set on the
     // child only, so no other test's environment moves.
     let (program, args) = crate::sandbox::bash(scope.sandbox.as_deref().unwrap(), "env", &[]).unwrap();
     let mut direct = std::process::Command::new(&program);
@@ -267,12 +267,12 @@ fn r_perm_3_a_sandboxed_command_gets_only_the_allowlisted_environment() {
     for k in planted {
         assert!(!got.contains(&format!("{k}=")), "{k} reached the sandbox: {got}");
     }
-    // What krowk sets for the command itself, a build's CARGO_BUILD_JOBS,
+    // What gruntas sets for the command itself, a build's CARGO_BUILD_JOBS,
     // is set inside beside the allowlist.
     let (program, args) = crate::sandbox::bash(scope.sandbox.as_deref().unwrap(), "echo jobs=$CARGO_BUILD_JOBS", &[("CARGO_BUILD_JOBS".into(), "3".into())]).unwrap();
     let got = std::process::Command::new(&program).args(&args).current_dir(&ws).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&got.stdout).trim(), "jobs=3");
-    // And as krowk starts it: the command's environment and bubblewrap's own
+    // And as gruntas starts it: the command's environment and bubblewrap's own
     // (pid 1's, which the command can read) are both the allowlist.
     let (out, err) = bash(&ws, &scope, dump);
     assert!(!err, "{out}");
@@ -293,7 +293,7 @@ fn r_perm_3_a_sandboxed_command_inherits_no_descriptor_and_has_its_own_session()
         return;
     }
     // A descriptor this process holds without close-on-exec, as one handed
-    // down by krowk's own parent would be.
+    // down by gruntas's own parent would be.
     let f = std::fs::File::open("/dev/null").unwrap();
     let fd = std::os::fd::IntoRawFd::into_raw_fd(f);
     // SAFETY: the descriptor was just opened here and is closed below.
@@ -309,7 +309,7 @@ fn r_perm_3_a_sandboxed_command_inherits_no_descriptor_and_has_its_own_session()
     unsafe { libc::close(fd) };
     let mut lines = out.lines();
     assert_eq!(lines.next(), Some("0 1 2 "), "{out}");
-    // Its own session: the shell leads none of krowk's.
+    // Its own session: the shell leads none of gruntas's.
     let (sid, pid) = (lines.next().unwrap_or("").trim().to_string(), lines.next().unwrap_or("").trim().to_string());
     // SAFETY: getsid(0) reads this process's session id.
     let ours = unsafe { libc::getsid(0) };
@@ -368,7 +368,7 @@ fn r_perm_3_cargo_runs_in_the_sandbox_and_its_credentials_stay_hidden() {
     let _ = std::fs::remove_dir_all(base);
 }
 
-/// git in a test repository, through krowk's own git (hooks off), with
+/// git in a test repository, through gruntas's own git (hooks off), with
 /// none of this machine's config: what it prints, trimmed.
 fn git(dir: &Path, args: &[&str]) -> String {
     let o = gruntas_api::git::command(dir).unwrap().args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
@@ -377,7 +377,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
 }
 
 /// A repository with `main` checked out, in a fake home the sandbox hides,
-/// whose own config names who commits; two worktrees krowk made for agents
+/// whose own config names who commits; two worktrees gruntas made for agents
 /// under that home's worktrees root (`.local/share/gruntas/worktrees/
 /// <repo-id>/<hex>`, branches `gruntas/abcd1234` and `gruntas/feedbeef`); and
 /// the person's own linked worktree, `own`, beside the repository. The
@@ -432,7 +432,7 @@ impl Repo {
     }
 }
 
-/// Worktrees WT4: a worktree is krowk's only when it is what krowk makes —
+/// Worktrees WT4: a worktree is gruntas's only when it is what gruntas makes —
 /// under the root, led to from a real common git directory and back, on a
 /// `gruntas/<8 hex>` branch — and every other one keeps today's plan.
 #[test]
@@ -440,7 +440,7 @@ fn wt4_only_a_worktree_krowk_made_is_opened_to_a_commit() {
     let r = Repo::new("wt4-managed");
     let root = r.home.join(".local/share/gruntas/worktrees");
     let common = r.main.join(".git");
-    let w = crate::sandbox::managed_worktree(&r.wt, &root).expect("krowk's worktree");
+    let w = crate::sandbox::managed_worktree(&r.wt, &root).expect("gruntas's worktree");
     assert_eq!((w.common.clone(), w.admin.clone(), w.hex.as_str()), (common.clone(), common.join("worktrees/abcd1234"), "abcd1234"));
     let plan = r.plan(&r.wt);
     assert_eq!(plan.git, [(common.clone(), false), (common.join("objects"), true), (common.join("refs/heads/gruntas"), true), (common.join("logs/refs/heads/gruntas"), true), (common.join("worktrees/abcd1234"), true)]);
@@ -466,7 +466,7 @@ fn wt4_only_a_worktree_krowk_made_is_opened_to_a_commit() {
         let plan = r.plan(ws);
         assert!(plan.git.is_empty() && plan.identity.is_none() && plan.read_only.contains(&ws.join(".git")), "{}", ws.display());
     }
-    // Not the root's subdirectory, not on a krowk branch, not under the
+    // Not the root's subdirectory, not on a gruntas branch, not under the
     // root the environment names, not with a `.git` leading elsewhere.
     assert_eq!(crate::sandbox::managed_worktree(&root.join("0123456789abcdef"), &root), None);
     assert_eq!(crate::sandbox::managed_worktree(&r.wt, &r.base.join("elsewhere")), None);
@@ -495,7 +495,7 @@ fn wt4_only_a_worktree_krowk_made_is_opened_to_a_commit() {
     let _ = std::fs::remove_dir_all(&r.base);
 }
 
-/// Worktrees WT4: an agent in a worktree krowk made commits from inside
+/// Worktrees WT4: an agent in a worktree gruntas made commits from inside
 /// the sandbox, as the person, and the commit is the repository's.
 #[test]
 fn wt4_a_sandboxed_agent_commits_in_a_krowk_worktree() {
@@ -600,7 +600,7 @@ fn wt4_a_krowk_worktree_cannot_touch_what_runs_or_what_another_checkout_is_on() 
     let _ = std::fs::remove_dir_all(&r.base);
 }
 
-/// WT4, the reflogs and links of a krowk worktree's sandbox: the rest of
+/// WT4, the reflogs and links of a gruntas worktree's sandbox: the rest of
 /// the reflogs stay read-only, and a link planted where git outside the
 /// sandbox writes through is gone after the call — or, left by a call that
 /// crashed, before the next binds anything.
@@ -628,7 +628,7 @@ fn no_link_outlives_a_call(r: &Repo, scope: &Scope) {
     assert_eq!(std::fs::read_to_string(&victim).unwrap(), "mine\n");
 }
 
-/// Worktrees WT4: the person's own linked worktree, outside krowk's root,
+/// Worktrees WT4: the person's own linked worktree, outside gruntas's root,
 /// keeps a read-only `.git` and its repository out of reach, as before.
 #[test]
 fn wt4_a_linked_worktree_outside_krowks_root_keeps_todays_fences() {

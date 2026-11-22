@@ -1,9 +1,9 @@
 @registry
 @env GRUNTAS_TOKEN=krowk_sk_test
 @file a.txt hello
-krowk push a.txt
-krowk push a.txt --private
-krowk push a.txt --title "the work" --pull-request https://github.com/o/r/pull/1 --session s1 --repo o/r --commit abc123 --agent claude --reference https://example.com/x
-krowk push a.txt --metadata '{"test":"login"}'
-krowk push a.txt --metadata notjson
-krowk push a.txt --link https://example.com --link-title Example --link-rel docs
+gruntas push a.txt
+gruntas push a.txt --private
+gruntas push a.txt --title "the work" --pull-request https://github.com/o/r/pull/1 --session s1 --repo o/r --commit abc123 --agent claude --reference https://example.com/x
+gruntas push a.txt --metadata '{"test":"login"}'
+gruntas push a.txt --metadata notjson
+gruntas push a.txt --link https://example.com --link-title Example --link-rel docs

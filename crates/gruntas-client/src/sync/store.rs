@@ -78,7 +78,7 @@ pub struct Index {
     pub updated_ms: u64,
     pub head: Option<Head>,
     pub checkpoint: Option<Mark>,
-    /// The machine that last took the session up, which `krowk machines`
+    /// The machine that last took the session up, which `gruntas machines`
     /// lists it under; absent from an index written before it was kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<HostedOn>,
@@ -316,7 +316,7 @@ fn read_chunks(client: &Client, id: &str, reader: &mut ChunkReader, mut last: Op
                     ReadError::rolled_back(format!("chunk {}: {e}", c.index))
                 }
             })?;
-            let chunk: Chunk = serde_json::from_slice(&plain).map_err(|e| ReadError::permanent(format!("chunk {} holds no chunk this krowk reads: {e}", c.index)))?;
+            let chunk: Chunk = serde_json::from_slice(&plain).map_err(|e| ReadError::permanent(format!("chunk {} holds no chunk this gruntas reads: {e}", c.index)))?;
             let h = Head { index: c.index, digest: e2e::chunk_digest(&sealed) };
             last = Some(h);
             each(chunk, h).map_err(ReadError::permanent)?;
@@ -398,7 +398,7 @@ pub fn open_session_key(s: &gruntas_api::sync::SyncSession, id: &str, keys: &Use
     e2e::unwrap_session_keys(&wrapped, &raw, keys).map_err(|e| e.to_string())
 }
 
-/// A synced session as a listing shows it (`krowk sessions`), from its sealed index.
+/// A synced session as a listing shows it (`gruntas sessions`), from its sealed index.
 #[derive(Debug, Clone)]
 pub struct Listed {
     pub id: String,
@@ -455,7 +455,7 @@ pub fn open_index(key: &SessionKeys, id: &str, sealed_hex: &str) -> Result<Index
         opened = e2e::open_session_index(&blob, &session, key.at(epoch).expect("within the ring"));
     }
     let plain = opened.map_err(|e| e.to_string())?;
-    serde_json::from_slice(&plain).map_err(|e| format!("the session's index is not one this krowk reads: {e}"))
+    serde_json::from_slice(&plain).map_err(|e| format!("the session's index is not one this gruntas reads: {e}"))
 }
 
 /// Attaches from the latest checkpoint and reads the tail after it, then

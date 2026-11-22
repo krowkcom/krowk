@@ -1,4 +1,4 @@
-$ krowk artifacts show <art_1>
+$ gruntas artifacts show <art_1>
 stderr:
 {
   "ok": false,
@@ -12,7 +12,7 @@ stderr:
 }
 exit: 2
 
-$ krowk artifacts delete <art_1>
+$ gruntas artifacts delete <art_1>
 stderr:
 {
   "ok": false,
@@ -26,7 +26,7 @@ stderr:
 }
 exit: 2
 
-$ krowk artifacts attach <art_1> --run <run_1>
+$ gruntas artifacts attach <art_1> --run <run_1>
 stderr:
 {
   "ok": false,
@@ -40,7 +40,7 @@ stderr:
 }
 exit: 2
 
-$ krowk runs show <run_1>
+$ gruntas runs show <run_1>
 stderr:
 {
   "ok": false,
@@ -54,7 +54,7 @@ stderr:
 }
 exit: 2
 
-$ krowk runs finish <run_1>
+$ gruntas runs finish <run_1>
 stderr:
 {
   "ok": false,
@@ -68,7 +68,7 @@ stderr:
 }
 exit: 2
 
-$ krowk push a.txt --run <run_2>
+$ gruntas push a.txt --run <run_2>
 stderr:
 {
   "ok": false,

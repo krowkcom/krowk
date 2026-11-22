@@ -17,7 +17,7 @@
 //! log and misses nothing but the typing.
 //!
 //! Wire names are camelCase, and every id is a UUIDv7 in canonical lowercase
-//! form, the same ids krowk.db mints.
+//! form, the same ids gruntas.db mints.
 
 pub mod frame;
 
@@ -62,12 +62,12 @@ pub enum WireApi {
     #[serde(rename = "chat-completions")]
     ChatCompletions,
     /// The `claude` binary's stream-json protocol: Claude Code runs the
-    /// loop and krowk drives it. A thinking signature it streams is
-    /// Claude Code's to replay, never sent to the Messages API by krowk.
+    /// loop and gruntas drives it. A thinking signature it streams is
+    /// Claude Code's to replay, never sent to the Messages API by gruntas.
     #[serde(rename = "claude-code")]
     ClaudeCode,
     /// `codex app-server`'s JSON-RPC: Codex runs the loop, on its own
-    /// login, and krowk drives it. Codex keeps its reasoning to itself, so
+    /// login, and gruntas drives it. Codex keeps its reasoning to itself, so
     /// nothing streamed here is ever replayed as a blob.
     #[serde(rename = "codex-app-server")]
     CodexAppServer,
@@ -164,7 +164,7 @@ pub enum Item {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         blob: Option<ProviderBlob>,
     },
-    /// A tool the model asked krowk to run. `callId` is the provider's id,
+    /// A tool the model asked gruntas to run. `callId` is the provider's id,
     /// which the matching result repeats.
     ToolCall { call_id: String, name: String, input: Value },
     /// What running it produced. A refusal or a failure is a result too,
@@ -289,7 +289,7 @@ impl Usage {
 #[serde(rename_all = "camelCase")]
 pub enum RanBy {
     /// gruntas's own loop, through its `subagent` tool, in logs from before
-    /// that engine went. Logs written before the rename say `krowk`.
+    /// that engine went. Logs written before the rename say `gruntas`.
     #[default]
     #[serde(rename = "gruntas", alias = "krowk")]
     Gruntas,
@@ -386,8 +386,8 @@ impl Rollover {
 /// Claude-Code-compatible permission modes (R-PERM-1): `default` asks
 /// before edits and commands, `acceptEdits` before commands, `plan` changes
 /// nothing, and `bypassPermissions` asks before nothing — though a deny
-/// rule, an ask rule and a hook's ask still hold in each of those. krowk's
-/// own `unhinged` holds nothing krowk's rules say: every call runs but one a
+/// rule, an ask rule and a hook's ask still hold in each of those. gruntas's
+/// own `unhinged` holds nothing gruntas's rules say: every call runs but one a
 /// hook blocks (`crate::permissions`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -416,7 +416,7 @@ impl PermissionMode {
     }
 
     /// Whether the mode asks a person before nothing: a backend runs in
-    /// its loosest setting, and krowk's evaluator answers what it asks.
+    /// its loosest setting, and gruntas's evaluator answers what it asks.
     pub fn asks_nothing(self) -> bool {
         matches!(self, PermissionMode::BypassPermissions | PermissionMode::Unhinged)
     }
@@ -552,7 +552,7 @@ pub enum Command {
         /// config's, else the one the model's family picks, when absent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         toolset: Option<String>,
-        /// The reasoning effort for this turn, on krowk's ladder; the
+        /// The reasoning effort for this turn, on gruntas's ladder; the
         /// instance's, else the provider's default, when absent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effort: Option<Effort>,
@@ -675,7 +675,7 @@ pub struct SwitchOffer {
     /// When `from`'s limit lifts, when the provider said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_at_ms: Option<i64>,
-    /// What `to` has left, when krowk knows (D12): `41% left as of 12:10,
+    /// What `to` has left, when gruntas knows (D12): `41% left as of 12:10,
     /// resets 13:20`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room: Option<String>,
@@ -728,7 +728,7 @@ pub enum HandoffKind {
     /// The vendor resumed its own thread, and was told what happened on
     /// other models since it last ran.
     CatchUp,
-    /// A new vendor session, seeded with krowk's summary of the earlier
+    /// A new vendor session, seeded with gruntas's summary of the earlier
     /// turns and the most recent ones as they happened.
     Summary,
 }
@@ -784,7 +784,7 @@ pub enum LogBody {
         provider: String,
         wire_api: WireApi,
         permission_mode: PermissionMode,
-        /// The effort asked for, on krowk's ladder, when one was; what the
+        /// The effort asked for, on gruntas's ladder, when one was; what the
         /// model was sent is that rung mapped onto the ones it takes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effort: Option<Effort>,
@@ -864,16 +864,16 @@ pub enum LogBody {
         #[serde(default)]
         ran_by: RanBy,
         /// The backend's own id for it: Claude Code's `task_id`, Codex's
-        /// thread id. Absent for krowk's own.
+        /// thread id. Absent for gruntas's own.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         backend_id: Option<String>,
     },
-    /// The session's todo list, whole, as krowk's own `todo_write` last set
+    /// The session's todo list, whole, as gruntas's own `todo_write` last set
     /// it (R-TODO-2), in logs from before that engine went: each write
     /// replaced the list before it.
     #[serde(rename = "todos.updated")]
     TodosUpdated { turn_id: String, todos: Vec<Todo> },
-    /// The krowk run this session's evidence is grouped under, opened by
+    /// The gruntas run this session's evidence is grouped under, opened by
     /// its first `publish` (R-EVID-1). Logged once; every later publish, and
     /// a resumed session's, attaches to it.
     #[serde(rename = "run.opened")]
@@ -971,7 +971,7 @@ pub enum LogBody {
         usage: Usage,
         duration_ms: u64,
         /// What a backend said the turn cost, when it says (Claude Code's
-        /// `total_cost_usd`). A budget counts it when it is more than krowk
+        /// `total_cost_usd`). A budget counts it when it is more than gruntas
         /// priced the turn's calls at.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reported_cost_usd: Option<f64>,
@@ -1029,7 +1029,7 @@ pub enum LiveEvent {
     },
     /// Something for the person at the client and nobody else: an
     /// anonymous upload's claim command, whose token is a secret. Never
-    /// logged, never in what a model reads; `krowk -p` prints it on stderr
+    /// logged, never in what a model reads; `gruntas -p` prints it on stderr
     /// and leaves it out of `stream-json`. One sent between turns (a
     /// backend let go with its agents) has an empty `turnId`.
     #[serde(rename = "notice")]
@@ -1062,7 +1062,7 @@ pub enum LiveEvent {
     #[serde(rename = "backend.agents")]
     BackendAgents { session_id: String, agents: Vec<BackendAgent> },
     /// How many background jobs and background children the session had
-    /// running, from krowk's own engine (R-STEER-2, R-STEER-3). Nothing
+    /// running, from gruntas's own engine (R-STEER-2, R-STEER-3). Nothing
     /// sends it since that engine went; kept so a client that reads it
     /// still parses.
     #[serde(rename = "background")]
@@ -1097,7 +1097,7 @@ pub enum LiveEvent {
 }
 
 /// One agent a backend runs by itself: it is the vendor's, with its own
-/// conversation, and krowk only reports it (its spend is metered as
+/// conversation, and gruntas only reports it (its spend is metered as
 /// `subagent.response`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -1141,7 +1141,7 @@ pub struct RunResult {
     /// `rollover` at `offer`: the instance it could continue on (R-INST-7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub switch_offer: Option<SwitchOffer>,
-    /// The worktree a `krowk -p --worktree` session worked in, kept when
+    /// The worktree a `gruntas -p --worktree` session worked in, kept when
     /// the session ended because it changed something: set by the command
     /// line on the result it prints, after the session's turn. Absent when
     /// the worktree was removed, and on every other result.
@@ -1149,9 +1149,9 @@ pub struct RunResult {
     pub worktree: Option<Box<KeptWorktree>>,
 }
 
-/// A session's own worktree (`krowk --worktree`), kept because the session
+/// A session's own worktree (`gruntas --worktree`), kept because the session
 /// changed something in it: where it is and its branch, for the person to
-/// merge or work in. `krowk worktrees` lists it from then on.
+/// merge or work in. `gruntas worktrees` lists it from then on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct KeptWorktree {
@@ -1231,7 +1231,7 @@ pub struct ContextRecord {
     pub system: String,
     pub tools: Vec<ToolDefinition>,
     /// The system prompt's size in tokens, estimated at four bytes a token:
-    /// no provider's tokenizer ships with krowk, and a budget compares the
+    /// no provider's tokenizer ships with gruntas, and a budget compares the
     /// estimate with itself, so growth shows whatever the true ratio is.
     #[serde(default)]
     pub system_tokens: u64,
@@ -1262,7 +1262,7 @@ pub enum ClientFrame {
         krowk_version: String,
         /// Whether the client answers `approval.requested` (an interactive client). A turn
         /// it runs asks it, and a request left with no such client
-        /// following the session is denied. One that does not (`krowk -p`)
+        /// following the session is denied. One that does not (`gruntas -p`)
         /// runs its turns as the in-process `-p` does: what would be asked
         /// is refused, with what would allow it.
         #[serde(default)]
@@ -1355,7 +1355,7 @@ pub enum ClientFrame {
     McpSignOut { id: u64, session_id: String, server: String },
     /// Reads the instances again — config.json and the credentials file —
     /// for every host, after a client connected or signed one out
-    /// (`krowk connect`): `changed` is that instance, whose backend processes are
+    /// (`gruntas connect`): `changed` is that instance, whose backend processes are
     /// not reused; `renamedFrom` and `renamedTo` a rename, whose are.
     /// Answered by `done` once applied; a command sent after it runs on
     /// what it read, answered or not.
@@ -1368,7 +1368,7 @@ pub enum ClientFrame {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         renamed_to: Option<String>,
     },
-    /// Asks the daemon to exit — `krowk host stop`, or `krowk machines always-on on`
+    /// Asks the daemon to exit — `gruntas host stop`, or `gruntas machines always-on on`
     /// handing over to the service. Refused with `host_busy` while a turn
     /// runs, and with `host_in_use` while another client is connected
     /// unless `force` (an interactive client connected to it reconnects to the next one);
@@ -1493,7 +1493,7 @@ pub enum McpState {
 }
 
 /// The pairing a host daemon opened for a new machine that signed in to
-/// the person's account (`krowk machines`, the terminal UI): the code to
+/// the person's account (`gruntas machines`, the terminal UI): the code to
 /// type there and where the pairing stands. `name` and `os` are the new
 /// machine's own, set only once the code's confirmation checks passed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1524,7 +1524,7 @@ pub enum OfferStage {
     Failed,
 }
 
-/// How the host daemon is: `krowk host status`.
+/// How the host daemon is: `gruntas host status`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct HostStatus {
@@ -1578,7 +1578,7 @@ pub struct HostSession {
     /// A turn in this daemon holds it, from the moment the prompt is
     /// accepted until the turn lets go as its command ends, or a backend
     /// runs it as an agent: while a prompt to it through this daemon is
-    /// refused as `session_busy` for that reason. (One run by another krowk
+    /// refused as `session_busy` for that reason. (One run by another gruntas
     /// process is refused too, and not shown here.)
     pub running: bool,
     /// Clients following it now, background ones included.

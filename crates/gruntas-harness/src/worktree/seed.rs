@@ -11,7 +11,7 @@
 //!   the time seeding is meant to save. Whether the worktrees directory
 //!   can clone the repository's files is probed once per repository
 //!   (`cow`) and remembered for a day in `<root>/<repo-id>/probe.json`,
-//!   krowk's own directory, which no sandbox can write.
+//!   gruntas's own directory, which no sandbox can write.
 //! - **Linux**: `cp -a --reflink=always`. **macOS**: `cp -cRp`, and only on
 //!   APFS, the same volume on both sides, since `cp -c` silently makes a
 //!   full copy anywhere else. **Windows**: nothing is seeded.
@@ -29,7 +29,7 @@
 //! - **Only ignored directories**: one git would see as untracked would
 //!   make an unchanged worktree look changed, and keep it.
 //!
-//! The copy runs as krowk, outside any sandbox; a directory that is a
+//! The copy runs as gruntas, outside any sandbox; a directory that is a
 //! symlink is not seeded, and symlinks inside one are copied as symlinks.
 //! Nothing here stops the agent: what was skipped or failed, and why, is
 //! appended to `<root>/<repo-id>/seed.log`, and a failed copy removes what

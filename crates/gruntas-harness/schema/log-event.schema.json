@@ -93,7 +93,7 @@
           "$ref": "#/$defs/PermissionMode"
         },
         "effort": {
-          "description": "The effort asked for, on krowk's ladder, when one was; what the\nmodel was sent is that rung mapped onto the ones it takes.",
+          "description": "The effort asked for, on gruntas's ladder, when one was; what the\nmodel was sent is that rung mapped onto the ones it takes.",
           "anyOf": [
             {
               "$ref": "#/$defs/Effort"
@@ -311,7 +311,7 @@
           "default": "gruntas"
         },
         "backendId": {
-          "description": "The backend's own id for it: Claude Code's `task_id`, Codex's\nthread id. Absent for krowk's own.",
+          "description": "The backend's own id for it: Claude Code's `task_id`, Codex's\nthread id. Absent for gruntas's own.",
           "type": [
             "string",
             "null"
@@ -332,7 +332,7 @@
       ]
     },
     {
-      "description": "The session's todo list, whole, as krowk's own `todo_write` last set\nit (R-TODO-2), in logs from before that engine went: each write\nreplaced the list before it.",
+      "description": "The session's todo list, whole, as gruntas's own `todo_write` last set\nit (R-TODO-2), in logs from before that engine went: each write\nreplaced the list before it.",
       "type": "object",
       "properties": {
         "turnId": {
@@ -356,7 +356,7 @@
       ]
     },
     {
-      "description": "The krowk run this session's evidence is grouped under, opened by\nits first `publish` (R-EVID-1). Logged once; every later publish, and\na resumed session's, attaches to it.",
+      "description": "The gruntas run this session's evidence is grouped under, opened by\nits first `publish` (R-EVID-1). Logged once; every later publish, and\na resumed session's, attaches to it.",
       "type": "object",
       "properties": {
         "turnId": {
@@ -567,7 +567,7 @@
           "minimum": 0
         },
         "reportedCostUsd": {
-          "description": "What a backend said the turn cost, when it says (Claude Code's\n`total_cost_usd`). A budget counts it when it is more than krowk\npriced the turn's calls at.",
+          "description": "What a backend said the turn cost, when it says (Claude Code's\n`total_cost_usd`). A budget counts it when it is more than gruntas\npriced the turn's calls at.",
           "type": [
             "number",
             "null"
@@ -645,19 +645,19 @@
           "const": "chat-completions"
         },
         {
-          "description": "The `claude` binary's stream-json protocol: Claude Code runs the\nloop and krowk drives it. A thinking signature it streams is\nClaude Code's to replay, never sent to the Messages API by krowk.",
+          "description": "The `claude` binary's stream-json protocol: Claude Code runs the\nloop and gruntas drives it. A thinking signature it streams is\nClaude Code's to replay, never sent to the Messages API by gruntas.",
           "type": "string",
           "const": "claude-code"
         },
         {
-          "description": "`codex app-server`'s JSON-RPC: Codex runs the loop, on its own\nlogin, and krowk drives it. Codex keeps its reasoning to itself, so\nnothing streamed here is ever replayed as a blob.",
+          "description": "`codex app-server`'s JSON-RPC: Codex runs the loop, on its own\nlogin, and gruntas drives it. Codex keeps its reasoning to itself, so\nnothing streamed here is ever replayed as a blob.",
           "type": "string",
           "const": "codex-app-server"
         }
       ]
     },
     "PermissionMode": {
-      "description": "Claude-Code-compatible permission modes (R-PERM-1): `default` asks\nbefore edits and commands, `acceptEdits` before commands, `plan` changes\nnothing, and `bypassPermissions` asks before nothing — though a deny\nrule, an ask rule and a hook's ask still hold in each of those. krowk's\nown `unhinged` holds nothing krowk's rules say: every call runs but one a\nhook blocks (`crate::permissions`).",
+      "description": "Claude-Code-compatible permission modes (R-PERM-1): `default` asks\nbefore edits and commands, `acceptEdits` before commands, `plan` changes\nnothing, and `bypassPermissions` asks before nothing — though a deny\nrule, an ask rule and a hook's ask still hold in each of those. gruntas's\nown `unhinged` holds nothing gruntas's rules say: every call runs but one a\nhook blocks (`crate::permissions`).",
       "type": "string",
       "enum": [
         "default",
@@ -771,7 +771,7 @@
           ]
         },
         {
-          "description": "A tool the model asked krowk to run. `callId` is the provider's id,\nwhich the matching result repeats.",
+          "description": "A tool the model asked gruntas to run. `callId` is the provider's id,\nwhich the matching result repeats.",
           "type": "object",
           "properties": {
             "callId": {
@@ -923,7 +923,7 @@
       "description": "Who runs a subagent's loop (R-SUB-7).",
       "oneOf": [
         {
-          "description": "gruntas's own loop, through its `subagent` tool, in logs from before\nthat engine went. Logs written before the rename say `krowk`.",
+          "description": "gruntas's own loop, through its `subagent` tool, in logs from before\nthat engine went. Logs written before the rename say `gruntas`.",
           "type": "string",
           "const": "gruntas"
         },
@@ -998,7 +998,7 @@
           "const": "catchUp"
         },
         {
-          "description": "A new vendor session, seeded with krowk's summary of the earlier\nturns and the most recent ones as they happened.",
+          "description": "A new vendor session, seeded with gruntas's summary of the earlier\nturns and the most recent ones as they happened.",
           "type": "string",
           "const": "summary"
         }

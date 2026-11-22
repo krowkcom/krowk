@@ -8,11 +8,11 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-/// `krowk -p` with a turn in flight on a Claude Code account whose
+/// `gruntas -p` with a turn in flight on a Claude Code account whose
 /// `claude` — the fake the harness's tests use — has taken the prompt and
-/// never answers: krowk waiting on its backend, the most idle a turn gets.
+/// never answers: gruntas waiting on its backend, the most idle a turn gets.
 /// Sampled from /proc once the prompt has reached the fake, then again
-/// after `window`; anything krowk did in between is polling. krowk's own
+/// after `window`; anything gruntas did in between is polling. gruntas's own
 /// process is measured, not the fake's.
 pub fn engine_idle(bin: &Path, home: &Path, window: Duration) -> Result<Idle, String> {
     std::fs::create_dir_all(home.join(".gruntas")).map_err(|e| format!("{}: {e}", home.display()))?;
@@ -42,10 +42,10 @@ pub fn engine_idle(bin: &Path, home: &Path, window: Duration) -> Result<Idle, St
             }
             std::thread::sleep(Duration::from_millis(50));
             if let Ok(Some(st)) = child.try_wait() {
-                return Err(format!("`krowk -p` exited {st} before its prompt reached claude: {}", std::fs::read_to_string(&stderr).unwrap_or_default().trim()));
+                return Err(format!("`gruntas -p` exited {st} before its prompt reached claude: {}", std::fs::read_to_string(&stderr).unwrap_or_default().trim()));
             }
             if Instant::now() > deadline {
-                return Err("`krowk -p` sent claude no prompt within 30 s".into());
+                return Err("`gruntas -p` sent claude no prompt within 30 s".into());
             }
         }
         // The prompt is out. What is left of startup settles: the write
@@ -57,7 +57,7 @@ pub fn engine_idle(bin: &Path, home: &Path, window: Duration) -> Result<Idle, St
         let (mut threads, mut since) = (proc_switches(pid)?.into_keys().collect::<Vec<_>>(), Instant::now());
         while since.elapsed() < Duration::from_secs(11) {
             if Instant::now() > settle {
-                return Err(format!("`krowk -p`'s threads never settled: {threads:?}"));
+                return Err(format!("`gruntas -p`'s threads never settled: {threads:?}"));
             }
             std::thread::sleep(Duration::from_millis(250));
             let now: Vec<u32> = proc_switches(pid)?.into_keys().collect();
@@ -70,7 +70,7 @@ pub fn engine_idle(bin: &Path, home: &Path, window: Duration) -> Result<Idle, St
         let (t1, w1) = (proc_ticks(pid)?, proc_switches(pid)?);
         let rss_mb = proc_rss_kib(pid)? as f64 * 1024.0 / 1e6;
         if let Ok(Some(st)) = child.try_wait() {
-            return Err(format!("`krowk -p` exited {st} while it should have been waiting"));
+            return Err(format!("`gruntas -p` exited {st} while it should have been waiting"));
         }
         let ticks = t1.checked_sub(t0).ok_or_else(|| format!("CPU ticks went backwards ({t0} to {t1})"))?;
         Ok(Idle { ticks, wakeups: wakeups_between(&w0, &w1)?, rss_mb })
@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn r_perf_2_ticks_are_read_past_a_name_with_spaces() {
-        let stat = "4242 (krowk -p x) S 1 4242 4242 0 -1 4194304 700 0 0 0 17 5 0 0 20 0 1 0 100 7000000 1787 18446744073709551615";
+        let stat = "4242 (gruntas -p x) S 1 4242 4242 0 -1 4194304 700 0 0 0 17 5 0 0 20 0 1 0 100 7000000 1787 18446744073709551615";
         assert_eq!(parse_ticks(stat), Some(22));
     }
 

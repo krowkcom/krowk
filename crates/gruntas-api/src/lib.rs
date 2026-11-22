@@ -1,4 +1,4 @@
-//! The krowk registry's wire: its records, its failure shape, and the local
+//! The gruntas registry's wire: its records, its failure shape, and the local
 //! credentials a call is made with. The contract is owned by krowk-canon and
 //! served by krowk-registry; this is one of its three implementations.
 

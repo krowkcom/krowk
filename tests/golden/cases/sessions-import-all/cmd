@@ -1,10 +1,10 @@
 @fixture harnesses
-krowk sessions import --from all --dry-run
-krowk sessions
-krowk sessions import --from all
-krowk sessions
-krowk sessions --format human
-krowk sessions --all
-krowk sessions --limit 1
-krowk sessions import --from all
+gruntas sessions import --from all --dry-run
+gruntas sessions
+gruntas sessions import --from all
+gruntas sessions
+gruntas sessions --format human
+gruntas sessions --all
+gruntas sessions --limit 1
+gruntas sessions import --from all
 @ls {home}/.gruntas/sessions

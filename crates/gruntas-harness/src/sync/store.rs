@@ -31,7 +31,7 @@ pub fn fetch_image(client: &Client, keys: &SessionKeys, id: &str, session_dir: &
         return Ok(true);
     }
     let Some(bytes) = gruntas_client::sync::store::fetch_image(client, keys, id, sha).map_err(String::from)? else { return Ok(false) };
-    let media_type = crate::images::sniff(&bytes).ok_or("an image object opened to bytes that are no image krowk reads")?;
+    let media_type = crate::images::sniff(&bytes).ok_or("an image object opened to bytes that are no image gruntas reads")?;
     crate::images::save(session_dir, &[crate::images::Decoded { number: r.number, media_type, bytes: bytes.into() }]).map_err(|e| e.message)?;
     Ok(true)
 }

@@ -1,8 +1,8 @@
 @registry
 @file a.png \x89PNG\r\n\x1a\n0000
-krowk push a.png --destination github
-krowk push a.png --destination slack
-krowk push a.png --destination linear
-krowk push a.png --destination basecamp
-krowk push a.png --destination notion
-krowk push a.png --destination nope
+gruntas push a.png --destination github
+gruntas push a.png --destination slack
+gruntas push a.png --destination linear
+gruntas push a.png --destination basecamp
+gruntas push a.png --destination notion
+gruntas push a.png --destination nope

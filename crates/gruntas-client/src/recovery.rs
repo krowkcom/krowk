@@ -18,7 +18,7 @@
 //! input key material and `"krowk/recovery-device/v1"` as `info`, expanded
 //! to 64 bytes. The first 32 are RFC 9180's DeriveKeyPair input for the
 //! X25519 key; the last 32 are the Ed25519 seed. The same words give the
-//! same device on every machine, which is how `krowk sync recover` finds it
+//! same device on every machine, which is how `gruntas sync recover` finds it
 //! on the chain.
 
 use crate::e2e::{self, DeviceKey, SigningKey};

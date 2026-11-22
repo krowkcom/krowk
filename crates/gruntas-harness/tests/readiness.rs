@@ -1,6 +1,6 @@
 //! The readiness check against fake vendor binaries (no real login):
 //! where a vendor is asked — a trusted repository's settings can make an
-//! account ready, and nothing outside krowk's own directory can when no
+//! account ready, and nothing outside gruntas's own directory can when no
 //! repository is trusted — and how long it may take: one deadline per
 //! check, a Codex fallback included, with the vendor and everything it
 //! started stopped when it passes.
@@ -145,7 +145,7 @@ fn readiness_a_trusted_repositorys_settings_count_and_an_untrusted_ones_are_neve
     assert_eq!(switch(&h.host(reg.clone(), gate), "claude:bedrock/sonnet").unwrap_err().code, "untrusted_directory");
     assert_eq!(h.log(), "", "nothing was spawned for an untrusted repository");
 
-    // Outside any repository — `krowk status` — krowk's own directory: the
+    // Outside any repository — `gruntas status` — gruntas's own directory: the
     // project's settings are not read, so the account is not signed in.
     let data = h.root.join("home/.gruntas");
     let neutral = readiness::neutral_dir(&data).unwrap();
@@ -153,7 +153,7 @@ fn readiness_a_trusted_repositorys_settings_count_and_an_untrusted_ones_are_neve
     assert_eq!(std::fs::metadata(&neutral).unwrap().permissions().mode() & 0o777, 0o700);
     let r = readiness::check(reg.get("claude:bedrock").unwrap(), &h.root.join("creds.json"), &Probe::at(&neutral));
     assert_eq!(r.readiness, Readiness::NotSignedIn);
-    // A directory of krowk's that someone made world-writable is closed again;
+    // A directory of gruntas's that someone made world-writable is closed again;
     // a symlink in its place is refused.
     std::fs::set_permissions(&neutral, std::fs::Permissions::from_mode(0o777)).unwrap();
     readiness::neutral_dir(&data).unwrap();

@@ -1,7 +1,7 @@
 //! A stand-in HTTP server for the MCP and OAuth tests: HTTP/1.1 on a
 //! loopback port, answering each request with what the test's closure
 //! returns (an event stream, JSON, or a redirect), and keeping every
-//! request it was sent so a test can pin what krowk asked. Standard library
+//! request it was sent so a test can pin what gruntas asked. Standard library
 //! only, and a thread per server, so the harness tests and the CLI's tests
 //! run the same one.
 #![allow(dead_code)]

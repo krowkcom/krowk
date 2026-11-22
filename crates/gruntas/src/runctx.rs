@@ -90,7 +90,7 @@ pub fn validate_links(links: &[Link]) -> Result<(), String> {
     let bytes = if links.is_empty() { 0 } else { serde_json::to_string(links).map_or(0, |s| s.len()) };
     if bytes > MAX_LINKS_BYTES {
         return Err(format!(
-            "the links come to {bytes} bytes of metadata, past the {MAX_LINKS_BYTES} they may fill: a run's metadata budget is shared with everything krowk detects"
+            "the links come to {bytes} bytes of metadata, past the {MAX_LINKS_BYTES} they may fill: a run's metadata budget is shared with everything gruntas detects"
         ));
     }
     Ok(())

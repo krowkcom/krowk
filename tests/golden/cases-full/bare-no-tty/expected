@@ -1,30 +1,30 @@
-$ krowk
+$ gruntas
 stdout:
-█  █  Krowk 0.0.0-golden
+█  █  Gruntas 0.0.0-golden
 █▀▀▄  A coding agent harness: one session, any machine, model or agent
 
 Start
-  krowk                      Set this machine up, then an overview of it
-  krowk -p "…"               One prompt, headless
-  krowk -p --resume          Continue a session
+  gruntas                    Set this machine up, then an overview of it
+  gruntas -p "…"             One prompt, headless
+  gruntas -p --resume        Continue a session
 
 Examples
-  krowk connect anthropic    Connect a model to run the agent on
-  krowk push shot.png        Upload a screenshot and get a link to paste
-  krowk sessions --json      Every agent session on this machine, as data
+  gruntas connect anthropic  Connect a model to run the agent on
+  gruntas push shot.png      Upload a screenshot and get a link to paste
+  gruntas sessions --json    Every agent session on this machine, as data
 
 Accounts
   connect       Connect a Claude Code or Codex account, by login or API key
   disconnect    Sign a connected model out
-  login         Sign in to your krowk account
+  login         Sign in to your gruntas account
   whoami        Show the key and its workspace
   billing       Choose or manage the workspace's plan
 
 Work
   sessions      List and read agent sessions on this machine
   machines      Your machines, and what each can take
-  worktrees     The git worktrees krowk made for agents, across repositories
-  mcp           MCP servers krowk's agent uses (add, remove, list, login)
+  worktrees     The worktrees gruntas made for agents, across repositories
+  mcp           MCP servers gruntas's agent uses (add, remove, list, login)
   trust         Trust a repository to run its hooks and MCP servers
 
 Publish
@@ -33,7 +33,7 @@ Publish
 Health
   status        What's connected, and whether each is ready
   doctor        Check this machine's setup
-  upgrade       Upgrade krowk
+  upgrade       Upgrade gruntas
   config        Show or set configuration
 
 Flags
@@ -42,22 +42,23 @@ Flags
   --json · --jq <expr>       Output as JSON, or filter it
   -h, --help · -v, --version
 
-krowk help <command>  A command's own flags
-krowk help --all      Every command and subcommand
-krowk help topics     Flags, exit codes, environment, workspaces, links
-krowk help agents     For AI agents and scripts: the output contract
+gruntas help <command>
+                      A command's own flags
+gruntas help --all    Every command and subcommand
+gruntas help topics   Flags, exit codes, environment, workspaces, links
+gruntas help agents   For AI agents and scripts: the output contract
 exit: 0
 
-$ krowk --json
+$ gruntas --json
 stdout:
 {
-  "name": "krowk",
+  "name": "gruntas",
   "version": "0.0.0-golden",
   "summary": "A coding agent harness: one session, any machine, model or agent",
   "commands": [
     {
       "name": "push",
-      "usage": "krowk push <file...> [flags]",
+      "usage": "gruntas push <file...> [flags]",
       "summary": "Upload files, get a link for each",
       "args": [
         {
@@ -85,7 +86,7 @@ stdout:
           "name": "destination",
           "type": "string",
           "default": "",
-          "usage": "Print what this tool wants pasted into it: the krowk block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool krowk has not been told about gets the block"
+          "usage": "Print what this tool wants pasted into it: the gruntas block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool gruntas has not been told about gets the block"
         },
         {
           "name": "private",
@@ -173,8 +174,8 @@ stdout:
       "subcommands": [
         {
           "name": "create",
-          "usage": "krowk artifacts create <file...> [flags]",
-          "summary": "Upload files: the long form of `krowk push`",
+          "usage": "gruntas artifacts create <file...> [flags]",
+          "summary": "Upload files: the long form of `gruntas push`",
           "args": [
             {
               "name": "file",
@@ -201,7 +202,7 @@ stdout:
               "name": "destination",
               "type": "string",
               "default": "",
-              "usage": "Print what this tool wants pasted into it: the krowk block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool krowk has not been told about gets the block"
+              "usage": "Print what this tool wants pasted into it: the gruntas block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool gruntas has not been told about gets the block"
             },
             {
               "name": "private",
@@ -285,8 +286,8 @@ stdout:
         },
         {
           "name": "list",
-          "usage": "krowk artifacts list [flags]",
-          "summary": "List artifacts, newest first: a run's, or the workspace's",
+          "usage": "gruntas artifacts list [flags]",
+          "summary": "List artifacts, newest first, of a run or the workspace",
           "flags": [
             {
               "name": "limit",
@@ -311,7 +312,7 @@ stdout:
         },
         {
           "name": "show",
-          "usage": "krowk artifacts show <artifact>",
+          "usage": "gruntas artifacts show <artifact>",
           "summary": "Read one artifact back",
           "args": [
             {
@@ -324,7 +325,7 @@ stdout:
         },
         {
           "name": "attach",
-          "usage": "krowk artifacts attach <art> --run <run>",
+          "usage": "gruntas artifacts attach <art> --run <run>",
           "summary": "Put an artifact under a run afterwards",
           "args": [
             {
@@ -345,7 +346,7 @@ stdout:
         },
         {
           "name": "delete",
-          "usage": "krowk artifacts delete <art> [token]",
+          "usage": "gruntas artifacts delete <art> [token]",
           "summary": "Take an artifact down — immediate, cannot be undone",
           "args": [
             {
@@ -363,8 +364,8 @@ stdout:
         },
         {
           "name": "claim",
-          "usage": "krowk artifacts claim <art> <token> [--run]",
-          "summary": "The long form of `krowk claim`",
+          "usage": "gruntas artifacts claim <art> <token> [--run]",
+          "summary": "The long form of `gruntas claim`",
           "args": [
             {
               "name": "artifact",
@@ -396,7 +397,7 @@ stdout:
       "subcommands": [
         {
           "name": "start",
-          "usage": "krowk runs start [flags]",
+          "usage": "gruntas runs start [flags]",
           "summary": "Open a run to group uploads under",
           "flags": [
             {
@@ -475,7 +476,7 @@ stdout:
         },
         {
           "name": "list",
-          "usage": "krowk runs list [--limit --before]",
+          "usage": "gruntas runs list [--limit --before]",
           "summary": "List the workspace's runs, newest first",
           "flags": [
             {
@@ -495,7 +496,7 @@ stdout:
         },
         {
           "name": "show",
-          "usage": "krowk runs show <run>",
+          "usage": "gruntas runs show <run>",
           "summary": "Read one run back, with its metadata",
           "args": [
             {
@@ -508,7 +509,7 @@ stdout:
         },
         {
           "name": "finish",
-          "usage": "krowk runs finish <run>",
+          "usage": "gruntas runs finish <run>",
           "summary": "Close a run",
           "args": [
             {
@@ -524,7 +525,7 @@ stdout:
     },
     {
       "name": "claim",
-      "usage": "krowk claim <artifact> <token> [--run]",
+      "usage": "gruntas claim <artifact> <token> [--run]",
       "summary": "Keep an anonymous upload past expiry",
       "args": [
         {
@@ -550,8 +551,8 @@ stdout:
     },
     {
       "name": "login",
-      "usage": "krowk login [--token <token>] [--no-browser]",
-      "summary": "Sign in to your krowk account",
+      "usage": "gruntas login [--token <token>] [--no-browser]",
+      "summary": "Sign in to your gruntas account",
       "flags": [
         {
           "name": "token",
@@ -570,19 +571,19 @@ stdout:
     },
     {
       "name": "logout",
-      "usage": "krowk logout",
+      "usage": "gruntas logout",
       "summary": "Remove this machine's key",
       "hidden": true
     },
     {
       "name": "whoami",
-      "usage": "krowk whoami",
+      "usage": "gruntas whoami",
       "summary": "Show the key and its workspace",
       "hidden": false
     },
     {
       "name": "billing",
-      "usage": "krowk billing [--no-browser]",
+      "usage": "gruntas billing [--no-browser]",
       "summary": "Choose or manage the workspace's plan",
       "flags": [
         {
@@ -600,8 +601,8 @@ stdout:
       "subcommands": [
         {
           "name": "login",
-          "usage": "krowk auth login [--token <token>] [--no-browser]",
-          "summary": "The long form of `krowk login`",
+          "usage": "gruntas auth login [--token <token>] [--no-browser]",
+          "summary": "The long form of `gruntas login`",
           "flags": [
             {
               "name": "token",
@@ -620,21 +621,21 @@ stdout:
         },
         {
           "name": "logout",
-          "usage": "krowk auth logout",
-          "summary": "The long form of `krowk logout`",
+          "usage": "gruntas auth logout",
+          "summary": "The long form of `gruntas logout`",
           "hidden": false
         },
         {
           "name": "token",
-          "usage": "krowk auth token",
+          "usage": "gruntas auth token",
           "summary": "Print the stored token",
           "no_json": true,
           "hidden": false
         },
         {
           "name": "verify",
-          "usage": "krowk auth verify",
-          "summary": "The long form of `krowk whoami`",
+          "usage": "gruntas auth verify",
+          "summary": "The long form of `gruntas whoami`",
           "hidden": false
         }
       ],
@@ -646,18 +647,18 @@ stdout:
       "subcommands": [
         {
           "name": "list",
-          "usage": "krowk workspaces [list]",
-          "summary": "List the stored keys, and which workspace resolves here",
+          "usage": "gruntas workspaces [list]",
+          "summary": "List the stored keys, and the one in use here",
           "hidden": false
         },
         {
           "name": "use",
-          "usage": "krowk workspaces use <workspace>",
+          "usage": "gruntas workspaces use <workspace>",
           "summary": "Make a stored key the machine-wide default",
           "args": [
             {
               "name": "workspace",
-              "summary": "A workspace `krowk workspaces` lists, e.g. <ws_1> — a person at a terminal may omit it and pick from a list instead",
+              "summary": "A workspace `gruntas workspaces` lists, e.g. <ws_1> — a person at a terminal may omit it and pick from a list instead",
               "required": true
             }
           ],
@@ -672,13 +673,13 @@ stdout:
       "subcommands": [
         {
           "name": "show",
-          "usage": "krowk config show",
-          "summary": "The effective configuration, and which layer set each value",
+          "usage": "gruntas config show",
+          "summary": "The effective config, and which layer set each value",
           "hidden": false
         },
         {
           "name": "get",
-          "usage": "krowk config get <key>",
+          "usage": "gruntas config get <key>",
           "summary": "One key's effective value and where it comes from",
           "args": [
             {
@@ -691,7 +692,7 @@ stdout:
         },
         {
           "name": "set",
-          "usage": "krowk config set <key> <value> [--global]",
+          "usage": "gruntas config set <key> <value> [--global]",
           "summary": "Write one value into the repo config, or the global one",
           "args": [
             {
@@ -717,7 +718,7 @@ stdout:
         },
         {
           "name": "unset",
-          "usage": "krowk config unset <key> [--global]",
+          "usage": "gruntas config unset <key> [--global]",
           "summary": "Remove one value from the repo config, or the global one",
           "args": [
             {
@@ -741,13 +742,13 @@ stdout:
     },
     {
       "name": "doctor",
-      "usage": "krowk doctor",
+      "usage": "gruntas doctor",
       "summary": "Check this machine's setup",
       "hidden": false
     },
     {
       "name": "sessions",
-      "usage": "krowk sessions [--harness <name>] [--worktree <path>] [--limit N] [--all]",
+      "usage": "gruntas sessions [--harness <name>] [--worktree <path>] [--limit N] [--all]",
       "summary": "List and read agent sessions on this machine",
       "flags": [
         {
@@ -778,8 +779,8 @@ stdout:
       "subcommands": [
         {
           "name": "show",
-          "usage": "krowk sessions show <id> [--thinking]",
-          "summary": "Read one session back, with its turns, messages and parts",
+          "usage": "gruntas sessions show <id> [--thinking]",
+          "summary": "Read one session back: its turns, messages and parts",
           "args": [
             {
               "name": "id",
@@ -799,7 +800,7 @@ stdout:
         },
         {
           "name": "import",
-          "usage": "krowk sessions import --from <provider|all> [--dry-run] [--limit N]",
+          "usage": "gruntas sessions import --from <provider|all> [--dry-run] [--limit N]",
           "summary": "Import this machine's agent transcripts",
           "flags": [
             {
@@ -825,7 +826,7 @@ stdout:
         },
         {
           "name": "rebuild",
-          "usage": "krowk sessions rebuild [--yes]",
+          "usage": "gruntas sessions rebuild [--yes]",
           "summary": "Delete the local store and re-import every transcript",
           "flags": [
             {
@@ -839,7 +840,7 @@ stdout:
         },
         {
           "name": "budget",
-          "usage": "krowk sessions budget <id> [--max-usd N] [--max-tokens N]",
+          "usage": "gruntas sessions budget <id> [--max-usd N] [--max-tokens N]",
           "summary": "Check a session against a spend limit",
           "args": [
             {
@@ -866,8 +867,8 @@ stdout:
         },
         {
           "name": "sync",
-          "usage": "krowk sessions sync [--no-network]",
-          "summary": "Import what changed since the last import, refresh prices",
+          "usage": "gruntas sessions sync [--no-network]",
+          "summary": "Import what changed since last import, refresh prices",
           "flags": [
             {
               "name": "no-network",
@@ -880,7 +881,7 @@ stdout:
         },
         {
           "name": "archive",
-          "usage": "krowk sessions archive [--older-than DAYS] [--weekly]",
+          "usage": "gruntas sessions archive [--older-than DAYS] [--weekly]",
           "summary": "Move idle sessions into encrypted weekly vintages",
           "flags": [
             {
@@ -900,7 +901,7 @@ stdout:
         },
         {
           "name": "restore",
-          "usage": "krowk sessions restore <id> [--from VINTAGE]",
+          "usage": "gruntas sessions restore <id> [--from VINTAGE]",
           "summary": "Bring an archived session back from its vintage",
           "args": [
             {
@@ -914,14 +915,14 @@ stdout:
               "name": "from",
               "type": "string",
               "default": "",
-              "usage": "The vintage of its week to restore it from (see `krowk sessions vintage <id>`)"
+              "usage": "The vintage of its week to restore it from (see `gruntas sessions vintage <id>`)"
             }
           ],
           "hidden": false
         },
         {
           "name": "vintage",
-          "usage": "krowk sessions vintage [<id>|<week>]",
+          "usage": "gruntas sessions vintage [<id>|<week>]",
           "summary": "List a week's vintages, replaced ones included",
           "args": [
             {
@@ -934,7 +935,7 @@ stdout:
         },
         {
           "name": "pin",
-          "usage": "krowk sessions pin <id>",
+          "usage": "gruntas sessions pin <id>",
           "summary": "Never archive this session",
           "args": [
             {
@@ -947,7 +948,7 @@ stdout:
         },
         {
           "name": "unpin",
-          "usage": "krowk sessions unpin <id>",
+          "usage": "gruntas sessions unpin <id>",
           "summary": "Let a pinned session be archived again",
           "args": [
             {
@@ -960,12 +961,12 @@ stdout:
         },
         {
           "name": "attach",
-          "usage": "krowk sessions attach <id>",
+          "usage": "gruntas sessions attach <id>",
           "summary": "Follow a session on another machine, live",
           "args": [
             {
               "name": "id",
-              "summary": "The session's id, as `krowk sessions` lists it",
+              "summary": "The session's id, as `gruntas sessions` lists it",
               "required": true
             }
           ],
@@ -973,12 +974,12 @@ stdout:
         },
         {
           "name": "take",
-          "usage": "krowk sessions take <id>",
+          "usage": "gruntas sessions take <id>",
           "summary": "Move a live session here, uncommitted work and all",
           "args": [
             {
               "name": "id",
-              "summary": "The session's id, as `krowk sessions` lists it",
+              "summary": "The session's id, as `gruntas sessions` lists it",
               "required": true
             }
           ],
@@ -986,8 +987,8 @@ stdout:
         },
         {
           "name": "new",
-          "usage": "krowk sessions new --on MACHINE --cwd DIR [--model INSTANCE/ID] PROMPT",
-          "summary": "Start a session on another machine of yours, and follow it",
+          "usage": "gruntas sessions new --on MACHINE --cwd DIR [--model INSTANCE/ID] PROMPT",
+          "summary": "Start a session on another machine of yours and follow it",
           "args": [
             {
               "name": "prompt",
@@ -1000,13 +1001,13 @@ stdout:
               "name": "on",
               "type": "string",
               "default": "",
-              "usage": "The machine to start it on: its name, or 8+ hex characters of its device id (`krowk machines` lists them)"
+              "usage": "The machine to start it on: its name, or 8+ hex characters of its device id (`gruntas machines` lists them)"
             },
             {
               "name": "cwd",
               "type": "string",
               "default": "",
-              "usage": "The directory there to start it in, one that machine offers (`krowk machines`)"
+              "usage": "The directory there to start it in, one that machine offers (`gruntas machines`)"
             },
             {
               "name": "model",
@@ -1026,7 +1027,7 @@ stdout:
       "subcommands": [
         {
           "name": "refresh",
-          "usage": "krowk pricing refresh",
+          "usage": "gruntas pricing refresh",
           "summary": "Refresh the models.dev price cache",
           "hidden": false
         }
@@ -1035,13 +1036,13 @@ stdout:
     },
     {
       "name": "upgrade",
-      "usage": "krowk upgrade",
-      "summary": "Upgrade krowk",
+      "usage": "gruntas upgrade",
+      "summary": "Upgrade gruntas",
       "hidden": false
     },
     {
       "name": "help",
-      "usage": "krowk help [command|topic] [--all]",
+      "usage": "gruntas help [command|topic] [--all]",
       "summary": "This, a command's help, or a topic",
       "args": [
         {
@@ -1062,7 +1063,7 @@ stdout:
     },
     {
       "name": "connect",
-      "usage": "krowk connect [vendor] [--method subscription|api-key|device] [--name N]",
+      "usage": "gruntas connect [vendor] [--method subscription|api-key|device] [--name N]",
       "summary": "Connect a Claude Code or Codex account, by login or API key",
       "args": [
         {
@@ -1094,19 +1095,19 @@ stdout:
           "name": "api-key-env",
           "type": "string",
           "default": "",
-          "usage": "The environment variable holding the key — krowk stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named account"
+          "usage": "The environment variable holding the key — gruntas stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named account"
         },
         {
           "name": "key-stdin",
           "type": "bool",
           "default": "false",
-          "usage": "An API key: store the key piped to stdin in krowk's provider credentials file (0600). Never a --key argument, which the shell's history would keep"
+          "usage": "An API key: store the key piped to stdin in gruntas's provider credentials file (0600). Never a --key argument, which the shell's history would keep"
         },
         {
           "name": "key-ref",
           "type": "string",
           "default": "",
-          "usage": "An API key: store a reference instead — '$VAR' (read from that variable) or '!command' (its output, e.g. '!pass show anthropic', run once per krowk process). At a terminal, pasting at the prompt does either"
+          "usage": "An API key: store a reference instead — '$VAR' (read from that variable) or '!command' (its output, e.g. '!pass show anthropic', run once per gruntas process). At a terminal, pasting at the prompt does either"
         },
         {
           "name": "base-url",
@@ -1131,7 +1132,7 @@ stdout:
     },
     {
       "name": "disconnect",
-      "usage": "krowk disconnect [instance] [--remove]",
+      "usage": "gruntas disconnect [instance] [--remove]",
       "summary": "Sign a connected model out",
       "args": [
         {
@@ -1162,7 +1163,7 @@ stdout:
       "subcommands": [
         {
           "name": "add",
-          "usage": "krowk providers add <provider> [--name N] [--api-key-env VAR] [--base-url URL] [--device] [--binary PATH] [--config-dir DIR]",
+          "usage": "gruntas providers add <provider> [--name N] [--api-key-env VAR] [--base-url URL] [--device] [--binary PATH] [--config-dir DIR]",
           "summary": "Add an instance, or sign one in",
           "args": [
             {
@@ -1182,7 +1183,7 @@ stdout:
               "name": "api-key-env",
               "type": "string",
               "default": "",
-              "usage": "The environment variable holding the key — krowk stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named instance. For claude and codex, only when given: the key a router (with --base-url) or a Console account runs on, handed to the backend"
+              "usage": "The environment variable holding the key — gruntas stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named instance. For claude and codex, only when given: the key a router (with --base-url) or a Console account runs on, handed to the backend"
             },
             {
               "name": "base-url",
@@ -1213,13 +1214,13 @@ stdout:
         },
         {
           "name": "list",
-          "usage": "krowk providers list",
+          "usage": "gruntas providers list",
           "summary": "List every instance, and whether it is ready",
           "hidden": false
         },
         {
           "name": "remove",
-          "usage": "krowk providers remove <instance>",
+          "usage": "gruntas providers remove <instance>",
           "summary": "Remove an instance's definition, and forget its login",
           "args": [
             {
@@ -1232,7 +1233,7 @@ stdout:
         },
         {
           "name": "rename",
-          "usage": "krowk providers rename [instance] [new-name]",
+          "usage": "gruntas providers rename [instance] [new-name]",
           "summary": "Rename an instance; its login and sessions follow",
           "args": [
             {
@@ -1253,7 +1254,7 @@ stdout:
     },
     {
       "name": "status",
-      "usage": "krowk status",
+      "usage": "gruntas status",
       "summary": "What's connected, and whether each is ready",
       "hidden": false
     },
@@ -1263,13 +1264,13 @@ stdout:
       "subcommands": [
         {
           "name": "status",
-          "usage": "krowk host status",
+          "usage": "gruntas host status",
           "summary": "Whether the daemon runs: socket, pid, uptime, sessions",
           "hidden": false
         },
         {
           "name": "attach",
-          "usage": "krowk host attach <session>",
+          "usage": "gruntas host attach <session>",
           "summary": "Follow a session in the daemon, live, as stream-json",
           "args": [
             {
@@ -1282,7 +1283,7 @@ stdout:
         },
         {
           "name": "stop",
-          "usage": "krowk host stop [--force]",
+          "usage": "gruntas host stop [--force]",
           "summary": "Stop the daemon, once no turn runs in it",
           "flags": [
             {
@@ -1296,13 +1297,13 @@ stdout:
         },
         {
           "name": "enable",
-          "usage": "krowk host enable",
+          "usage": "gruntas host enable",
           "summary": "Run the daemon as a systemd or launchd user service",
           "hidden": true
         },
         {
           "name": "disable",
-          "usage": "krowk host disable",
+          "usage": "gruntas host disable",
           "summary": "Stop the service and remove it",
           "hidden": true
         }
@@ -1315,7 +1316,7 @@ stdout:
       "subcommands": [
         {
           "name": "serve",
-          "usage": "krowk relay serve --ticket-keys FILE [--addr HOST:PORT] [--origin URL] [--state DIR]",
+          "usage": "gruntas relay serve --ticket-keys FILE [--addr HOST:PORT] [--origin URL] [--state DIR]",
           "summary": "Carry sealed sessions between their host and viewers",
           "flags": [
             {
@@ -1354,13 +1355,13 @@ stdout:
       "subcommands": [
         {
           "name": "list",
-          "usage": "krowk machines [list]",
+          "usage": "gruntas machines [list]",
           "summary": "Your machines, and what each can take",
           "hidden": false
         },
         {
           "name": "accept",
-          "usage": "krowk machines accept on|off",
+          "usage": "gruntas machines accept on|off",
           "summary": "Take work from your other machines, or not",
           "args": [
             {
@@ -1373,18 +1374,18 @@ stdout:
         },
         {
           "name": "add",
-          "usage": "krowk machines add",
+          "usage": "gruntas machines add",
           "summary": "Show a code that adds another machine",
           "hidden": false
         },
         {
           "name": "remove",
-          "usage": "krowk machines remove NAME",
+          "usage": "gruntas machines remove NAME",
           "summary": "Take a machine off your list and rotate your key",
           "args": [
             {
               "name": "name",
-              "summary": "The machine's name, as `krowk machines` lists it",
+              "summary": "The machine's name, as `gruntas machines` lists it",
               "required": true
             }
           ],
@@ -1392,7 +1393,7 @@ stdout:
         },
         {
           "name": "always-on",
-          "usage": "krowk machines always-on on|off",
+          "usage": "gruntas machines always-on on|off",
           "summary": "Keep this machine available while you're away",
           "args": [
             {
@@ -1405,12 +1406,12 @@ stdout:
         },
         {
           "name": "recovery",
-          "usage": "krowk machines recovery [new|check|discard-old]",
+          "usage": "gruntas machines recovery [new|check|discard-old]",
           "summary": "Your recovery kit: see it, make a new one, test it",
           "subcommands": [
             {
               "name": "new",
-              "usage": "krowk machines recovery new [--save FILE]",
+              "usage": "gruntas machines recovery new [--save FILE]",
               "summary": "Make a new recovery kit",
               "flags": [
                 {
@@ -1424,13 +1425,13 @@ stdout:
             },
             {
               "name": "check",
-              "usage": "krowk machines recovery check",
+              "usage": "gruntas machines recovery check",
               "summary": "Test the kit's words against your device list, locally",
               "hidden": false
             },
             {
               "name": "discard-old",
-              "usage": "krowk machines recovery discard-old",
+              "usage": "gruntas machines recovery discard-old",
               "summary": "Drop the old keys a start-over kept aside",
               "hidden": false
             }
@@ -1442,8 +1443,8 @@ stdout:
     },
     {
       "name": "hosts",
-      "usage": "krowk hosts",
-      "summary": "The same as krowk machines",
+      "usage": "gruntas hosts",
+      "summary": "The same as gruntas machines",
       "hidden": true
     },
     {
@@ -1452,7 +1453,7 @@ stdout:
       "subcommands": [
         {
           "name": "init",
-          "usage": "krowk sync init [--save FILE] [--start-over]",
+          "usage": "gruntas sync init [--save FILE] [--start-over]",
           "summary": "Set up sync: this device, your user key and a recovery kit",
           "flags": [
             {
@@ -1478,8 +1479,8 @@ stdout:
         },
         {
           "name": "recover",
-          "usage": "krowk sync recover",
-          "summary": "Back in from the recovery kit's 12 words, on a new machine",
+          "usage": "gruntas sync recover",
+          "summary": "Back in from the kit's 12 words, on a new machine",
           "flags": [
             {
               "name": "name",
@@ -1492,18 +1493,18 @@ stdout:
         },
         {
           "name": "status",
-          "usage": "krowk sync status",
+          "usage": "gruntas sync status",
           "summary": "This device's list, recovery kit and auto-sync, checked",
           "hidden": false
         },
         {
           "name": "recovery",
-          "usage": "krowk sync recovery new|check|discard-old",
+          "usage": "gruntas sync recovery new|check|discard-old",
           "summary": "Your recovery kit: make a new one, or test its words",
           "subcommands": [
             {
               "name": "new",
-              "usage": "krowk sync recovery new [--save FILE]",
+              "usage": "gruntas sync recovery new [--save FILE]",
               "summary": "Make a new recovery kit",
               "flags": [
                 {
@@ -1517,13 +1518,13 @@ stdout:
             },
             {
               "name": "check",
-              "usage": "krowk sync recovery check",
+              "usage": "gruntas sync recovery check",
               "summary": "Test the kit's words against your device list, locally",
               "hidden": false
             },
             {
               "name": "discard-old",
-              "usage": "krowk sync recovery discard-old",
+              "usage": "gruntas sync recovery discard-old",
               "summary": "Drop the old keys a start-over kept aside",
               "hidden": false
             }
@@ -1532,8 +1533,8 @@ stdout:
         },
         {
           "name": "join",
-          "usage": "krowk sync join",
-          "summary": "Add this machine by the code `krowk machines add` shows",
+          "usage": "gruntas sync join",
+          "summary": "Add this machine by the code `gruntas machines add` shows",
           "flags": [
             {
               "name": "name",
@@ -1546,32 +1547,32 @@ stdout:
         },
         {
           "name": "sessions",
-          "usage": "krowk sync sessions",
+          "usage": "gruntas sync sessions",
           "summary": "The synced sessions this machine can open",
           "hidden": true
         },
         {
           "name": "host",
-          "usage": "krowk sync host SESSION",
+          "usage": "gruntas sync host SESSION",
           "summary": "Run a session here and sync it until interrupted",
           "hidden": false
         },
         {
           "name": "attach",
-          "usage": "krowk sync attach SESSION",
+          "usage": "gruntas sync attach SESSION",
           "summary": "Follow a synced session as stream-json",
           "hidden": true
         },
         {
           "name": "take",
-          "usage": "krowk sync take SESSION",
+          "usage": "gruntas sync take SESSION",
           "summary": "Move a live session here, uncommitted work and all",
           "hidden": true
         },
         {
           "name": "new",
-          "usage": "krowk sync new --host NAME --cwd DIR [--model INSTANCE/ID] PROMPT",
-          "summary": "Start a session on another machine of yours, and follow it",
+          "usage": "gruntas sync new --host NAME --cwd DIR [--model INSTANCE/ID] PROMPT",
+          "summary": "Start a session on another machine of yours and follow it",
           "args": [
             {
               "name": "prompt",
@@ -1584,13 +1585,13 @@ stdout:
               "name": "host",
               "type": "string",
               "default": "",
-              "usage": "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`krowk machines` lists them)"
+              "usage": "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`gruntas machines` lists them)"
             },
             {
               "name": "cwd",
               "type": "string",
               "default": "",
-              "usage": "The directory there to start it in, one that machine offers (`krowk machines`)"
+              "usage": "The directory there to start it in, one that machine offers (`gruntas machines`)"
             },
             {
               "name": "model",
@@ -1610,19 +1611,19 @@ stdout:
       "subcommands": [
         {
           "name": "list",
-          "usage": "krowk devices list",
+          "usage": "gruntas devices list",
           "summary": "The devices on your device list, this one marked",
           "hidden": false
         },
         {
           "name": "add",
-          "usage": "krowk devices add",
+          "usage": "gruntas devices add",
           "summary": "Show a code that adds a new machine to your devices",
           "hidden": false
         },
         {
           "name": "remove",
-          "usage": "krowk devices remove NAME",
+          "usage": "gruntas devices remove NAME",
           "summary": "Take a device off your list and rotate your key",
           "hidden": false
         }
@@ -1631,11 +1632,11 @@ stdout:
     },
     {
       "name": "mcp",
-      "summary": "MCP servers krowk's agent uses (add, remove, list, login)",
+      "summary": "MCP servers gruntas's agent uses (add, remove, list, login)",
       "subcommands": [
         {
           "name": "login",
-          "usage": "krowk mcp login <name> [--no-browser]",
+          "usage": "gruntas mcp login <name> [--no-browser]",
           "summary": "Sign in to a remote MCP server that asks for OAuth",
           "args": [
             {
@@ -1656,7 +1657,7 @@ stdout:
         },
         {
           "name": "logout",
-          "usage": "krowk mcp logout <name>",
+          "usage": "gruntas mcp logout <name>",
           "summary": "Forget a server's sign-in",
           "args": [
             {
@@ -1669,8 +1670,8 @@ stdout:
         },
         {
           "name": "add",
-          "usage": "krowk mcp add <name> <url> [--header \"Name: value\"] | krowk mcp add <name> [--env K=V] -- <command> [args…]",
-          "summary": "Add an MCP server to krowk's config.json",
+          "usage": "gruntas mcp add <name> <url> [--header \"Name: value\"] | gruntas mcp add <name> [--env K=V] -- <command> [args…]",
+          "summary": "Add an MCP server to gruntas's config.json",
           "args": [
             {
               "name": "name",
@@ -1709,7 +1710,7 @@ stdout:
         },
         {
           "name": "remove",
-          "usage": "krowk mcp remove <name>",
+          "usage": "gruntas mcp remove <name>",
           "summary": "Remove a server from config.json, and its stored sign-in",
           "args": [
             {
@@ -1722,8 +1723,8 @@ stdout:
         },
         {
           "name": "list",
-          "usage": "krowk mcp list",
-          "summary": "List the servers krowk would load here, without connecting",
+          "usage": "gruntas mcp list",
+          "summary": "List the servers gruntas would load here, without connecting",
           "hidden": false
         }
       ],
@@ -1731,12 +1732,12 @@ stdout:
     },
     {
       "name": "trust",
-      "usage": "krowk trust [<path>] | krowk trust --revoke [<path>] | krowk trust --list",
+      "usage": "gruntas trust [<path>] | gruntas trust --revoke [<path>] | gruntas trust --list",
       "summary": "Trust a repository to run its hooks and MCP servers",
       "args": [
         {
           "name": "path",
-          "summary": "A directory in the repository (default: the current directory); a krowk worktree counts as its main repository",
+          "summary": "A directory in the repository (default: the current directory); a gruntas worktree counts as its main repository",
           "required": false
         }
       ],
@@ -1758,18 +1759,18 @@ stdout:
     },
     {
       "name": "worktrees",
-      "summary": "The git worktrees krowk made for agents, across repositories",
+      "summary": "The worktrees gruntas made for agents, across repositories",
       "subcommands": [
         {
           "name": "list",
-          "usage": "krowk worktrees list",
+          "usage": "gruntas worktrees list",
           "summary": "Each one: branch, commits ahead, changes, session, age",
           "hidden": false
         },
         {
           "name": "add",
-          "usage": "krowk worktrees add [--from REF]",
-          "summary": "Make one for an agent to work in, and print its directory",
+          "usage": "gruntas worktrees add [--from REF]",
+          "summary": "Make one for an agent to work in; print its directory",
           "flags": [
             {
               "name": "from",
@@ -1782,8 +1783,8 @@ stdout:
         },
         {
           "name": "remove",
-          "usage": "krowk worktrees remove <hex|path> [--force]",
-          "summary": "Remove one, its branch kept; not while its session runs",
+          "usage": "gruntas worktrees remove <hex|path> [--force]",
+          "summary": "Remove one, branch kept; not while its session runs",
           "args": [
             {
               "name": "worktree",
@@ -1803,7 +1804,7 @@ stdout:
         },
         {
           "name": "apply",
-          "usage": "krowk worktrees apply <hex|path> [--to DIR]",
+          "usage": "gruntas worktrees apply <hex|path> [--to DIR]",
           "summary": "Bring one's changes into a checkout, uncommitted",
           "args": [
             {
@@ -1824,7 +1825,7 @@ stdout:
         },
         {
           "name": "prune",
-          "usage": "krowk worktrees prune",
+          "usage": "gruntas worktrees prune",
           "summary": "Clear what deleted worktrees left, and old snapshots",
           "hidden": false
         }
@@ -1912,7 +1913,7 @@ stdout:
       "name": "resume",
       "type": "string",
       "default": "",
-      "usage": "With -p: continue this krowk session — the sessionId a result names, or its krowk.db id"
+      "usage": "With -p: continue this gruntas session — the sessionId a result names, or its gruntas.db id"
     },
     {
       "name": "worktree",
@@ -1924,13 +1925,13 @@ stdout:
       "name": "permission-mode",
       "type": "string",
       "default": "default",
-      "usage": "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which asks about nothing: no krowk deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode; in every other mode a deny rule holds"
+      "usage": "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which asks about nothing: no gruntas deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode; in every other mode a deny rule holds"
     },
     {
       "name": "sandbox",
       "type": "string",
       "default": "",
-      "usage": "With -p: off. Claude Code and Codex run their own tools outside krowk's OS sandbox, so a profile (workspace, read-only, strict) is refused"
+      "usage": "With -p: off. Claude Code and Codex run their own tools outside gruntas's OS sandbox, so a profile (workspace, read-only, strict) is refused"
     },
     {
       "name": "toolset",
@@ -1961,7 +1962,7 @@ stdout:
       "name": "max-usd",
       "type": "string",
       "default": "",
-      "usage": "With -p: stop the session once it, with its agents, is past this many dollars — metered, priced from models.dev: a turn at the limit is refused, and one a call takes past it is interrupted. Exits 4, like `krowk sessions budget`"
+      "usage": "With -p: stop the session once it, with its agents, is past this many dollars — metered, priced from models.dev: a turn at the limit is refused, and one a call takes past it is interrupted. Exits 4, like `gruntas sessions budget`"
     },
     {
       "name": "max-tokens",
@@ -1979,7 +1980,7 @@ stdout:
       "name": "daemon",
       "type": "bool",
       "default": "false",
-      "usage": "With -p: run the turn in the host daemon (started when none runs) instead of this process, so it goes on if this process ends — `krowk host attach <session>` follows it"
+      "usage": "With -p: run the turn in the host daemon (started when none runs) instead of this process, so it goes on if this process ends — `gruntas host attach <session>` follows it"
     }
   ],
   "environment": [
@@ -2010,7 +2011,7 @@ stdout:
     },
     {
       "name": "GRUNTAS_HOME",
-      "usage": "Where krowk keeps its files, an absolute path",
+      "usage": "Where gruntas keeps its files, an absolute path",
       "default": "~/.gruntas"
     },
     {
@@ -2021,47 +2022,47 @@ stdout:
 }
 exit: 0
 
-$ krowk --format human
+$ gruntas --format human
 stdout:
 
 █  █
 █▀▀▄
 
-Krowk 0.0.0-golden
+Gruntas 0.0.0-golden
 A coding agent harness: one session, any machine, model or agent
 
-  krowk push screenshot.png  Upload a file, get a link — no key, lasts a day
-  krowk login --token …      Add a key: uploads keep, group under runs
-  krowk help                 The commands; --all for every one, --json as data
+  gruntas push screenshot.png  Upload a file, get a link — no key, lasts a day
+  gruntas login --token …    Add a key: uploads keep, group under runs
+  gruntas help               The commands; --all for every one, --json as data
 exit: 0
 
-$ krowk
+$ gruntas
 stdout:
-█  █  Krowk 0.0.0-golden
+█  █  Gruntas 0.0.0-golden
 █▀▀▄  A coding agent harness: one session, any machine, model or agent
 
 Start
-  krowk                      Set this machine up, then an overview of it
-  krowk -p "…"               One prompt, headless
-  krowk -p --resume          Continue a session
+  gruntas                    Set this machine up, then an overview of it
+  gruntas -p "…"             One prompt, headless
+  gruntas -p --resume        Continue a session
 
 Examples
-  krowk connect anthropic    Connect a model to run the agent on
-  krowk push shot.png        Upload a screenshot and get a link to paste
-  krowk sessions --json      Every agent session on this machine, as data
+  gruntas connect anthropic  Connect a model to run the agent on
+  gruntas push shot.png      Upload a screenshot and get a link to paste
+  gruntas sessions --json    Every agent session on this machine, as data
 
 Accounts
   connect       Connect a Claude Code or Codex account, by login or API key
   disconnect    Sign a connected model out
-  login         Sign in to your krowk account
+  login         Sign in to your gruntas account
   whoami        Show the key and its workspace
   billing       Choose or manage the workspace's plan
 
 Work
   sessions      List and read agent sessions on this machine
   machines      Your machines, and what each can take
-  worktrees     The git worktrees krowk made for agents, across repositories
-  mcp           MCP servers krowk's agent uses (add, remove, list, login)
+  worktrees     The worktrees gruntas made for agents, across repositories
+  mcp           MCP servers gruntas's agent uses (add, remove, list, login)
   trust         Trust a repository to run its hooks and MCP servers
 
 Publish
@@ -2070,7 +2071,7 @@ Publish
 Health
   status        What's connected, and whether each is ready
   doctor        Check this machine's setup
-  upgrade       Upgrade krowk
+  upgrade       Upgrade gruntas
   config        Show or set configuration
 
 Flags
@@ -2079,39 +2080,40 @@ Flags
   --json · --jq <expr>       Output as JSON, or filter it
   -h, --help · -v, --version
 
-krowk help <command>  A command's own flags
-krowk help --all      Every command and subcommand
-krowk help topics     Flags, exit codes, environment, workspaces, links
-krowk help agents     For AI agents and scripts: the output contract
+gruntas help <command>
+                      A command's own flags
+gruntas help --all    Every command and subcommand
+gruntas help topics   Flags, exit codes, environment, workspaces, links
+gruntas help agents   For AI agents and scripts: the output contract
 exit: 0
 
-$ @tty krowk
+$ @tty gruntas
 tty:
-█  █  \e[1mKrowk\e[0m 0.0.0-golden
+█  █  \e[1mGruntas\e[0m 0.0.0-golden
 █▀▀▄  A coding agent harness: one session, any machine, model or agent
 
 \e[1mStart\e[0m
-  krowk                      Set this machine up, then an overview of it
-  krowk -p "…"               One prompt, headless
-  krowk -p --resume          Continue a session
+  gruntas                    Set this machine up, then an overview of it
+  gruntas -p "…"             One prompt, headless
+  gruntas -p --resume        Continue a session
 
 \e[1mExamples\e[0m
-  krowk connect anthropic    Connect a model to run the agent on
-  krowk push shot.png        Upload a screenshot and get a link to paste
-  krowk sessions --json      Every agent session on this machine, as data
+  gruntas connect anthropic  Connect a model to run the agent on
+  gruntas push shot.png      Upload a screenshot and get a link to paste
+  gruntas sessions --json    Every agent session on this machine, as data
 
 \e[1mAccounts\e[0m
   connect       Connect a Claude Code or Codex account, by login or API key
   disconnect    Sign a connected model out
-  login         Sign in to your krowk account
+  login         Sign in to your gruntas account
   whoami        Show the key and its workspace
   billing       Choose or manage the workspace's plan
 
 \e[1mWork\e[0m
   sessions      List and read agent sessions on this machine
   machines      Your machines, and what each can take
-  worktrees     The git worktrees krowk made for agents, across repositories
-  mcp           MCP servers krowk's agent uses (add, remove, list, login)
+  worktrees     The worktrees gruntas made for agents, across repositories
+  mcp           MCP servers gruntas's agent uses (add, remove, list, login)
   trust         Trust a repository to run its hooks and MCP servers
 
 \e[1mPublish\e[0m
@@ -2120,7 +2122,7 @@ tty:
 \e[1mHealth\e[0m
   status        What's connected, and whether each is ready
   doctor        Check this machine's setup
-  upgrade       Upgrade krowk
+  upgrade       Upgrade gruntas
   config        Show or set configuration
 
 \e[1mFlags\e[0m
@@ -2129,22 +2131,23 @@ tty:
   --json · --jq <expr>       Output as JSON, or filter it
   -h, --help · -v, --version
 
-krowk help <command>  A command's own flags
-krowk help --all      Every command and subcommand
-krowk help topics     Flags, exit codes, environment, workspaces, links
-krowk help agents     For AI agents and scripts: the output contract
+gruntas help <command>
+                      A command's own flags
+gruntas help --all    Every command and subcommand
+gruntas help topics   Flags, exit codes, environment, workspaces, links
+gruntas help agents   For AI agents and scripts: the output contract
 exit: 0
 
-$ @tty krowk --json
+$ @tty gruntas --json
 tty:
 {
-  "name": "krowk",
+  "name": "gruntas",
   "version": "0.0.0-golden",
   "summary": "A coding agent harness: one session, any machine, model or agent",
   "commands": [
     {
       "name": "push",
-      "usage": "krowk push <file...> [flags]",
+      "usage": "gruntas push <file...> [flags]",
       "summary": "Upload files, get a link for each",
       "args": [
         {
@@ -2172,7 +2175,7 @@ tty:
           "name": "destination",
           "type": "string",
           "default": "",
-          "usage": "Print what this tool wants pasted into it: the krowk block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool krowk has not been told about gets the block"
+          "usage": "Print what this tool wants pasted into it: the gruntas block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool gruntas has not been told about gets the block"
         },
         {
           "name": "private",
@@ -2260,8 +2263,8 @@ tty:
       "subcommands": [
         {
           "name": "create",
-          "usage": "krowk artifacts create <file...> [flags]",
-          "summary": "Upload files: the long form of `krowk push`",
+          "usage": "gruntas artifacts create <file...> [flags]",
+          "summary": "Upload files: the long form of `gruntas push`",
           "args": [
             {
               "name": "file",
@@ -2288,7 +2291,7 @@ tty:
               "name": "destination",
               "type": "string",
               "default": "",
-              "usage": "Print what this tool wants pasted into it: the krowk block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool krowk has not been told about gets the block"
+              "usage": "Print what this tool wants pasted into it: the gruntas block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool gruntas has not been told about gets the block"
             },
             {
               "name": "private",
@@ -2372,8 +2375,8 @@ tty:
         },
         {
           "name": "list",
-          "usage": "krowk artifacts list [flags]",
-          "summary": "List artifacts, newest first: a run's, or the workspace's",
+          "usage": "gruntas artifacts list [flags]",
+          "summary": "List artifacts, newest first, of a run or the workspace",
           "flags": [
             {
               "name": "limit",
@@ -2398,7 +2401,7 @@ tty:
         },
         {
           "name": "show",
-          "usage": "krowk artifacts show <artifact>",
+          "usage": "gruntas artifacts show <artifact>",
           "summary": "Read one artifact back",
           "args": [
             {
@@ -2411,7 +2414,7 @@ tty:
         },
         {
           "name": "attach",
-          "usage": "krowk artifacts attach <art> --run <run>",
+          "usage": "gruntas artifacts attach <art> --run <run>",
           "summary": "Put an artifact under a run afterwards",
           "args": [
             {
@@ -2432,7 +2435,7 @@ tty:
         },
         {
           "name": "delete",
-          "usage": "krowk artifacts delete <art> [token]",
+          "usage": "gruntas artifacts delete <art> [token]",
           "summary": "Take an artifact down — immediate, cannot be undone",
           "args": [
             {
@@ -2450,8 +2453,8 @@ tty:
         },
         {
           "name": "claim",
-          "usage": "krowk artifacts claim <art> <token> [--run]",
-          "summary": "The long form of `krowk claim`",
+          "usage": "gruntas artifacts claim <art> <token> [--run]",
+          "summary": "The long form of `gruntas claim`",
           "args": [
             {
               "name": "artifact",
@@ -2483,7 +2486,7 @@ tty:
       "subcommands": [
         {
           "name": "start",
-          "usage": "krowk runs start [flags]",
+          "usage": "gruntas runs start [flags]",
           "summary": "Open a run to group uploads under",
           "flags": [
             {
@@ -2562,7 +2565,7 @@ tty:
         },
         {
           "name": "list",
-          "usage": "krowk runs list [--limit --before]",
+          "usage": "gruntas runs list [--limit --before]",
           "summary": "List the workspace's runs, newest first",
           "flags": [
             {
@@ -2582,7 +2585,7 @@ tty:
         },
         {
           "name": "show",
-          "usage": "krowk runs show <run>",
+          "usage": "gruntas runs show <run>",
           "summary": "Read one run back, with its metadata",
           "args": [
             {
@@ -2595,7 +2598,7 @@ tty:
         },
         {
           "name": "finish",
-          "usage": "krowk runs finish <run>",
+          "usage": "gruntas runs finish <run>",
           "summary": "Close a run",
           "args": [
             {
@@ -2611,7 +2614,7 @@ tty:
     },
     {
       "name": "claim",
-      "usage": "krowk claim <artifact> <token> [--run]",
+      "usage": "gruntas claim <artifact> <token> [--run]",
       "summary": "Keep an anonymous upload past expiry",
       "args": [
         {
@@ -2637,8 +2640,8 @@ tty:
     },
     {
       "name": "login",
-      "usage": "krowk login [--token <token>] [--no-browser]",
-      "summary": "Sign in to your krowk account",
+      "usage": "gruntas login [--token <token>] [--no-browser]",
+      "summary": "Sign in to your gruntas account",
       "flags": [
         {
           "name": "token",
@@ -2657,19 +2660,19 @@ tty:
     },
     {
       "name": "logout",
-      "usage": "krowk logout",
+      "usage": "gruntas logout",
       "summary": "Remove this machine's key",
       "hidden": true
     },
     {
       "name": "whoami",
-      "usage": "krowk whoami",
+      "usage": "gruntas whoami",
       "summary": "Show the key and its workspace",
       "hidden": false
     },
     {
       "name": "billing",
-      "usage": "krowk billing [--no-browser]",
+      "usage": "gruntas billing [--no-browser]",
       "summary": "Choose or manage the workspace's plan",
       "flags": [
         {
@@ -2687,8 +2690,8 @@ tty:
       "subcommands": [
         {
           "name": "login",
-          "usage": "krowk auth login [--token <token>] [--no-browser]",
-          "summary": "The long form of `krowk login`",
+          "usage": "gruntas auth login [--token <token>] [--no-browser]",
+          "summary": "The long form of `gruntas login`",
           "flags": [
             {
               "name": "token",
@@ -2707,21 +2710,21 @@ tty:
         },
         {
           "name": "logout",
-          "usage": "krowk auth logout",
-          "summary": "The long form of `krowk logout`",
+          "usage": "gruntas auth logout",
+          "summary": "The long form of `gruntas logout`",
           "hidden": false
         },
         {
           "name": "token",
-          "usage": "krowk auth token",
+          "usage": "gruntas auth token",
           "summary": "Print the stored token",
           "no_json": true,
           "hidden": false
         },
         {
           "name": "verify",
-          "usage": "krowk auth verify",
-          "summary": "The long form of `krowk whoami`",
+          "usage": "gruntas auth verify",
+          "summary": "The long form of `gruntas whoami`",
           "hidden": false
         }
       ],
@@ -2733,18 +2736,18 @@ tty:
       "subcommands": [
         {
           "name": "list",
-          "usage": "krowk workspaces [list]",
-          "summary": "List the stored keys, and which workspace resolves here",
+          "usage": "gruntas workspaces [list]",
+          "summary": "List the stored keys, and the one in use here",
           "hidden": false
         },
         {
           "name": "use",
-          "usage": "krowk workspaces use <workspace>",
+          "usage": "gruntas workspaces use <workspace>",
           "summary": "Make a stored key the machine-wide default",
           "args": [
             {
               "name": "workspace",
-              "summary": "A workspace `krowk workspaces` lists, e.g. <ws_1> — a person at a terminal may omit it and pick from a list instead",
+              "summary": "A workspace `gruntas workspaces` lists, e.g. <ws_1> — a person at a terminal may omit it and pick from a list instead",
               "required": true
             }
           ],
@@ -2759,13 +2762,13 @@ tty:
       "subcommands": [
         {
           "name": "show",
-          "usage": "krowk config show",
-          "summary": "The effective configuration, and which layer set each value",
+          "usage": "gruntas config show",
+          "summary": "The effective config, and which layer set each value",
           "hidden": false
         },
         {
           "name": "get",
-          "usage": "krowk config get <key>",
+          "usage": "gruntas config get <key>",
           "summary": "One key's effective value and where it comes from",
           "args": [
             {
@@ -2778,7 +2781,7 @@ tty:
         },
         {
           "name": "set",
-          "usage": "krowk config set <key> <value> [--global]",
+          "usage": "gruntas config set <key> <value> [--global]",
           "summary": "Write one value into the repo config, or the global one",
           "args": [
             {
@@ -2804,7 +2807,7 @@ tty:
         },
         {
           "name": "unset",
-          "usage": "krowk config unset <key> [--global]",
+          "usage": "gruntas config unset <key> [--global]",
           "summary": "Remove one value from the repo config, or the global one",
           "args": [
             {
@@ -2828,13 +2831,13 @@ tty:
     },
     {
       "name": "doctor",
-      "usage": "krowk doctor",
+      "usage": "gruntas doctor",
       "summary": "Check this machine's setup",
       "hidden": false
     },
     {
       "name": "sessions",
-      "usage": "krowk sessions [--harness <name>] [--worktree <path>] [--limit N] [--all]",
+      "usage": "gruntas sessions [--harness <name>] [--worktree <path>] [--limit N] [--all]",
       "summary": "List and read agent sessions on this machine",
       "flags": [
         {
@@ -2865,8 +2868,8 @@ tty:
       "subcommands": [
         {
           "name": "show",
-          "usage": "krowk sessions show <id> [--thinking]",
-          "summary": "Read one session back, with its turns, messages and parts",
+          "usage": "gruntas sessions show <id> [--thinking]",
+          "summary": "Read one session back: its turns, messages and parts",
           "args": [
             {
               "name": "id",
@@ -2886,7 +2889,7 @@ tty:
         },
         {
           "name": "import",
-          "usage": "krowk sessions import --from <provider|all> [--dry-run] [--limit N]",
+          "usage": "gruntas sessions import --from <provider|all> [--dry-run] [--limit N]",
           "summary": "Import this machine's agent transcripts",
           "flags": [
             {
@@ -2912,7 +2915,7 @@ tty:
         },
         {
           "name": "rebuild",
-          "usage": "krowk sessions rebuild [--yes]",
+          "usage": "gruntas sessions rebuild [--yes]",
           "summary": "Delete the local store and re-import every transcript",
           "flags": [
             {
@@ -2926,7 +2929,7 @@ tty:
         },
         {
           "name": "budget",
-          "usage": "krowk sessions budget <id> [--max-usd N] [--max-tokens N]",
+          "usage": "gruntas sessions budget <id> [--max-usd N] [--max-tokens N]",
           "summary": "Check a session against a spend limit",
           "args": [
             {
@@ -2953,8 +2956,8 @@ tty:
         },
         {
           "name": "sync",
-          "usage": "krowk sessions sync [--no-network]",
-          "summary": "Import what changed since the last import, refresh prices",
+          "usage": "gruntas sessions sync [--no-network]",
+          "summary": "Import what changed since last import, refresh prices",
           "flags": [
             {
               "name": "no-network",
@@ -2967,7 +2970,7 @@ tty:
         },
         {
           "name": "archive",
-          "usage": "krowk sessions archive [--older-than DAYS] [--weekly]",
+          "usage": "gruntas sessions archive [--older-than DAYS] [--weekly]",
           "summary": "Move idle sessions into encrypted weekly vintages",
           "flags": [
             {
@@ -2987,7 +2990,7 @@ tty:
         },
         {
           "name": "restore",
-          "usage": "krowk sessions restore <id> [--from VINTAGE]",
+          "usage": "gruntas sessions restore <id> [--from VINTAGE]",
           "summary": "Bring an archived session back from its vintage",
           "args": [
             {
@@ -3001,14 +3004,14 @@ tty:
               "name": "from",
               "type": "string",
               "default": "",
-              "usage": "The vintage of its week to restore it from (see `krowk sessions vintage <id>`)"
+              "usage": "The vintage of its week to restore it from (see `gruntas sessions vintage <id>`)"
             }
           ],
           "hidden": false
         },
         {
           "name": "vintage",
-          "usage": "krowk sessions vintage [<id>|<week>]",
+          "usage": "gruntas sessions vintage [<id>|<week>]",
           "summary": "List a week's vintages, replaced ones included",
           "args": [
             {
@@ -3021,7 +3024,7 @@ tty:
         },
         {
           "name": "pin",
-          "usage": "krowk sessions pin <id>",
+          "usage": "gruntas sessions pin <id>",
           "summary": "Never archive this session",
           "args": [
             {
@@ -3034,7 +3037,7 @@ tty:
         },
         {
           "name": "unpin",
-          "usage": "krowk sessions unpin <id>",
+          "usage": "gruntas sessions unpin <id>",
           "summary": "Let a pinned session be archived again",
           "args": [
             {
@@ -3047,12 +3050,12 @@ tty:
         },
         {
           "name": "attach",
-          "usage": "krowk sessions attach <id>",
+          "usage": "gruntas sessions attach <id>",
           "summary": "Follow a session on another machine, live",
           "args": [
             {
               "name": "id",
-              "summary": "The session's id, as `krowk sessions` lists it",
+              "summary": "The session's id, as `gruntas sessions` lists it",
               "required": true
             }
           ],
@@ -3060,12 +3063,12 @@ tty:
         },
         {
           "name": "take",
-          "usage": "krowk sessions take <id>",
+          "usage": "gruntas sessions take <id>",
           "summary": "Move a live session here, uncommitted work and all",
           "args": [
             {
               "name": "id",
-              "summary": "The session's id, as `krowk sessions` lists it",
+              "summary": "The session's id, as `gruntas sessions` lists it",
               "required": true
             }
           ],
@@ -3073,8 +3076,8 @@ tty:
         },
         {
           "name": "new",
-          "usage": "krowk sessions new --on MACHINE --cwd DIR [--model INSTANCE/ID] PROMPT",
-          "summary": "Start a session on another machine of yours, and follow it",
+          "usage": "gruntas sessions new --on MACHINE --cwd DIR [--model INSTANCE/ID] PROMPT",
+          "summary": "Start a session on another machine of yours and follow it",
           "args": [
             {
               "name": "prompt",
@@ -3087,13 +3090,13 @@ tty:
               "name": "on",
               "type": "string",
               "default": "",
-              "usage": "The machine to start it on: its name, or 8+ hex characters of its device id (`krowk machines` lists them)"
+              "usage": "The machine to start it on: its name, or 8+ hex characters of its device id (`gruntas machines` lists them)"
             },
             {
               "name": "cwd",
               "type": "string",
               "default": "",
-              "usage": "The directory there to start it in, one that machine offers (`krowk machines`)"
+              "usage": "The directory there to start it in, one that machine offers (`gruntas machines`)"
             },
             {
               "name": "model",
@@ -3113,7 +3116,7 @@ tty:
       "subcommands": [
         {
           "name": "refresh",
-          "usage": "krowk pricing refresh",
+          "usage": "gruntas pricing refresh",
           "summary": "Refresh the models.dev price cache",
           "hidden": false
         }
@@ -3122,13 +3125,13 @@ tty:
     },
     {
       "name": "upgrade",
-      "usage": "krowk upgrade",
-      "summary": "Upgrade krowk",
+      "usage": "gruntas upgrade",
+      "summary": "Upgrade gruntas",
       "hidden": false
     },
     {
       "name": "help",
-      "usage": "krowk help [command|topic] [--all]",
+      "usage": "gruntas help [command|topic] [--all]",
       "summary": "This, a command's help, or a topic",
       "args": [
         {
@@ -3149,7 +3152,7 @@ tty:
     },
     {
       "name": "connect",
-      "usage": "krowk connect [vendor] [--method subscription|api-key|device] [--name N]",
+      "usage": "gruntas connect [vendor] [--method subscription|api-key|device] [--name N]",
       "summary": "Connect a Claude Code or Codex account, by login or API key",
       "args": [
         {
@@ -3181,19 +3184,19 @@ tty:
           "name": "api-key-env",
           "type": "string",
           "default": "",
-          "usage": "The environment variable holding the key — krowk stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named account"
+          "usage": "The environment variable holding the key — gruntas stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named account"
         },
         {
           "name": "key-stdin",
           "type": "bool",
           "default": "false",
-          "usage": "An API key: store the key piped to stdin in krowk's provider credentials file (0600). Never a --key argument, which the shell's history would keep"
+          "usage": "An API key: store the key piped to stdin in gruntas's provider credentials file (0600). Never a --key argument, which the shell's history would keep"
         },
         {
           "name": "key-ref",
           "type": "string",
           "default": "",
-          "usage": "An API key: store a reference instead — '$VAR' (read from that variable) or '!command' (its output, e.g. '!pass show anthropic', run once per krowk process). At a terminal, pasting at the prompt does either"
+          "usage": "An API key: store a reference instead — '$VAR' (read from that variable) or '!command' (its output, e.g. '!pass show anthropic', run once per gruntas process). At a terminal, pasting at the prompt does either"
         },
         {
           "name": "base-url",
@@ -3218,7 +3221,7 @@ tty:
     },
     {
       "name": "disconnect",
-      "usage": "krowk disconnect [instance] [--remove]",
+      "usage": "gruntas disconnect [instance] [--remove]",
       "summary": "Sign a connected model out",
       "args": [
         {
@@ -3249,7 +3252,7 @@ tty:
       "subcommands": [
         {
           "name": "add",
-          "usage": "krowk providers add <provider> [--name N] [--api-key-env VAR] [--base-url URL] [--device] [--binary PATH] [--config-dir DIR]",
+          "usage": "gruntas providers add <provider> [--name N] [--api-key-env VAR] [--base-url URL] [--device] [--binary PATH] [--config-dir DIR]",
           "summary": "Add an instance, or sign one in",
           "args": [
             {
@@ -3269,7 +3272,7 @@ tty:
               "name": "api-key-env",
               "type": "string",
               "default": "",
-              "usage": "The environment variable holding the key — krowk stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named instance. For claude and codex, only when given: the key a router (with --base-url) or a Console account runs on, handed to the backend"
+              "usage": "The environment variable holding the key — gruntas stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named instance. For claude and codex, only when given: the key a router (with --base-url) or a Console account runs on, handed to the backend"
             },
             {
               "name": "base-url",
@@ -3300,13 +3303,13 @@ tty:
         },
         {
           "name": "list",
-          "usage": "krowk providers list",
+          "usage": "gruntas providers list",
           "summary": "List every instance, and whether it is ready",
           "hidden": false
         },
         {
           "name": "remove",
-          "usage": "krowk providers remove <instance>",
+          "usage": "gruntas providers remove <instance>",
           "summary": "Remove an instance's definition, and forget its login",
           "args": [
             {
@@ -3319,7 +3322,7 @@ tty:
         },
         {
           "name": "rename",
-          "usage": "krowk providers rename [instance] [new-name]",
+          "usage": "gruntas providers rename [instance] [new-name]",
           "summary": "Rename an instance; its login and sessions follow",
           "args": [
             {
@@ -3340,7 +3343,7 @@ tty:
     },
     {
       "name": "status",
-      "usage": "krowk status",
+      "usage": "gruntas status",
       "summary": "What's connected, and whether each is ready",
       "hidden": false
     },
@@ -3350,13 +3353,13 @@ tty:
       "subcommands": [
         {
           "name": "status",
-          "usage": "krowk host status",
+          "usage": "gruntas host status",
           "summary": "Whether the daemon runs: socket, pid, uptime, sessions",
           "hidden": false
         },
         {
           "name": "attach",
-          "usage": "krowk host attach <session>",
+          "usage": "gruntas host attach <session>",
           "summary": "Follow a session in the daemon, live, as stream-json",
           "args": [
             {
@@ -3369,7 +3372,7 @@ tty:
         },
         {
           "name": "stop",
-          "usage": "krowk host stop [--force]",
+          "usage": "gruntas host stop [--force]",
           "summary": "Stop the daemon, once no turn runs in it",
           "flags": [
             {
@@ -3383,13 +3386,13 @@ tty:
         },
         {
           "name": "enable",
-          "usage": "krowk host enable",
+          "usage": "gruntas host enable",
           "summary": "Run the daemon as a systemd or launchd user service",
           "hidden": true
         },
         {
           "name": "disable",
-          "usage": "krowk host disable",
+          "usage": "gruntas host disable",
           "summary": "Stop the service and remove it",
           "hidden": true
         }
@@ -3402,7 +3405,7 @@ tty:
       "subcommands": [
         {
           "name": "serve",
-          "usage": "krowk relay serve --ticket-keys FILE [--addr HOST:PORT] [--origin URL] [--state DIR]",
+          "usage": "gruntas relay serve --ticket-keys FILE [--addr HOST:PORT] [--origin URL] [--state DIR]",
           "summary": "Carry sealed sessions between their host and viewers",
           "flags": [
             {
@@ -3441,13 +3444,13 @@ tty:
       "subcommands": [
         {
           "name": "list",
-          "usage": "krowk machines [list]",
+          "usage": "gruntas machines [list]",
           "summary": "Your machines, and what each can take",
           "hidden": false
         },
         {
           "name": "accept",
-          "usage": "krowk machines accept on|off",
+          "usage": "gruntas machines accept on|off",
           "summary": "Take work from your other machines, or not",
           "args": [
             {
@@ -3460,18 +3463,18 @@ tty:
         },
         {
           "name": "add",
-          "usage": "krowk machines add",
+          "usage": "gruntas machines add",
           "summary": "Show a code that adds another machine",
           "hidden": false
         },
         {
           "name": "remove",
-          "usage": "krowk machines remove NAME",
+          "usage": "gruntas machines remove NAME",
           "summary": "Take a machine off your list and rotate your key",
           "args": [
             {
               "name": "name",
-              "summary": "The machine's name, as `krowk machines` lists it",
+              "summary": "The machine's name, as `gruntas machines` lists it",
               "required": true
             }
           ],
@@ -3479,7 +3482,7 @@ tty:
         },
         {
           "name": "always-on",
-          "usage": "krowk machines always-on on|off",
+          "usage": "gruntas machines always-on on|off",
           "summary": "Keep this machine available while you're away",
           "args": [
             {
@@ -3492,12 +3495,12 @@ tty:
         },
         {
           "name": "recovery",
-          "usage": "krowk machines recovery [new|check|discard-old]",
+          "usage": "gruntas machines recovery [new|check|discard-old]",
           "summary": "Your recovery kit: see it, make a new one, test it",
           "subcommands": [
             {
               "name": "new",
-              "usage": "krowk machines recovery new [--save FILE]",
+              "usage": "gruntas machines recovery new [--save FILE]",
               "summary": "Make a new recovery kit",
               "flags": [
                 {
@@ -3511,13 +3514,13 @@ tty:
             },
             {
               "name": "check",
-              "usage": "krowk machines recovery check",
+              "usage": "gruntas machines recovery check",
               "summary": "Test the kit's words against your device list, locally",
               "hidden": false
             },
             {
               "name": "discard-old",
-              "usage": "krowk machines recovery discard-old",
+              "usage": "gruntas machines recovery discard-old",
               "summary": "Drop the old keys a start-over kept aside",
               "hidden": false
             }
@@ -3529,8 +3532,8 @@ tty:
     },
     {
       "name": "hosts",
-      "usage": "krowk hosts",
-      "summary": "The same as krowk machines",
+      "usage": "gruntas hosts",
+      "summary": "The same as gruntas machines",
       "hidden": true
     },
     {
@@ -3539,7 +3542,7 @@ tty:
       "subcommands": [
         {
           "name": "init",
-          "usage": "krowk sync init [--save FILE] [--start-over]",
+          "usage": "gruntas sync init [--save FILE] [--start-over]",
           "summary": "Set up sync: this device, your user key and a recovery kit",
           "flags": [
             {
@@ -3565,8 +3568,8 @@ tty:
         },
         {
           "name": "recover",
-          "usage": "krowk sync recover",
-          "summary": "Back in from the recovery kit's 12 words, on a new machine",
+          "usage": "gruntas sync recover",
+          "summary": "Back in from the kit's 12 words, on a new machine",
           "flags": [
             {
               "name": "name",
@@ -3579,18 +3582,18 @@ tty:
         },
         {
           "name": "status",
-          "usage": "krowk sync status",
+          "usage": "gruntas sync status",
           "summary": "This device's list, recovery kit and auto-sync, checked",
           "hidden": false
         },
         {
           "name": "recovery",
-          "usage": "krowk sync recovery new|check|discard-old",
+          "usage": "gruntas sync recovery new|check|discard-old",
           "summary": "Your recovery kit: make a new one, or test its words",
           "subcommands": [
             {
               "name": "new",
-              "usage": "krowk sync recovery new [--save FILE]",
+              "usage": "gruntas sync recovery new [--save FILE]",
               "summary": "Make a new recovery kit",
               "flags": [
                 {
@@ -3604,13 +3607,13 @@ tty:
             },
             {
               "name": "check",
-              "usage": "krowk sync recovery check",
+              "usage": "gruntas sync recovery check",
               "summary": "Test the kit's words against your device list, locally",
               "hidden": false
             },
             {
               "name": "discard-old",
-              "usage": "krowk sync recovery discard-old",
+              "usage": "gruntas sync recovery discard-old",
               "summary": "Drop the old keys a start-over kept aside",
               "hidden": false
             }
@@ -3619,8 +3622,8 @@ tty:
         },
         {
           "name": "join",
-          "usage": "krowk sync join",
-          "summary": "Add this machine by the code `krowk machines add` shows",
+          "usage": "gruntas sync join",
+          "summary": "Add this machine by the code `gruntas machines add` shows",
           "flags": [
             {
               "name": "name",
@@ -3633,32 +3636,32 @@ tty:
         },
         {
           "name": "sessions",
-          "usage": "krowk sync sessions",
+          "usage": "gruntas sync sessions",
           "summary": "The synced sessions this machine can open",
           "hidden": true
         },
         {
           "name": "host",
-          "usage": "krowk sync host SESSION",
+          "usage": "gruntas sync host SESSION",
           "summary": "Run a session here and sync it until interrupted",
           "hidden": false
         },
         {
           "name": "attach",
-          "usage": "krowk sync attach SESSION",
+          "usage": "gruntas sync attach SESSION",
           "summary": "Follow a synced session as stream-json",
           "hidden": true
         },
         {
           "name": "take",
-          "usage": "krowk sync take SESSION",
+          "usage": "gruntas sync take SESSION",
           "summary": "Move a live session here, uncommitted work and all",
           "hidden": true
         },
         {
           "name": "new",
-          "usage": "krowk sync new --host NAME --cwd DIR [--model INSTANCE/ID] PROMPT",
-          "summary": "Start a session on another machine of yours, and follow it",
+          "usage": "gruntas sync new --host NAME --cwd DIR [--model INSTANCE/ID] PROMPT",
+          "summary": "Start a session on another machine of yours and follow it",
           "args": [
             {
               "name": "prompt",
@@ -3671,13 +3674,13 @@ tty:
               "name": "host",
               "type": "string",
               "default": "",
-              "usage": "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`krowk machines` lists them)"
+              "usage": "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`gruntas machines` lists them)"
             },
             {
               "name": "cwd",
               "type": "string",
               "default": "",
-              "usage": "The directory there to start it in, one that machine offers (`krowk machines`)"
+              "usage": "The directory there to start it in, one that machine offers (`gruntas machines`)"
             },
             {
               "name": "model",
@@ -3697,19 +3700,19 @@ tty:
       "subcommands": [
         {
           "name": "list",
-          "usage": "krowk devices list",
+          "usage": "gruntas devices list",
           "summary": "The devices on your device list, this one marked",
           "hidden": false
         },
         {
           "name": "add",
-          "usage": "krowk devices add",
+          "usage": "gruntas devices add",
           "summary": "Show a code that adds a new machine to your devices",
           "hidden": false
         },
         {
           "name": "remove",
-          "usage": "krowk devices remove NAME",
+          "usage": "gruntas devices remove NAME",
           "summary": "Take a device off your list and rotate your key",
           "hidden": false
         }
@@ -3718,11 +3721,11 @@ tty:
     },
     {
       "name": "mcp",
-      "summary": "MCP servers krowk's agent uses (add, remove, list, login)",
+      "summary": "MCP servers gruntas's agent uses (add, remove, list, login)",
       "subcommands": [
         {
           "name": "login",
-          "usage": "krowk mcp login <name> [--no-browser]",
+          "usage": "gruntas mcp login <name> [--no-browser]",
           "summary": "Sign in to a remote MCP server that asks for OAuth",
           "args": [
             {
@@ -3743,7 +3746,7 @@ tty:
         },
         {
           "name": "logout",
-          "usage": "krowk mcp logout <name>",
+          "usage": "gruntas mcp logout <name>",
           "summary": "Forget a server's sign-in",
           "args": [
             {
@@ -3756,8 +3759,8 @@ tty:
         },
         {
           "name": "add",
-          "usage": "krowk mcp add <name> <url> [--header \"Name: value\"] | krowk mcp add <name> [--env K=V] -- <command> [args…]",
-          "summary": "Add an MCP server to krowk's config.json",
+          "usage": "gruntas mcp add <name> <url> [--header \"Name: value\"] | gruntas mcp add <name> [--env K=V] -- <command> [args…]",
+          "summary": "Add an MCP server to gruntas's config.json",
           "args": [
             {
               "name": "name",
@@ -3796,7 +3799,7 @@ tty:
         },
         {
           "name": "remove",
-          "usage": "krowk mcp remove <name>",
+          "usage": "gruntas mcp remove <name>",
           "summary": "Remove a server from config.json, and its stored sign-in",
           "args": [
             {
@@ -3809,8 +3812,8 @@ tty:
         },
         {
           "name": "list",
-          "usage": "krowk mcp list",
-          "summary": "List the servers krowk would load here, without connecting",
+          "usage": "gruntas mcp list",
+          "summary": "List the servers gruntas would load here, without connecting",
           "hidden": false
         }
       ],
@@ -3818,12 +3821,12 @@ tty:
     },
     {
       "name": "trust",
-      "usage": "krowk trust [<path>] | krowk trust --revoke [<path>] | krowk trust --list",
+      "usage": "gruntas trust [<path>] | gruntas trust --revoke [<path>] | gruntas trust --list",
       "summary": "Trust a repository to run its hooks and MCP servers",
       "args": [
         {
           "name": "path",
-          "summary": "A directory in the repository (default: the current directory); a krowk worktree counts as its main repository",
+          "summary": "A directory in the repository (default: the current directory); a gruntas worktree counts as its main repository",
           "required": false
         }
       ],
@@ -3845,18 +3848,18 @@ tty:
     },
     {
       "name": "worktrees",
-      "summary": "The git worktrees krowk made for agents, across repositories",
+      "summary": "The worktrees gruntas made for agents, across repositories",
       "subcommands": [
         {
           "name": "list",
-          "usage": "krowk worktrees list",
+          "usage": "gruntas worktrees list",
           "summary": "Each one: branch, commits ahead, changes, session, age",
           "hidden": false
         },
         {
           "name": "add",
-          "usage": "krowk worktrees add [--from REF]",
-          "summary": "Make one for an agent to work in, and print its directory",
+          "usage": "gruntas worktrees add [--from REF]",
+          "summary": "Make one for an agent to work in; print its directory",
           "flags": [
             {
               "name": "from",
@@ -3869,8 +3872,8 @@ tty:
         },
         {
           "name": "remove",
-          "usage": "krowk worktrees remove <hex|path> [--force]",
-          "summary": "Remove one, its branch kept; not while its session runs",
+          "usage": "gruntas worktrees remove <hex|path> [--force]",
+          "summary": "Remove one, branch kept; not while its session runs",
           "args": [
             {
               "name": "worktree",
@@ -3890,7 +3893,7 @@ tty:
         },
         {
           "name": "apply",
-          "usage": "krowk worktrees apply <hex|path> [--to DIR]",
+          "usage": "gruntas worktrees apply <hex|path> [--to DIR]",
           "summary": "Bring one's changes into a checkout, uncommitted",
           "args": [
             {
@@ -3911,7 +3914,7 @@ tty:
         },
         {
           "name": "prune",
-          "usage": "krowk worktrees prune",
+          "usage": "gruntas worktrees prune",
           "summary": "Clear what deleted worktrees left, and old snapshots",
           "hidden": false
         }
@@ -3999,7 +4002,7 @@ tty:
       "name": "resume",
       "type": "string",
       "default": "",
-      "usage": "With -p: continue this krowk session — the sessionId a result names, or its krowk.db id"
+      "usage": "With -p: continue this gruntas session — the sessionId a result names, or its gruntas.db id"
     },
     {
       "name": "worktree",
@@ -4011,13 +4014,13 @@ tty:
       "name": "permission-mode",
       "type": "string",
       "default": "default",
-      "usage": "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which asks about nothing: no krowk deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode; in every other mode a deny rule holds"
+      "usage": "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which asks about nothing: no gruntas deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode; in every other mode a deny rule holds"
     },
     {
       "name": "sandbox",
       "type": "string",
       "default": "",
-      "usage": "With -p: off. Claude Code and Codex run their own tools outside krowk's OS sandbox, so a profile (workspace, read-only, strict) is refused"
+      "usage": "With -p: off. Claude Code and Codex run their own tools outside gruntas's OS sandbox, so a profile (workspace, read-only, strict) is refused"
     },
     {
       "name": "toolset",
@@ -4048,7 +4051,7 @@ tty:
       "name": "max-usd",
       "type": "string",
       "default": "",
-      "usage": "With -p: stop the session once it, with its agents, is past this many dollars — metered, priced from models.dev: a turn at the limit is refused, and one a call takes past it is interrupted. Exits 4, like `krowk sessions budget`"
+      "usage": "With -p: stop the session once it, with its agents, is past this many dollars — metered, priced from models.dev: a turn at the limit is refused, and one a call takes past it is interrupted. Exits 4, like `gruntas sessions budget`"
     },
     {
       "name": "max-tokens",
@@ -4066,7 +4069,7 @@ tty:
       "name": "daemon",
       "type": "bool",
       "default": "false",
-      "usage": "With -p: run the turn in the host daemon (started when none runs) instead of this process, so it goes on if this process ends — `krowk host attach <session>` follows it"
+      "usage": "With -p: run the turn in the host daemon (started when none runs) instead of this process, so it goes on if this process ends — `gruntas host attach <session>` follows it"
     }
   ],
   "environment": [
@@ -4097,7 +4100,7 @@ tty:
     },
     {
       "name": "GRUNTAS_HOME",
-      "usage": "Where krowk keeps its files, an absolute path",
+      "usage": "Where gruntas keeps its files, an absolute path",
       "default": "~/.gruntas"
     },
     {
@@ -4108,18 +4111,18 @@ tty:
 }
 exit: 0
 
-$ @tty krowk --resume
+$ @tty gruntas --resume
 tty:
 \e[31m✗\e[0m \e[1m--resume needs a value.\e[0m
-\e[2m  Try:\e[0m \e[36mkrowk --help\e[0m
+\e[2m  Try:\e[0m \e[36mgruntas --help\e[0m
 \e[2m  Code: bad_flag\e[0m
 exit: 1
 
-$ @tty krowk --model claude-x
+$ @tty gruntas --model claude-x
 tty:
 \e[31m✗\e[0m \e[1m`--model` has nothing to act on without a command or `-p`.\e[0m
-\e[2m  Krowk has no interactive screen.\e[0m
-\e[2m  Try:\e[0m \e[36mkrowk -p "<prompt>" --model …\e[0m
+\e[2m  Gruntas has no interactive screen.\e[0m
+\e[2m  Try:\e[0m \e[36mgruntas -p "<prompt>" --model …\e[0m
 \e[2m  Code: bad_flag\e[0m
 exit: 1
 

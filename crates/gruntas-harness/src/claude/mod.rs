@@ -1,4 +1,4 @@
-//! The Claude Code backend (R-BACK-1): krowk drives the user's own,
+//! The Claude Code backend (R-BACK-1): gruntas drives the user's own,
 //! unmodified `claude` binary — the one compliant way to run a turn on a
 //! Claude subscription rather than API tokens — as one long-lived process
 //! per session:
@@ -13,9 +13,9 @@
 //!
 //! Each prompt is one `user` line on the process's stdin, and its turn is
 //! everything up to the `result` line; the stream in between is translated
-//! into krowk's events by `stream`, so a backend turn lands in the same log
+//! into gruntas's events by `stream`, so a backend turn lands in the same log
 //! in the same shape as a native one (R-BACK-5). The process stays up
-//! between turns of the session, kept by the host; a new krowk process
+//! between turns of the session, kept by the host; a new gruntas process
 //! starts a new one on `--resume` with the Claude session id the log holds.
 //!
 //! **Steering** (R-STEER-1) is written to stdin as it arrives, a `user` line
@@ -23,11 +23,11 @@
 //! `--replay-user-messages` it echoes each line it reads (`isReplay`), and
 //! that replay is where the steer is logged. One that arrives as the model
 //! writes its last answer is read in a turn Claude Code begins by itself
-//! after the `result`, which the krowk turn reads on into, so it does not
+//! after the `result`, which the gruntas turn reads on into, so it does not
 //! complete with steering unread; an interrupt cancels what was not read
 //! (`cancel_queued`), and what its answer names cancelled goes back on the
 //! turn's result — as when that turn has not begun within `STEER_GRACE`,
-//! and krowk interrupts to stop waiting. Steering is
+//! and gruntas interrupts to stop waiting. Steering is
 //! written only to a binary that announces it can cancel it so
 //! (`interrupt_cancel_queued_v1`); an older one keeps it for the result.
 //!
@@ -36,15 +36,15 @@
 //! Anthropic's open-source `claude-agent-sdk-python` (`_internal/query.py`),
 //! and what this build speaks was checked against `claude` 2.1.280:
 //!
-//! | subtype | direction | what krowk does |
+//! | subtype | direction | what gruntas does |
 //! |---|---|---|
-//! | `initialize` | krowk → claude | first, on every process, registering the paste guard as a `PreToolUse` hook on `Bash`, `EnterWorktree`, `Agent` and `Task` and asking for agents' own text (`forwardSubagentText`); its answer lists the `models`, which is how in-place model switching is detected |
-//! | `can_use_tool` | claude → krowk | judged by krowk's permission evaluator (`crate::permissions`), asking the person when a client is attached; `AskUserQuestion` is the person's to answer (`crate::ask`), its answers returned in `updatedInput`; one an agent asks (`agent_id`, else the call's `tool_use_id`) is asked as that agent's child session |
-//! | `hook_callback` | claude → krowk | the paste guard (`crate::paste_guard`) and the tooling guard (`crate::tooling_guard`): a `gh` post carrying a bare krowk card link, a worktree made by hand or a paste-site upload is denied, whatever the mode and the person's allow rules |
-//! | `mcp_message` | claude → krowk | a JSON-RPC message for the `gruntas` MCP server, answered by `crate::bridge` |
-//! | `interrupt` | krowk → claude | a `Command::Interrupt`; the turn ends at the next `result` and the process lives on |
-//! | `set_model` | krowk → claude | a turn on another model of the same instance, when `initialize` listed models; otherwise a new process on `--resume` |
-//! | `stop_task` | krowk → claude | a `Command::Interrupt` of one agent's child session: the agent alone stops (`task_updated` `killed`, `task_notification` `stopped`), then the answer; the parent's turn goes on |
+//! | `initialize` | gruntas → claude | first, on every process, registering the paste guard as a `PreToolUse` hook on `Bash`, `EnterWorktree`, `Agent` and `Task` and asking for agents' own text (`forwardSubagentText`); its answer lists the `models`, which is how in-place model switching is detected |
+//! | `can_use_tool` | claude → gruntas | judged by gruntas's permission evaluator (`crate::permissions`), asking the person when a client is attached; `AskUserQuestion` is the person's to answer (`crate::ask`), its answers returned in `updatedInput`; one an agent asks (`agent_id`, else the call's `tool_use_id`) is asked as that agent's child session |
+//! | `hook_callback` | claude → gruntas | the paste guard (`crate::paste_guard`) and the tooling guard (`crate::tooling_guard`): a `gh` post carrying a bare gruntas card link, a worktree made by hand or a paste-site upload is denied, whatever the mode and the person's allow rules |
+//! | `mcp_message` | claude → gruntas | a JSON-RPC message for the `gruntas` MCP server, answered by `crate::bridge` |
+//! | `interrupt` | gruntas → claude | a `Command::Interrupt`; the turn ends at the next `result` and the process lives on |
+//! | `set_model` | gruntas → claude | a turn on another model of the same instance, when `initialize` listed models; otherwise a new process on `--resume` |
+//! | `stop_task` | gruntas → claude | a `Command::Interrupt` of one agent's child session: the agent alone stops (`task_updated` `killed`, `task_notification` `stopped`), then the answer; the parent's turn goes on |
 //!
 //! **Between turns** the process is not silent: an agent the model started
 //! with Claude Code's `Agent` tool (`run_in_background`) runs on, asks
@@ -67,32 +67,32 @@
 //! interrupt is acknowledged, so an unacknowledged one is given up on
 //! sooner) and the `initialize` answer.
 //!
-//! **What krowk is asked, and what it is not.** Claude Code decides some
+//! **What gruntas is asked, and what it is not.** Claude Code decides some
 //! tool calls itself before it asks anyone: an allow rule in the user's or
 //! the project's settings (`permissions.allow`), a `PreToolUse` hook that
 //! approves, an agent's own `permissionMode`, and the read-only calls its
-//! mode never asks about. Those run without krowk's `can_use_tool` — that
+//! mode never asks about. Those run without gruntas's `can_use_tool` — that
 //! is Claude Code behaving as its user configured it, from the same
-//! `.claude/settings.json` files krowk's own rules read. Every deny rule
-//! krowk holds is handed to it as `--disallowedTools`, so what Claude Code
-//! would allow by itself still meets them: deny wins here too. What krowk
+//! `.claude/settings.json` files gruntas's own rules read. Every deny rule
+//! gruntas holds is handed to it as `--disallowedTools`, so what Claude Code
+//! would allow by itself still meets them: deny wins here too. What gruntas
 //! also holds is the mode: the process is started `--permission-mode default` (or `plan`),
 //! so a `defaultMode` in settings cannot loosen it, and a turn whose
-//! `system`/`init` reports a mode looser than krowk's is stopped before it
-//! runs anything. Every call Claude Code does ask about is judged by krowk's
+//! `system`/`init` reports a mode looser than gruntas's is stopped before it
+//! runs anything. Every call Claude Code does ask about is judged by gruntas's
 //! permission evaluator (`crate::permissions`) under Claude Code's own tool
 //! names, and asked of the person when a client is attached.
 //!
 //! **MCP servers.** Claude Code is started `--strict-mcp-config` with only
-//! krowk's bridge, so it loads none of the person's servers itself. When the
+//! gruntas's bridge, so it loads none of the person's servers itself. When the
 //! session has any (`crate::mcp::discover`: the trust gate, Claude Code's
 //! approval lists), the bridge also offers `mcp_search` and `mcp_call`, run
 //! on the session's own connections and sign-ins; a call is judged as
 //! `Mcp(server:tool)` — asked by `can_use_tool`, and judged again by the
 //! bridge, which refuses a call that needed asking and was not. Claude
-//! Code's own agents reach the same tools under krowk's rules.
+//! Code's own agents reach the same tools under gruntas's rules.
 //!
-//! **Compliance** (R-BACK-2) is structural: krowk starts the binary as the
+//! **Compliance** (R-BACK-2) is structural: gruntas starts the binary as the
 //! user installed it, sends it no system prompt and no headers, sets only
 //! `CLAUDE_CONFIG_DIR` and the instance's own environment, and never opens
 //! Claude's credentials — the login is Claude Code's, made with `claude auth
@@ -145,16 +145,16 @@ const EXIT_GRACE: Duration = Duration::from_secs(5);
 const STDERR_TAIL: usize = 4096;
 /// After a `result` with steering written and not yet replayed, how long
 /// Claude Code has to begin the turn that reads it (at once, as recorded)
-/// before krowk stops waiting: an interrupt cancels it, and what its
+/// before gruntas stops waiting: an interrupt cancels it, and what its
 /// answer names cancelled is handed back.
 const STEER_GRACE: Duration = Duration::from_secs(10);
 
 /// What a turn's context record says of the system prompt: it is Claude
-/// Code's, and krowk neither sees nor changes it.
-pub const SYSTEM_NOTE: &str = "(Claude Code's own system prompt: krowk sends none and does not see it)";
+/// Code's, and gruntas neither sees nor changes it.
+pub const SYSTEM_NOTE: &str = "(Claude Code's own system prompt: gruntas sends none and does not see it)";
 
 /// What the prompt item of a turn Claude Code began by itself starts
-/// with: clients show it as krowk's note, not the person's words.
+/// with: clients show it as gruntas's note, not the person's words.
 pub const UNPROMPTED: &str = "<unprompted>";
 
 /// What a limit's error ends with, unless the session's `rollover` is `off`.
@@ -162,7 +162,7 @@ pub const CONTINUE_HINT: &str = " — continue on another instance with --model,
 
 /// The prompt item of a turn Claude Code began by itself: why it began.
 pub fn unprompted(reason: &str) -> String {
-    format!("{UNPROMPTED}Claude Code began this turn by itself: {reason}. krowk sent no prompt.</unprompted>")
+    format!("{UNPROMPTED}Claude Code began this turn by itself: {reason}. gruntas sent no prompt.</unprompted>")
 }
 
 /// A turn Claude Code began by itself that ended inside a prompted one: the
@@ -204,12 +204,12 @@ pub struct Launch {
     /// `--disallowedTools`: what Claude Code would allow by itself still
     /// meets them, so deny wins on this backend too.
     pub disallowed: Vec<String>,
-    /// The names of krowk's MCP servers: the bridge lists its MCP tools once,
+    /// The names of gruntas's MCP servers: the bridge lists its MCP tools once,
     /// when the process starts, so a changed set needs a new process.
     pub mcp: Vec<String>,
 }
 
-/// The `--mcp-config` that injects krowk's tools: one in-process (`sdk`)
+/// The `--mcp-config` that injects gruntas's tools: one in-process (`sdk`)
 /// server, answered over the control protocol.
 pub fn mcp_config() -> String {
     json!({"mcpServers": {bridge::SERVER: {"type": "sdk", "name": bridge::SERVER}}}).to_string()
@@ -221,7 +221,7 @@ pub fn mcp_config() -> String {
 /// an instance's own `--settings` in its `args` comes later and wins.
 pub const SETTINGS: &str = r#"{"attribution":{"commit":"","pr":""},"includeCoAuthoredBy":false}"#;
 
-/// The whole argument list, krowk's own first and the instance's after.
+/// The whole argument list, gruntas's own first and the instance's after.
 pub fn args(l: &Launch, extra: &[String]) -> Vec<String> {
     let mut a: Vec<String> = [
         "-p",
@@ -252,8 +252,8 @@ pub fn args(l: &Launch, extra: &[String]) -> Vec<String> {
     // The mode is always named: left out, a `defaultMode` in the user's or
     // the project's settings (acceptEdits, bypassPermissions) would decide
     // it. Plan changes what Claude Code does, not only what it may do, so it
-    // is Claude Code's to know; every looser krowk mode stays krowk's, and
-    // what Claude Code asks is judged by krowk's permission evaluator.
+    // is Claude Code's to know; every looser gruntas mode stays gruntas's, and
+    // what Claude Code asks is judged by gruntas's permission evaluator.
     if !l.disallowed.is_empty() {
         a.push("--disallowedTools".into());
         a.extend(l.disallowed.iter().cloned());
@@ -263,14 +263,14 @@ pub fn args(l: &Launch, extra: &[String]) -> Vec<String> {
     a
 }
 
-/// krowk's deny rules, as Claude Code is started with them: none under
-/// unhinged, which no rule of krowk's holds. The deny rules of Claude Code's
-/// own settings files Claude Code applies itself, before it asks krowk.
+/// gruntas's deny rules, as Claude Code is started with them: none under
+/// unhinged, which no rule of gruntas's holds. The deny rules of Claude Code's
+/// own settings files Claude Code applies itself, before it asks gruntas.
 fn disallowed(gate: &Gate) -> Vec<String> {
     if gate.mode() == PermissionMode::Unhinged { Vec::new() } else { gate.policy().deny_list() }
 }
 
-/// krowk's ladder onto Claude Code's `--effort` levels (low … max): below
+/// gruntas's ladder onto Claude Code's `--effort` levels (low … max): below
 /// low is low, since Claude Code has no switch for thinking off.
 pub fn effort_level(e: Effort) -> &'static str {
     match e {
@@ -300,11 +300,11 @@ pub fn transcript_path(config_dir: &Path, cwd: &str, session_id: &str) -> PathBu
         .unwrap_or(direct)
 }
 
-/// A tool call Claude Code asks about, as krowk's permission evaluator
+/// A tool call Claude Code asks about, as gruntas's permission evaluator
 /// judges it (`crate::permissions`): Claude Code's own tool names are the
 /// names rules are written in. Calls Claude Code allows itself — its
 /// settings' allow rules, its hooks — never reach here (see the module's
-/// notes); what does is judged by `crate::permissions`. krowk's own bridged
+/// notes); what does is judged by `crate::permissions`. gruntas's own bridged
 /// tools need no permission; a tool this build does not know is asked
 /// about.
 pub fn call_of(tool: &str, input: &Value, cwd: &Path) -> Call {
@@ -313,7 +313,7 @@ pub fn call_of(tool: &str, input: &Value, cwd: &Path) -> Call {
         if p.is_absolute() { p.to_path_buf() } else { cwd.join(p) }
     };
     let path = ["file_path", "notebook_path", "path"].iter().find_map(|k| input.get(*k).and_then(Value::as_str)).map(at);
-    // krowk's own `mcp_call` is the MCP tool it names: judged, and asked
+    // gruntas's own `mcp_call` is the MCP tool it names: judged, and asked
     // about, as `mcp__server__tool`, so `Mcp(server:tool)` rules hold.
     let bridged = (tool == format!("mcp__{}__{}", bridge::SERVER, crate::mcp::CALL)).then(|| crate::mcp::target(input).ok()).flatten();
     if let Some((server, t)) = bridged {
@@ -361,18 +361,18 @@ fn glob_root(g: &str) -> String {
     root.display().to_string()
 }
 
-/// How loose a Claude Code permission mode is, against krowk's: plan asks
+/// How loose a Claude Code permission mode is, against gruntas's: plan asks
 /// before everything, default asks before edits and commands, acceptEdits
 /// only before commands; auto, bypassPermissions and any mode this build
-/// does not know ask before nothing krowk can count on.
-fn looser_than(claude: &str, krowk: PermissionMode) -> bool {
+/// does not know ask before nothing gruntas can count on.
+fn looser_than(claude: &str, gruntas: PermissionMode) -> bool {
     let rank = match claude {
         "plan" => 0,
         "default" | "manual" | "dontAsk" => 1,
         "acceptEdits" => 2,
         _ => 3,
     };
-    let allowed = match krowk {
+    let allowed = match gruntas {
         PermissionMode::Plan => 0,
         PermissionMode::Default => 1,
         PermissionMode::AcceptEdits => 2,
@@ -385,7 +385,7 @@ fn looser_than(claude: &str, krowk: PermissionMode) -> bool {
 /// instance sets them: they are the native `anthropic` instance's key and
 /// base URL, and inherited they would move a subscription account onto an
 /// API key or another server without anyone asking for it. An instance
-/// sets a base URL in its `env` and a key through `apiKeyEnv`, which krowk
+/// sets a base URL in its `env` and a key through `apiKeyEnv`, which gruntas
 /// reads and hands the process itself.
 pub const NOT_INHERITED: &[&str] = &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"];
 
@@ -394,7 +394,7 @@ pub fn cleared(b: &Backend) -> impl Iterator<Item = &'static str> + '_ {
     NOT_INHERITED.iter().copied().filter(|k| !b.env.contains_key(*k))
 }
 
-/// The environment a Claude Code command gets on top of krowk's own: the
+/// The environment a Claude Code command gets on top of gruntas's own: the
 /// inherited key and base URL taken away, telemetry off, the config
 /// directory, the instance's `env`, and its key under the name Claude Code
 /// reads.
@@ -799,7 +799,7 @@ async fn idle(proc: Arc<tokio::sync::Mutex<Option<Proc>>>, mut stop: oneshot::Re
                 let id = msg["request_id"].as_str().unwrap_or_default();
                 let answer = match p.answers.clone() {
                     Some(ask) => ask.answer(id, &msg["request"], None).await,
-                    None => json!({"type": "control_response", "response": {"subtype": "error", "request_id": id, "error": "krowk has no turn to answer this under"}}),
+                    None => json!({"type": "control_response", "response": {"subtype": "error", "request_id": id, "error": "gruntas has no turn to answer this under"}}),
                 };
                 if p.send(&answer).await.is_err() {
                     return;
@@ -824,7 +824,7 @@ async fn idle(proc: Arc<tokio::sync::Mutex<Option<Proc>>>, mut stop: oneshot::Re
     }
     p.armed = false;
     let reason = p.finished.take().unwrap_or_else(|| BEGAN.into());
-    // The mode it runs in is the one the process is in, which krowk
+    // The mode it runs in is the one the process is in, which gruntas
     // accepted: the last turn's, or default once that plan turn's
     // ExitPlanMode was approved — never looser than asked but for that.
     let asked = p.answers.as_ref().map(|a| a.mode);
@@ -873,7 +873,7 @@ struct Answers {
 }
 
 /// Where a question for a person goes while a turn runs: the turn's events,
-/// and its interrupt. Outside a turn (a request krowk made, such as
+/// and its interrupt. Outside a turn (a request gruntas made, such as
 /// `initialize`) nobody is asked.
 type Asking<'a> = Option<(&'a Events, &'a tokio::sync::watch::Receiver<bool>)>;
 
@@ -930,7 +930,7 @@ impl Answers {
                 }
                 match self.permit(tool, &input, asking).await {
                     Ok(()) => {
-                        // Recorded only when krowk's rules said Ask, by
+                        // Recorded only when gruntas's rules said Ask, by
                         // Claude Code's id for the call: what a person was
                         // asked and allowed, once.
                         if tool == format!("mcp__{}__{}", bridge::SERVER, crate::mcp::CALL)
@@ -965,7 +965,7 @@ impl Answers {
             "hook_callback" if req.get("callback_id").and_then(Value::as_str) == Some(PASTE_GUARD) => success(crate::paste_guard::pre_tool_use(req.get("input").unwrap_or(&Value::Null))),
             // The paste guard is the only hook registered.
             "hook_callback" => success(json!({})),
-            other => json!({"type": "control_response", "response": {"subtype": "error", "request_id": request_id, "error": format!("krowk does not answer the control request {other:?}")}}),
+            other => json!({"type": "control_response", "response": {"subtype": "error", "request_id": request_id, "error": format!("gruntas does not answer the control request {other:?}")}}),
         }
     }
 }
@@ -1014,7 +1014,7 @@ struct Proc {
     /// Background agents `background_tasks_changed` took off the list, for
     /// the words of their `task_notification`, which comes after it.
     ended: Vec<BackendAgent>,
-    /// Lines read while krowk waited on a control request before a turn —
+    /// Lines read while gruntas waited on a control request before a turn —
     /// an agent's end, its calls — for that turn to read first.
     backlog: VecDeque<Value>,
     /// A `result` has carried `origin`: this binary says which turn a
@@ -1125,13 +1125,13 @@ impl Proc {
             cmd.env_remove(k);
         }
         cmd.envs(set);
-        // Its own process group: a Ctrl-C at the terminal is krowk's to turn
+        // Its own process group: a Ctrl-C at the terminal is gruntas's to turn
         // into an interrupt, not a signal that kills Claude Code mid-write.
         #[cfg(unix)]
         cmd.process_group(0);
         let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                EngineError::new("backend_not_found", format!("{} was not found — install Claude Code (https://claude.com/claude-code), or name the binary with `krowk connect anthropic --method subscription --binary <path>`", b.binary))
+                EngineError::new("backend_not_found", format!("{} was not found — install Claude Code (https://claude.com/claude-code), or name the binary with `gruntas connect anthropic --method subscription --binary <path>`", b.binary))
             } else {
                 EngineError::new("backend_failed", format!("{} could not be started: {e}", b.binary))
             }
@@ -1140,7 +1140,7 @@ impl Proc {
         crate::group::register(pid);
         let stdin = child.stdin.take();
         // One reader for the life of the process: between turns too, when
-        // Claude Code goes on without krowk. A line that is not JSON (a
+        // Claude Code goes on without gruntas. A line that is not JSON (a
         // warning a wrapper printed) is skipped; the channel closes at the
         // end of the stream.
         let mut lines = BufReader::new(child.stdout.take().expect("piped")).lines();
@@ -1231,9 +1231,9 @@ impl Proc {
     async fn send(&mut self, v: &Value) -> Result<(), EngineError> {
         let mut line = v.to_string();
         line.push('\n');
-        let Some(stdin) = self.stdin.as_mut() else { return Err(self.died("before krowk could write to it")) };
+        let Some(stdin) = self.stdin.as_mut() else { return Err(self.died("before gruntas could write to it")) };
         if stdin.write_all(line.as_bytes()).await.is_err() || stdin.flush().await.is_err() {
-            return Err(self.died("while krowk was writing to it"));
+            return Err(self.died("while gruntas was writing to it"));
         }
         Ok(())
     }
@@ -1518,7 +1518,7 @@ impl Proc {
 
     /// Writes the steering queued since the last look. Once Claude Code
     /// has begun no turn to read the steering written before a `result`
-    /// within `STEER_GRACE`, krowk stops waiting: since Claude Code may yet
+    /// within `STEER_GRACE`, gruntas stops waiting: since Claude Code may yet
     /// begin it, an interrupt cancels what it has not read (`receipt`,
     /// `deadline`), and once answered the turn ends at that result
     /// (`given_up`), handing back what was cancelled; what its answer does
@@ -1560,7 +1560,7 @@ impl Proc {
         Some(self.unread.remove(at).steer)
     }
 
-    /// After a `result`, the one the krowk turn ends at, or none when it
+    /// After a `result`, the one the gruntas turn ends at, or none when it
     /// reads on: into the prompt's own answer past a turn Claude Code began
     /// by itself (`fold`), or, not interrupted (`grace` given), into a turn
     /// that reads steering, waited on for `STEER_GRACE`.
@@ -1577,7 +1577,7 @@ impl Proc {
         Ok(None)
     }
 
-    /// After a `result`, whether the krowk turn reads on: steering written
+    /// After a `result`, whether the gruntas turn reads on: steering written
     /// and not replayed is read in a turn Claude Code begins by itself, and
     /// steering still queued is written now, for the same. With none, the
     /// queue is closed in the same locked step as the last look, so a steer
@@ -1769,14 +1769,14 @@ impl Proc {
     /// can cancel the steering not read yet.
     async fn came_up(&mut self, init: &Init, ask: &Answers, events: &Events, b: &Backend, instance: &str) -> Result<(bool, bool), EngineError> {
         self.mode.clone_from(&init.permission_mode);
-        // A mode looser than krowk's — a setting, a
+        // A mode looser than gruntas's — a setting, a
         // wrapper — is stopped before it runs anything.
         if !init.permission_mode.is_empty() && looser_than(&init.permission_mode, ask.mode) {
             self.terminate().await;
             return Err(EngineError::new(
                 "backend_permission_mode",
                 format!(
-                    "Claude Code on {instance} came up in its `{}` permission mode, looser than krowk's `{}` for this turn, so krowk stopped it before it ran anything — check `permissions.defaultMode` in its settings and the instance's `args`, or rerun krowk with a mode that allows it",
+                    "Claude Code on {instance} came up in its `{}` permission mode, looser than gruntas's `{}` for this turn, so gruntas stopped it before it ran anything — check `permissions.defaultMode` in its settings and the instance's `args`, or rerun gruntas with a mode that allows it",
                     init.permission_mode,
                     ask.mode.name()
                 ),
@@ -1966,7 +1966,7 @@ async fn forward(events: &Events, out: Vec<EngineEvent>) {
     }
 }
 
-/// A note of krowk's in the turn, as a `userText` item.
+/// A note of gruntas's in the turn, as a `userText` item.
 async fn note(events: &Events, text: String) {
     let item_id = gruntas_store::new_id();
     let _ = events.send(EngineEvent::ItemStarted { item_id: item_id.clone(), kind: ItemKind::UserText }).await;
@@ -2056,14 +2056,14 @@ mod tests {
         assert_eq!(settings, json!({"attribution": {"commit": "", "pr": ""}, "includeCoAuthoredBy": false}));
         assert!(s.contains("--permission-mode default --add-dir"), "the mode is always named, so settings cannot loosen it: {s}");
         assert!(args(&Launch { plan: true, resume: None, effort: None, ..l.clone() }, &[]).join(" ").ends_with("--model haiku --permission-mode plan"));
-        // R-PERM-1: krowk's deny rules reach what Claude Code allows by itself.
+        // R-PERM-1: gruntas's deny rules reach what Claude Code allows by itself.
         let denied = args(&Launch { disallowed: vec!["Bash(rm:*)".into(), "Read(.env)".into()], ..l }, &[]).join(" ");
         assert!(denied.contains("--disallowedTools Bash(rm:*) Read(.env) --permission-mode default"), "{denied}");
         let mut p = permissions::Policy::modes_only(Path::new("/repo"));
         p.loaded.rules.push((permissions::Kind::Deny, permissions::rules::parse("Bash(rm:*)", "test", Path::new("/repo")).unwrap()));
         let gate = |m| Gate::new(p.clone(), m, Default::default(), None, None, "s", "t");
         assert_eq!(disallowed(&gate(PermissionMode::BypassPermissions)), ["Bash(rm:*)"]);
-        assert!(disallowed(&gate(PermissionMode::Unhinged)).is_empty(), "unhinged starts Claude Code without krowk's deny rules");
+        assert!(disallowed(&gate(PermissionMode::Unhinged)).is_empty(), "unhinged starts Claude Code without gruntas's deny rules");
         assert!(looser_than("bypassPermissions", PermissionMode::AcceptEdits) && looser_than("acceptEdits", PermissionMode::Default) && looser_than("auto", PermissionMode::AcceptEdits));
         assert!(looser_than("default", PermissionMode::Plan) && looser_than("somethingNew", PermissionMode::AcceptEdits));
         assert!(!looser_than("default", PermissionMode::Default) && !looser_than("plan", PermissionMode::Plan) && !looser_than("bypassPermissions", PermissionMode::BypassPermissions) && !looser_than("bypassPermissions", PermissionMode::Unhinged));

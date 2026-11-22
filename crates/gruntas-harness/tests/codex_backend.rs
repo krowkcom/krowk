@@ -1,8 +1,8 @@
 //! The Codex backend through the host, against a fake `codex` (a script
 //! replaying recorded JSON-RPC, `fixtures/codex/fake-codex`), so no test
-//! needs a real login: a tool-using turn that calls krowk's injected
+//! needs a real login: a tool-using turn that calls gruntas's injected
 //! session_info tool, one process serving the whole session, a resume from
-//! a new host, approvals by krowk's modes, steering and an interrupt
+//! a new host, approvals by gruntas's modes, steering and an interrupt
 //! mid-turn, a crash mid-turn, two instances with their own homes and
 //! accounts, and the refusals — a looser sandbox, a missing login, a missing
 //! binary, an untrusted repository; and Codex's child threads as child
@@ -47,7 +47,7 @@ impl Home {
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
         std::fs::create_dir_all(root.join("bin")).unwrap();
-        std::fs::write(root.join("repo/README.md"), "# krowk\n").unwrap();
+        std::fs::write(root.join("repo/README.md"), "# gruntas\n").unwrap();
         // The fake, installed as `codex`, executable whatever git kept.
         let bin = root.join("bin/codex");
         // Linked, not copied: a copy is a file open for writing that a test
@@ -273,11 +273,11 @@ fn r_back_3_a_tool_using_turn_on_a_codex_instance_completes_and_is_logged() {
         assert_eq!(kinds, ["user", "reasoning", "call", "result", "call", "result", "assistant"], "{got:?}");
         assert!(matches!(&got[2], Item::ToolCall { name, input, call_id } if name == "shell" && input["command"] == "/bin/bash -lc ls" && call_id == "call-ls"));
         assert!(matches!(&got[3], Item::ToolResult { output, is_error: false, .. } if output == "README.md\n"));
-        // krowk's own tool, injected as Codex's dynamic tools and answered by
-        // the bridge: the result is what krowk said.
+        // gruntas's own tool, injected as Codex's dynamic tools and answered by
+        // the bridge: the result is what gruntas said.
         assert!(matches!(&got[4], Item::ToolCall { name, .. } if name == "mcp__gruntas__session_info"));
         let Item::ToolResult { output, is_error: false, .. } = &got[5] else { panic!("{:?}", got[5]) };
-        assert!(output.contains(&format!("krowk session: {}", r.session_id)) && output.contains("instance: codex:team") && output.contains("backend: codex-app-server"), "{output}");
+        assert!(output.contains(&format!("gruntas session: {}", r.session_id)) && output.contains("instance: codex:team") && output.contains("backend: codex-app-server"), "{output}");
         let responses: Vec<usize> = events.iter().filter_map(|e| if let LogBody::ResponseCompleted { item_ids, .. } = &e.body { Some(item_ids.len()) } else { None }).collect();
         assert_eq!(responses, [3, 1], "each model call names the model output it made");
 
@@ -286,7 +286,7 @@ fn r_back_3_a_tool_using_turn_on_a_codex_instance_completes_and_is_logged() {
         assert!(ctx[0].system.contains("Codex's own system prompt"));
 
         // What gruntas told Codex: itself as the client, the thread in its
-        // read-only sandbox with krowk reviewing, krowk's tools, the prompt.
+        // read-only sandbox with gruntas reviewing, gruntas's tools, the prompt.
         let log = h.fake_log();
         let sent = lines_of(&log, "in ");
         assert!(sent[0].contains(r#""method":"initialize""#) && sent[0].contains(r#""name":"gruntas""#) && sent[0].contains(r#""experimentalApi":true"#), "{}", sent[0]);
@@ -341,7 +341,7 @@ fn a_hook_that_only_looks_like_the_paste_guard_is_not_trusted() {
         r.unwrap().unwrap();
         host.shutdown().await;
     });
-    assert!(lines_of(&h.fake_log(), "config-write ").is_empty(), "krowk trusts the one command it passed, exactly");
+    assert!(lines_of(&h.fake_log(), "config-write ").is_empty(), "gruntas trusts the one command it passed, exactly");
 }
 
 #[test]
@@ -354,7 +354,7 @@ fn r_back_5_a_new_host_resumes_the_codex_thread_the_log_names() {
         host.shutdown().await;
         r.unwrap().unwrap().session_id
     });
-    // A new krowk: a new process, on the thread the log holds.
+    // A new gruntas: a new process, on the thread the log holds.
     rt().block_on(async {
         let host = h.host(vec![("codex:team", h.instance(&home, Some("tool_use.jsonl"), &[]))], trust::allow_all());
         let (_, r) = run(&host, Command::Prompt { session_id: Some(session.clone()), text: "and now?".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None }).await;
@@ -366,7 +366,7 @@ fn r_back_5_a_new_host_resumes_the_codex_thread_the_log_names() {
     assert_eq!(backend_processes(&log), 2);
     assert!(log.contains(&format!("resume {THREAD}")), "{log}");
     let resume = lines_of(&log, "in ").into_iter().find(|l| l.contains("thread/resume")).unwrap();
-    assert!(resume.contains(r#""sandbox":"read-only""#) && resume.contains(r#""approvalsReviewer":"user""#), "a resumed thread is put back in krowk's mode: {resume}");
+    assert!(resume.contains(r#""sandbox":"read-only""#) && resume.contains(r#""approvalsReviewer":"user""#), "a resumed thread is put back in gruntas's mode: {resume}");
 }
 
 /// An MCP server the person's config names, as `config/read` reports one.
@@ -393,7 +393,7 @@ fn r_back_3_codexs_approval_requests_are_answered_by_krowks_modes() {
             assert!(answers[1].contains(&format!(r#""decision":"{patch}""#)), "{mode:?}: {}", answers[1]);
             assert!(answers[2].contains(r#""decision":"decline""#), "never .codex, whatever the mode: {}", answers[2]);
             assert!(answers[3].contains(r#""decision":"decline""#), "a move into .git is judged by where it lands: {}", answers[3]);
-            // The log keeps krowk's reason where Codex told the model only
+            // The log keeps gruntas's reason where Codex told the model only
             // that it was declined.
             let results: Vec<(String, bool)> = items(&h.events(&r.session_id)).into_iter().filter_map(|i| if let Item::ToolResult { output, is_error, .. } = i { Some((output, is_error)) } else { None }).collect();
             assert!(results[0].1 && results[0].0.contains("bypassPermissions"), "{:?}", results[0]);
@@ -426,7 +426,7 @@ fn r_back_3_steering_reaches_the_running_codex_turn_and_none_is_lost() {
     rt().block_on(async {
         // The first delta: steer the running turn, which Codex takes. The
         // second, the turn's last answer: steer again — Codex refuses, its
-        // turn is ending — so krowk gives it to another Codex turn.
+        // turn is ending — so gruntas gives it to another Codex turn.
         let (_, r) = run_with(&host, prompt(None, "count to three", "codex:team/gpt-5.5", PermissionMode::Default), async |host: &Host, session: &str, n: usize| {
             let text = match n {
                 1 => "count in French",
@@ -728,7 +728,7 @@ fn r_sub_10_a_codex_child_waiting_on_its_approval_is_stopped_and_its_question_ta
 }
 
 /// R-EVID-1, R-SUB-9 — checked against the schema, not live: a child
-/// thread's call of krowk's `publish` runs as the child's request, but the
+/// thread's call of gruntas's `publish` runs as the child's request, but the
 /// run it opens is logged in the parent's log — where the parent's next
 /// turn attaches to it — and what the publisher says for the person is the
 /// session's notice, not dropped as the child's.
@@ -818,7 +818,7 @@ fn r_back_3_a_looser_sandbox_a_missing_login_or_binary_and_an_untrusted_reposito
         let (_, r) = run(&host, prompt(None, "hi", "codex:empty/gpt-5.5", PermissionMode::Default)).await;
         let e = r.unwrap_err();
         assert_eq!((e.code.as_str(), e.status), ("not_authenticated", 401));
-        assert!(e.message.contains("krowk connect openai --method subscription --name empty"), "{}", e.message);
+        assert!(e.message.contains("gruntas connect openai --method subscription --name empty"), "{}", e.message);
         assert!(!h.fake_log().contains("thread/start"));
         // A login Codex finds stale mid-turn, as a real Codex reported it.
         let host = h.host(vec![("codex:team", h.instance(&home, Some("unauthorized.jsonl"), &[]))], trust::allow_all());
@@ -910,9 +910,9 @@ fn r_back_3_every_message_krowk_sends_and_codex_answers_matches_the_pinned_schem
         let (validator, what) = match (dir, &method, &id) {
             ("in", Some(m), Some(i)) => {
                 asked.insert(i.clone(), m.clone());
-                (&requests, format!("krowk's {m}"))
+                (&requests, format!("gruntas's {m}"))
             }
-            ("in", Some(m), None) => (&notifications, format!("krowk's {m}")),
+            ("in", Some(m), None) => (&notifications, format!("gruntas's {m}")),
             ("out", Some(m), Some(i)) => {
                 asked.insert(i.clone(), m.clone());
                 (&server_requests, format!("codex's {m}"))

@@ -44,7 +44,7 @@ pub fn sandboxed(bin: &Path, home: &Path) -> Command {
     c
 }
 
-/// The CLIs krowk connects by finding them on PATH: kept off it, so a
+/// The CLIs gruntas connects by finding them on PATH: kept off it, so a
 /// machine with them installed measures the same as one without — no
 /// implicit instance of the real `claude` or `codex` beside the bench's.
 const AGENT_CLIS: [&str; 2] = ["claude", "codex"];
@@ -52,7 +52,7 @@ const AGENT_CLIS: [&str; 2] = ["claude", "codex"];
 /// The caller's PATH with each directory that holds one of `AGENT_CLIS`
 /// stood in for by a directory beside the homes (`home`'s parent, the
 /// work directory) of links to all it holds but those: the measured
-/// krowk still finds `git`, `sh` or `bwrap` there. Made once a run.
+/// gruntas still finds `git`, `sh` or `bwrap` there. Made once a run.
 fn bare_path(home: &Path) -> std::ffi::OsString {
     static PATH: std::sync::OnceLock<std::ffi::OsString> = std::sync::OnceLock::new();
     PATH.get_or_init(|| {
@@ -60,7 +60,7 @@ fn bare_path(home: &Path) -> std::ffi::OsString {
         let work = home.parent().unwrap_or(home).join("path");
         let _ = std::fs::remove_dir_all(&work);
         let dirs = std::env::split_paths(&path).enumerate().filter_map(|(i, d)| {
-            // A relative entry means nothing to the measured krowk, nor to
+            // A relative entry means nothing to the measured gruntas, nor to
             // the daemon it starts (which runs in `/`, where `usr/bin`
             // would find a CLI): left out.
             if !d.is_absolute() {
@@ -87,7 +87,7 @@ fn bare_path(home: &Path) -> std::ffi::OsString {
 
 /// Wall time from spawn to exit, the median of `runs` new processes. One run
 /// is made first and thrown away: it creates what a first run creates (an
-/// empty krowk.db) and pulls the binary into the page cache, which a runner
+/// empty gruntas.db) and pulls the binary into the page cache, which a runner
 /// cannot drop without root. "Cold" is the process — no daemon, nothing
 /// loaded — not the disk.
 pub fn startup(bin: &Path, args: &[&str], runs: usize, home: &Path) -> Outcome {
@@ -99,7 +99,7 @@ pub fn startup(bin: &Path, args: &[&str], runs: usize, home: &Path) -> Outcome {
         let st = sandboxed(bin, home).args(args).stdout(Stdio::null()).stderr(Stdio::null()).status().map_err(|e| format!("{}: {e}", bin.display()))?;
         let ms = t.elapsed().as_secs_f64() * 1000.0;
         if !st.success() {
-            return Err(format!("`krowk {}` exited {st}", args.join(" ")));
+            return Err(format!("`gruntas {}` exited {st}", args.join(" ")));
         }
         Ok(ms)
     };
@@ -191,7 +191,7 @@ pub fn remote_attach(runs: usize, resume: bool) -> Outcome {
     let signer = e2e::DeviceSigner::new(device.id(), e2e::SigningKey::from_secret(&*signing.secret_bytes()).expect("a key")).shared();
     let api = std::sync::Arc::new(gruntas_api::Client::new(&format!("{}/v1", reg.url()), "krowk_sk_bench_remote_attach_000000000").signed_by(signer));
     let setup = || -> Result<(String, SessionKeys, Option<store::ReadPlace>), String> {
-        // The device alone on a device list, as `krowk sync init` posts it,
+        // The device alone on a device list, as `gruntas sync init` posts it,
         // which binds the key to it.
         let subject = Subject { kind: Kind::Device, name: "bench".into(), os: "linux".into(), device: device.public(), signing: signing.public() };
         let (_, start) = Chain::start(subject, &signing, None, 1_790_000_000).map_err(|e| e.0)?;

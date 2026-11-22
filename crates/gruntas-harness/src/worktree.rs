@@ -7,11 +7,11 @@
 //! otherwise — or, for a subagent's, `finish_into` applies its changes to
 //! the parent's working tree (WT13, `apply`); `open` is the first two with
 //! what the agent holds while it works (`InUse`). The subagent tool calls them around a child's turn
-//! (`isolation: "worktree"`), and `krowk --worktree` around a session of
+//! (`isolation: "worktree"`), and `gruntas --worktree` around a session of
 //! its own (WT6).
 //!
 //! - **Where**: `<root>/<repo-id>/<hex>`, the root being
-//!   `gruntas_api::home::worktrees_root` (outside krowk's home, which the
+//!   `gruntas_api::home::worktrees_root` (outside gruntas's home, which the
 //!   sandbox hides), the repo-id the first 16 hex digits of the sha256 of
 //!   the canonical common git directory, `<hex>` 8 random hex digits. The
 //!   branch is `gruntas/<hex>`, which is what the sandbox lets a commit move
@@ -20,7 +20,7 @@
 //!   so a child started mid-edit sees the parent's edits. A clean checkout
 //!   gives its HEAD. Otherwise a commit on top of HEAD of what `git add -A`
 //!   would stage — modified, new and deleted files, `.gitignore` respected —
-//!   built in a fresh index file of krowk's, so the parent's index, HEAD and
+//!   built in a fresh index file of gruntas's, so the parent's index, HEAD and
 //!   files are never touched. `add -A` runs the repository's clean filters
 //!   (git-lfs's, say), as `git status` does: their commands come from
 //!   config, which is the person's own. Every later judgement of the
@@ -29,8 +29,8 @@
 //!   write files in the common directory (`config`, `worktrees/`), and two
 //!   at once fail on its `config.lock`. So every change here holds `lock`:
 //!   a mutex for this process's threads, and `File::lock` on
-//!   `<common>/gruntas-worktree.lock` for every other krowk.
-//! - **Locked while it runs**, and one `krowk worktrees add` made until it
+//!   `<common>/gruntas-worktree.lock` for every other gruntas.
+//! - **Locked while it runs**, and one `gruntas worktrees add` made until it
 //!   is applied or removed: `git worktree lock --reason gruntas:<owner>`,
 //!   the owner being the session that works in it, so `git worktree prune`
 //!   leaves it alone and a listing can say whose it is.
@@ -47,7 +47,7 @@
 //!   session and when it was made in `<root>/<repo-id>/<hex>.json`, the
 //!   repository's common directory in `<root>/<repo-id>/common`, and
 //!   `<hex>.live` locked by the process whose session works in it
-//!   (`create_held`), so `krowk worktrees` can list, remove and prune
+//!   (`create_held`), so `gruntas worktrees` can list, remove and prune
 //!   kept ones safely.
 //! - **A template** (WT10, `template`): on btrfs, a subvolume of the
 //!   repository's source tree at a commit, kept up to date in
@@ -63,7 +63,7 @@
 //!   nothing is made.
 //! - **A port slot** (`setup::port_slot`) is held by whoever uses the
 //!   worktree, for as long as they do: `GRUNTAS_PORT_BASE` for the setup
-//!   command and the agent's commands. `krowk worktrees add` lets go of its
+//!   command and the agent's commands. `gruntas worktrees add` lets go of its
 //!   slot on exit, so its setup command's base is not reserved afterwards.
 
 pub mod apply;
@@ -80,14 +80,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Condvar, Mutex};
 
-/// What a krowk worktree's branch is named under.
+/// What a gruntas worktree's branch is named under.
 pub const BRANCH_PREFIX: &str = "gruntas/";
-/// The file in the common directory every krowk locks to change worktrees.
+/// The file in the common directory every gruntas locks to change worktrees.
 pub const LOCK_FILE: &str = "gruntas-worktree.lock";
-/// What a krowk worktree's lock reason starts with; the owner follows.
+/// What a gruntas worktree's lock reason starts with; the owner follows.
 pub const LOCK_REASON: &str = "gruntas:";
 
-/// One worktree krowk made.
+/// One worktree gruntas made.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Worktree {
     /// Its directory, `<root>/<repo-id>/<hex>`: the agent's cwd.
@@ -111,7 +111,7 @@ impl Worktree {
         format!("{BRANCH_PREFIX}{}", self.hex)
     }
 
-    /// `<root>/<repo-id>`: the directory of krowk's own for its repository,
+    /// `<root>/<repo-id>`: the directory of gruntas's own for its repository,
     /// which no sandbox can write, its worktrees inside.
     pub fn repo_dir(&self) -> &Path {
         self.path.parent().unwrap_or(&self.path)
@@ -246,12 +246,12 @@ pub fn discard(wt: &Worktree) -> Result<(), Error> {
 }
 
 /// The first prompt of the agent that works in a prepared worktree: the
-/// prepare steps' notes, each marked as krowk's so the model does not take
+/// prepare steps' notes, each marked as gruntas's so the model does not take
 /// it for its parent's words, then `prompt`.
 pub fn first_prompt(notes: &[String], prompt: &str) -> String {
     let mut out = String::new();
     for note in notes {
-        out.push_str("Note from krowk, which prepared this worktree: ");
+        out.push_str("Note from gruntas, which prepared this worktree: ");
         out.push_str(note.trim_end());
         out.push_str("\n\n");
     }
@@ -260,7 +260,7 @@ pub fn first_prompt(notes: &[String], prompt: &str) -> String {
 }
 
 /// A worktree an agent works in, with what its user holds while it does:
-/// the live hold `krowk worktrees` judges it by (`manage::Held`), and a
+/// the live hold `gruntas worktrees` judges it by (`manage::Held`), and a
 /// port slot for its `GRUNTAS_PORT_BASE` (`setup::port_slot`). A subagent's
 /// (WT3) and a session's own (WT6) alike; both are let go by `finish`, or
 /// when it is dropped.
@@ -372,7 +372,7 @@ fn ready(w: Worktree, held: manage::Held, made: Made, foreign: bool, r: &Readyin
 /// where it is, and the command that applies its changes to the
 /// repository's main checkout (WT13).
 pub fn kept_line(wt: &Worktree) -> String {
-    format!("Worktree kept: {} (branch {}) — `krowk worktrees apply {}` brings its changes into your checkout", wt.path.display(), wt.branch(), wt.hex)
+    format!("Worktree kept: {} (branch {}) — `gruntas worktrees apply {}` brings its changes into your checkout", wt.path.display(), wt.branch(), wt.hex)
 }
 
 /// `wt` as a result names it when `finished` kept it (WT6); none when it
@@ -385,7 +385,7 @@ pub fn kept(wt: &Worktree, finished: Finished) -> Option<crate::protocol::KeptWo
 }
 
 /// How deep `submodules` follows submodules inside submodules: a bound on
-/// what a repository's `.gitmodules` can make krowk clone.
+/// what a repository's `.gitmodules` can make gruntas clone.
 const SUBMODULE_DEPTH: usize = 8;
 
 /// The first prepare step (WT15). `git worktree add` leaves a submodule an
@@ -425,7 +425,7 @@ const SUBMODULE_DEPTH: usize = 8;
 /// it. Nothing the repository's files name is run: hooks are off
 /// (`gruntas_api::git`), `ext::` URLs are refused whatever config says, a
 /// local path from `.gitmodules` is refused as git refuses it by default
-/// (only the main checkout's own git directory, which krowk chose, is
+/// (only the main checkout's own git directory, which gruntas chose, is
 /// cloned locally), `--checkout` overrides any `submodule.<name>.update`,
 /// and git itself refuses a `!command` one from `.gitmodules`. Filters
 /// from config still run, as on any checkout. A submodule that cannot be
@@ -593,7 +593,7 @@ fn resolve_url(base: &str, url: &str) -> String {
 /// `git submodule update --checkout` of `path` in `dir`, `ext::` refused,
 /// with `config` on top, passed as `GIT_CONFIG_KEY_<n>` so a submodule's
 /// name needs no quoting. No credential prompt: nobody is at the terminal
-/// for it, and it would draw over krowk's. `remote` for one that may reach
+/// for it, and it would draw over gruntas's. `remote` for one that may reach
 /// the network: with no terminal, and stopped after `SUBMODULE_TIMEOUT`.
 fn update(dir: &Path, path: &str, config: &[(&str, &std::ffi::OsStr)], remote: bool) -> Result<(), Error> {
     let mut c = git(dir)?;
@@ -640,7 +640,7 @@ pub fn create(cwd: &Path, root: &Path, owner: &str) -> Result<Worktree, Error> {
 }
 
 /// `create`, held live for `owner` (`manage::hold`) from before the
-/// repository's lock is let go, so no `krowk worktrees remove` finds it
+/// repository's lock is let go, so no `gruntas worktrees remove` finds it
 /// unheld in between; recorded (`manage::Record`) for listing it later.
 /// Always a checkout: `create_fastest` may make a snapshot.
 pub fn create_held(cwd: &Path, root: &Path, owner: &str) -> Result<(Worktree, manage::Held), Error> {
@@ -748,7 +748,7 @@ fn create_as(cwd: &Path, root: &Path, owner: &str, config: Option<&WorktreesConf
 }
 
 /// The worktree just added, locked for `owner` with git, recorded and held
-/// live, under the caller's lock, so no `krowk worktrees remove` finds it
+/// live, under the caller's lock, so no `gruntas worktrees remove` finds it
 /// unheld once the lock is let go: `held` when it is held already. An
 /// error has removed it.
 fn register(wt: &Worktree, owner: &str, held: Option<manage::Held>) -> Result<manage::Held, Error> {
@@ -785,7 +785,7 @@ fn working_state(cwd: &Path, head: &str, scratch: &Path) -> Result<Option<String
     }
     let index = Scratch(std::path::absolute(scratch.join(format!(".index-{}", random_hex()))).map_err(|e| Error::Failed(format!("the index for the working state: {e}")))?);
     // Split or not, the scratch index is written whole: no shared index
-    // file of krowk's is left in the repository's git directory.
+    // file of gruntas's is left in the repository's git directory.
     let staged = || git(&top).map(|mut c| {
         c.env("GIT_INDEX_FILE", &index.0).args(["-c", "core.splitIndex=false"]);
         c
@@ -824,13 +824,13 @@ fn gitlinks(listing: &str) -> std::collections::HashSet<String> {
 }
 
 /// The commit of the working state `tree` on top of `head`, for the
-/// worktree `hex`. The person's identity when git has one, krowk's when it
-/// has none: it is krowk's commit, and a person without `user.email` set
+/// worktree `hex`. The person's identity when git has one, gruntas's when it
+/// has none: it is gruntas's commit, and a person without `user.email` set
 /// must still get a worktree.
 fn commit_state(cwd: &Path, tree: &str, head: &str, hex: &str) -> Result<String, Error> {
-    let message = format!("krowk: working state for {hex}");
+    let message = format!("gruntas: working state for {hex}");
     let commit = |identity: &[&str]| read(git(cwd)?.args(identity).args(["commit-tree", tree, "-p", head, "-m", &message]), "commit-tree");
-    commit(&[]).or_else(|_| commit(&["-c", "user.name=krowk", "-c", "user.email=krowk@localhost"]))
+    commit(&[]).or_else(|_| commit(&["-c", "user.name=gruntas", "-c", "user.email=gruntas@localhost"]))
 }
 
 /// A scratch index file, gone with its lock file when dropped.
@@ -996,7 +996,7 @@ pub fn repo_id(common: &Path) -> String {
 /// 8 random hex digits.
 fn random_hex() -> String {
     let mut b = [0u8; 4];
-    // The system's RNG does not fail where krowk runs; the clock is a
+    // The system's RNG does not fail where gruntas runs; the clock is a
     // fallback that only makes a name less unlikely to be taken.
     if ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut b).is_err() {
         b = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos()).to_le_bytes();
@@ -1032,9 +1032,9 @@ impl Drop for Busy {
     }
 }
 
-/// The per-repository lock every change to krowk's worktrees of the
+/// The per-repository lock every change to gruntas's worktrees of the
 /// repository whose common directory is `common` holds, waited for: this
-/// process's threads queue on a mutex, and every krowk process on
+/// process's threads queue on a mutex, and every gruntas process on
 /// `File::lock` of `<common>/gruntas-worktree.lock`, which the OS frees when a
 /// holder dies. Both, so a thread never depends on how an OS scopes a file
 /// lock within one process.
@@ -1054,7 +1054,7 @@ pub fn lock(common: &Path) -> Result<RepoLock, Error> {
 }
 
 /// git that changes something in `dir`, through `gruntas_api::git`, with no
-/// `GIT_DIR` and the like an outer git (a hook running krowk) may have
+/// `GIT_DIR` and the like an outer git (a hook running gruntas) may have
 /// set: every call here names its repository by its directory.
 fn git(dir: &Path) -> Result<Command, Error> {
     let mut c = gruntas_api::git::command(dir).map_err(|e| Error::Failed(format!("git: {e}")))?;
@@ -1119,7 +1119,7 @@ mod tests {
 
     /// Eight at once, as a response of eight subagents starts them: each its
     /// own directory and branch, none failing on another's `config.lock`,
-    /// each one the sandbox takes for krowk's, and each removed again.
+    /// each one the sandbox takes for gruntas's, and each removed again.
     #[test]
     fn wt3_eight_worktrees_made_at_once_all_succeed() {
         if !has_git() {
@@ -1150,7 +1150,7 @@ mod tests {
             assert!(w.path.join("a.txt").is_file());
             assert_eq!(git_ok(&w.path, &["rev-parse", "--abbrev-ref", "HEAD"]), w.branch());
             assert_eq!(w.branch(), format!("gruntas/{}", w.hex));
-            let managed = crate::sandbox::managed_worktree(&w.path, &root).expect("the sandbox's krowk worktree");
+            let managed = crate::sandbox::managed_worktree(&w.path, &root).expect("the sandbox's gruntas worktree");
             assert_eq!(managed.hex, w.hex);
         }
         for w in &made {
@@ -1268,7 +1268,7 @@ mod tests {
         let head = &before[2];
         assert_ne!(&w.base, head);
         assert_eq!(&git_ok(&main, &["rev-parse", &format!("{}^", w.base)]), head, "one commit on top of HEAD");
-        assert_eq!(git_ok(&main, &["log", "-1", "--format=%s", &w.base]), format!("krowk: working state for {}", w.hex));
+        assert_eq!(git_ok(&main, &["log", "-1", "--format=%s", &w.base]), format!("gruntas: working state for {}", w.hex));
         assert_eq!(git_ok(&w.path, &["rev-parse", "HEAD"]), w.base);
         assert!(std::fs::read_dir(root.join(&w.repo_id)).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().starts_with(".index")), "the scratch index is gone");
         assert_eq!(finish(&w).unwrap(), Finished::Removed, "unchanged from the working state");
@@ -1283,7 +1283,7 @@ mod tests {
     }
 
     /// A clean parent, one whose only change is ignored, or one with no
-    /// index at all: the branch starts at HEAD, with no commit of krowk's.
+    /// index at all: the branch starts at HEAD, with no commit of gruntas's.
     #[test]
     fn wt14_a_clean_parent_gives_a_branch_at_head() {
         if !has_git() {
@@ -1476,7 +1476,7 @@ mod tests {
         assert!(!marker.exists(), "the ext:: command did not run");
         assert!(!w.path.join("mid/f").exists());
         let prompt = first_prompt(&notes, "Fix the build.");
-        assert!(prompt.starts_with("Note from krowk, which prepared this worktree: these submodules could not be initialised"), "{prompt}");
+        assert!(prompt.starts_with("Note from gruntas, which prepared this worktree: these submodules could not be initialised"), "{prompt}");
         assert!(prompt.ends_with("\n\nFix the build."), "{prompt}");
         assert_eq!(first_prompt(&[], "Fix the build."), "Fix the build.");
         assert_eq!(finish(&w).unwrap(), Finished::Removed);

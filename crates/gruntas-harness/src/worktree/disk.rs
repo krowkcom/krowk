@@ -38,7 +38,7 @@ pub(super) fn admit(cwd: &Path, head: &str, dir: &Path) -> Result<(), Error> {
     let needed = RESERVE.saturating_add(expected.saturating_mul(2));
     if free < needed {
         return Err(Error::Failed(format!(
-            "not enough disk for a worktree: {} free, {} needed — `krowk worktrees prune` clears what deleted worktrees left, and `krowk worktrees remove` a kept one you are done with",
+            "not enough disk for a worktree: {} free, {} needed — `gruntas worktrees prune` clears what deleted worktrees left, and `gruntas worktrees remove` a kept one you are done with",
             gib(free),
             gib(needed)
         )));
@@ -135,7 +135,7 @@ mod tests {
         FREE.with(|f| f.set(None));
         let Err(Error::Failed(why)) = refused else { panic!("made on a full disk: {refused:?}") };
         assert!(why.starts_with("not enough disk for a worktree: 1.0 GiB free, 4.0 GiB needed"), "{why}");
-        assert!(why.contains("krowk worktrees prune"), "{why}");
+        assert!(why.contains("gruntas worktrees prune"), "{why}");
         assert!(!root.exists(), "nothing under the root");
         assert_eq!(git_ok(&main, &["worktree", "list", "--porcelain"]).lines().filter(|l| l.starts_with("worktree ")).count(), 1);
         assert_eq!(git_ok(&main, &["branch", "--list", "gruntas/*"]), "");

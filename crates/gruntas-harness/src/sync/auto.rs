@@ -5,11 +5,11 @@
 //! command, which directories opt out, how long a bridge may sit idle, and
 //! which directory a session belongs to — is pure reads of the environment,
 //! the person's own `config.json` and the files on disk: no network,
-//! nothing spawned. The supervisor and `krowk sync status` (Harness P4
+//! nothing spawned. The supervisor and `gruntas sync status` (Harness P4
 //! ticket 95) call it.
 //!
 //! **The supervisor** (`Supervisor::spawn`) runs in the host daemon's
-//! process and starts the existing bridge (`host::run`, what `krowk sync
+//! process and starts the existing bridge (`host::run`, what `gruntas sync
 //! host` runs) for each session the moment a turn starts in it, told by the
 //! daemon's turn hook (`server::Options::turns`) — never by polling.
 //!
@@ -19,7 +19,7 @@
 //! Each turn event of a bridged session, and each idle check, reads the
 //! policy again: off stops every bridge, an opt-out that has come since
 //! stops that session's. A bridge refused because another holds the lease
-//! (`lease_held` — a `krowk sync host`, say) waits a minute and is tried
+//! (`lease_held` — a `gruntas sync host`, say) waits a minute and is tried
 //! once more then, so the turn refused is not left unsynced when the lease
 //! was a crashed daemon's, which has lapsed by then (ticket 98); one whose
 //! lease another device took waits five. Past that either is tried again
@@ -114,8 +114,8 @@ pub struct Policy {
     pub idle: Option<Duration>,
     /// `sync.accept`: this machine takes tasks a supervisor on another
     /// machine hands it, in its trusted repositories (D14, R-ALLOC-12). On
-    /// unless set false: `krowk machines accept off` writes `false`, and
-    /// `accept on` removes the key. A session started here with `krowk sync
+    /// unless set false: `gruntas machines accept off` writes `false`, and
+    /// `accept on` removes the key. A session started here with `gruntas sync
     /// new --host` is not one of those.
     pub accepting: bool,
 }
@@ -200,7 +200,7 @@ pub fn policy(env: &dyn Fn(&str) -> String, config: Option<&Value>) -> Result<Po
     let accepting = match key("accept") {
         None | Some(Value::Bool(true)) => true,
         Some(Value::Bool(false)) => false,
-        Some(v) => return Err(format!("sync.accept in config.json is {v}, not true or false — run krowk machines accept on or off, or remove it")),
+        Some(v) => return Err(format!("sync.accept in config.json is {v}, not true or false — run gruntas machines accept on or off, or remove it")),
     };
 
     Ok(Policy { on, off_by, exclude, idle: (secs > 0 && secs < NEVER_AFTER).then(|| Duration::from_secs(secs)), accepting })
@@ -210,7 +210,7 @@ impl Policy {
     /// Whether sessions in `cwd` are kept off sync, and by what: under a
     /// `sync.exclude` entry, matched by whole components (`/work/a` does
     /// not take `/work/ab`), or below a `.gruntas/no-sync` — a file or a
-    /// directory — in `cwd` or any ancestor. The `.gruntas` that is krowk's
+    /// directory — in `cwd` or any ancestor. The `.gruntas` that is gruntas's
     /// own home (`krowk_home`) is not a repository's: a `no-sync` there
     /// opts out nothing (the device's switch is `sync.auto: false`).
     ///
@@ -354,7 +354,7 @@ pub struct Config {
 pub const PAID_PAUSE: Duration = Duration::from_secs(60 * 60);
 
 /// How long a session waits when another bridge holds its lease as its
-/// bridge starts — a `krowk sync host` here or elsewhere, or a lease left
+/// bridge starts — a `gruntas sync host` here or elsewhere, or a lease left
 /// by a host that crashed, which lapses within its TTL (`host::LEASE_TTL`,
 /// no longer than this): it is tried once more then.
 pub const LEASE_HELD_WAIT: Duration = Duration::from_secs(60);
@@ -392,7 +392,7 @@ const DROPPED_GRACE: Duration = Duration::from_secs(10);
 
 /// The daemon's turn hook (`server::Options::turns`) and the supervisor's
 /// end of it (`Supervisor::spawn`): unbounded, so the daemon's thread never
-/// waits on the supervisor. Here so the daemon's owner (`krowk host serve`)
+/// waits on the supervisor. Here so the daemon's owner (`gruntas host serve`)
 /// links no async runtime of its own to make it.
 pub fn turn_hook() -> (mpsc::UnboundedSender<TurnEvent>, mpsc::UnboundedReceiver<TurnEvent>) {
     mpsc::unbounded_channel()
@@ -435,18 +435,18 @@ impl Supervisor {
                     // even after a panic: a runtime merely dropped would.
                     rt.shutdown_background();
                     if ran.is_err() {
-                        eprintln!("krowk: automatic sync stopped: its supervisor panicked; `krowk sync host` still syncs a session");
+                        eprintln!("gruntas: automatic sync stopped: its supervisor panicked; `gruntas sync host` still syncs a session");
                         lock(&bridged).clear();
                     }
                 }
-                Err(e) => eprintln!("krowk: automatic sync could not start: the async runtime did not: {e}"),
+                Err(e) => eprintln!("gruntas: automatic sync could not start: the async runtime did not: {e}"),
             }
             let _ = done_tx.send(());
         });
         let thread = match thread {
             Ok(t) => Some(t),
             Err(e) => {
-                eprintln!("krowk: automatic sync could not start: no thread for it: {e}");
+                eprintln!("gruntas: automatic sync could not start: no thread for it: {e}");
                 None
             }
         };
@@ -473,7 +473,7 @@ impl Handle {
                     let _ = t.join();
                 }
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => eprintln!("krowk: automatic sync did not stop in {}; leaving it", human(grace)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => eprintln!("gruntas: automatic sync did not stop in {}; leaving it", human(grace)),
         }
         self.presence.wait((grace + Duration::from_secs(1)).saturating_sub(started.elapsed()));
     }
@@ -509,7 +509,7 @@ enum No {
 fn check(c: &Config, session: &str) -> Result<(PathBuf, Option<Duration>), No> {
     let p = match (c.policy)() {
         Ok(p) if p.on => p,
-        Ok(p) => return Err(No::Device(format!("automatic sync is off ({}); a session syncs only with `krowk sync host`", p.off_by.unwrap_or("turned off")))),
+        Ok(p) => return Err(No::Device(format!("automatic sync is off ({}); a session syncs only with `gruntas sync host`", p.off_by.unwrap_or("turned off")))),
         // Fail closed: a policy that cannot be read is off.
         Err(e) => return Err(No::Device(format!("automatic sync is off: {e}"))),
     };
@@ -573,7 +573,7 @@ fn paid_fix(error: &str) -> String {
         Some(i) if error[i + PAID.len()..].trim().is_empty() => error[..i].trim(),
         _ => "",
     };
-    if fix.is_empty() { "run `krowk billing` to choose a paid plan for this workspace".into() } else { fix.into() }
+    if fix.is_empty() { "run `gruntas billing` to choose a paid plan for this workspace".into() } else { fix.into() }
 }
 
 /// One bridge: its options built, its own daemon client connected in the
@@ -659,7 +659,7 @@ impl Lists {
 
     /// `o`'s bridge read for: its `stale` the reader's to write, and the
     /// reader started if none runs. With no thread to be had, the bridge
-    /// reads the list itself, as `krowk sync host` does.
+    /// reads the list itself, as `gruntas sync host` does.
     fn add(lists: &Arc<Lists>, o: &mut host::Options) -> Option<Listed> {
         let stale = Arc::new(Mutex::new(None));
         let mut l = lists.lock();
@@ -1221,13 +1221,13 @@ impl Sup {
                 match no {
                     No::Device(why) => {
                         if self.said.as_ref() != Some(&why) {
-                            eprintln!("krowk: {why}");
+                            eprintln!("gruntas: {why}");
                             self.said = Some(why);
                         }
                     }
                     No::Session(why) => {
                         if self.said_of.get(&session) != Some(&why) {
-                            eprintln!("krowk: session {session} is not synced automatically: {why}");
+                            eprintln!("gruntas: session {session} is not synced automatically: {why}");
                             if self.said_of.len() >= SAID_MOST {
                                 self.said_of.clear();
                             }
@@ -1280,9 +1280,9 @@ impl Sup {
                 for (session, out) in outs {
                     let Some(out) = out else { continue };
                     if self.stop_one(&session) {
-                        eprintln!("krowk: stopped syncing session {session}: opted out by {}", source(&out));
+                        eprintln!("gruntas: stopped syncing session {session}: opted out by {}", source(&out));
                     } else if self.unpark(&session) {
-                        eprintln!("krowk: session {session} is off the relay: opted out by {}", source(&out));
+                        eprintln!("gruntas: session {session} is off the relay: opted out by {}", source(&out));
                     }
                 }
             }
@@ -1314,9 +1314,9 @@ impl Sup {
                     *parking = true;
                 }
                 if viewed {
-                    eprintln!("krowk: stopped syncing session {s}: nothing ran in it for {}, though a device still has it open; that device's next prompt, or a turn here, syncs it again", human(idle.max(WATCHED_MOST)));
+                    eprintln!("gruntas: stopped syncing session {s}: nothing ran in it for {}, though a device still has it open; that device's next prompt, or a turn here, syncs it again", human(idle.max(WATCHED_MOST)));
                 } else {
-                    eprintln!("krowk: stopped syncing session {s}: nothing ran in it, and no device watched it, for {}; its next turn, or a device opening it, syncs it again", human(idle));
+                    eprintln!("gruntas: stopped syncing session {s}: nothing ran in it, and no device watched it, for {}; its next turn, or a device opening it, syncs it again", human(idle));
                 }
             }
         }
@@ -1349,10 +1349,10 @@ impl Sup {
         let sessions: Vec<String> = self.has.keys().cloned().collect();
         let stopped = sessions.iter().filter(|s| self.stop_one(s)).count();
         if stopped > 0 {
-            eprintln!("krowk: stopped syncing {stopped} session(s): {why}");
+            eprintln!("gruntas: stopped syncing {stopped} session(s): {why}");
         }
         if parked > 0 {
-            eprintln!("krowk: {parked} session(s) let go earlier are off the relay too: {why}");
+            eprintln!("gruntas: {parked} session(s) let go earlier are off the relay too: {why}");
         }
     }
 
@@ -1360,7 +1360,7 @@ impl Sup {
     /// bridged, so no sync call made, for `paid_pause`.
     fn pause(&mut self, error: &str) {
         if !self.paused() {
-            eprintln!("krowk: automatic sync is off for {}: this workspace has no paid plan ({})", for_how_long(self.c.paid_pause), paid_fix(error));
+            eprintln!("gruntas: automatic sync is off for {}: this workspace has no paid plan ({})", for_how_long(self.c.paid_pause), paid_fix(error));
             self.paused = Some(Instant::now() + self.c.paid_pause);
         }
         self.unpark_every();
@@ -1400,7 +1400,7 @@ impl Sup {
         {
             limit_refused(&session, said);
             if self.said_limit.as_deref() != Some(said) {
-                eprintln!("krowk: {said}");
+                eprintln!("gruntas: {said}");
                 self.said_limit = Some(said.to_string());
             }
             self.waits.remove(&session);
@@ -1424,7 +1424,7 @@ impl Sup {
             } else if let Some(cwd) = parking.filter(|_| !self.gone) {
                 match parked {
                     Some(p) => self.park(session, cwd, p),
-                    None if r.is_ok() => eprintln!("krowk: session {session} was off the relay as it was let go, so only its next turn syncs it again"),
+                    None if r.is_ok() => eprintln!("gruntas: session {session} was off the relay as it was let go, so only its next turn syncs it again"),
                     None => {}
                 }
             }
@@ -1432,17 +1432,17 @@ impl Sup {
         }
         match r {
             // The device list moved on: built again at once, so the new list
-            // is verified and its user key taken up (as `krowk sync host`).
+            // is verified and its user key taken up (as `gruntas sync host`).
             Err(e) if e.starts_with(host::LIST_MOVED) => {
-                eprintln!("krowk: automatic sync of session {session} starts again: {e}");
+                eprintln!("gruntas: automatic sync of session {session} starts again: {e}");
                 self.start(session);
             }
             // The session moved to another device: its sync is there now.
             Err(e) if e.starts_with(host::HANDED_OVER) => {
-                eprintln!("krowk: automatic sync of session {session} ended: {e}");
+                eprintln!("gruntas: automatic sync of session {session} ended: {e}");
                 self.waits.remove(&session);
             }
-            // Another bridge holds the lease — a `krowk sync host`, or a
+            // Another bridge holds the lease — a `gruntas sync host`, or a
             // crashed host's, which lapses: no error, and never taken from it.
             // The turn that asked for it is not left unsynced: tried once
             // more when the wait runs out, by when a crashed host's lease
@@ -1463,10 +1463,10 @@ impl Sup {
                     _ => BACKOFF_FIRST,
                 };
                 if self.gone {
-                    eprintln!("krowk: automatic sync of session {session} stopped: {why}");
+                    eprintln!("gruntas: automatic sync of session {session} stopped: {why}");
                     return;
                 }
-                eprintln!("krowk: automatic sync of session {session} stopped: {why}; trying again in {}", human(wait));
+                eprintln!("gruntas: automatic sync of session {session} stopped: {why}; trying again in {}", human(wait));
                 // The registry's minute is no failure of the session's own
                 // to double the next backoff from.
                 if !limited {
@@ -1493,7 +1493,7 @@ impl Sup {
             format!("{why}; it is left to it, and tried again at a turn after {}", human(wait))
         };
         if self.said_lease.get(&session) != Some(&line) {
-            eprintln!("krowk: automatic sync skips session {session}: {line}");
+            eprintln!("gruntas: automatic sync skips session {session}: {line}");
             if self.said_lease.len() >= SAID_MOST {
                 self.said_lease.clear();
             }
@@ -1552,7 +1552,7 @@ impl Sup {
             }).min().map(|(_, s)| s)
         {
             self.unpark(&oldest);
-            eprintln!("krowk: session {oldest} is off the relay: {PARKED_MOST} sessions let go more lately are held there; its next turn syncs it again");
+            eprintln!("gruntas: session {oldest} is off the relay: {PARKED_MOST} sessions let go more lately are held there; its next turn syncs it again");
         }
     }
 
@@ -1596,10 +1596,10 @@ impl Sup {
         self.has.remove(&session);
         match woke {
             host::Woke::Viewer if !self.gone => {
-                eprintln!("krowk: a device opened session {session}; syncing it again, as its checks allow");
+                eprintln!("gruntas: a device opened session {session}; syncing it again, as its checks allow");
                 self.start(session);
             }
-            host::Woke::Gone(why) => eprintln!("krowk: session {session} is off the relay ({why}); its next turn syncs it again"),
+            host::Woke::Gone(why) => eprintln!("gruntas: session {session} is off the relay ({why}); its next turn syncs it again"),
             _ => {}
         }
     }
@@ -1628,7 +1628,7 @@ impl Sup {
                 }
                 Ok(None) => break,
                 Err(_) => {
-                    eprintln!("krowk: automatic sync left {} bridge(s) that did not stop in {}", self.bridges.len(), human(grace));
+                    eprintln!("gruntas: automatic sync left {} bridge(s) that did not stop in {}", self.bridges.len(), human(grace));
                     break;
                 }
             }
@@ -1684,7 +1684,7 @@ mod tests {
         assert!(policy(&env(&NONE), None).unwrap().accepting);
         assert!(policy(&env(&NONE), Some(&json!({"sync": {"accept": true}}))).unwrap().accepting);
         assert!(!policy(&env(&NONE), Some(&json!({"sync": {"accept": false}}))).unwrap().accepting);
-        assert!(policy(&env(&NONE), Some(&json!({"sync": {"accept": "no"}}))).unwrap_err().contains("krowk machines accept"));
+        assert!(policy(&env(&NONE), Some(&json!({"sync": {"accept": "no"}}))).unwrap_err().contains("gruntas machines accept"));
     }
 
     /// R-SYNC-3: on unless the device turns it off. R-SYNC-1: the policy is
@@ -1799,7 +1799,7 @@ mod tests {
         std::fs::write(root.join("repo/.gruntas/no-sync"), "").unwrap();
         mk("mono/.gruntas/no-sync"); // a directory marker, two levels above the repository at svc
         mk("mono/team/svc/.gruntas");
-        // krowk's own home is `home/.gruntas`; its no-sync covers nothing.
+        // gruntas's own home is `home/.gruntas`; its no-sync covers nothing.
         let (krowk_home, in_home) = (mk("home/.gruntas"), mk("home/code/proj"));
         mk("home/.gruntas/no-sync");
 
@@ -1811,7 +1811,7 @@ mod tests {
         assert_eq!(p.opted_out(&root.join("repo"), home), Some(OptOut::Marker(root.join("repo/.gruntas/no-sync"))));
         assert_eq!(p.opted_out(&repo_sub, home), Some(OptOut::Marker(root.join("repo/.gruntas/no-sync"))), "from the repository's root");
         assert_eq!(p.opted_out(&high_sub, home), Some(OptOut::Marker(root.join("mono/.gruntas/no-sync"))), "from two levels above it, as a directory");
-        assert_eq!(p.opted_out(&in_home, home), None, "krowk's home is no repository");
+        assert_eq!(p.opted_out(&in_home, home), None, "gruntas's home is no repository");
         assert_eq!(p.opted_out(&root.join("home"), home), None);
         assert_eq!(p.opted_out(&in_home, None), Some(OptOut::Marker(root.join("home/.gruntas/no-sync"))), "without the home given, it is just a .gruntas");
 
@@ -1997,7 +1997,7 @@ mod tests {
     /// ends with, and its fix is the one said.
     #[test]
     fn r_sync_1_a_paid_plan_refusal_names_its_fix() {
-        let fix = "syncing sessions between devices needs a paid plan — run `krowk billing` to choose one for this workspace";
+        let fix = "syncing sessions between devices needs a paid plan — run `gruntas billing` to choose one for this workspace";
         let taken = format!("{} (sync_requires_paid_plan): {fix}", host::NOT_GRANTED);
         let built = format!("{fix} (sync_requires_paid_plan)");
         let shown = "the registry did not say whether it holds session x (sync_requires_paid_plan) — nothing was published; try again";
@@ -2007,7 +2007,7 @@ mod tests {
             assert_eq!(paid_fix(e), fix, "{e}");
         }
         assert!(unpaid(shown));
-        assert!(paid_fix(shown).contains("krowk billing"), "{}", paid_fix(shown));
+        assert!(paid_fix(shown).contains("gruntas billing"), "{}", paid_fix(shown));
         assert!(!unpaid(&format!("{} (lease_held): device x holds it", host::NOT_GRANTED)));
         assert!(!unpaid(&format!("{} session x to device (sync_requires_paid_plan)", host::HANDED_OVER)), "a device's name says nothing");
     }

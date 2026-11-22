@@ -6,19 +6,19 @@
 //! In this order, so a crash anywhere leaves a device that syncs plus the
 //! old keys:
 //! 1. The old `user-keys.json` and `device-list.json` are copied into
-//!    `before-start-over/` in krowk's home, before anything is posted. They
+//!    `before-start-over/` in gruntas's home, before anything is posted. They
 //!    open with this device's key, which a start-over keeps.
 //! 2. The new list's seq 0 is posted.
 //! 3. The new generation 1 and list are kept in place of the old ones.
 //! 4. Every session the old keys open, and the new ones don't, is sealed
 //!    again. A session whose write the registry refuses — another
 //!    workspace's, one this device may not replace, a lease another device
-//!    holds — is left, not a failed run; `krowk sync init --start-over`,
+//!    holds — is left, not a failed run; `gruntas sync init --start-over`,
 //!    run again (under another workspace's key, for its sessions), goes
 //!    through what is left.
 //!
 //! The aside is never deleted on its own: the old sessions of a workspace
-//! not yet gone through need it. `krowk machines recovery discard-old` drops it,
+//! not yet gone through need it. `gruntas machines recovery discard-old` drops it,
 //! when the person says so.
 
 use super::chain::{keystore_at, Me};

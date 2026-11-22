@@ -1,18 +1,18 @@
 //! The paste guard: a `gh pr|issue create|edit|comment` whose body carries
-//! a bare krowk card link is refused, that one call, with a message telling
-//! the model to paste the krowk block instead. GitHub does not unfurl a
+//! a bare gruntas card link is refused, that one call, with a message telling
+//! the model to paste the gruntas block instead. GitHub does not unfurl a
 //! card link; bare, it is a blue link that says nothing about the file.
 //!
 //! It guards the shape of a paste, not what may run, so it is no permission
 //! rule: it holds in every mode, `bypassPermissions` and `unhinged`
-//! included. Claude Code asks it through a `PreToolUse` hook callback krowk
+//! included. Claude Code asks it through a `PreToolUse` hook callback gruntas
 //! registers on `initialize`; Codex runs it as a `PreToolUse` command hook,
-//! `krowk __paste-guard` (`HOOK_ARG`), answered by `pre_tool_use`. The
+//! `gruntas __paste-guard` (`HOOK_ARG`), answered by `pre_tool_use`. The
 //! tooling guard (`crate::tooling_guard`) rides the same two ways, asked
 //! first, and `pre_tool_use` also refuses Claude Code's `EnterWorktree`.
 //!
 //! A link is a card link when its path is `/a/art_<slug>` — the card page,
-//! or its `share_url` with `?share=`. It is fine as the target of a krowk
+//! or its `share_url` with `?share=`. It is fine as the target of a gruntas
 //! block line (canon glossary → Paste form): `[![caption](file_url)](url)`
 //! or `… · [View preview ↗](url)`. Anywhere else in the body it is bare.
 //!
@@ -25,7 +25,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
-/// The argument Codex's hook runs krowk with: `krowk __paste-guard`, the
+/// The argument Codex's hook runs gruntas with: `gruntas __paste-guard`, the
 /// hook's input on stdin, its answer on stdout.
 pub const HOOK_ARG: &str = "__paste-guard";
 
@@ -57,9 +57,9 @@ pub fn refusal(command: &str, cwd: &Path) -> Option<String> {
 /// The refusal the model reads.
 fn message(link: &str) -> String {
     format!(
-        "krowk did not run this: the body carries a bare krowk card link ({link}), and GitHub shows a bare card link as a plain link that tells the reader nothing. \
-         Put the artifact's krowk block there instead — `paste.markdown` from `krowk uploads show <link> --json`, the `markdown` form on a publish result, or what `krowk push FILE --destination github` prints — and run the command again with it. \
-         A card link inside a krowk block is fine."
+        "gruntas did not run this: the body carries a bare gruntas card link ({link}), and GitHub shows a bare card link as a plain link that tells the reader nothing. \
+         Put the artifact's gruntas block there instead — `paste.markdown` from `gruntas uploads show <link> --json`, the `markdown` form on a publish result, or what `gruntas push FILE --destination github` prints — and run the command again with it. \
+         A card link inside a gruntas block is fine."
     )
 }
 
@@ -85,7 +85,7 @@ pub fn pre_tool_use(input: &Value) -> Value {
     }
 }
 
-/// `pre_tool_use` over the hook's stdin, for `krowk __paste-guard`: an
+/// `pre_tool_use` over the hook's stdin, for `gruntas __paste-guard`: an
 /// input it cannot read is let through, as a hook with nothing to say.
 pub fn hook_main(stdin: &str) -> String {
     serde_json::from_str::<Value>(stdin).map(|v| pre_tool_use(&v)).unwrap_or_else(|_| json!({})).to_string()
@@ -308,7 +308,7 @@ fn command_around(line: &str, at: usize) -> &str {
     &line[start..end]
 }
 
-/// The first card link in `text` that is not the target of a krowk block
+/// The first card link in `text` that is not the target of a gruntas block
 /// line. Code — a fenced block, or a backtick span — quotes a link rather
 /// than pastes it, and is passed over.
 fn bare_link(text: &str) -> Option<String> {
@@ -355,7 +355,7 @@ fn card_link(word: &str) -> Option<String> {
     (slug >= SLUG_LENGTH && (host.contains("://") || host.trim_start_matches("www.").starts_with("krowk.com"))).then(|| word.to_string())
 }
 
-/// Whether what precedes a link makes it a krowk block line's target:
+/// Whether what precedes a link makes it a gruntas block line's target:
 /// `[View preview ↗](` on the caption line, `[![caption](file_url)](` on
 /// an image's (`image`, where the line's first `[![` is).
 fn in_block(before: &str, image: Option<usize>) -> bool {
@@ -582,7 +582,7 @@ mod tests {
     fn the_hook_answer_denies_with_the_refusal() {
         let deny = pre_tool_use(&json!({"tool_name": "Bash", "tool_input": {"command": format!("gh pr comment 1 --body '{CARD}'")}, "cwd": "/"}));
         assert_eq!(deny["hookSpecificOutput"]["permissionDecision"], "deny");
-        assert!(deny["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().contains("krowk block"));
+        assert!(deny["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().contains("gruntas block"));
         assert_eq!(pre_tool_use(&json!({"tool_name": "Bash", "tool_input": {"command": "gh pr comment 1 --body ok"}})), json!({}));
         assert_eq!(pre_tool_use(&json!({"tool_name": "Read", "tool_input": {"file_path": CARD}})), json!({}));
         assert_eq!(hook_main("not json"), "{}");

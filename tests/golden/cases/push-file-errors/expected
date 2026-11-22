@@ -1,4 +1,4 @@
-$ krowk push missing.txt
+$ gruntas push missing.txt
 stderr:
 {
   "ok": false,
@@ -10,7 +10,7 @@ stderr:
 }
 exit: 1
 
-$ krowk push empty.txt
+$ gruntas push empty.txt
 stderr:
 {
   "ok": false,
@@ -22,7 +22,7 @@ stderr:
 }
 exit: 1
 
-$ krowk push dir
+$ gruntas push dir
 stderr:
 {
   "ok": false,
@@ -34,25 +34,25 @@ stderr:
 }
 exit: 1
 
-$ krowk push
+$ gruntas push
 stderr:
 {
   "ok": false,
   "error": {
     "error": "no_file",
-    "fix": "pass at least one path: `krowk push screenshot.png`",
+    "fix": "pass at least one path: `gruntas push screenshot.png`",
     "retryable": false
   }
 }
 exit: 1
 
-$ krowk push a b --run
+$ gruntas push a b --run
 stderr:
 {
   "ok": false,
   "error": {
     "error": "bad_flag",
-    "fix": "--run needs a value; run `krowk help push`",
+    "fix": "--run needs a value; run `gruntas help push`",
     "retryable": false
   }
 }

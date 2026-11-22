@@ -1,6 +1,6 @@
-//! Stored API keys (R-CRED-1, R-INST-5 as amended): `krowk connect <vendor>
+//! Stored API keys (R-CRED-1, R-INST-5 as amended): `gruntas connect <vendor>
 //! --method api-key` storing a pasted key, a `$VAR` or a `!command` in
-//! krowk's provider credentials file, the built binary against fake
+//! gruntas's provider credentials file, the built binary against fake
 //! vendor binaries, a stand-in gateway and a fake password manager. A
 //! sentinel key is followed through every path — connect, status,
 //! providers list, doctor, a turn's stream-json and log, a failing request,
@@ -75,11 +75,11 @@ impl Sandbox {
         c
     }
 
-    fn krowk(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
+    fn gruntas(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         self.command(args, env).output().unwrap()
     }
 
-    /// krowk with `input` piped to its stdin.
+    /// gruntas with `input` piped to its stdin.
     fn piped(&self, args: &[&str], input: &str) -> Output {
         let mut child = self.command(args, &[]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
@@ -98,9 +98,9 @@ impl Sandbox {
         std::fs::read_to_string(self.root.join("home/.gruntas/config.json")).map(|s| serde_json::from_str(&s).unwrap()).unwrap_or(json!({}))
     }
 
-    /// Keyed Claude Code and Codex accounts, as `krowk connect` makes them
+    /// Keyed Claude Code and Codex accounts, as `gruntas connect` makes them
     /// for an Anthropic, OpenAI, xAI and OpenRouter key: the instances a
-    /// stored key belongs to now (D3), krowk running no model itself (D4).
+    /// stored key belongs to now (D3), gruntas running no model itself (D4).
     fn keyed_accounts(&self) {
         let dir = |n: &str| {
             let d = self.root.join("home/.gruntas/accounts").join(n);
@@ -118,7 +118,7 @@ impl Sandbox {
     }
 
     fn row(&self, instance: &str, env: &[(&str, &str)]) -> Value {
-        let out = self.krowk(&["status", "--json"], env);
+        let out = self.gruntas(&["status", "--json"], env);
         let v: Value = serde_json::from_slice(&out.stdout).or_else(|_| serde_json::from_slice(&out.stderr)).unwrap();
         let rows = v.pointer("/data/instances").or_else(|| v.pointer("/error/details/instances")).unwrap_or_else(|| panic!("{v}"));
         rows.as_array().unwrap().iter().find(|r| r["instance"] == instance).cloned().unwrap_or_else(|| panic!("{instance} not listed"))
@@ -189,7 +189,7 @@ fn r_cred_1_a_pasted_key_is_stored_0600_used_first_and_never_shown_anywhere() {
     let env = [("ANTHROPIC_API_KEY", DECOY)];
     let row = b.row("anthropic", &env);
     assert_eq!((row["state"].as_str(), row["source"].as_str()), (Some("ready"), Some("stored, handed to Claude Code")), "{row}");
-    let turn = b.krowk(&["-p", "hello", "--trust", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "stream-json"], &env);
+    let turn = b.gruntas(&["-p", "hello", "--trust", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "stream-json"], &env);
     assert!(turn.status.success(), "{}", printed(&turn));
     // The sandbox's ANTHROPIC_BASE_URL made it a gateway's account: the key
     // goes on as the gateway's token.
@@ -197,16 +197,16 @@ fn r_cred_1_a_pasted_key_is_stored_0600_used_first_and_never_shown_anywhere() {
 
     let mut outs = vec![out, turn];
     for args in [&["status", "--json"][..], &["status"], &["providers", "list", "--json"], &["providers", "list"], &["doctor", "--json"], &["doctor"]] {
-        outs.push(b.krowk(args, &env));
+        outs.push(b.gruntas(args, &env));
     }
     for o in &outs {
         assert!(!printed(o).contains(SENTINEL), "the key was printed: {}", printed(o));
     }
-    // Not in the session log, krowk.db, or anything else krowk wrote.
+    // Not in the session log, gruntas.db, or anything else gruntas wrote.
     assert_eq!(b.holding(SENTINEL), Vec::<PathBuf>::new());
 
     // Disconnected, the key is deleted, and the variable is read again.
-    let gone = b.krowk(&["disconnect", "anthropic", "--format", "human"], &env);
+    let gone = b.gruntas(&["disconnect", "anthropic", "--format", "human"], &env);
     assert!(gone.status.success(), "{}", printed(&gone));
     assert!(printed(&gone).contains("its stored key is deleted") && printed(&gone).contains("$ANTHROPIC_API_KEY is set too"), "{}", printed(&gone));
     assert!(!std::fs::read_to_string(b.credentials()).unwrap().contains(SENTINEL));
@@ -229,7 +229,7 @@ fn r_cred_1_a_var_and_a_command_reference_resolve_and_one_that_fails_has_no_fall
     let row = b.row("anthropic", &env);
     assert_eq!(row["state"], "unknown", "{row}");
     assert!(row["reason"].as_str().unwrap().contains("`fake-pass …`, which stopped"), "{row}");
-    let failed = b.krowk(&["-p", "hi", "--trust", "--model", "anthropic/claude-sonnet-4-6"], &env);
+    let failed = b.gruntas(&["-p", "hi", "--trust", "--model", "anthropic/claude-sonnet-4-6"], &env);
     assert_eq!(failed.status.code(), Some(3), "{}", printed(&failed));
     assert!(printed(&failed).contains("does not fall back to $ANTHROPIC_API_KEY"), "{}", printed(&failed));
     assert_eq!(b.logged("env ANTHROPIC_AUTH_TOKEN="), asked, "nothing was started");
@@ -237,7 +237,7 @@ fn r_cred_1_a_var_and_a_command_reference_resolve_and_one_that_fails_has_no_fall
         assert!(!o.contains(SENTINEL) && !o.contains("gpg:"), "{o}");
     }
     // A command that fails at connect stores nothing.
-    let out = b.krowk(&["connect", "openrouter", "--key-ref", "!fake-pass show openrouter", "--base-url", "http://127.0.0.1:9/v1"], &[]);
+    let out = b.gruntas(&["connect", "openrouter", "--key-ref", "!fake-pass show openrouter", "--base-url", "http://127.0.0.1:9/v1"], &[]);
     assert_eq!(out.status.code(), Some(3), "{}", printed(&out));
     assert!(printed(&out).contains("nothing was written") && !printed(&out).contains(SENTINEL), "{}", printed(&out));
     assert!(b.stored()["keys"].get("openrouter").is_none() && b.config()["instances"].get("openrouter").is_none());
@@ -245,7 +245,7 @@ fn r_cred_1_a_var_and_a_command_reference_resolve_and_one_that_fails_has_no_fall
     // On a fresh home, nothing is left behind but the home itself.
     let fresh = Sandbox::new("refs-fresh", &m.url);
     std::fs::write(fresh.root.join("pass.fail"), "").unwrap();
-    let out = fresh.krowk(&["connect", "openrouter", "--key-ref", "!fake-pass show openrouter"], &[]);
+    let out = fresh.gruntas(&["connect", "openrouter", "--key-ref", "!fake-pass show openrouter"], &[]);
     assert_eq!(out.status.code(), Some(3), "{}", printed(&out));
     let left: Vec<_> = std::fs::read_dir(fresh.credentials().parent().unwrap()).unwrap().flatten().map(|e| e.file_name()).filter(|n| n.to_string_lossy().contains("credentials")).collect();
     assert!(left.is_empty(), "a connection that wrote nothing left {left:?}");
@@ -253,40 +253,40 @@ fn r_cred_1_a_var_and_a_command_reference_resolve_and_one_that_fails_has_no_fall
 
 /// `$VAR`: read from that variable, and with it unset nothing is sent.
 fn assert_a_var_reference(b: &Sandbox) {
-    let out = b.krowk(&["connect", "anthropic", "--method", "api-key", "--name", "work", "--key-ref", "$WORK_SECRET", "--base-url", &b.url], &[]);
+    let out = b.gruntas(&["connect", "anthropic", "--method", "api-key", "--name", "work", "--key-ref", "$WORK_SECRET", "--base-url", &b.url], &[]);
     assert!(out.status.success(), "{}", printed(&out));
     assert_eq!(b.stored()["keys"]["anthropic:work"], json!({"env": "WORK_SECRET"}));
     let row = b.row("anthropic:work", &[("WORK_SECRET", SENTINEL)]);
     assert_eq!((row["state"].as_str(), row["source"].as_str()), (Some("ready"), Some("stored ($WORK_SECRET), handed to Claude Code")), "{row}");
     let unset = b.row("anthropic:work", &[("ANTHROPIC_WORK_API_KEY", DECOY)]);
     assert_eq!((unset["state"].as_str(), unset["var"].as_str()), (Some("key_not_set"), Some("WORK_SECRET")), "{unset}");
-    let refused = b.krowk(&["-p", "hi", "--trust", "--model", "anthropic:work/claude-sonnet-4-6"], &[("ANTHROPIC_WORK_API_KEY", DECOY)]);
+    let refused = b.gruntas(&["-p", "hi", "--trust", "--model", "anthropic:work/claude-sonnet-4-6"], &[("ANTHROPIC_WORK_API_KEY", DECOY)]);
     assert_eq!(refused.status.code(), Some(3), "{}", printed(&refused));
     assert!(printed(&refused).contains("$WORK_SECRET, which is not set") && printed(&refused).contains("does not fall back"), "{}", printed(&refused));
-    let sent = b.krowk(&["-p", "hi", "--trust", "--model", "anthropic:work/claude-sonnet-4-6"], &[("WORK_SECRET", SENTINEL)]);
+    let sent = b.gruntas(&["-p", "hi", "--trust", "--model", "anthropic:work/claude-sonnet-4-6"], &[("WORK_SECRET", SENTINEL)]);
     assert!(sent.status.success(), "{}", printed(&sent));
     assert_eq!(b.logged(&format!("env ANTHROPIC_AUTH_TOKEN={SENTINEL}")), 1, "the gateway's token, handed to Claude Code");
 }
 
-/// `!command`: run once to connect, then once per krowk process — status
+/// `!command`: run once to connect, then once per gruntas process — status
 /// runs it, and a turn in another process runs it again.
 fn assert_a_command_reference(b: &Sandbox, env: &[(&str, &str)]) {
-    let out = b.krowk(&["connect", "anthropic", "--method", "api-key", "--key-ref", "!fake-pass show anthropic", "--format", "human"], &[]);
+    let out = b.gruntas(&["connect", "anthropic", "--method", "api-key", "--key-ref", "!fake-pass show anthropic", "--format", "human"], &[]);
     assert!(out.status.success(), "{}", printed(&out));
     assert_eq!(b.pass_runs(), 1, "connecting checks the command");
-    assert!(printed(&out).contains("key stored (!fake-pass …) in krowk's credentials file (0600), used before any variable"), "{}", printed(&out));
-    let again = b.krowk(&["connect", "anthropic", "--method", "api-key", "--format", "human"], &[]);
+    assert!(printed(&out).contains("key stored (!fake-pass …) in gruntas's credentials file (0600), used before any variable"), "{}", printed(&out));
+    let again = b.gruntas(&["connect", "anthropic", "--method", "api-key", "--format", "human"], &[]);
     assert!(printed(&again).contains("key was already stored (!fake-pass …)"), "{}", printed(&again));
     // Naming a variable while a key is stored would change nothing: refused.
-    let named = b.krowk(&["connect", "anthropic", "--method", "api-key", "--api-key-env", "OTHER_KEY"], &[]);
-    assert!(!named.status.success() && printed(&named).contains("`krowk disconnect anthropic` first"), "{}", printed(&named));
+    let named = b.gruntas(&["connect", "anthropic", "--method", "api-key", "--api-key-env", "OTHER_KEY"], &[]);
+    assert!(!named.status.success() && printed(&named).contains("`gruntas disconnect anthropic` first"), "{}", printed(&named));
     // A stored $VAR that is unset says so, and offers nothing to try yet.
-    let unset = b.krowk(&["connect", "openai", "--method", "api-key", "--key-ref", "$NOT_SET_HERE", "--format", "human"], &[]);
+    let unset = b.gruntas(&["connect", "openai", "--method", "api-key", "--key-ref", "$NOT_SET_HERE", "--format", "human"], &[]);
     assert!(printed(&unset).contains("$NOT_SET_HERE is not set here") && !printed(&unset).contains("try it"), "{}", printed(&unset));
     let row = b.row("anthropic", env);
     assert_eq!((row["state"].as_str(), row["source"].as_str()), (Some("ready"), Some("stored (!fake-pass …), handed to Claude Code")), "{row}");
     assert_eq!(b.pass_runs(), 2);
-    let turn = b.krowk(&["-p", "hi", "--trust", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "stream-json"], env);
+    let turn = b.gruntas(&["-p", "hi", "--trust", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "stream-json"], env);
     assert!(turn.status.success(), "{}", printed(&turn));
     assert_eq!(b.logged(&format!("env ANTHROPIC_AUTH_TOKEN={SENTINEL}")), 2, "the command's key, handed to Claude Code");
     assert_eq!(b.pass_runs(), 3, "once for the turn's process");
@@ -319,7 +319,7 @@ fn r_cred_1_no_config_but_the_persons_own_credentials_file_can_make_krowk_run_a_
     let env = [("ANTHROPIC_API_KEY", DECOY)];
     let row = b.row("anthropic", &env);
     assert_eq!(row["source"], "env ANTHROPIC_API_KEY, handed to Claude Code", "{row}");
-    let turn = b.krowk(&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--trust"], &env);
+    let turn = b.gruntas(&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--trust"], &env);
     assert!(turn.status.success(), "{}", printed(&turn));
     assert!(b.logged("env ANTHROPIC_API_KEY=set") >= 1, "the environment's key, handed to Claude Code");
     assert_eq!(b.row("openai:x", &[])["state"], "key_not_set", "a variable's name is only ever a name");
@@ -331,10 +331,10 @@ fn r_cred_1_at_a_terminal_a_key_is_pasted_without_echo_and_without_one_the_flags
     let b = Sandbox::new("pty", "http://127.0.0.1:9");
     // Nobody at a terminal: nothing to paste into, so the key comes from
     // the environment as before — and --key-stdin at a terminal is refused.
-    let out = b.krowk(&["connect", "xai", "--method", "api-key", "--format", "human"], &[]);
+    let out = b.gruntas(&["connect", "xai", "--method", "api-key", "--format", "human"], &[]);
     assert!(out.status.success() && printed(&out).contains("$XAI_API_KEY is not set here"), "{}", printed(&out));
     assert!(b.stored().get("keys").is_none());
-    assert!(!b.krowk(&["connect", "xai", "--key-ref", "sk-plain"], &[]).status.success(), "a key itself is never an argument");
+    assert!(!b.gruntas(&["connect", "xai", "--key-ref", "sk-plain"], &[]).status.success(), "a key itself is never an argument");
 
     let mut cmd = b.command(&["connect", "anthropic", "--method", "api-key"], &[]);
     cmd.env("TERM", "xterm-256color");
@@ -342,9 +342,9 @@ fn r_cred_1_at_a_terminal_a_key_is_pasted_without_echo_and_without_one_the_flags
     let wait = Duration::from_secs(20);
     assert!(t.wait_for("Paste a key, or reference one ($VAR or !command)", wait).is_some(), "{}", t.text());
     t.write(format!("{SENTINEL}\r").as_bytes());
-    let exit = t.wait(wait).expect("krowk connect finished");
+    let exit = t.wait(wait).expect("gruntas connect finished");
     assert!(exit.success(), "{}", t.text());
-    assert!(t.text().contains("key stored in krowk's credentials file"), "{}", t.text());
+    assert!(t.text().contains("key stored in gruntas's credentials file"), "{}", t.text());
     assert!(!t.text().contains(SENTINEL), "the key was echoed: {}", t.text());
     assert_eq!(b.stored()["keys"]["anthropic"], json!({"literal": SENTINEL}));
 }
@@ -362,10 +362,10 @@ fn r_cred_1_a_credentials_file_krowk_cannot_read_is_named_without_quoting_it() {
         let row = b.row("anthropic", &[("ANTHROPIC_API_KEY", DECOY)]);
         assert_eq!(row["state"], "unknown", "{row}");
         assert!(row["reason"].as_str().unwrap().contains("credentials.json is not valid (line 1, column"), "{row}");
-        let mut outs = vec![b.krowk(&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "stream-json"], &[("ANTHROPIC_API_KEY", DECOY)])];
+        let mut outs = vec![b.gruntas(&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "stream-json"], &[("ANTHROPIC_API_KEY", DECOY)])];
         // The registry's commands read the same one file.
         for args in [&["status", "--json"][..], &["status"], &["providers", "list", "--json"], &["doctor", "--json"], &["whoami"], &["workspaces", "--json"], &["auth", "token"], &["logout"]] {
-            outs.push(b.krowk(args, &[]));
+            outs.push(b.gruntas(args, &[]));
         }
         for o in &outs {
             assert!(!printed(o).contains(SENTINEL), "quoted: {}", printed(o));
@@ -379,7 +379,7 @@ fn r_cred_1_with_no_home_krowk_reads_no_repositorys_dot_krowk_as_its_own() {
     let m = answer();
     let b = Sandbox::new("nohome", &m.url);
     let pwned = b.root.join("pwned");
-    // A repository that ships krowk's config directory, as a relative
+    // A repository that ships gruntas's config directory, as a relative
     // fallback would find it.
     std::fs::create_dir_all(b.root.join("repo/.gruntas")).unwrap();
     std::fs::write(b.root.join("repo/.gruntas/credentials.json"), json!({"version": 1, "keys": {"anthropic": {"command": format!("touch {}", pwned.display())}}}).to_string()).unwrap();
@@ -428,17 +428,17 @@ fn r_cred_1_a_command_runs_once_per_process_with_no_terminal_and_bounded_output(
     assert_eq!((failing["state"].as_str(), b.pass_runs()), (Some("unknown"), 5), "{failing}");
     std::fs::remove_file(b.root.join("pass.fail")).unwrap();
 
-    // `krowk status` at a terminal too: the command still has none, so it
+    // `gruntas status` at a terminal too: the command still has none, so it
     // fails at once rather than stop on a read it can never make.
     let mut c = b.command(&["status"], &[]);
     c.env("TERM", "xterm-256color");
     let mut t = pty::Pty::spawn(c, 200, 30);
     let started = std::time::Instant::now();
-    t.wait(Duration::from_secs(25)).expect("krowk status finished");
+    t.wait(Duration::from_secs(25)).expect("gruntas status finished");
     assert!(started.elapsed() < Duration::from_secs(15), "the tty prompt hung: {:?}", started.elapsed());
     assert!(t.text().contains("with no terminal"), "{}", t.text());
 
-    // At a terminal, `krowk connect` runs it there, so its passphrase can be typed.
+    // At a terminal, `gruntas connect` runs it there, so its passphrase can be typed.
     // A new account: `xai` is the hand-written one above.
     let mut c = b.command(&["connect", "xai", "--method", "api-key", "--name", "t"], &[]);
     c.env("TERM", "xterm-256color");
@@ -448,7 +448,7 @@ fn r_cred_1_a_command_runs_once_per_process_with_no_terminal_and_bounded_output(
     t.write(b"!tty-pass\r");
     std::thread::sleep(Duration::from_millis(500));
     t.write(b"hunter2\r");
-    let exit = t.wait(wait).expect("krowk connect finished");
+    let exit = t.wait(wait).expect("gruntas connect finished");
     assert!(exit.success(), "{}", t.text());
     assert!(t.text().contains("stored (!tty-pass)") && !t.text().contains(SENTINEL), "{}", t.text());
 }

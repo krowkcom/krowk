@@ -1,4 +1,4 @@
-//! The krowk command line. `run` is the whole entry point, taking its streams
+//! The gruntas command line. `run` is the whole entry point, taking its streams
 //! and environment as arguments so tests never touch the process.
 
 mod agent;
@@ -80,7 +80,7 @@ pub struct Io<'a> {
     pub tty: bool,
     /// Whether stderr is: a string --jq prints raw there could repaint it.
     pub err_tty: bool,
-    /// Whether stdin is: with stdout, whether `krowk -p` may ask a question.
+    /// Whether stdin is: with stdout, whether `gruntas -p` may ask a question.
     pub stdin_tty: bool,
 }
 
@@ -131,8 +131,8 @@ fn after_the_command_ran(err: &Error) -> Error {
 }
 
 /// Runs one invocation and returns the process exit code.
-/// krowk-mcp's delegation tools (`mcp.rs`): the `Placer` its tasks are
-/// placed by, and `krowk machines --json`.
+/// gruntas-mcp's delegation tools (`mcp.rs`): the `Placer` its tasks are
+/// placed by, and `gruntas machines --json`.
 #[cfg(all(feature = "harness", unix))]
 pub use delegate::{machines, placer};
 
@@ -192,7 +192,7 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
         let _ = writeln!(io.stdout, "{VERSION}");
         return exit::OK;
     }
-    // A home krowk cannot use — a GRUNTAS_HOME that is not absolute, a
+    // A home gruntas cannot use — a GRUNTAS_HOME that is not absolute, a
     // symlink or another user's directory in its place, an older layout
     // that could not be moved in — is refused before anything runs, rather
     // than read around. One `lstat` when it is there; none is fine (a
@@ -214,7 +214,7 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
             }
         };
     }
-    // `krowk --resume <id>` for a session another machine runs: attach it
+    // `gruntas --resume <id>` for a session another machine runs: attach it
     // through sync, terminal or not (ticket 21's cards copy this command).
     #[cfg(all(feature = "harness", unix))]
     let (io, f, filter) = if positionals.is_empty() && !f.resume.is_empty() {
@@ -238,12 +238,12 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
     if positionals.is_empty() && !f.help {
         for name in ["model", "permission-mode", "toolset", "effort", "resume", "worktree", "max-usd", "max-tokens"] {
             if f.given.contains(name) {
-                let e = fail("bad_flag", format!("`--{name}` has nothing to act on without a command or `-p` — krowk has no interactive screen; run `krowk -p \"<prompt>\" --{name} …`"));
+                let e = fail("bad_flag", format!("`--{name}` has nothing to act on without a command or `-p` — gruntas has no interactive screen; run `gruntas -p \"<prompt>\" --{name} …`"));
                 return report(io, &e, format, f.quiet, err_colour, None);
             }
         }
     }
-    // Bare `krowk` is the overview wherever it runs; the short greeting is
+    // Bare `gruntas` is the overview wherever it runs; the short greeting is
     // for the build with no agent, or when the human format is asked for.
     if positionals.is_empty() && !f.help && format != Format::Json && (!cfg!(feature = "harness") || f.format == "human") {
         let _ = write!(io.stdout, "{}", help::greeting(VERSION));
@@ -253,7 +253,7 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
     let mut ctx = Ctx { io, f, format, colour, filter };
     let result = if ctx.f.help || positionals.is_empty() || positionals[0] == "help" {
         let topic = if positionals.first().is_some_and(|p| p == "help") { &positionals[1..] } else { &positionals[..] };
-        // Bare `krowk`: the first machine's setup, with a person at the
+        // Bare `gruntas`: the first machine's setup, with a person at the
         // terminal to answer it, then the overview with what needs doing.
         #[cfg(feature = "harness")]
         let bare = positionals.is_empty() && !ctx.f.help;
@@ -296,7 +296,7 @@ fn command_words(f: &Flags, typed: &[String]) -> Vec<String> {
     if prompting(f) { typed.to_vec() } else { catalog::canonical(typed) }
 }
 
-/// Whether this is `krowk -p`, whose words are a prompt rather than a command.
+/// Whether this is `gruntas -p`, whose words are a prompt rather than a command.
 fn prompting(f: &Flags) -> bool {
     #[cfg(feature = "harness")]
     return f.print && !f.help;
@@ -329,7 +329,7 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         ["auth", "logout", ..] => auth::logout(ctx, rest(2)),
         ["auth", "token", ..] => auth::token(ctx),
         ["auth", "verify", ..] => auth::verify(ctx),
-        // Your krowk account, short: `krowk connect` is a model provider.
+        // Your gruntas account, short: `gruntas connect` is a model provider.
         ["login", ..] => auth::login(ctx, rest(1)),
         ["logout", ..] => auth::logout(ctx, rest(1)),
         ["whoami", ..] => auth::verify(ctx),
@@ -418,7 +418,7 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         ["machines", "always-on", ..] => match rest(2).first().map(String::as_str) {
             Some("on") => host::enable(ctx, true),
             Some("off") => host::enable(ctx, false),
-            _ => Err(fail("missing_argument", "say on or off: `krowk machines always-on on` keeps this machine available while you're away, `off` stops that")),
+            _ => Err(fail("missing_argument", "say on or off: `gruntas machines always-on on` keeps this machine available while you're away, `off` stops that")),
         },
         #[cfg(all(feature = "harness", unix))]
         ["machines", "recovery"] => recovery::status(ctx),
@@ -487,7 +487,7 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
     }
 }
 
-/// A command krowk does not have, with the nearest one it does when the
+/// A command gruntas does not have, with the nearest one it does when the
 /// words look like a typo of it.
 fn unknown_command(p: &[String], typed: &[String]) -> Error {
     let c = catalog::catalog(VERSION);
@@ -500,20 +500,20 @@ fn unknown_command(p: &[String], typed: &[String]) -> Error {
             _ => n,
         });
         return match near {
-            Some(near) => fail("unknown_command", format!("`{typed}` is not a krowk command — did you mean `krowk {near}`?")),
-            None => fail("unknown_command", format!("`{typed}` is not a krowk command — run `krowk --help`")),
+            Some(near) => fail("unknown_command", format!("`{typed}` is not a gruntas command — did you mean `gruntas {near}`?")),
+            None => fail("unknown_command", format!("`{typed}` is not a gruntas command — run `gruntas --help`")),
         };
     };
     // A group alone, or with a subcommand it lacks: name the ones it has.
     let subs: Vec<&str> = group.subcommands.iter().map(|s| s.name.as_str()).collect();
     let near = p.get(1).and_then(|w| suggest::closest(w, subs.iter().copied()));
     match (p.get(1), near) {
-        (Some(_), Some(near)) => fail("unknown_command", format!("`{typed}` is not a krowk command — did you mean `krowk {} {near}`?", group.name)),
+        (Some(_), Some(near)) => fail("unknown_command", format!("`{typed}` is not a gruntas command — did you mean `gruntas {} {near}`?", group.name)),
         (Some(_), None) => fail(
             "unknown_command",
-            format!("`{typed}` is not a krowk command; the {} command takes {}; run `krowk help {}`", group.name, either(&subs), group.name),
+            format!("`{typed}` is not a gruntas command; the {} command takes {}; run `gruntas help {}`", group.name, either(&subs), group.name),
         ),
-        (None, _) => fail("unknown_command", format!("the {} command needs a subcommand: {}; run `krowk help {}`", group.name, either(&subs), group.name)),
+        (None, _) => fail("unknown_command", format!("the {} command needs a subcommand: {}; run `gruntas help {}`", group.name, either(&subs), group.name)),
     }
 }
 
@@ -541,8 +541,8 @@ fn canonical_name(name: &str) -> String {
 fn help_for(p: &[String]) -> String {
     let c = catalog::catalog(VERSION);
     match c.find(p).or_else(|| c.find(clip(p, 1))) {
-        Some(cmd) => format!("krowk help {}", cmd.name),
-        None => "krowk --help".into(),
+        Some(cmd) => format!("gruntas help {}", cmd.name),
+        None => "gruntas --help".into(),
     }
 }
 
@@ -578,7 +578,7 @@ fn help_is_human(ctx: &Ctx) -> bool {
 
 fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
     let c = catalog::catalog(VERSION);
-    // `krowk help uploads` is the help of what `uploads` now is.
+    // `gruntas help uploads` is the help of what `uploads` now is.
     let (typed, topic) = (topic, &catalog::canonical(topic));
     let human = help_is_human(ctx);
     if topic.is_empty() {
@@ -611,8 +611,8 @@ fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
         let typed = clip(typed, 2).join(" ");
         let near = suggest::closest(&topic[0], names.chain(aliases())).map(canonical_name);
         return Err(match near {
-            Some(near) => fail("unknown_command", format!("`{typed}` is not a krowk command or help topic — did you mean `krowk help {near}`?")),
-            None => fail("unknown_command", format!("`{typed}` is not a krowk command or help topic — run `krowk help`")),
+            Some(near) => fail("unknown_command", format!("`{typed}` is not a gruntas command or help topic — did you mean `gruntas help {near}`?")),
+            None => fail("unknown_command", format!("`{typed}` is not a gruntas command or help topic — run `gruntas help`")),
         });
     };
     // A topic is prose, so its JSON is the prose as one string.
@@ -662,17 +662,17 @@ fn filter_has_something_to_read(filtering: bool, f: &Flags, p: &[String]) -> Res
 /// Who takes `--all`: `help` (handled before this check), and `sessions` in
 /// the builds that have it.
 #[cfg(feature = "sessions")]
-const ALL_OWNERS: &str = "`krowk sessions` and `krowk help`";
+const ALL_OWNERS: &str = "`gruntas sessions` and `gruntas help`";
 #[cfg(not(feature = "sessions"))]
-const ALL_OWNERS: &str = "`krowk help`";
+const ALL_OWNERS: &str = "`gruntas help`";
 
 /// Who takes `--worktree`: `sessions`, whose `--worktree <path>` filters
 /// the listing, and in the agent's build a new session, which starts in a
 /// worktree of its own.
 #[cfg(feature = "harness")]
-const WORKTREE_OWNERS: &str = "`krowk sessions` (`--worktree <path>`) and `krowk -p`";
+const WORKTREE_OWNERS: &str = "`gruntas sessions` (`--worktree <path>`) and `gruntas -p`";
 #[cfg(not(feature = "harness"))]
-const WORKTREE_OWNERS: &str = "`krowk sessions`";
+const WORKTREE_OWNERS: &str = "`gruntas sessions`";
 
 /// Each sessions flag is refused anywhere it does not belong: a flag that
 /// means nothing where it was typed was misunderstood by whoever typed it.
@@ -686,16 +686,16 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
         words.starts_with(&["sessions", "sync"]),
     );
     let owners = [
-        ("dry-run", "`krowk sessions import`", import),
-        ("from", "`krowk sessions import`, `krowk sessions restore` and `krowk worktrees add`", import || words.starts_with(&["sessions", "restore"]) || words.starts_with(&["worktrees", "add"])),
-        ("harness", "`krowk sessions`", list),
+        ("dry-run", "`gruntas sessions import`", import),
+        ("from", "`gruntas sessions import`, `gruntas sessions restore` and `gruntas worktrees add`", import || words.starts_with(&["sessions", "restore"]) || words.starts_with(&["worktrees", "add"])),
+        ("harness", "`gruntas sessions`", list),
         ("worktree", WORKTREE_OWNERS, list),
         ("all", ALL_OWNERS, list),
-        ("thinking", "`krowk sessions show`", show),
-        ("older-than", "`krowk sessions archive`", words.starts_with(&["sessions", "archive"])),
-        ("weekly", "`krowk sessions archive`", words.starts_with(&["sessions", "archive"])),
-        ("yes", "`krowk sessions rebuild`", rebuild),
-        ("no-network", "`krowk sessions sync`", sync),
+        ("thinking", "`gruntas sessions show`", show),
+        ("older-than", "`gruntas sessions archive`", words.starts_with(&["sessions", "archive"])),
+        ("weekly", "`gruntas sessions archive`", words.starts_with(&["sessions", "archive"])),
+        ("yes", "`gruntas sessions rebuild`", rebuild),
+        ("no-network", "`gruntas sessions sync`", sync),
     ];
     #[cfg(feature = "harness")]
     {
@@ -707,12 +707,12 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
             let own = catalog::catalog("").find(&[words[0].into(), "new".into()]).map(|c| c.flags).unwrap_or_default();
             let takes = |name: &str| own.iter().chain(&catalog::global_flags()[..catalog::CORE_FLAGS]).any(|f| f.name == name);
             if let Some(name) = f.given.iter().find(|n| !takes(n)) {
-                return Err(fail("bad_flag", format!("unknown flag --{name} for `krowk {} new`, which takes {}, --cwd and --model; the host runs the session in its own default permission mode", words[0], if words[0] == "sync" { "--host" } else { "--on" })));
+                return Err(fail("bad_flag", format!("unknown flag --{name} for `gruntas {} new`, which takes {}, --cwd and --model; the host runs the session in its own default permission mode", words[0], if words[0] == "sync" { "--host" } else { "--on" })));
             }
         }
         for name in ["host", "on", "cwd"] {
             if f.given.contains(name) && !new {
-                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk sessions new` (`krowk sync new` for --host)")));
+                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `gruntas sessions new` (`gruntas sync new` for --host)")));
             }
         }
         for name in ["output-format", "model", "resume", "permission-mode", "toolset", "effort", "rollover", "image", "trust", "daemon", "sandbox"] {
@@ -720,7 +720,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
                 continue;
             }
             if f.given.contains(name) && !f.print {
-                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk -p`")));
+                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `gruntas -p`")));
             }
         }
         // A budget holds a -p session or is the one `sessions budget` checks; anywhere else it would
@@ -728,7 +728,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
         let budget = words.starts_with(&["sessions", "budget"]);
         for name in ["max-usd", "max-tokens"] {
             if f.given.contains(name) && !f.print && !budget {
-                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk -p` and `krowk sessions budget`")));
+                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `gruntas -p` and `gruntas sessions budget`")));
             }
         }
         let add = words.starts_with(&["providers", "add"]);
@@ -737,39 +737,39 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
         // registers it: what the workspace's device list calls it.
         let names_device = matches!(words.as_slice(), ["sync", "init" | "recover" | "join", ..]);
         if f.given.contains("name") && !add && !connect && !names_device {
-            return Err(fail("bad_flag", "`--name` is only a flag of `krowk connect`, `krowk providers add`, and `krowk sync`"));
+            return Err(fail("bad_flag", "`--name` is only a flag of `gruntas connect`, `gruntas providers add`, and `gruntas sync`"));
         }
         for name in ["api-key-env", "base-url", "binary", "config-dir"] {
             if f.given.contains(name) && !add && !connect {
-                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk connect` and `krowk providers add`")));
+                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `gruntas connect` and `gruntas providers add`")));
             }
         }
         let kit = words.starts_with(&["sync", "init"]) || words.starts_with(&["sync", "recovery", "new"]) || words.starts_with(&["machines", "recovery", "new"]);
         if f.given.contains("save") && !kit {
-            return Err(fail("bad_flag", "`--save` is only a flag of `krowk sync init` and `krowk machines recovery new`"));
+            return Err(fail("bad_flag", "`--save` is only a flag of `gruntas sync init` and `gruntas machines recovery new`"));
         }
         if f.given.contains("to") && !words.starts_with(&["worktrees", "apply"]) {
-            return Err(fail("bad_flag", "`--to` is only a flag of `krowk worktrees apply`"));
+            return Err(fail("bad_flag", "`--to` is only a flag of `gruntas worktrees apply`"));
         }
         if f.given.contains("start-over") && !words.starts_with(&["sync", "init"]) {
-            return Err(fail("bad_flag", "`--start-over` is only a flag of `krowk sync init`"));
+            return Err(fail("bad_flag", "`--start-over` is only a flag of `gruntas sync init`"));
         }
         let mcp_add = words.starts_with(&["mcp", "add"]);
         if f.given.contains("force") && !words.starts_with(&["host", "stop"]) && !words.starts_with(&["worktrees", "remove"]) && !mcp_add {
-            return Err(fail("bad_flag", "`--force` is only a flag of `krowk host stop`, `krowk worktrees remove` and `krowk mcp add`"));
+            return Err(fail("bad_flag", "`--force` is only a flag of `gruntas host stop`, `gruntas worktrees remove` and `gruntas mcp add`"));
         }
         for name in ["env", "header"] {
             if f.given.contains(name) && !mcp_add {
-                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk mcp add`")));
+                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `gruntas mcp add`")));
             }
         }
         let trusting = words.first() == Some(&"trust") && !f.print;
         for name in ["list", "revoke"] {
             if f.given.contains(name) && !trusting {
-                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk trust`")));
+                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `gruntas trust`")));
             }
         }
-        let owners = [("device", "`krowk providers add` (`krowk connect` takes --method device)", add), ("method", "`krowk connect`", connect), ("default", "`krowk connect`", connect), ("key-stdin", "`krowk connect`", connect), ("key-ref", "`krowk connect`", connect), ("remove", "`krowk disconnect`", words.first() == Some(&"disconnect")), ("sign-out-vendor", "`krowk disconnect`", words.first() == Some(&"disconnect"))];
+        let owners = [("device", "`gruntas providers add` (`gruntas connect` takes --method device)", add), ("method", "`gruntas connect`", connect), ("default", "`gruntas connect`", connect), ("key-stdin", "`gruntas connect`", connect), ("key-ref", "`gruntas connect`", connect), ("remove", "`gruntas disconnect`", words.first() == Some(&"disconnect")), ("sign-out-vendor", "`gruntas disconnect`", words.first() == Some(&"disconnect"))];
         for (name, owner, allowed) in owners {
             if f.given.contains(name) && !allowed {
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of {owner}")));
@@ -782,16 +782,16 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
         }
     }
     let why = if show {
-        "`krowk sessions show` reads one session"
+        "`gruntas sessions show` reads one session"
     } else if rebuild {
-        "`krowk sessions rebuild` re-imports everything"
+        "`gruntas sessions rebuild` re-imports everything"
     } else if sync {
-        "`krowk sessions sync` reads everything that changed"
+        "`gruntas sessions sync` reads everything that changed"
     } else {
         return Ok(());
     };
     if f.given.contains("limit") {
-        return Err(fail("bad_flag", format!("`--limit` is only a flag of `krowk sessions` and `krowk sessions import` — {why}")));
+        return Err(fail("bad_flag", format!("`--limit` is only a flag of `gruntas sessions` and `gruntas sessions import` — {why}")));
     }
     Ok(())
 }
@@ -851,6 +851,6 @@ mod tests {
     #[test]
     fn an_unknown_subcommand_is_quoted_as_typed() {
         let e = unknown_command(&words("artifacts bogus"), &words("uploads bogus"));
-        assert!(e.fix().starts_with("`uploads bogus` is not a krowk command"), "{}", e.fix());
+        assert!(e.fix().starts_with("`uploads bogus` is not a gruntas command"), "{}", e.fix());
     }
 }

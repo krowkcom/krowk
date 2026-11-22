@@ -1,5 +1,5 @@
-krowk sessions
-krowk sessions --format human
-krowk sessions show nope
-krowk sessions sync --no-network
-krowk sessions
+gruntas sessions
+gruntas sessions --format human
+gruntas sessions show nope
+gruntas sessions sync --no-network
+gruntas sessions

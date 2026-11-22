@@ -1,5 +1,5 @@
-//! What krowk says it can do, as data. The human help's command list is
-//! rendered from it, `krowk help --json` serialises it, and the flag parser
+//! What gruntas says it can do, as data. The human help's command list is
+//! rendered from it, `gruntas help --json` serialises it, and the flag parser
 //! reads it — so the surface cannot say one thing and route another.
 
 use serde::Serialize;
@@ -15,7 +15,7 @@ pub struct Catalog {
     pub environment: Vec<EnvVar>,
 }
 
-/// One thing krowk does, or a group of them.
+/// One thing gruntas does, or a group of them.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Command {
     pub name: String,
@@ -32,7 +32,7 @@ pub struct Command {
     /// --jq has nothing to read on.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub no_json: bool,
-    /// Works, but is left out of `krowk help` (a top-level command, by
+    /// Works, but is left out of `gruntas help` (a top-level command, by
     /// `ALL_ONLY`) or its group's command list (a subcommand): an older or
     /// low-level form. `help --all` still lists it, and `help --json` says so
     /// for every command.
@@ -97,7 +97,7 @@ fn cmd(name: &str, usage: &'static str, summary: &'static str) -> Command {
     Command { name: name.into(), usage, summary, ..Command::default() }
 }
 
-/// `krowk claim` and its long form, `krowk artifacts claim`.
+/// `gruntas claim` and its long form, `gruntas artifacts claim`.
 fn claim_command(name: &str, usage: &'static str, summary: &'static str) -> Command {
     Command {
         args: vec![arg("artifact", ARTIFACT_ARG, true), arg("claim-token", "The token the anonymous upload came back with", true)],
@@ -125,7 +125,7 @@ pub fn canonical(words: &[String]) -> Vec<String> {
 const ARTIFACT_ARG: &str = "The artifact slug, or a link carrying it — the card page or the CDN URL";
 const RUN_ARG: &str = "The run slug, or a link carrying it";
 
-// What `krowk help <command>` explains beyond the summary, wrapped for 80
+// What `gruntas help <command>` explains beyond the summary, wrapped for 80
 // columns: what the overview used to carry under its command list, beside
 // the command it is about.
 
@@ -137,14 +137,14 @@ macro_rules! push_about {
 Run metadata — the pull request, the links, the references, the session — is
 recorded on a run, and a run belongs to a workspace, so it needs an API key.
 Without one an upload still works: it lands anonymously, expires within a
-day, and comes back with a claim token that `krowk claim` spends to move it
+day, and comes back with a claim token that `gruntas claim` spends to move it
 into a workspace — where a paid plan keeps it and a free one gives it another
 day."
     };
 }
 
 const PUSH_ABOUT: &str = push_about!();
-const PUSH_SHORTCUT_ABOUT: &str = concat!("The short form of `krowk artifacts create`.\n\n", push_about!());
+const PUSH_SHORTCUT_ABOUT: &str = concat!("The short form of `gruntas artifacts create`.\n\n", push_about!());
 
 #[cfg(feature = "harness")]
 const SYNC_ATTACH_ABOUT: &str = "\
@@ -171,7 +171,7 @@ names the command that answers it, as one does for a result's switchOffer.";
 
 const CLAIM_ABOUT: &str = "\
 Moves an anonymous upload into this key's workspace, spending the claim token
-it came back with: `krowk help push`.";
+it came back with: `gruntas help push`.";
 
 const DELETE_ABOUT: &str = "\
 Taking an upload down removes the bytes at once and leaves the link reporting
@@ -180,13 +180,13 @@ reach for when something was published by accident. A key takes down anything
 in its workspace; an upload that is still anonymous is taken down with the
 claim token it came back with, passed after the slug.";
 
-/// Your krowk account, which a model provider is not: that is `krowk
+/// Your gruntas account, which a model provider is not: that is `gruntas
 /// connect`, and the help says so where someone could confuse the two.
 macro_rules! login_about {
     ($connect:literal) => {
         concat!(
             "\
-Logging in goes through a browser. `krowk login` asks the registry to open an
+Logging in goes through a browser. `gruntas login` asks the registry to open an
 authorization, prints a short code and opens the page that approves it;
 approving mints a key and this command collects it, once. Over SSH or with no
 display it prints the code and the page instead of opening anything, which is
@@ -194,29 +194,29 @@ what --no-browser asks for everywhere else. On CI it is refused outright, since
 nothing there can approve it — that is what --token is for, and --token never
 opens or waits for anything.
 
-`krowk login` is your krowk account; a model provider — a Claude Code or
+`gruntas login` is your gruntas account; a model provider — a Claude Code or
 Codex account, on a subscription or an API key — is connected with
 ",
             $connect,
-            ".\nA key belongs to one workspace: `krowk help workspaces`."
+            ".\nA key belongs to one workspace: `gruntas help workspaces`."
         )
     };
 }
 #[cfg(feature = "harness")]
-const LOGIN_ABOUT: &str = login_about!("`krowk connect`");
+const LOGIN_ABOUT: &str = login_about!("`gruntas connect`");
 #[cfg(not(feature = "harness"))]
-const LOGIN_ABOUT: &str = login_about!("the full build's\n`krowk connect`");
+const LOGIN_ABOUT: &str = login_about!("the full build's\n`gruntas connect`");
 
 #[cfg(feature = "harness")]
 const CONFIG_ABOUT: &str = concat!(
-    "Pins a repository, or the machine, to a workspace: `krowk help workspaces`.\n",
+    "Pins a repository, or the machine, to a workspace: `gruntas help workspaces`.\n",
     "`config get <key>` prints one key's effective value and its source. `config set\n",
     "defaultMode default|unhinged` and `config set rollover auto|offer|off` set the\n",
     "permission mode new sessions start in and what happens at a usage limit, always\n",
     "in the global config."
 );
 #[cfg(not(feature = "harness"))]
-const CONFIG_ABOUT: &str = "Pins a repository, or the machine, to a workspace: `krowk help workspaces`.\n`config get <key>` prints one key's effective value and its source.";
+const CONFIG_ABOUT: &str = "Pins a repository, or the machine, to a workspace: `gruntas help workspaces`.\n`config get <key>` prints one key's effective value and its source.";
 #[cfg(feature = "harness")]
 const CONFIG_GET_KEYS: &str = "workspace, defaultMode or rollover";
 #[cfg(not(feature = "harness"))]
@@ -232,22 +232,22 @@ credentials file holds one key per workspace: logging in against a second
 workspace adds a key rather than replacing the first. Which key a command uses
 is decided in order by --workspace, GRUNTAS_WORKSPACE, the repository's
 .gruntas/config.json, the global config, and finally whichever key logged in
-last. `krowk config set workspace <name>` pins a repository to a workspace, so
+last. `gruntas config set workspace <name>` pins a repository to a workspace, so
 every command run inside it — by anyone, agent or person — lands there
-without saying so. Where the files live: `krowk help environment`.";
+without saying so. Where the files live: `gruntas help environment`.";
 
 const BILLING_ABOUT: &str = "\
 Opens the dashboard for the workspace the key belongs to: the plan chooser on
 Free, the subscription (plan, cancellation, invoices) on Pro or Business.
 Only owners and admins manage billing; a member is told who to ask, and it
-exits 4. `krowk upgrade` is something else: it updates krowk itself.";
+exits 4. `gruntas upgrade` is something else: it updates gruntas itself.";
 
 const BUDGET_ABOUT: &str = "\
 Checks by what the provider metered: the session's cost and generated tokens
 (output and reasoning), its subagents' included. Over a limit it exits 4; a
 Claude Code hook blocks only on exit 2, so block on a trip alone:
 
-  krowk sessions budget \"$ID\" --max-usd 5; [ $? -ne 4 ] || exit 2
+  gruntas sessions budget \"$ID\" --max-usd 5; [ $? -ne 4 ] || exit 2
 
 — any other failure then warns without stopping the agent.";
 
@@ -256,23 +256,24 @@ const MACHINES_ABOUT: &str = "\
 One row per machine of yours: online or not, its load per core, free memory,
 build and agent slots in use, and whether it accepts tasks other machines hand
 it. In a clone with an origin, a second list says for each other machine
-`ready`, or the one fix it needs: `krowk machines accept on`,
+`ready`, or the one fix it needs: `gruntas machines accept on`,
 `run: git clone <origin>`, or the account to sign in. `--json` (the default
-when piped) carries the same, and `krowk hosts` is this command.
+when piped) carries the same, and `gruntas hosts` is this command.
 
 Managing them:
 
-  krowk machines add               a code for a machine that can't sign in;
-                                   valid 10 minutes and once, and this machine
-                                   asks you to confirm the new one by name
-                                   before anything is added
-  krowk machines remove NAME       take one off and rotate your key
-  krowk machines always-on on|off  keep this machine available while you're away
-  krowk machines recovery          whether you have a recovery kit; `new`,
-                                   `check` or `discard-old` act on it
+  gruntas machines add               a code for a machine that can't sign in;
+                                     valid 10 minutes and once, and this machine
+                                     asks you to confirm the new one by name
+                                     before anything is added
+  gruntas machines remove NAME       take one off and rotate your key
+  gruntas machines always-on on|off  keep this machine available while you're
+                                     away
+  gruntas machines recovery          whether you have a recovery kit; `new`,
+                                     `check` or `discard-old` act on it
 
-`krowk devices`, `krowk host enable|disable` and `krowk sync recovery` are older
-names for these and still work.
+`gruntas devices`, `gruntas host enable|disable` and `gruntas sync recovery` are
+older names for these and still work.
 
 Read from the registry's synced sessions with this machine's sync keys:
 hosting when it holds one now; reachable directly when this machine's
@@ -280,7 +281,7 @@ Tailscale finds it online. No tag and no admin console step: a host names
 its tailnet node, sealed, in each session it hosts.
 
 Tailscale is read from tailscaled's LocalAPI, which the direct path asks
-too. On Linux that is /var/run/tailscale/tailscaled.sock. On macOS krowk tries
+too. On Linux that is /var/run/tailscale/tailscaled.sock. On macOS gruntas tries
 the open-source tailscaled's socket (/var/run/tailscaled.socket or the Linux
 path), then the Tailscale app's LocalAPI on 127.0.0.1, whose port and token it
 finds in the app's sameuserproof file: the App Store app's group container,
@@ -292,7 +293,7 @@ or /Library/Tailscale for the standalone app. To name one yourself:
   GRUNTAS_TAILSCALE_LOCALAPI=/path/to/sameuserproof-<port>-<token>
     or /Library/Tailscale/sameuserproof-<port>, which holds the token
 
-The socket wins over the LocalAPI. krowk dials 127.0.0.1 and nowhere else
+The socket wins over the LocalAPI. gruntas dials 127.0.0.1 and nowhere else
 (localhost is taken as a name for it).";
 
 fn run_flag(usage: &str) -> Flag {
@@ -309,7 +310,7 @@ fn upload_flags() -> Vec<Flag> {
         flag(
             "destination",
             STRING,
-            "Print what this tool wants pasted into it: the krowk block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool krowk has not been told about gets the block",
+            "Print what this tool wants pasted into it: the gruntas block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool gruntas has not been told about gets the block",
         ),
         flag(
             "private",
@@ -379,34 +380,34 @@ pub fn catalog(version: &str) -> Catalog {
     let file = Arg { repeated: true, ..arg("file", "Path to upload", true) };
     #[allow(unused_mut)]
     let mut c = Catalog {
-        name: "krowk",
+        name: "gruntas",
         version: version.into(),
         summary: SUMMARY,
         commands: vec![
             Command {
                 args: vec![file.clone()],
                 flags: upload_flags(),
-                ..cmd("push", "krowk push <file...> [flags]", "Upload files, get a link for each")
+                ..cmd("push", "gruntas push <file...> [flags]", "Upload files, get a link for each")
             },
             Command {
                 subcommands: vec![
                     Command {
                         args: vec![file],
                         flags: upload_flags(),
-                        ..cmd("create", "krowk artifacts create <file...> [flags]", "Upload files: the long form of `krowk push`")
+                        ..cmd("create", "gruntas artifacts create <file...> [flags]", "Upload files: the long form of `gruntas push`")
                     },
                     Command {
                         flags: [page_flags(), vec![run_flag("Narrow it to what one run produced")]].concat(),
-                        ..cmd("list", "krowk artifacts list [flags]", "List artifacts, newest first: a run's, or the workspace's")
+                        ..cmd("list", "gruntas artifacts list [flags]", "List artifacts, newest first, of a run or the workspace")
                     },
                     Command {
                         args: vec![arg("artifact", ARTIFACT_ARG, true)],
-                        ..cmd("show", "krowk artifacts show <artifact>", "Read one artifact back")
+                        ..cmd("show", "gruntas artifacts show <artifact>", "Read one artifact back")
                     },
                     Command {
                         args: vec![arg("artifact", ARTIFACT_ARG, true)],
                         flags: vec![run_flag("The run to put it under — required, and it must be one this workspace holds")],
-                        ..cmd("attach", "krowk artifacts attach <art> --run <run>", "Put an artifact under a run afterwards")
+                        ..cmd("attach", "gruntas artifacts attach <art> --run <run>", "Put an artifact under a run afterwards")
                     },
                     Command {
                         args: vec![
@@ -417,64 +418,64 @@ pub fn catalog(version: &str) -> Catalog {
                                 false,
                             ),
                         ],
-                        ..cmd("delete", "krowk artifacts delete <art> [token]", "Take an artifact down — immediate, cannot be undone")
+                        ..cmd("delete", "gruntas artifacts delete <art> [token]", "Take an artifact down — immediate, cannot be undone")
                     },
-                    claim_command("claim", "krowk artifacts claim <art> <token> [--run]", "The long form of `krowk claim`"),
+                    claim_command("claim", "gruntas artifacts claim <art> <token> [--run]", "The long form of `gruntas claim`"),
                 ],
                 ..cmd("artifacts", "", "Create, list, show, attach, delete or claim artifacts")
             },
             Command {
                 subcommands: vec![
-                    Command { flags: metadata_flags(), ..cmd("start", "krowk runs start [flags]", "Open a run to group uploads under") },
-                    Command { flags: page_flags(), ..cmd("list", "krowk runs list [--limit --before]", "List the workspace's runs, newest first") },
-                    Command { args: vec![arg("run", RUN_ARG, true)], ..cmd("show", "krowk runs show <run>", "Read one run back, with its metadata") },
-                    Command { args: vec![arg("run", RUN_ARG, true)], ..cmd("finish", "krowk runs finish <run>", "Close a run") },
+                    Command { flags: metadata_flags(), ..cmd("start", "gruntas runs start [flags]", "Open a run to group uploads under") },
+                    Command { flags: page_flags(), ..cmd("list", "gruntas runs list [--limit --before]", "List the workspace's runs, newest first") },
+                    Command { args: vec![arg("run", RUN_ARG, true)], ..cmd("show", "gruntas runs show <run>", "Read one run back, with its metadata") },
+                    Command { args: vec![arg("run", RUN_ARG, true)], ..cmd("finish", "gruntas runs finish <run>", "Close a run") },
                 ],
                 ..cmd("runs", "", "Group uploads under a run")
             },
-            claim_command("claim", "krowk claim <artifact> <token> [--run]", "Keep an anonymous upload past expiry"),
+            claim_command("claim", "gruntas claim <artifact> <token> [--run]", "Keep an anonymous upload past expiry"),
             Command {
                 flags: login_flags(),
-                ..cmd("login", "krowk login [--token <token>] [--no-browser]", "Sign in to your krowk account")
+                ..cmd("login", "gruntas login [--token <token>] [--no-browser]", "Sign in to your gruntas account")
             },
-            cmd("logout", "krowk logout", "Remove this machine's key"),
-            cmd("whoami", "krowk whoami", "Show the key and its workspace"),
+            cmd("logout", "gruntas logout", "Remove this machine's key"),
+            cmd("whoami", "gruntas whoami", "Show the key and its workspace"),
             Command {
                 flags: vec![flag("no-browser", BOOL, "Print the page instead of opening a browser — the default over SSH, or with no display")],
-                ..cmd("billing", "krowk billing [--no-browser]", "Choose or manage the workspace's plan")
+                ..cmd("billing", "gruntas billing [--no-browser]", "Choose or manage the workspace's plan")
             },
             Command {
                 subcommands: vec![
                     Command {
                         flags: login_flags(),
-                        ..cmd("login", "krowk auth login [--token <token>] [--no-browser]", "The long form of `krowk login`")
+                        ..cmd("login", "gruntas auth login [--token <token>] [--no-browser]", "The long form of `gruntas login`")
                     },
-                    cmd("logout", "krowk auth logout", "The long form of `krowk logout`"),
-                    Command { no_json: true, ..cmd("token", "krowk auth token", "Print the stored token") },
-                    cmd("verify", "krowk auth verify", "The long form of `krowk whoami`"),
+                    cmd("logout", "gruntas auth logout", "The long form of `gruntas logout`"),
+                    Command { no_json: true, ..cmd("token", "gruntas auth token", "Print the stored token") },
+                    cmd("verify", "gruntas auth verify", "The long form of `gruntas whoami`"),
                 ],
                 ..cmd("auth", "", "Long forms of login, logout and whoami")
             },
             Command {
                 subcommands: vec![
-                    cmd("list", "krowk workspaces [list]", "List the stored keys, and which workspace resolves here"),
+                    cmd("list", "gruntas workspaces [list]", "List the stored keys, and the one in use here"),
                     Command {
                         args: vec![arg(
                             "workspace",
-                            "A workspace `krowk workspaces` lists, e.g. ws_9hj3kd8a — a person at a terminal may omit it and pick from a list instead",
+                            "A workspace `gruntas workspaces` lists, e.g. ws_9hj3kd8a — a person at a terminal may omit it and pick from a list instead",
                             true,
                         )],
-                        ..cmd("use", "krowk workspaces use <workspace>", "Make a stored key the machine-wide default")
+                        ..cmd("use", "gruntas workspaces use <workspace>", "Make a stored key the machine-wide default")
                     },
                 ],
                 ..cmd("workspaces", "", "Switch between stored keys")
             },
             Command {
                 subcommands: vec![
-                    cmd("show", "krowk config show", "The effective configuration, and which layer set each value"),
+                    cmd("show", "gruntas config show", "The effective config, and which layer set each value"),
                     Command {
                         args: vec![arg("key", CONFIG_GET_KEYS, true)],
-                        ..cmd("get", "krowk config get <key>", "One key's effective value and where it comes from")
+                        ..cmd("get", "gruntas config get <key>", "One key's effective value and where it comes from")
                     },
                     Command {
                         args: vec![
@@ -486,17 +487,17 @@ pub fn catalog(version: &str) -> Catalog {
                             ),
                         ],
                         flags: vec![global_flag()],
-                        ..cmd("set", "krowk config set <key> <value> [--global]", "Write one value into the repo config, or the global one")
+                        ..cmd("set", "gruntas config set <key> <value> [--global]", "Write one value into the repo config, or the global one")
                     },
                     Command {
                         args: vec![arg("key", "A configuration key, e.g. `workspace`", true)],
                         flags: vec![global_flag()],
-                        ..cmd("unset", "krowk config unset <key> [--global]", "Remove one value from the repo config, or the global one")
+                        ..cmd("unset", "gruntas config unset <key> [--global]", "Remove one value from the repo config, or the global one")
                     },
                 ],
                 ..cmd("config", "", "Show or set configuration")
             },
-            cmd("doctor", "krowk doctor", "Check this machine's setup"),
+            cmd("doctor", "gruntas doctor", "Check this machine's setup"),
             Command {
                 flags: vec![
                     flag("harness", STRING, "Only sessions from this harness, e.g. claude"),
@@ -508,7 +509,7 @@ pub fn catalog(version: &str) -> Catalog {
                     Command {
                         args: vec![arg("id", "The session id, an unambiguous id prefix of at least 8 chars, or a foreign session id", true)],
                         flags: vec![flag("thinking", BOOL, "Show full thinking parts instead of one line each")],
-                        ..cmd("show", "krowk sessions show <id> [--thinking]", "Read one session back, with its turns, messages and parts")
+                        ..cmd("show", "gruntas sessions show <id> [--thinking]", "Read one session back: its turns, messages and parts")
                     },
                     Command {
                         flags: vec![
@@ -518,13 +519,13 @@ pub fn catalog(version: &str) -> Catalog {
                         ],
                         ..cmd(
                             "import",
-                            "krowk sessions import --from <provider|all> [--dry-run] [--limit N]",
+                            "gruntas sessions import --from <provider|all> [--dry-run] [--limit N]",
                             "Import this machine's agent transcripts",
                         )
                     },
                     Command {
                         flags: vec![flag("yes", BOOL, "Delete without asking — required when nobody is at a terminal to confirm")],
-                        ..cmd("rebuild", "krowk sessions rebuild [--yes]", "Delete the local store and re-import every transcript")
+                        ..cmd("rebuild", "gruntas sessions rebuild [--yes]", "Delete the local store and re-import every transcript")
                     },
                     Command {
                         args: vec![arg("id", "The session id, an unambiguous id prefix of at least 8 chars, or a foreign session id", true)],
@@ -536,29 +537,29 @@ pub fn catalog(version: &str) -> Catalog {
                                 "Trip when the session's generated tokens (output and reasoning — the session's and its subagents') are over this many",
                             ),
                         ],
-                        ..cmd("budget", "krowk sessions budget <id> [--max-usd N] [--max-tokens N]", "Check a session against a spend limit")
+                        ..cmd("budget", "gruntas sessions budget <id> [--max-usd N] [--max-tokens N]", "Check a session against a spend limit")
                     },
                     Command {
                         hidden: true,
                         flags: vec![flag("no-network", BOOL, "Skip the models.dev price refresh")],
-                        ..cmd("sync", "krowk sessions sync [--no-network]", "Import what changed since the last import, refresh prices")
+                        ..cmd("sync", "gruntas sessions sync [--no-network]", "Import what changed since last import, refresh prices")
                     },
                 ],
                 ..cmd(
                     "sessions",
-                    "krowk sessions [--harness <name>] [--worktree <path>] [--limit N] [--all]",
+                    "gruntas sessions [--harness <name>] [--worktree <path>] [--limit N] [--all]",
                     "List and read agent sessions on this machine",
                 )
             },
             Command {
-                subcommands: vec![cmd("refresh", "krowk pricing refresh", "Refresh the models.dev price cache")],
+                subcommands: vec![cmd("refresh", "gruntas pricing refresh", "Refresh the models.dev price cache")],
                 ..cmd("pricing", "", "Refresh model prices")
             },
-            cmd("upgrade", "krowk upgrade", "Upgrade krowk"),
+            cmd("upgrade", "gruntas upgrade", "Upgrade gruntas"),
             Command {
                 args: vec![arg("command", "The command or topic to describe, e.g. `artifacts attach` or `exit-codes`", false)],
                 flags: vec![flag("all", BOOL, "List every command and subcommand")],
-                ..cmd("help", "krowk help [command|topic] [--all]", "This, a command's help, or a topic")
+                ..cmd("help", "gruntas help [command|topic] [--all]", "This, a command's help, or a topic")
             },
         ],
         global_flags: global_flags(),
@@ -573,7 +574,7 @@ pub fn catalog(version: &str) -> Catalog {
             EnvVar { name: "GRUNTAS_DEV", usage: "1/true/yes/on — same as --dev", default: "" },
             EnvVar { name: "GRUNTAS_AGENT", usage: "Agent name to report", default: "" },
             EnvVar { name: "GRUNTAS_NO_UPDATE_CHECK", usage: "1/true/yes/on — never check for or mention new releases", default: "" },
-            EnvVar { name: "GRUNTAS_HOME", usage: "Where krowk keeps its files, an absolute path", default: "~/.gruntas" },
+            EnvVar { name: "GRUNTAS_HOME", usage: "Where gruntas keeps its files, an absolute path", default: "~/.gruntas" },
             EnvVar { name: "NO_COLOR", usage: "Set to anything — no colour, even on a terminal (no-color.org); TERM=dumb does the same", default: "" },
         ],
     };
@@ -582,7 +583,7 @@ pub fn catalog(version: &str) -> Catalog {
     #[cfg(feature = "harness")]
     c.commands.push(providers_command());
     #[cfg(feature = "harness")]
-    c.commands.push(cmd("status", "krowk status", "What's connected, and whether each is ready"));
+    c.commands.push(cmd("status", "gruntas status", "What's connected, and whether each is ready"));
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(host_command());
     #[cfg(all(feature = "harness", unix))]
@@ -590,7 +591,7 @@ pub fn catalog(version: &str) -> Catalog {
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(Command { subcommands: machines_subcommands(), ..cmd("machines", "", "Your machines, and what each can take") });
     #[cfg(all(feature = "harness", unix))]
-    c.commands.push(cmd("hosts", "krowk hosts", "The same as krowk machines"));
+    c.commands.push(cmd("hosts", "gruntas hosts", "The same as gruntas machines"));
     #[cfg(feature = "harness")]
     c.commands.push(sync_command());
     #[cfg(feature = "harness")]
@@ -612,27 +613,27 @@ pub fn catalog(version: &str) -> Catalog {
     c
 }
 
-/// `krowk sessions attach`, `take` and `new --on`: a session on any of your
-/// machines, by the same code as the `krowk sync` forms they replace.
+/// `gruntas sessions attach`, `take` and `new --on`: a session on any of your
+/// machines, by the same code as the `gruntas sync` forms they replace.
 #[cfg(all(feature = "harness", unix))]
 fn machine_commands() -> Vec<Command> {
-    let id = || vec![arg("id", "The session's id, as `krowk sessions` lists it", true)];
+    let id = || vec![arg("id", "The session's id, as `gruntas sessions` lists it", true)];
     vec![
-        Command { args: id(), ..cmd("attach", "krowk sessions attach <id>", "Follow a session on another machine, live") },
-        Command { args: id(), ..cmd("take", "krowk sessions take <id>", "Move a live session here, uncommitted work and all") },
+        Command { args: id(), ..cmd("attach", "gruntas sessions attach <id>", "Follow a session on another machine, live") },
+        Command { args: id(), ..cmd("take", "gruntas sessions take <id>", "Move a live session here, uncommitted work and all") },
         Command {
             args: vec![arg("prompt", "The session's first prompt; it seals to at most 16 KiB", true)],
             flags: vec![
-                flag("on", STRING, "The machine to start it on: its name, or 8+ hex characters of its device id (`krowk machines` lists them)"),
-                flag("cwd", STRING, "The directory there to start it in, one that machine offers (`krowk machines`)"),
+                flag("on", STRING, "The machine to start it on: its name, or 8+ hex characters of its device id (`gruntas machines` lists them)"),
+                flag("cwd", STRING, "The directory there to start it in, one that machine offers (`gruntas machines`)"),
                 flag("model", STRING, "<instance>/<model>, an instance that machine has ready; its first ready instance's first model when absent"),
             ],
-            ..cmd("new", "krowk sessions new --on MACHINE --cwd DIR [--model INSTANCE/ID] PROMPT", "Start a session on another machine of yours, and follow it")
+            ..cmd("new", "gruntas sessions new --on MACHINE --cwd DIR [--model INSTANCE/ID] PROMPT", "Start a session on another machine of yours and follow it")
         },
     ]
 }
 
-/// `krowk sessions archive`, `restore`, `vintage`, `pin` and `unpin`: native sessions
+/// `gruntas sessions archive`, `restore`, `vintage`, `pin` and `unpin`: native sessions
 /// leaving the machine as weekly vintages, and coming back (R-VINT-1..4).
 #[cfg(all(feature = "harness", unix))]
 fn vintage_commands() -> Vec<Command> {
@@ -643,23 +644,23 @@ fn vintage_commands() -> Vec<Command> {
                 flag("older-than", STRING, "Idle cut-off in days (default 14, or GRUNTAS_ARCHIVE_AFTER_DAYS)"),
                 flag("weekly", BOOL, "Run only a week after the last run: the weekly job"),
             ],
-            ..cmd("archive", "krowk sessions archive [--older-than DAYS] [--weekly]", "Move idle sessions into encrypted weekly vintages")
+            ..cmd("archive", "gruntas sessions archive [--older-than DAYS] [--weekly]", "Move idle sessions into encrypted weekly vintages")
         },
         Command {
             args: id(),
-            flags: vec![flag("from", STRING, "The vintage of its week to restore it from (see `krowk sessions vintage <id>`)")],
-            ..cmd("restore", "krowk sessions restore <id> [--from VINTAGE]", "Bring an archived session back from its vintage")
+            flags: vec![flag("from", STRING, "The vintage of its week to restore it from (see `gruntas sessions vintage <id>`)")],
+            ..cmd("restore", "gruntas sessions restore <id> [--from VINTAGE]", "Bring an archived session back from its vintage")
         },
         Command {
             args: vec![arg("id", "An archived session's id, or an ISO week like 2026-W40; every week when absent", false)],
-            ..cmd("vintage", "krowk sessions vintage [<id>|<week>]", "List a week's vintages, replaced ones included")
+            ..cmd("vintage", "gruntas sessions vintage [<id>|<week>]", "List a week's vintages, replaced ones included")
         },
-        Command { args: id(), ..cmd("pin", "krowk sessions pin <id>", "Never archive this session") },
-        Command { args: id(), ..cmd("unpin", "krowk sessions unpin <id>", "Let a pinned session be archived again") },
+        Command { args: id(), ..cmd("pin", "gruntas sessions pin <id>", "Never archive this session") },
+        Command { args: id(), ..cmd("unpin", "gruntas sessions unpin <id>", "Let a pinned session be archived again") },
     ]
 }
 
-/// `krowk sync`: this machine's end-to-end keys (R-E2E-3, R-E2E-4).
+/// `gruntas sync`: this machine's end-to-end keys (R-E2E-3, R-E2E-4).
 #[cfg(feature = "harness")]
 fn sync_command() -> Command {
     Command {
@@ -670,50 +671,50 @@ fn sync_command() -> Command {
                     flag("start-over", BOOL, "Replace your device list; this device's sessions come along"),
                     flag("name", STRING, "What your device list calls this machine; its host name when absent (also GRUNTAS_DEVICE_NAME)"),
                 ],
-                ..cmd("init", "krowk sync init [--save FILE] [--start-over]", "Set up sync: this device, your user key and a recovery kit")
+                ..cmd("init", "gruntas sync init [--save FILE] [--start-over]", "Set up sync: this device, your user key and a recovery kit")
             },
             Command {
                 flags: vec![flag("name", STRING, "What your device list calls this machine; its host name when absent (also GRUNTAS_DEVICE_NAME)")],
-                ..cmd("recover", "krowk sync recover", "Back in from the recovery kit's 12 words, on a new machine")
+                ..cmd("recover", "gruntas sync recover", "Back in from the kit's 12 words, on a new machine")
             },
-            cmd("status", "krowk sync status", "This device's list, recovery kit and auto-sync, checked"),
+            cmd("status", "gruntas sync status", "This device's list, recovery kit and auto-sync, checked"),
             Command {
                 subcommands: vec![
-                    Command { flags: vec![flag("save", STRING, "Write the new kit to this file (0600) instead of showing it")], ..cmd("new", "krowk sync recovery new [--save FILE]", "Make a new recovery kit") },
-                    cmd("check", "krowk sync recovery check", "Test the kit's words against your device list, locally"),
-                    cmd("discard-old", "krowk sync recovery discard-old", "Drop the old keys a start-over kept aside"),
+                    Command { flags: vec![flag("save", STRING, "Write the new kit to this file (0600) instead of showing it")], ..cmd("new", "gruntas sync recovery new [--save FILE]", "Make a new recovery kit") },
+                    cmd("check", "gruntas sync recovery check", "Test the kit's words against your device list, locally"),
+                    cmd("discard-old", "gruntas sync recovery discard-old", "Drop the old keys a start-over kept aside"),
                 ],
-                ..cmd("recovery", "krowk sync recovery new|check|discard-old", "Your recovery kit: make a new one, or test its words")
+                ..cmd("recovery", "gruntas sync recovery new|check|discard-old", "Your recovery kit: make a new one, or test its words")
             },
             Command {
                 flags: vec![flag("name", STRING, "What the workspace's device list calls this machine; its host name when absent (also GRUNTAS_DEVICE_NAME)")],
-                ..cmd("join", "krowk sync join", "Add this machine by the code `krowk machines add` shows")
+                ..cmd("join", "gruntas sync join", "Add this machine by the code `gruntas machines add` shows")
             },
             #[cfg(unix)]
-            Command { hidden: true, ..cmd("sessions", "krowk sync sessions", "The synced sessions this machine can open") },
+            Command { hidden: true, ..cmd("sessions", "gruntas sync sessions", "The synced sessions this machine can open") },
             #[cfg(unix)]
-            cmd("host", "krowk sync host SESSION", "Run a session here and sync it until interrupted"),
+            cmd("host", "gruntas sync host SESSION", "Run a session here and sync it until interrupted"),
             #[cfg(unix)]
-            Command { hidden: true, ..cmd("attach", "krowk sync attach SESSION", "Follow a synced session as stream-json") },
+            Command { hidden: true, ..cmd("attach", "gruntas sync attach SESSION", "Follow a synced session as stream-json") },
             #[cfg(unix)]
-            Command { hidden: true, ..cmd("take", "krowk sync take SESSION", "Move a live session here, uncommitted work and all") },
+            Command { hidden: true, ..cmd("take", "gruntas sync take SESSION", "Move a live session here, uncommitted work and all") },
             #[cfg(unix)]
             Command {
                 hidden: true,
                 args: vec![arg("prompt", "The session's first prompt; it seals to at most 16 KiB", true)],
                 flags: vec![
-                    flag("host", STRING, "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`krowk machines` lists them)"),
-                    flag("cwd", STRING, "The directory there to start it in, one that machine offers (`krowk machines`)"),
+                    flag("host", STRING, "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`gruntas machines` lists them)"),
+                    flag("cwd", STRING, "The directory there to start it in, one that machine offers (`gruntas machines`)"),
                     flag("model", STRING, "<instance>/<model>, an instance that machine has ready; its first ready instance's first model when absent"),
                 ],
-                ..cmd("new", "krowk sync new --host NAME --cwd DIR [--model INSTANCE/ID] PROMPT", "Start a session on another machine of yours, and follow it")
+                ..cmd("new", "gruntas sync new --host NAME --cwd DIR [--model INSTANCE/ID] PROMPT", "Start a session on another machine of yours and follow it")
             },
         ],
         ..cmd("sync", "", "Sync sessions between your machines, end-to-end encrypted")
     }
 }
 
-/// `krowk relay`: the reference relay (R-RELAY-1), the contract of Canon's
+/// `gruntas relay`: the reference relay (R-RELAY-1), the contract of Canon's
 /// engineering/relay.md in Rust — the hermetic stand-in and a self-hosting
 /// path.
 #[cfg(all(feature = "harness", unix))]
@@ -726,67 +727,67 @@ fn relay_command() -> Command {
                 flag("origin", STRING, "The origin devices dial and sign, as ws://host:port or wss://host; ws:// and the request's Host when absent"),
                 flag("state", STRING, "The directory each channel's fence is kept in across restarts; required off loopback"),
             ],
-            ..cmd("serve", "krowk relay serve --ticket-keys FILE [--addr HOST:PORT] [--origin URL] [--state DIR]", "Carry sealed sessions between their host and viewers")
+            ..cmd("serve", "gruntas relay serve --ticket-keys FILE [--addr HOST:PORT] [--origin URL] [--state DIR]", "Carry sealed sessions between their host and viewers")
         }],
         ..cmd("relay", "", "The relay other devices reach a session through")
     }
 }
 
-/// `krowk devices`: the machines that sync the workspace (R-E2E-3).
+/// `gruntas devices`: the machines that sync the workspace (R-E2E-3).
 #[cfg(feature = "harness")]
 fn devices_command() -> Command {
     Command {
         subcommands: vec![
-            cmd("list", "krowk devices list", "The devices on your device list, this one marked"),
-            cmd("add", "krowk devices add", "Show a code that adds a new machine to your devices"),
-            cmd("remove", "krowk devices remove NAME", "Take a device off your list and rotate your key"),
+            cmd("list", "gruntas devices list", "The devices on your device list, this one marked"),
+            cmd("add", "gruntas devices add", "Show a code that adds a new machine to your devices"),
+            cmd("remove", "gruntas devices remove NAME", "Take a device off your list and rotate your key"),
         ],
         ..cmd("devices", "", "The machines that sync this workspace's sessions")
     }
 }
 
-/// `krowk worktrees`: the git worktrees krowk made for agents (worktrees
+/// `gruntas worktrees`: the git worktrees gruntas made for agents (worktrees
 /// WT9).
 #[cfg(feature = "harness")]
 fn worktrees_command() -> Command {
     Command {
         subcommands: vec![
-            cmd("list", "krowk worktrees list", "Each one: branch, commits ahead, changes, session, age"),
+            cmd("list", "gruntas worktrees list", "Each one: branch, commits ahead, changes, session, age"),
             Command {
                 flags: vec![flag("from", STRING, "The commit or ref to start from, such as origin/main (default: this checkout's files as they are)")],
-                ..cmd("add", "krowk worktrees add [--from REF]", "Make one for an agent to work in, and print its directory")
+                ..cmd("add", "gruntas worktrees add [--from REF]", "Make one for an agent to work in; print its directory")
             },
             Command {
                 args: vec![arg("worktree", "Its 8 hex digits, its branch gruntas/<hex>, or its directory", true)],
                 flags: vec![flag("force", BOOL, "Remove it though it has changes; uncommitted ones are saved as refs/gruntas/snapshots/<hex>")],
-                ..cmd("remove", "krowk worktrees remove <hex|path> [--force]", "Remove one, its branch kept; not while its session runs")
+                ..cmd("remove", "gruntas worktrees remove <hex|path> [--force]", "Remove one, branch kept; not while its session runs")
             },
             Command {
                 args: vec![arg("worktree", "Its 8 hex digits, its branch gruntas/<hex>, or its directory", true)],
                 flags: vec![flag("to", STRING, "The checkout its changes go to (default: the repository's main checkout)")],
-                ..cmd("apply", "krowk worktrees apply <hex|path> [--to DIR]", "Bring one's changes into a checkout, uncommitted")
+                ..cmd("apply", "gruntas worktrees apply <hex|path> [--to DIR]", "Bring one's changes into a checkout, uncommitted")
             },
-            cmd("prune", "krowk worktrees prune", "Clear what deleted worktrees left, and old snapshots"),
+            cmd("prune", "gruntas worktrees prune", "Clear what deleted worktrees left, and old snapshots"),
         ],
-        ..cmd("worktrees", "", "The git worktrees krowk made for agents, across repositories")
+        ..cmd("worktrees", "", "The worktrees gruntas made for agents, across repositories")
     }
 }
 
-/// `krowk trust`: which repositories a backend or krowk's agent may run
+/// `gruntas trust`: which repositories a backend or gruntas's agent may run
 /// the hooks and MCP servers of.
 #[cfg(feature = "harness")]
 fn trust_command() -> Command {
     Command {
-        args: vec![arg("path", "A directory in the repository (default: the current directory); a krowk worktree counts as its main repository", false)],
+        args: vec![arg("path", "A directory in the repository (default: the current directory); a gruntas worktree counts as its main repository", false)],
         flags: vec![
             flag("revoke", BOOL, "Stop trusting it, and forget the MCP servers it was trusted with"),
             flag("list", BOOL, "List every trusted directory instead; takes no path"),
         ],
-        ..cmd("trust", "krowk trust [<path>] | krowk trust --revoke [<path>] | krowk trust --list", "Trust a repository to run its hooks and MCP servers")
+        ..cmd("trust", "gruntas trust [<path>] | gruntas trust --revoke [<path>] | gruntas trust --list", "Trust a repository to run its hooks and MCP servers")
     }
 }
 
-/// `krowk mcp`: the MCP servers krowk hands Claude Code and Codex.
+/// `gruntas mcp`: the MCP servers gruntas hands Claude Code and Codex.
 #[cfg(feature = "harness")]
 fn mcp_command() -> Command {
     Command {
@@ -794,11 +795,11 @@ fn mcp_command() -> Command {
             Command {
                 args: vec![arg("name", "The server's name in your MCP config", true)],
                 flags: vec![flag("no-browser", BOOL, "Print the sign-in page and read the address your browser lands on, instead of opening a browser — the default over SSH, or with no display")],
-                ..cmd("login", "krowk mcp login <name> [--no-browser]", "Sign in to a remote MCP server that asks for OAuth")
+                ..cmd("login", "gruntas mcp login <name> [--no-browser]", "Sign in to a remote MCP server that asks for OAuth")
             },
             Command {
                 args: vec![arg("name", "The server's name", true)],
-                ..cmd("logout", "krowk mcp logout <name>", "Forget a server's sign-in")
+                ..cmd("logout", "gruntas mcp logout <name>", "Forget a server's sign-in")
             },
             Command {
                 args: vec![
@@ -810,60 +811,60 @@ fn mcp_command() -> Command {
                     repeatable("env", "An environment variable a stdio server starts with, K=V — repeat for more than one"),
                     flag("force", BOOL, "Replace a server of that name already in config.json"),
                 ],
-                ..cmd("add", "krowk mcp add <name> <url> [--header \"Name: value\"] | krowk mcp add <name> [--env K=V] -- <command> [args…]", "Add an MCP server to krowk's config.json")
+                ..cmd("add", "gruntas mcp add <name> <url> [--header \"Name: value\"] | gruntas mcp add <name> [--env K=V] -- <command> [args…]", "Add an MCP server to gruntas's config.json")
             },
             Command {
                 args: vec![arg("name", "The server to remove", true)],
-                ..cmd("remove", "krowk mcp remove <name>", "Remove a server from config.json, and its stored sign-in")
+                ..cmd("remove", "gruntas mcp remove <name>", "Remove a server from config.json, and its stored sign-in")
             },
-            cmd("list", "krowk mcp list", "List the servers krowk would load here, without connecting"),
+            cmd("list", "gruntas mcp list", "List the servers gruntas would load here, without connecting"),
         ],
-        ..cmd("mcp", "", "MCP servers krowk's agent uses (add, remove, list, login)")
+        ..cmd("mcp", "", "MCP servers gruntas's agent uses (add, remove, list, login)")
     }
 }
 
 #[cfg(all(feature = "harness", unix))]
 fn machines_subcommands() -> Vec<Command> {
     vec![
-        cmd("list", "krowk machines [list]", "Your machines, and what each can take"),
+        cmd("list", "gruntas machines [list]", "Your machines, and what each can take"),
         machines_accept(),
-        cmd("add", "krowk machines add", "Show a code that adds another machine"),
-        Command { args: vec![arg("name", "The machine's name, as `krowk machines` lists it", true)], ..cmd("remove", "krowk machines remove NAME", "Take a machine off your list and rotate your key") },
-        Command { args: vec![arg("state", "on or off", true)], ..cmd("always-on", "krowk machines always-on on|off", "Keep this machine available while you're away") },
+        cmd("add", "gruntas machines add", "Show a code that adds another machine"),
+        Command { args: vec![arg("name", "The machine's name, as `gruntas machines` lists it", true)], ..cmd("remove", "gruntas machines remove NAME", "Take a machine off your list and rotate your key") },
+        Command { args: vec![arg("state", "on or off", true)], ..cmd("always-on", "gruntas machines always-on on|off", "Keep this machine available while you're away") },
         Command {
             subcommands: vec![
-                Command { flags: vec![flag("save", STRING, "Write the new kit to this file (0600) instead of showing it")], ..cmd("new", "krowk machines recovery new [--save FILE]", "Make a new recovery kit") },
-                cmd("check", "krowk machines recovery check", "Test the kit's words against your device list, locally"),
-                cmd("discard-old", "krowk machines recovery discard-old", "Drop the old keys a start-over kept aside"),
+                Command { flags: vec![flag("save", STRING, "Write the new kit to this file (0600) instead of showing it")], ..cmd("new", "gruntas machines recovery new [--save FILE]", "Make a new recovery kit") },
+                cmd("check", "gruntas machines recovery check", "Test the kit's words against your device list, locally"),
+                cmd("discard-old", "gruntas machines recovery discard-old", "Drop the old keys a start-over kept aside"),
             ],
-            ..cmd("recovery", "krowk machines recovery [new|check|discard-old]", "Your recovery kit: see it, make a new one, test it")
+            ..cmd("recovery", "gruntas machines recovery [new|check|discard-old]", "Your recovery kit: see it, make a new one, test it")
         },
     ]
 }
 
 #[cfg(all(feature = "harness", unix))]
 fn machines_accept() -> Command {
-    Command { args: vec![arg("state", "on or off", true)], ..cmd("accept", "krowk machines accept on|off", "Take work from your other machines, or not") }
+    Command { args: vec![arg("state", "on or off", true)], ..cmd("accept", "gruntas machines accept on|off", "Take work from your other machines, or not") }
 }
 
-/// `krowk host`: the per-user daemon sessions run in (R-HOST-1, R-HOST-2).
-/// `serve` is what the first `krowk` that needs the daemon starts, and what
+/// `gruntas host`: the per-user daemon sessions run in (R-HOST-1, R-HOST-2).
+/// `serve` is what the first `gruntas` that needs the daemon starts, and what
 /// the service runs; it is not listed.
 #[cfg(all(feature = "harness", unix))]
 fn host_command() -> Command {
     Command {
         subcommands: vec![
-            cmd("status", "krowk host status", "Whether the daemon runs: socket, pid, uptime, sessions"),
+            cmd("status", "gruntas host status", "Whether the daemon runs: socket, pid, uptime, sessions"),
             Command {
                 args: vec![arg("session", "The session id a result names", true)],
-                ..cmd("attach", "krowk host attach <session>", "Follow a session in the daemon, live, as stream-json")
+                ..cmd("attach", "gruntas host attach <session>", "Follow a session in the daemon, live, as stream-json")
             },
             Command {
                 flags: vec![flag("force", BOOL, "Stop it though other clients are connected; each reconnects to the next daemon")],
-                ..cmd("stop", "krowk host stop [--force]", "Stop the daemon, once no turn runs in it")
+                ..cmd("stop", "gruntas host stop [--force]", "Stop the daemon, once no turn runs in it")
             },
-            Command { hidden: true, ..cmd("enable", "krowk host enable", "Run the daemon as a systemd or launchd user service") },
-            Command { hidden: true, ..cmd("disable", "krowk host disable", "Stop the service and remove it") },
+            Command { hidden: true, ..cmd("enable", "gruntas host enable", "Run the daemon as a systemd or launchd user service") },
+            Command { hidden: true, ..cmd("disable", "gruntas host disable", "Stop the service and remove it") },
         ],
         ..cmd("host", "", "The daemon sessions run in, which outlives the terminal")
     }
@@ -903,7 +904,7 @@ fn core_flags() -> Vec<Flag> {
     ]
 }
 
-/// `krowk connect` and `krowk disconnect`: a model source, by vendor and
+/// `gruntas connect` and `gruntas disconnect`: a model source, by vendor and
 /// method. The harness build's only.
 #[cfg(feature = "harness")]
 fn connect_commands() -> Vec<Command> {
@@ -918,16 +919,16 @@ fn connect_commands() -> Vec<Command> {
                 flag("method", STRING, "subscription (Claude or ChatGPT, signed in by Claude Code's or Codex's own login), device (the same with a code typed into any browser: ChatGPT) or api-key (a Claude Code or Codex account on the key). Required without a terminal when the vendor has more than one"),
                 flag("name", STRING, "Name a second account <provider>:<name> — claude:work, anthropic:work; the default-named one (claude, anthropic) when absent"),
                 flag("default", BOOL, "Make it the default model even when config.json names one already; the first connection is the default by itself"),
-                flag("api-key-env", STRING, "The environment variable holding the key — krowk stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named account"),
-                flag("key-stdin", BOOL, "An API key: store the key piped to stdin in krowk's provider credentials file (0600). Never a --key argument, which the shell's history would keep"),
-                flag("key-ref", STRING, "An API key: store a reference instead — '$VAR' (read from that variable) or '!command' (its output, e.g. '!pass show anthropic', run once per krowk process). At a terminal, pasting at the prompt does either"),
+                flag("api-key-env", STRING, "The environment variable holding the key — gruntas stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named account"),
+                flag("key-stdin", BOOL, "An API key: store the key piped to stdin in gruntas's provider credentials file (0600). Never a --key argument, which the shell's history would keep"),
+                flag("key-ref", STRING, "An API key: store a reference instead — '$VAR' (read from that variable) or '!command' (its output, e.g. '!pass show anthropic', run once per gruntas process). At a terminal, pasting at the prompt does either"),
                 flag("base-url", STRING, "Where the API is, for a gateway, a router or a local server — asked for openai-compatible"),
                 flag("binary", STRING, "A subscription: the claude or codex binary to run; the one on PATH when absent"),
                 flag("config-dir", STRING, "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one in ~/.gruntas/accounts/ for a named account"),
             ],
             ..cmd(
                 "connect",
-                "krowk connect [vendor] [--method subscription|api-key|device] [--name N]",
+                "gruntas connect [vendor] [--method subscription|api-key|device] [--name N]",
                 "Connect a Claude Code or Codex account, by login or API key",
             )
         },
@@ -937,12 +938,12 @@ fn connect_commands() -> Vec<Command> {
                 flag("remove", BOOL, "Remove its definition too; without it the instance stays, not signed in"),
                 flag("sign-out-vendor", BOOL, "The built-in claude or codex: yes, sign me out of Claude Code or Codex itself (~/.claude, ~/.codex), for every tool. Asked at a terminal; required without one"),
             ],
-            ..cmd("disconnect", "krowk disconnect [instance] [--remove]", "Sign a connected model out")
+            ..cmd("disconnect", "gruntas disconnect [instance] [--remove]", "Sign a connected model out")
         },
     ]
 }
 
-/// `krowk providers`: the Claude Code and Codex accounts, on a subscription,
+/// `gruntas providers`: the Claude Code and Codex accounts, on a subscription,
 /// an API key or a gateway. The harness build's only.
 #[cfg(feature = "harness")]
 fn providers_command() -> Command {
@@ -953,7 +954,7 @@ fn providers_command() -> Command {
                 args: vec![arg("provider", PROVIDER_ARG, true)],
                 flags: vec![
                     flag("name", STRING, "Name the instance <provider>:<name> (for openai-compatible, <name> alone); the provider's own name when absent"),
-                    flag("api-key-env", STRING, "The environment variable holding the key — krowk stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named instance. For claude and codex, only when given: the key a router (with --base-url) or a Console account runs on, handed to the backend"),
+                    flag("api-key-env", STRING, "The environment variable holding the key — gruntas stores its name, never the key. Default: the conventional one, or <PROVIDER>_<NAME>_API_KEY for a named instance. For claude and codex, only when given: the key a router (with --base-url) or a Console account runs on, handed to the backend"),
                     flag("base-url", STRING, "Where the API is, for a gateway, a router or a local server — required for openai-compatible"),
                     flag("device", BOOL, "codex: sign in with a code typed into any browser, instead of one opened here"),
                     flag("binary", STRING, "claude, codex: the binary to run; claude or codex on PATH when absent"),
@@ -961,28 +962,28 @@ fn providers_command() -> Command {
                 ],
                 ..cmd(
                     "add",
-                    "krowk providers add <provider> [--name N] [--api-key-env VAR] [--base-url URL] [--device] [--binary PATH] [--config-dir DIR]",
+                    "gruntas providers add <provider> [--name N] [--api-key-env VAR] [--base-url URL] [--device] [--binary PATH] [--config-dir DIR]",
                     "Add an instance, or sign one in",
                 )
             },
-            cmd("list", "krowk providers list", "List every instance, and whether it is ready"),
+            cmd("list", "gruntas providers list", "List every instance, and whether it is ready"),
             Command {
                 args: vec![arg("instance", "The instance to remove, e.g. openai:work", true)],
-                ..cmd("remove", "krowk providers remove <instance>", "Remove an instance's definition, and forget its login")
+                ..cmd("remove", "gruntas providers remove <instance>", "Remove an instance's definition, and forget its login")
             },
             Command {
                 args: vec![
                     arg("instance", "The instance to rename, e.g. claude:work — a person at a terminal may omit it and pick", false),
                     arg("new-name", "Its whole new name, e.g. claude:personal — the same <provider>: prefix; a server's has none. Asked at a terminal when absent", false),
                 ],
-                ..cmd("rename", "krowk providers rename [instance] [new-name]", "Rename an instance; its login and sessions follow")
+                ..cmd("rename", "gruntas providers rename [instance] [new-name]", "Rename an instance; its login and sessions follow")
             },
         ],
         ..cmd("providers", "", "Low-level instance config (add, list, rename, remove)")
     }
 }
 
-/// `krowk -p "…"`: the harness build's headless agent. Flags rather than a
+/// `gruntas -p "…"`: the harness build's headless agent. Flags rather than a
 /// command, because that is how every agent CLI spells it.
 #[cfg(feature = "harness")]
 fn prompt_flags() -> Vec<Flag> {
@@ -993,7 +994,7 @@ fn prompt_flags() -> Vec<Flag> {
         },
         with_default(flag("output-format", STRING, "With -p: text (the answer), json (the result event) or stream-json (every event, one per line)"), "text"),
         flag("model", STRING, "With -p: the model, as <instance>/<model> or a model id on the anthropic instance, e.g. claude-opus-5-5, claude:work/sonnet to run Claude Code, or codex:team/gpt-5.5 to run Codex; with --resume, the session moves there"),
-        flag("resume", STRING, "With -p: continue this krowk session — the sessionId a result names, or its krowk.db id"),
+        flag("resume", STRING, "With -p: continue this gruntas session — the sessionId a result names, or its gruntas.db id"),
         flag(
             "worktree",
             BOOL,
@@ -1003,14 +1004,14 @@ fn prompt_flags() -> Vec<Flag> {
             flag(
                 "permission-mode",
                 STRING,
-                "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which asks about nothing: no krowk deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode; in every other mode a deny rule holds",
+                "With -p and the agent: default, acceptEdits, plan or bypassPermissions, as in Claude Code, or unhinged, which asks about nothing: no gruntas deny rule, ask rule or protected directory holds. Without it, the settings' permissions.defaultMode; in every other mode a deny rule holds",
             ),
             "default",
         ),
         flag(
             "sandbox",
             STRING,
-            "With -p: off. Claude Code and Codex run their own tools outside krowk's OS sandbox, so a profile (workspace, read-only, strict) is refused",
+            "With -p: off. Claude Code and Codex run their own tools outside gruntas's OS sandbox, so a profile (workspace, read-only, strict) is refused",
         ),
         flag(
             "toolset",
@@ -1034,7 +1035,7 @@ fn prompt_flags() -> Vec<Flag> {
         flag(
             "max-usd",
             STRING,
-            "With -p: stop the session once it, with its agents, is past this many dollars — metered, priced from models.dev: a turn at the limit is refused, and one a call takes past it is interrupted. Exits 4, like `krowk sessions budget`",
+            "With -p: stop the session once it, with its agents, is past this many dollars — metered, priced from models.dev: a turn at the limit is refused, and one a call takes past it is interrupted. Exits 4, like `gruntas sessions budget`",
         ),
         flag(
             "max-tokens",
@@ -1049,7 +1050,7 @@ fn prompt_flags() -> Vec<Flag> {
         flag(
             "daemon",
             BOOL,
-            "With -p: run the turn in the host daemon (started when none runs) instead of this process, so it goes on if this process ends — `krowk host attach <session>` follows it",
+            "With -p: run the turn in the host daemon (started when none runs) instead of this process, so it goes on if this process ends — `gruntas host attach <session>` follows it",
         ),
     ]
 }
@@ -1108,7 +1109,7 @@ impl Catalog {
     }
 }
 
-/// What `krowk help <command>` says under the usage: everything the one-line
+/// What `gruntas help <command>` says under the usage: everything the one-line
 /// summary has no room for, by the command's whole name. Prose for a person,
 /// so not in `--json`, whose shape stays the parser's.
 pub fn about(name: &str) -> &'static str {
@@ -1117,16 +1118,16 @@ pub fn about(name: &str) -> &'static str {
         "artifacts create" => PUSH_ABOUT,
         "artifacts delete" => DELETE_ABOUT,
         "claim" | "artifacts claim" => CLAIM_ABOUT,
-        "artifacts" => "An artifact is a file published to a link. `krowk push` and `krowk claim`\nare the short forms of `create` and `claim`; `uploads` is an older name.",
+        "artifacts" => "An artifact is a file published to a link. `gruntas push` and `gruntas claim`\nare the short forms of `create` and `claim`; `uploads` is an older name.",
         "login" | "auth login" => LOGIN_ABOUT,
-        "logout" => "Takes the key that resolves here (what `krowk whoami` shows) off this machine.",
-        "auth" => "Manage the API key — your krowk account.",
+        "logout" => "Takes the key that resolves here (what `gruntas whoami` shows) off this machine.",
+        "auth" => "Manage the API key — your gruntas account.",
         "workspaces" => WORKSPACES_ABOUT,
         "config" => CONFIG_ABOUT,
         "doctor" => "Checks the local setup, and that the registry answers.",
         "sessions budget" => BUDGET_ABOUT,
         "sessions" => "Lists every agent thread on this machine, newest first.",
-        "upgrade" => "Upgrades krowk to the latest release.",
+        "upgrade" => "Upgrades gruntas to the latest release.",
         "billing" => BILLING_ABOUT,
         #[cfg(all(feature = "harness", unix))]
         "machines" | "hosts" => MACHINES_ABOUT,
@@ -1142,7 +1143,7 @@ variable is named for you to unset.",
         "sync attach" => SYNC_ATTACH_ABOUT,
         #[cfg(feature = "harness")]
         "sync new" => "\
-Asks the machine to start the session, then follows it as `krowk sync attach`
+Asks the machine to start the session, then follows it as `gruntas sync attach`
 does. Nothing is sent to a machine that is offline, or for a directory or a
 model it does not offer; the machine checks again and runs it in its own
 default permission mode, so there is no --permission-mode here.",
@@ -1151,31 +1152,31 @@ default permission mode, so there is no --permission-mode here.",
 Adds a Claude Code or Codex account: on a subscription (signed in with
 `claude auth login` or `codex login`), or on an API key or a gateway.",
         #[cfg(feature = "harness")]
-        "providers list" => "Where each runs, too. The same check as `krowk status`.",
+        "providers list" => "Where each runs, too. The same check as `gruntas status`.",
         #[cfg(feature = "harness")]
         "mcp" => "\
-Servers live in krowk's config.json (`mcpServers`, the shape Claude Code
+Servers live in gruntas's config.json (`mcpServers`, the shape Claude Code
 uses), for every repository. Project servers stay in the repository's
 .mcp.json, behind trust; `list` shows them, and Claude Code's, too. Claude
-Code and Codex reach them through krowk's bridge (`mcp_search`, `mcp_call`).
+Code and Codex reach them through gruntas's bridge (`mcp_search`, `mcp_call`).
 
 A server that asks for OAuth, like Mobbin:
 
-  krowk mcp add mobbin https://api.mobbin.com/mcp
-  krowk mcp login mobbin
+  gruntas mcp add mobbin https://api.mobbin.com/mcp
+  gruntas mcp login mobbin
 
 `login` opens your browser, or with --no-browser (or over SSH) prints the page
 and reads the address your browser lands on. Tokens are stored in
-credentials.json and refreshed by krowk; a call to a server that needs sign-in
+credentials.json and refreshed by gruntas; a call to a server that needs sign-in
 says so and names this command.",
         #[cfg(feature = "harness")]
-        "providers" => "Below `krowk connect`: API keys, logins, Claude Code and Codex accounts.",
+        "providers" => "Below `gruntas connect`: API keys, logins, Claude Code and Codex accounts.",
         #[cfg(feature = "harness")]
         "sync" => "\
 Sessions are encrypted on this machine before they leave it. `init` sets up
 your device list and shows a recovery kit, 12 words, once: the only way back
 in if every device is lost. `recover` takes them on a new machine — at its
-prompt, or piped from a file (`krowk sync recover < kit.txt`), never `echo`,
+prompt, or piped from a file (`gruntas sync recover < kit.txt`), never `echo`,
 which keeps them in your shell history.
 
 Once sync is set up, every session that runs a turn in the host daemon is
@@ -1183,12 +1184,12 @@ synced by itself. `sync.auto: false` in ~/.gruntas/config.json turns that off,
 and `sync.exclude` or a `.gruntas/no-sync` file keeps a directory off sync. A
 session idle for `sync.idleMinutes` (10), with no other device watching it,
 stops syncing until its next prompt here, or until another device opens it
-while the host daemon runs and has stayed online (`krowk machines always-on on`
-keeps it running).",
+while the host daemon runs and has stayed online (`gruntas machines always-on
+on` keeps it running).",
         #[cfg(feature = "harness")]
         "devices" => "\
-Adding a machine: `krowk machines add` here shows a code, valid 10 minutes and
-once; run `krowk sync join` on the new machine and type it there. The code is
+Adding a machine: `gruntas machines add` here shows a code, valid 10 minutes and
+once; run `gruntas sync join` on the new machine and type it there. The code is
 checked by both machines, not by the registry, and this one asks you to
 confirm the new machine by name before anything is added. A wrong code ends
 it: run `add` again for a new one. Needs a Pro workspace.",
@@ -1196,13 +1197,13 @@ it: run `add` again for a new one. Needs a Pro workspace.",
         "worktrees add" => "\
 The worktree is of the repository you are in, on a new branch gruntas/<hex>,
 started from your files as they are, uncommitted changes included, or at
---from, which is not fetched first. It is readied as a `krowk --worktree`
+--from, which is not fetched first. It is readied as a `gruntas --worktree`
 session's is: submodules, seeds, .worktreeinclude, worktrees.setup. A --from on
 neither this checkout nor origin's default branch skips .worktreeinclude and
 setup, so its code is not run beside your files. Agents on Claude Code or Codex
-use this rather than `git worktree add`, which krowk refuses them. A setup
+use this rather than `git worktree add`, which gruntas refuses them. A setup
 command can take minutes, and nothing prints until it ends. Nothing removes
-the worktree by itself: `krowk worktrees apply` or `remove` does.",
+the worktree by itself: `gruntas worktrees apply` or `remove` does.",
         #[cfg(feature = "harness")]
         "worktrees remove" => "\
 Its branch gruntas/<hex> is kept. Forced, uncommitted changes are saved as
@@ -1221,20 +1222,20 @@ be one of the same repository. Files in .git, .claude, .codex and .gruntas
 directories, which an agent's changes leave to you, are applied.",
         #[cfg(feature = "harness")]
         "host" => "\
-The first krowk that needs it starts the daemon, and it exits after ten idle
+The first gruntas that needs it starts the daemon, and it exits after ten idle
 minutes (host.idleMinutes in config.json, or GRUNTAS_HOST_IDLE seconds).
-`krowk machines always-on on` keeps it running instead, for an
+`gruntas machines always-on on` keeps it running instead, for an
 always-on machine.",
         _ => "",
     }
 }
 
 /// A heading in the human help, and the commands under it in reading order.
-/// `krowk help` lists the commands under the first four, bar those in
-/// `ALL_ONLY`; `krowk help --all` each with everything under it, and the
+/// `gruntas help` lists the commands under the first four, bar those in
+/// `ALL_ONLY`; `gruntas help --all` each with everything under it, and the
 /// last heading, which holds what the overview leaves out. Every command the
 /// build has sits under exactly one heading. The overview's Start header
-/// (`krowk`, `krowk -p`, `krowk -p --resume`) is flags, so not here.
+/// (`gruntas`, `gruntas -p`, `gruntas -p --resume`) is flags, so not here.
 pub const GROUPS: &[(&str, &[&str])] = &[
     (
         "Accounts",
@@ -1302,11 +1303,11 @@ pub const GROUPS: &[(&str, &[&str])] = &[
     ),
 ];
 
-/// The heading `krowk help --all` puts the hidden commands under.
+/// The heading `gruntas help --all` puts the hidden commands under.
 pub const MORE_HEADING: &str = "More";
 
-/// Hidden: still routed, but listed by `krowk help --all` alone, and marked
-/// `hidden` in `krowk help --json`. The duplicates and the low-level
+/// Hidden: still routed, but listed by `gruntas help --all` alone, and marked
+/// `hidden` in `gruntas help --json`. The duplicates and the low-level
 /// commands; the GitHub Action and scripts call them by name, and nothing
 /// about how they run changes.
 pub const ALL_ONLY: &[&str] = &[
@@ -1409,7 +1410,7 @@ mod tests {
             let words: Vec<String> = leaf.name.split(' ').map(|w| format!("\"{w}\"")).collect();
             let arm = format!("[{}", words.join(", "));
             let alone = format!("[{}]", words.join(", "));
-            assert!(router.iter().any(|l| l.contains(&arm) || l.contains(&alone)), "no route for hidden `krowk {}`", leaf.name);
+            assert!(router.iter().any(|l| l.contains(&arm) || l.contains(&alone)), "no route for hidden `gruntas {}`", leaf.name);
             checked += 1;
         }
         assert!(checked >= 10, "{checked}");

@@ -35,7 +35,7 @@ pub type Stop = Box<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 /// which is all it is held for.
 const JOB_LEASE: u64 = 120;
 /// A fresh command id: a random UUID, version 4, which is all the registry
-/// takes for one (`krowk sync new` makes its the same way).
+/// takes for one (`gruntas sync new` makes its the same way).
 fn command_id() -> String {
     let mut b = e2e::random::<16>();
     b[6] = (b[6] & 0x0f) | 0x40;
@@ -233,7 +233,7 @@ impl Fleet for Registry {
 
     fn send_run(&self, to: &Announcement, task: &RunTask, wait: Duration) -> Result<Option<HostAnswer>, String> {
         let a = &self.announcer;
-        let target = DeviceId::parse(&to.device).ok_or_else(|| format!("{} announces no device id this krowk reads", to.name))?;
+        let target = DeviceId::parse(&to.device).ok_or_else(|| format!("{} announces no device id this gruntas reads", to.name))?;
         let id = command_id();
         let sealed = host_command::seal_command(&HostCommand::Run(task.clone()), &id, &a.device, &target, &a.keys, a.chain.generation())?;
         let mut tries = 0;
@@ -251,7 +251,7 @@ impl Fleet for Registry {
         loop {
             match a.api.host_command(&target.to_string(), &id) {
                 Ok(s) if s.answered => {
-                    let sealed = s.answer.ok_or_else(|| format!("{} answered with nothing this krowk reads", to.name))?;
+                    let sealed = s.answer.ok_or_else(|| format!("{} answered with nothing this gruntas reads", to.name))?;
                     return host_command::open_answer(&sealed, &id, &target, &a.device, &a.keys, &a.chain).map(Some);
                 }
                 _ => {}
@@ -275,14 +275,14 @@ impl Fleet for Registry {
     }
 
     fn read_result(&self, child: &str, transport: &str, key: &str) -> Result<Bundle, String> {
-        let key = handoff::key_from_hex(key).ok_or("the result's key is not one krowk reads")?;
+        let key = handoff::key_from_hex(key).ok_or("the result's key is not one gruntas reads")?;
         let sealed = self.announcer.api.read_transport(transport).map_err(|e| format!("{} ({})", e.fix(), e.code()))?;
         let plain = e2e::open_transport(&sealed, &crate::daemon::ws::uuid(child), &key).map_err(|e| e.to_string())?;
         Bundle::decode(&plain, child)
     }
 
     fn land(&self, job: &Bundle, result: &Bundle, to: &Path) -> Result<(crate::worktree::Worktree, crate::worktree::apply::Applied), String> {
-        let root = self.worktrees.as_deref().ok_or("krowk found no home directory to make worktrees under: set HOME or XDG_DATA_HOME")?;
+        let root = self.worktrees.as_deref().ok_or("gruntas found no home directory to make worktrees under: set HOME or XDG_DATA_HOME")?;
         handoff::apply_result(job, result, to, root)
     }
 

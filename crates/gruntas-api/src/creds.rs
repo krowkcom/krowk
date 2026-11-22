@@ -1,4 +1,4 @@
-//! The credentials file, `credentials.json` in krowk's home: the one file
+//! The credentials file, `credentials.json` in gruntas's home: the one file
 //! that holds a secret. The registry's keys (one per workspace, and which is
 //! the default) live here at the top level; the harness keeps its provider
 //! logins and stored API keys beside them (`instances`, `keys`). Each writer
@@ -25,11 +25,11 @@ use std::time::{Duration, Instant};
 /// a test can hand in its own.
 pub type Env<'a> = &'a dyn Fn(&str) -> String;
 
-/// How long a writer waits for another krowk's write (a token refresh) to
+/// How long a writer waits for another gruntas's write (a token refresh) to
 /// finish.
 pub const LOCK_WAIT: Duration = Duration::from_secs(45);
 
-/// Where a file stops being JSON krowk reads, in the only words an error
+/// Where a file stops being JSON gruntas reads, in the only words an error
 /// about it may use.
 pub fn not_valid(path: &Path, e: &serde_json::Error) -> String {
     format!("{} is not valid (line {}, column {})", path.display(), e.line(), e.column())
@@ -65,7 +65,7 @@ pub fn write_bytes(path: &Path, data: &[u8]) -> Result<(), String> {
 }
 
 /// The file's lock, held until dropped: one writer at a time across every
-/// krowk on the host.
+/// gruntas on the host.
 pub struct Lock(#[allow(dead_code)] std::fs::File);
 
 /// The lock, if nobody holds it. Never blocks, so an async caller can poll
@@ -86,7 +86,7 @@ pub fn try_lock(path: &Path) -> Result<Option<Lock>, String> {
 
 /// Why a lock was not had in time.
 pub fn busy(path: &Path) -> String {
-    format!("another krowk held {} for {} seconds — run the command again", path.display(), LOCK_WAIT.as_secs())
+    format!("another gruntas held {} for {} seconds — run the command again", path.display(), LOCK_WAIT.as_secs())
 }
 
 /// The lock, waited for from blocking code.
@@ -138,7 +138,7 @@ struct StoredKey {
 struct Credentials {
     default: String,
     workspaces: BTreeMap<String, StoredKey>,
-    /// The harness's sections, and whatever a later krowk writes: kept.
+    /// The harness's sections, and whatever a later gruntas writes: kept.
     other: Map<String, Value>,
 }
 
@@ -156,7 +156,7 @@ pub struct Identity {
     pub workspace_name: String,
 }
 
-/// One stored key as `krowk workspaces` lists it.
+/// One stored key as `gruntas workspaces` lists it.
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 pub struct WorkspaceKey {
     pub name: String,
@@ -173,7 +173,7 @@ pub const TOKEN_SOURCE_ENV: &str = "GRUNTAS_TOKEN";
 pub const TOKEN_SOURCE_FILE: &str = "credentials file";
 pub const TOKEN_SOURCE_NONE: &str = "none";
 
-/// `credentials.json` in krowk's home.
+/// `credentials.json` in gruntas's home.
 pub fn credentials_path() -> Result<PathBuf, Error> {
     Ok(crate::home::get()?.join(crate::home::CREDENTIALS))
 }
@@ -202,7 +202,7 @@ fn parse(path: &Path) -> Result<Credentials, String> {
     let default = field("default");
     let c = match other.remove("workspaces") {
         // Never serde's words here either: they would quote a key.
-        Some(w) => Credentials { default, workspaces: serde_json::from_value(w).map_err(|_| format!("{} is not valid (its workspaces are not krowk's)", path.display()))?, other },
+        Some(w) => Credentials { default, workspaces: serde_json::from_value(w).map_err(|_| format!("{} is not valid (its workspaces are not gruntas's)", path.display()))?, other },
         None if other.contains_key("token") => {
             let mut field = |k: &str| match other.remove(k) {
                 Some(Value::String(s)) => s,
@@ -249,7 +249,7 @@ fn change<R>(edit: impl FnOnce(&mut Credentials) -> Result<(R, bool), Error>) ->
 }
 
 /// The legacy shape, normalised, as a JSON object: what the move from an
-/// older krowk's file merges.
+/// older gruntas's file merges.
 pub fn registry_section(path: &Path) -> Result<Map<String, Value>, String> {
     Ok(parse(path)?.into_map())
 }
@@ -295,7 +295,7 @@ pub fn resolve_token(env: Env, workspace: &str) -> Result<String, Error> {
             return Err(fail(
                 "no_key_for_workspace",
                 format!(
-                    "no key is stored for workspace {workspace} — stored: {}; run `krowk login` to add one",
+                    "no key is stored for workspace {workspace} — stored: {}; run `gruntas login` to add one",
                     names.join(", ")
                 ),
             ));
@@ -303,7 +303,7 @@ pub fn resolve_token(env: Env, workspace: &str) -> Result<String, Error> {
         return Err(fail(
             "no_key_for_workspace",
             format!(
-                "no key is stored for workspace {workspace}, and nothing else is stored either — run `krowk login` first"
+                "no key is stored for workspace {workspace}, and nothing else is stored either — run `gruntas login` first"
             ),
         ));
     }
@@ -319,8 +319,8 @@ pub fn resolve_token(env: Env, workspace: &str) -> Result<String, Error> {
     Err(fail(
         "dangling_default",
         format!(
-            "the default names {}, and no key is stored under that name — {stored}; run `krowk workspaces use <name>` \
-             to point the default at a stored key, or `krowk login`",
+            "the default names {}, and no key is stored under that name — {stored}; run `gruntas workspaces use <name>` \
+             to point the default at a stored key, or `gruntas login`",
             c.default
         ),
     ))
@@ -438,7 +438,7 @@ pub fn set_default_workspace(name: &str) -> Result<String, String> {
         if !c.workspaces.contains_key(name) {
             let names = c.names();
             if names.is_empty() {
-                return Err(fail("", "no workspace keys are stored — run `krowk login` first"));
+                return Err(fail("", "no workspace keys are stored — run `gruntas login` first"));
             }
             return Err(fail("", format!("no stored key named {name} — stored: {}", names.join(", "))));
         }

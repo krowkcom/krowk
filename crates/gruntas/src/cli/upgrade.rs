@@ -18,7 +18,7 @@ use std::time::Duration;
 const RELEASE_API: &str = "https://api.github.com/repos/gruntas/gruntas/releases/latest";
 /// The recent releases, for the check: a security fix in one skipped counts
 /// as much as one in the newest. A hundred is GitHub's most to a page; a
-/// krowk further behind than that is a major release behind regardless.
+/// gruntas further behind than that is a major release behind regardless.
 const RELEASES_API: &str = "https://api.github.com/repos/gruntas/gruntas/releases?per_page=100";
 const DAY: i64 = 24 * 3600;
 const RELEASE_DOWNLOAD: &str = "https://github.com/gruntas/gruntas/releases/download";
@@ -276,7 +276,7 @@ fn write_binary(r: &mut impl Read, dest: &Path) -> std::io::Result<()> {
     result
 }
 
-/// `cache/update-check.json` in krowk's home; none without one. It holds
+/// `cache/update-check.json` in gruntas's home; none without one. It holds
 /// when the releases were last asked about, the newest, the security ones,
 /// and the notice already given for the newest (`shown`).
 fn state_path(ctx: &Ctx) -> Option<PathBuf> {
@@ -316,7 +316,7 @@ fn stale(state: &Value, now: jiff::Timestamp) -> bool {
 }
 
 /// Asks for the releases and folds them into what the file holds now —
-/// read again here, so a notice another krowk marked meanwhile is kept.
+/// read again here, so a notice another gruntas marked meanwhile is kept.
 fn refresh(path: &Path, timeout: Duration) {
     let found = recent_releases(timeout);
     let mut state = read_state(path);

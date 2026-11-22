@@ -1,4 +1,4 @@
-//! krowk: a coding agent harness, whose lean build only publishes agent
+//! gruntas: a coding agent harness, whose lean build only publishes agent
 //! output to permalinks. `cli::run` is the whole entry point,
 //! taking its streams and environment as arguments so tests never touch the
 //! process.

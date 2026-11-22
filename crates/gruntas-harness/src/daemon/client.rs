@@ -185,7 +185,7 @@ impl Inner {
 }
 
 fn gone() -> EngineError {
-    EngineError::new("host_gone", "the host daemon closed the connection — the session goes on there if it was running; `krowk host status` says whether the daemon is up")
+    EngineError::new("host_gone", "the host daemon closed the connection — the session goes on there if it was running; `gruntas host status` says whether the daemon is up")
 }
 
 pub fn engine_error(e: ErrorInfo) -> EngineError {

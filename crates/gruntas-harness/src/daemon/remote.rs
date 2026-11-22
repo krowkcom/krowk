@@ -1,9 +1,9 @@
 //! A daemon client that outlives its daemon: what an interactive client holds for as long
-//! as it is open. A daemon can go while an interactive client idles — `krowk host stop
-//! --force`, `krowk machines always-on on` handing over to the service, an upgrade's
+//! as it is open. A daemon can go while an interactive client idles — `gruntas host stop
+//! --force`, `gruntas machines always-on on` handing over to the service, an upgrade's
 //! old daemon killed, a crash — and a client's next command then reaches the
 //! next one, started when none runs (`daemon::ensure`), rather than failing
-//! with `host_gone` until krowk is restarted. A turn under way when its
+//! with `host_gone` until gruntas is restarted. A turn under way when its
 //! connection goes — the daemon let it go for falling past what it can
 //! catch up, or the daemon itself went — is re-followed on the next one
 //! from where its stream stood: the log after its last logged event, the
@@ -149,7 +149,7 @@ impl Remote {
         self.fresh().await?.mcp_sign_out(session_id, server).await
     }
 
-    /// A daemon of an older krowk than this one replaced with one of this
+    /// A daemon of an older gruntas than this one replaced with one of this
     /// version, when it can go with nothing of it lost: no turn running
     /// there (the daemon refuses a stop while one does), nothing in the
     /// background — a backend's agent, a turn it began by itself — and not
@@ -158,9 +158,9 @@ impl Remote {
     /// replaced only with no other client on it: nobody's is then lost that
     /// its own idle exit would not lose. The caller knows its own session's
     /// (`Link::renew`). Its other clients
-    /// reach the next one on their next command, as after `krowk host stop
+    /// reach the next one on their next command, as after `gruntas host stop
     /// --force`. One not replaced is tried again on the next call; one of
-    /// the same or a newer krowk is never touched, so an older krowk still
+    /// the same or a newer gruntas is never touched, so an older gruntas still
     /// open does not replace it in turn. Answers whether it was replaced.
     pub async fn renew(&self) -> bool {
         let old = self.current();
@@ -186,11 +186,11 @@ impl Remote {
         let Ok(next) = super::ensure(&*self.env, &self.cwd, &self.version, self.answers, &*self.spawn).await else { return false };
         let next = Arc::new(next);
         forward(&next, &self.watch);
-        // An older krowk's command can start one of its own between the old
+        // An older gruntas's command can start one of its own between the old
         // daemon's going and this one's start: that is not a replacement.
         let renewed = !super::older(&next.krowk_version, &self.version);
         if renewed {
-            *self.note.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("the host daemon ran krowk {}; it was replaced with {} (pid {})", old.krowk_version, next.krowk_version, next.pid));
+            *self.note.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("the host daemon ran gruntas {}; it was replaced with {} (pid {})", old.krowk_version, next.krowk_version, next.pid));
         }
         *self.client.lock().unwrap_or_else(|e| e.into_inner()) = next;
         renewed

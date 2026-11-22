@@ -30,7 +30,7 @@ fn root(name: &str) -> PathBuf {
     root.canonicalize().unwrap()
 }
 
-/// krowk with `home` as HOME and nothing else of this machine's.
+/// gruntas with `home` as HOME and nothing else of this machine's.
 fn attended(home: &Path, api: &str, token: &str, args: &[&str]) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
     c.args(args)
@@ -47,7 +47,7 @@ fn attended(home: &Path, api: &str, token: &str, args: &[&str]) -> Command {
 
 /// Sync set up in `home`: an account key and the device's own keys, and
 /// the device alone on the person's device list in the registry, `token`
-/// bound to it — as `krowk sync init` leaves a machine.
+/// bound to it — as `gruntas sync init` leaves a machine.
 fn set_up(home: &Path, api: &str, token: &str) -> gruntas_api::Client {
     let keys = Keystore::new(&home.join(".gruntas"));
     keys.recover(AccountKey::generate()).unwrap();
@@ -67,7 +67,7 @@ fn r_sync_14_a_service_key_is_refused_with_a_fix_and_free_is_admitted() {
     let api = format!("{}/v1", registry.url());
 
     let refused = gruntas_api::Client::new(&api, "krowk_sk_service_workspace").device_list_all().unwrap_err();
-    assert!(refused.code() == "sync_requires_paid_plan" && refused.fix().contains("`krowk billing`"), "{refused:?}");
+    assert!(refused.code() == "sync_requires_paid_plan" && refused.fix().contains("`gruntas billing`"), "{refused:?}");
 
     let free = gruntas_api::Client::new(&api, "krowk_sk_free_workspace").device_list_all();
     assert!(free.as_ref().err().is_none_or(|e| e.code() != "sync_requires_paid_plan"), "{free:?}");
@@ -258,7 +258,7 @@ struct Machine {
 
 /// A machine of the person's, a home of its own under `root`: its device on
 /// the person's device list, and a key of its own that speaks for it, as
-/// `krowk sync init` or `sync join` leaves one. Its client is signed by the
+/// `gruntas sync init` or `sync join` leaves one. Its client is signed by the
 /// device's own key (crypto.md → Signed registry requests).
 fn machine(api: &str, people: &mut People, root: &Path, name: &str) -> Machine {
     let keys = Keystore::new(&root.join(name).join(".gruntas"));

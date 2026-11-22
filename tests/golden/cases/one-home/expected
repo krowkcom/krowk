@@ -1,4 +1,4 @@
-$ krowk auth login --token krowk_sk_test
+$ gruntas auth login --token krowk_sk_test
 stdout:
 {
   "ok": true,
@@ -12,14 +12,14 @@ stdout:
   "breadcrumbs": [
     {
       "action": "push",
-      "cmd": "krowk push <file>",
+      "cmd": "gruntas push <file>",
       "description": "the key is stored and accepted, so nothing else is needed before uploading; <file> is the path to upload"
     }
   ]
 }
 exit: 0
 
-$ krowk config set workspace ws_x --global
+$ gruntas config set workspace ws_x --global
 stdout:
 {
   "ok": true,
@@ -32,14 +32,14 @@ stdout:
   "breadcrumbs": [
     {
       "action": "check the effective configuration",
-      "cmd": "krowk config show",
+      "cmd": "gruntas config show",
       "description": "reports what actually resolves here, which layer wins, and why"
     }
   ]
 }
 exit: 0
 
-$ krowk sessions import --from claude --quiet
+$ gruntas sessions import --from claude --quiet
 stdout:
 {
   "dry_run": false,
@@ -80,7 +80,7 @@ sessions/
 sessions/gruntas.db 600
 sessions/import.lock 600
 
-$ krowk auth login --token krowk_sk_test
+$ gruntas auth login --token krowk_sk_test
 stdout:
 {
   "ok": true,
@@ -94,14 +94,14 @@ stdout:
   "breadcrumbs": [
     {
       "action": "push",
-      "cmd": "krowk push <file>",
+      "cmd": "gruntas push <file>",
       "description": "the key is stored and accepted, so nothing else is needed before uploading; <file> is the path to upload"
     }
   ]
 }
 exit: 0
 
-$ krowk sessions --quiet
+$ gruntas sessions --quiet
 stdout:
 {
   "sessions": []
@@ -114,7 +114,7 @@ credentials.lock 600
 sessions/
 sessions/gruntas.db 600
 
-$ krowk sessions --quiet
+$ gruntas sessions --quiet
 stderr:
 {
   "error": "bad_home",
@@ -123,7 +123,7 @@ stderr:
 }
 exit: 1
 
-$ krowk doctor
+$ gruntas doctor
 stderr:
 {
   "ok": false,

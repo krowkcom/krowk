@@ -1,28 +1,28 @@
-$ krowk push --format human
+$ gruntas push --format human
 stderr:
 ✗ Pass at least one path.
-  Try: krowk push screenshot.png
+  Try: gruntas push screenshot.png
   Code: no_file
 exit: 1
 
-$ krowk push --format markdown
+$ gruntas push --format markdown
 stderr:
 ✗ Pass at least one path.
-  Try: krowk push screenshot.png
+  Try: gruntas push screenshot.png
   Code: no_file
 exit: 1
 
-$ krowk push --format url
+$ gruntas push --format url
 stderr:
 ✗ Pass at least one path.
-  Try: krowk push screenshot.png
+  Try: gruntas push screenshot.png
   Code: no_file
 exit: 1
 
-$ krowk bogus --format human
+$ gruntas bogus --format human
 stderr:
-✗ `bogus` is not a krowk command.
-  Try: krowk --help
+✗ `bogus` is not a gruntas command.
+  Try: gruntas --help
   Code: unknown_command
 exit: 1
 

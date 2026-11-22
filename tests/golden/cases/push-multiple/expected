@@ -1,4 +1,4 @@
-$ krowk push a.txt b.md c.json
+$ gruntas push a.txt b.md c.json
 stdout:
 {
   "ok": true,
@@ -117,17 +117,17 @@ stdout:
   "breadcrumbs": [
     {
       "action": "keep past expiry",
-      "cmd": "krowk claim <art_1> <claim_1>",
+      "cmd": "gruntas claim <art_1> <claim_1>",
       "description": "this upload is anonymous and expires within the day; claiming it with a key moves it into that key's workspace — a Pro workspace keeps it, a free one gives it another 24 hours. The token is shown once and spent once"
     },
     {
       "action": "keep past expiry",
-      "cmd": "krowk claim <art_2> <claim_2>",
+      "cmd": "gruntas claim <art_2> <claim_2>",
       "description": "this upload is anonymous and expires within the day; claiming it with a key moves it into that key's workspace — a Pro workspace keeps it, a free one gives it another 24 hours. The token is shown once and spent once"
     },
     {
       "action": "keep past expiry",
-      "cmd": "krowk claim <art_3> <claim_3>",
+      "cmd": "gruntas claim <art_3> <claim_3>",
       "description": "this upload is anonymous and expires within the day; claiming it with a key moves it into that key's workspace — a Pro workspace keeps it, a free one gives it another 24 hours. The token is shown once and spent once"
     },
     {
@@ -149,14 +149,14 @@ stdout:
 }
 exit: 0
 
-$ krowk push a.txt b.md --format markdown
+$ gruntas push a.txt b.md --format markdown
 stdout:
 **a.txt** · [View preview ↗](http://<registry>/a/<art_4>) · expires <date>
 
 **b.md** · [View preview ↗](http://<registry>/a/<art_5>) · expires <date>
 exit: 0
 
-$ krowk push a.txt b.md --format url
+$ gruntas push a.txt b.md --format url
 stdout:
 http://<registry>/a/<art_6>
 http://<registry>/a/<art_7>

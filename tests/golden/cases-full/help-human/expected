@@ -1,30 +1,30 @@
-$ krowk help --format human
+$ gruntas help --format human
 stdout:
-█  █  Krowk 0.0.0-golden
+█  █  Gruntas 0.0.0-golden
 █▀▀▄  A coding agent harness: one session, any machine, model or agent
 
 Start
-  krowk                      Set this machine up, then an overview of it
-  krowk -p "…"               One prompt, headless
-  krowk -p --resume          Continue a session
+  gruntas                    Set this machine up, then an overview of it
+  gruntas -p "…"             One prompt, headless
+  gruntas -p --resume        Continue a session
 
 Examples
-  krowk connect anthropic    Connect a model to run the agent on
-  krowk push shot.png        Upload a screenshot and get a link to paste
-  krowk sessions --json      Every agent session on this machine, as data
+  gruntas connect anthropic  Connect a model to run the agent on
+  gruntas push shot.png      Upload a screenshot and get a link to paste
+  gruntas sessions --json    Every agent session on this machine, as data
 
 Accounts
   connect       Connect a Claude Code or Codex account, by login or API key
   disconnect    Sign a connected model out
-  login         Sign in to your krowk account
+  login         Sign in to your gruntas account
   whoami        Show the key and its workspace
   billing       Choose or manage the workspace's plan
 
 Work
   sessions      List and read agent sessions on this machine
   machines      Your machines, and what each can take
-  worktrees     The git worktrees krowk made for agents, across repositories
-  mcp           MCP servers krowk's agent uses (add, remove, list, login)
+  worktrees     The worktrees gruntas made for agents, across repositories
+  mcp           MCP servers gruntas's agent uses (add, remove, list, login)
   trust         Trust a repository to run its hooks and MCP servers
 
 Publish
@@ -33,7 +33,7 @@ Publish
 Health
   status        What's connected, and whether each is ready
   doctor        Check this machine's setup
-  upgrade       Upgrade krowk
+  upgrade       Upgrade gruntas
   config        Show or set configuration
 
 Flags
@@ -42,31 +42,32 @@ Flags
   --json · --jq <expr>       Output as JSON, or filter it
   -h, --help · -v, --version
 
-krowk help <command>  A command's own flags
-krowk help --all      Every command and subcommand
-krowk help topics     Flags, exit codes, environment, workspaces, links
-krowk help agents     For AI agents and scripts: the output contract
+gruntas help <command>
+                      A command's own flags
+gruntas help --all    Every command and subcommand
+gruntas help topics   Flags, exit codes, environment, workspaces, links
+gruntas help agents   For AI agents and scripts: the output contract
 exit: 0
 
-$ krowk help --all --format human
+$ gruntas help --all --format human
 stdout:
-krowk — every command and subcommand
+gruntas — every command and subcommand
 
 Accounts
   connect             Connect a Claude Code or Codex account, by login or API
                       key
   disconnect          Sign a connected model out
-  login               Sign in to your krowk account
+  login               Sign in to your gruntas account
   whoami              Show the key and its workspace
   billing             Choose or manage the workspace's plan
 
 Work
   sessions            List and read agent sessions on this machine
-  sessions show       Read one session back, with its turns, messages and parts
+  sessions show       Read one session back: its turns, messages and parts
   sessions import     Import this machine's agent transcripts
   sessions rebuild    Delete the local store and re-import every transcript
   sessions budget     Check a session against a spend limit
-  sessions sync       Import what changed since the last import, refresh prices
+  sessions sync       Import what changed since last import, refresh prices
   sessions archive    Move idle sessions into encrypted weekly vintages
   sessions restore    Bring an archived session back from its vintage
   sessions vintage    List a week's vintages, replaced ones included
@@ -74,7 +75,7 @@ Work
   sessions unpin      Let a pinned session be archived again
   sessions attach     Follow a session on another machine, live
   sessions take       Move a live session here, uncommitted work and all
-  sessions new        Start a session on another machine of yours, and follow it
+  sessions new        Start a session on another machine of yours and follow it
   machines list       Your machines, and what each can take
   machines accept     Take work from your other machines, or not
   machines add        Show a code that adds another machine
@@ -82,15 +83,16 @@ Work
   machines always-on  Keep this machine available while you're away
   machines recovery   Your recovery kit: see it, make a new one, test it
   worktrees list      Each one: branch, commits ahead, changes, session, age
-  worktrees add       Make one for an agent to work in, and print its directory
-  worktrees remove    Remove one, its branch kept; not while its session runs
+  worktrees add       Make one for an agent to work in; print its directory
+  worktrees remove    Remove one, branch kept; not while its session runs
   worktrees apply     Bring one's changes into a checkout, uncommitted
   worktrees prune     Clear what deleted worktrees left, and old snapshots
   mcp login           Sign in to a remote MCP server that asks for OAuth
   mcp logout          Forget a server's sign-in
-  mcp add             Add an MCP server to krowk's config.json
+  mcp add             Add an MCP server to gruntas's config.json
   mcp remove          Remove a server from config.json, and its stored sign-in
-  mcp list            List the servers krowk would load here, without connecting
+  mcp list            List the servers gruntas would load here, without
+                      connecting
   trust               Trust a repository to run its hooks and MCP servers
 
 Publish
@@ -99,46 +101,45 @@ Publish
 Health
   status              What's connected, and whether each is ready
   doctor              Check this machine's setup
-  upgrade             Upgrade krowk
-  config show         The effective configuration, and which layer set each
-                      value
+  upgrade             Upgrade gruntas
+  config show         The effective config, and which layer set each value
   config get          One key's effective value and where it comes from
   config set          Write one value into the repo config, or the global one
   config unset        Remove one value from the repo config, or the global one
 
 More
   logout              Remove this machine's key
-  workspaces list     List the stored keys, and which workspace resolves here
+  workspaces list     List the stored keys, and the one in use here
   workspaces use      Make a stored key the machine-wide default
-  auth login          The long form of `krowk login`
-  auth logout         The long form of `krowk logout`
+  auth login          The long form of `gruntas login`
+  auth logout         The long form of `gruntas logout`
   auth token          Print the stored token
-  auth verify         The long form of `krowk whoami`
+  auth verify         The long form of `gruntas whoami`
   runs start          Open a run to group uploads under
   runs list           List the workspace's runs, newest first
   runs show           Read one run back, with its metadata
   runs finish         Close a run
-  artifacts create    Upload files: the long form of `krowk push`
-  artifacts list      List artifacts, newest first: a run's, or the workspace's
+  artifacts create    Upload files: the long form of `gruntas push`
+  artifacts list      List artifacts, newest first, of a run or the workspace
   artifacts show      Read one artifact back
   artifacts attach    Put an artifact under a run afterwards
   artifacts delete    Take an artifact down — immediate, cannot be undone
-  artifacts claim     The long form of `krowk claim`
+  artifacts claim     The long form of `gruntas claim`
   claim               Keep an anonymous upload past expiry
   providers add       Add an instance, or sign one in
   providers list      List every instance, and whether it is ready
   providers remove    Remove an instance's definition, and forget its login
   providers rename    Rename an instance; its login and sessions follow
   sync init           Set up sync: this device, your user key and a recovery kit
-  sync recover        Back in from the recovery kit's 12 words, on a new machine
+  sync recover        Back in from the kit's 12 words, on a new machine
   sync status         This device's list, recovery kit and auto-sync, checked
   sync recovery       Your recovery kit: make a new one, or test its words
-  sync join           Add this machine by the code `krowk machines add` shows
+  sync join           Add this machine by the code `gruntas machines add` shows
   sync sessions       The synced sessions this machine can open
   sync host           Run a session here and sync it until interrupted
   sync attach         Follow a synced session as stream-json
   sync take           Move a live session here, uncommitted work and all
-  sync new            Start a session on another machine of yours, and follow it
+  sync new            Start a session on another machine of yours and follow it
   devices list        The devices on your device list, this one marked
   devices add         Show a code that adds a new machine to your devices
   devices remove      Take a device off your list and rotate your key
@@ -147,20 +148,21 @@ More
   host stop           Stop the daemon, once no turn runs in it
   host enable         Run the daemon as a systemd or launchd user service
   host disable        Stop the service and remove it
-  hosts               The same as krowk machines
+  hosts               The same as gruntas machines
   relay serve         Carry sealed sessions between their host and viewers
   pricing refresh     Refresh the models.dev price cache
   help                This, a command's help, or a topic
 
-krowk help <command>  A command's own flags and explanation
-krowk help topics     Flags, exit codes, environment, workspaces, links
-krowk help agents     For AI agents and scripts: the output contract
-krowk help --json     The whole surface as data, for tooling
+gruntas help <command>
+                      A command's own flags and explanation
+gruntas help topics   Flags, exit codes, environment, workspaces, links
+gruntas help agents   For AI agents and scripts: the output contract
+gruntas help --json   The whole surface as data, for tooling
 exit: 0
 
-$ krowk help flags --format human
+$ gruntas help flags --format human
 stdout:
-krowk help flags — The flags every command takes
+gruntas help flags — The flags every command takes
 
 Global flags
   --workspace <string>  Use this workspace's stored key for this one command —
@@ -177,7 +179,7 @@ Global flags
   --help, -h            Show the help
   --version, -v         Print the version
 
-Agent flags (krowk, krowk -p)
+Agent flags (gruntas, gruntas -p)
   --print, -p                 Run the prompt given as the arguments (or on
                               stdin) headless: Claude Code or Codex answers it,
                               on the default account or the one --model names,
@@ -190,8 +192,8 @@ Agent flags (krowk, krowk -p)
                               claude-opus-5-5, claude:work/sonnet to run Claude
                               Code, or codex:team/gpt-5.5 to run Codex; with
                               --resume, the session moves there
-  --resume <string>           With -p: continue this krowk session — the
-                              sessionId a result names, or its krowk.db id
+  --resume <string>           With -p: continue this gruntas session — the
+                              sessionId a result names, or its gruntas.db id
   --worktree                  With -p: start the session in a new git worktree
                               of this repository, on a branch gruntas/<hex> —
                               removed at the end if nothing changed, kept and
@@ -199,12 +201,12 @@ Agent flags (krowk, krowk -p)
   --permission-mode <string> (default default)
                               With -p and the agent: default, acceptEdits, plan
                               or bypassPermissions, as in Claude Code, or
-                              unhinged, which asks about nothing: no krowk deny
-                              rule, ask rule or protected directory holds.
+                              unhinged, which asks about nothing: no gruntas
+                              deny rule, ask rule or protected directory holds.
                               Without it, the settings' permissions.defaultMode;
                               in every other mode a deny rule holds
   --sandbox <string>          With -p: off. Claude Code and Codex run their own
-                              tools outside krowk's OS sandbox, so a profile
+                              tools outside gruntas's OS sandbox, so a profile
                               (workspace, read-only, strict) is refused
   --toolset <string>          With -p: the preset the session's context record
                               names — claude, gpt or grok. The model's family
@@ -229,7 +231,8 @@ Agent flags (krowk, krowk -p)
                               agents, is past this many dollars — metered,
                               priced from models.dev: a turn at the limit is
                               refused, and one a call takes past it is
-                              interrupted. Exits 4, like `krowk sessions budget`
+                              interrupted. Exits 4, like `gruntas sessions
+                              budget`
   --max-tokens <string>       With -p: stop the session once its generated
                               tokens (output and reasoning, its agents included)
                               are past this many: a turn at the limit is
@@ -242,7 +245,7 @@ Agent flags (krowk, krowk -p)
                               terminal says yes
   --daemon                    With -p: run the turn in the host daemon (started
                               when none runs) instead of this process, so it
-                              goes on if this process ends — `krowk host attach
-                              <session>` follows it
+                              goes on if this process ends — `gruntas host
+                              attach <session>` follows it
 exit: 0
 

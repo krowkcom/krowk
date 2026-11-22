@@ -1,5 +1,5 @@
 //! Exit codes are a contract a script branches on, so every failure maps to
-//! one here and nowhere else. The table is in `krowk help exit-codes`.
+//! one here and nowhere else. The table is in `gruntas help exit-codes`.
 
 use gruntas_api::Error;
 
@@ -25,19 +25,19 @@ fn client(code: &str) -> Option<i32> {
         "not_authenticated" | "missing_claim" | "no_key_for_workspace" | "dangling_default" | "authorization_denied"
         | "no_one_to_approve" => AUTH,
         "private_needs_key" | "shared_needs_key" | "visibility_not_applied" | "budget_exceeded" => REFUSED,
-        // `krowk upgrade` and a release whose checksums its workflow did not
+        // `gruntas upgrade` and a release whose checksums its workflow did not
         // sign: refused, not retried.
         "unverified_release" => REFUSED,
-        // `krowk billing` for a member: an owner or admin manages it.
+        // `gruntas billing` for a member: an owner or admin manages it.
         "billing_not_permitted" => REFUSED,
         // A backend is not started in a repository nobody trusted (R-BACK-6).
         #[cfg(feature = "harness")]
         "untrusted_directory" => REFUSED,
-        // `krowk status` with no instance ready: nothing is signed in or
+        // `gruntas status` with no instance ready: nothing is signed in or
         // keyed, the same class as a missing login.
         #[cfg(feature = "harness")]
         "none_ready" => AUTH,
-        // A provider krowk no longer runs (D4): connecting a Claude Code or
+        // A provider gruntas no longer runs (D4): connecting a Claude Code or
         // Codex account is the fix, as for a missing one.
         #[cfg(feature = "harness")]
         "removed_provider" => AUTH,
@@ -49,7 +49,7 @@ fn client(code: &str) -> Option<i32> {
         "bad_pairing_code" => USAGE,
         #[cfg(feature = "harness")]
         "no_pairing" => NOT_FOUND,
-        // `krowk worktrees remove` and `apply`: nothing by that name, or
+        // `gruntas worktrees remove` and `apply`: nothing by that name, or
         // one it will not remove or apply as things stand (worktrees WT9,
         // WT13).
         #[cfg(feature = "harness")]
@@ -58,7 +58,7 @@ fn client(code: &str) -> Option<i32> {
         "worktree_live" | "worktree_has_changes" | "worktree_conflicts" | "worktree_submodules" | "worktree_protected" => REFUSED,
         #[cfg(feature = "harness")]
         "worktree_other_repository" => USAGE,
-        // `--resume` of a session whose krowk worktree is gone (WT6).
+        // `--resume` of a session whose gruntas worktree is gone (WT6).
         #[cfg(feature = "harness")]
         "worktree_missing" => NOT_FOUND,
         "authorization_expired" => GONE,

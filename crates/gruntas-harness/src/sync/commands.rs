@@ -30,7 +30,7 @@
 //! with no answering client following is denied at once. Then it goes, and
 //! the turn runs on in the daemon.
 //!
-//! **Take.** The directory checked as for a start, then `krowk sync take
+//! **Take.** The directory checked as for a start, then `gruntas sync take
 //! <session>` run there (`Options::take`), detached, as the person would run
 //! it on this machine: this host is still the one that asks for the session,
 //! and the take's own checks — the instance by name and ready, a backend's
@@ -100,10 +100,10 @@ pub const TAKE_WAIT: Duration = Duration::from_secs(6 * 60);
 /// How often a take's output is read.
 const TAKE_EVERY: Duration = Duration::from_millis(200);
 
-/// The start of the line `krowk sync take` says once the session moved
+/// The start of the line `gruntas sync take` says once the session moved
 /// here, and before it hosts it: how the take's watcher knows.
 pub fn moved_line(session: &str) -> String {
-    format!("krowk: session {session} moved here")
+    format!("gruntas: session {session} moved here")
 }
 
 /// What is kept of a command answered.
@@ -161,7 +161,7 @@ impl State {
             Kept::Answer { from, answer } => match host_command::seal_answer(answer, id, &a.device, from, &a.keys, a.chain.generation()) {
                 Ok(b) => b,
                 Err(e) => {
-                    eprintln!("krowk: the answer to command {id} could not be sealed: {e}; it is tried again at the next refresh");
+                    eprintln!("gruntas: the answer to command {id} could not be sealed: {e}; it is tried again at the next refresh");
                     return None;
                 }
             },
@@ -204,7 +204,7 @@ impl Commands {
                 Err(e) => {
                     let mut s = me.lock();
                     if !s.unopened.contains_key(&id) {
-                        eprintln!("krowk: a command delivered to this machine ({shown}) did not open, and is not answered: {e}");
+                        eprintln!("gruntas: a command delivered to this machine ({shown}) did not open, and is not answered: {e}");
                     }
                     s.not_opened(&id);
                 }
@@ -248,9 +248,9 @@ impl Commands {
 /// that cannot be is sent from the next refresh.
 fn finish(me: &Arc<Commands>, c: &Config, id: &str, from: DeviceId, answer: HostAnswer) {
     match &answer {
-        HostAnswer::Started { session_id } => eprintln!("krowk: device {from} started session {session_id} on this machine"),
-        HostAnswer::Taken { session_id } => eprintln!("krowk: device {from} moved session {session_id} to this machine"),
-        HostAnswer::Refused { code, message } => eprintln!("krowk: device {from} asked something of this machine, refused: {} ({})", message.escape_debug(), code.escape_debug()),
+        HostAnswer::Started { session_id } => eprintln!("gruntas: device {from} started session {session_id} on this machine"),
+        HostAnswer::Taken { session_id } => eprintln!("gruntas: device {from} moved session {session_id} to this machine"),
+        HostAnswer::Refused { code, message } => eprintln!("gruntas: device {from} asked something of this machine, refused: {} ({})", message.escape_debug(), code.escape_debug()),
     }
     let a = c.announce.as_ref().and_then(|o| (o.keys)(false).ok());
     let sealed = {
@@ -300,7 +300,7 @@ fn repositories(directories: &[String]) -> Vec<AnnouncedRepository> {
         .collect()
 }
 
-/// Whether `dir` is a repository rather than a worktree krowk made under
+/// Whether `dir` is a repository rather than a worktree gruntas made under
 /// `worktrees`, which a handoff or a task trusts for its backend but is
 /// no clone to offer.
 fn not_krowks_own(dir: &Path, worktrees: Option<&Path>) -> bool {
@@ -323,7 +323,7 @@ fn run(me: &Arc<Commands>, c: &Config, host: &str, command: HostCommand, tell: &
     let offered = offered(c, o, &policy);
     if !offered.contains(&cwd) {
         let pick = if offered.is_empty() { "it offers none yet".to_string() } else { format!("pick one of: {}", offered.join(", ")) };
-        return tell(HostAnswer::refused("directory_not_offered", format!("{host} does not offer {cwd}: run `krowk trust {}` on {host}, or {pick}", crate::worktree::manage::quote(Path::new(&cwd)))));
+        return tell(HostAnswer::refused("directory_not_offered", format!("{host} does not offer {cwd}: run `gruntas trust {}` on {host}, or {pick}", crate::worktree::manage::quote(Path::new(&cwd)))));
     }
     let (model, prompt) = match command {
         HostCommand::Start { model, prompt, .. } => (model, prompt),
@@ -375,7 +375,7 @@ pub fn admit(task: &RunTask, here: &Admission<'_>) -> Result<Admitted, (RunRefus
         return Err((RunRefusal::BadJob, "the task came after the time its sender gave up waiting for an answer, so it was not run — send it again".into()));
     }
     if !here.accepting {
-        return Err((RunRefusal::NotAccepting, "this machine does not take tasks from your other machines — krowk machines accept on, there, turns that on".into()));
+        return Err((RunRefusal::NotAccepting, "this machine does not take tasks from your other machines — gruntas machines accept on, there, turns that on".into()));
     }
     let Some(repository) = here.repositories.iter().find(|r| r.origin == task.origin) else {
         return Err((RunRefusal::NoClone, format!("this machine has no trusted clone of {}", task.origin)));
@@ -693,7 +693,7 @@ async fn follow(c: &Config, a: &Announcer, task: &RunTask, child: &Child, ran: &
         Err(e) => {
             tell(match e {
                 crate::daemon::client::ConnectError::Failed(e) => refused(e),
-                crate::daemon::client::ConnectError::Absent => HostAnswer::refused("host_unavailable", "the host daemon is not running — it starts again with the next krowk there"),
+                crate::daemon::client::ConnectError::Absent => HostAnswer::refused("host_unavailable", "the host daemon is not running — it starts again with the next gruntas there"),
             });
             return false;
         }
@@ -772,7 +772,7 @@ async fn start(c: &Config, cwd: &str, model: crate::protocol::ModelRef, prompt: 
     let d = match Daemon::connect_as(&c.socket, Path::new(cwd), &c.version, true, true).await {
         Ok(d) => d,
         Err(crate::daemon::client::ConnectError::Failed(e)) => return tell(refused(e)),
-        Err(crate::daemon::client::ConnectError::Absent) => return tell(HostAnswer::refused("host_unavailable", "the host daemon is not running — it starts again with the next krowk there")),
+        Err(crate::daemon::client::ConnectError::Absent) => return tell(HostAnswer::refused("host_unavailable", "the host daemon is not running — it starts again with the next gruntas there")),
     };
     let (tx, _rx) = tokio::sync::mpsc::channel(1);
     if let Err(e) = d.execute(Command::SwitchModel { session_id: None, model: model.clone() }, tx).await {
@@ -817,13 +817,13 @@ async fn start(c: &Config, cwd: &str, model: crate::protocol::ModelRef, prompt: 
     hold(&d, &session, &mut rx, run).await;
 }
 
-/// A take, run (R-HAND-1, R-HAND-4): `krowk sync take` started in `cwd`
+/// A take, run (R-HAND-1, R-HAND-4): `gruntas sync take` started in `cwd`
 /// and watched until it says the session moved here, or ends refused. A
 /// client of the daemon is held meanwhile, so it does not exit idle with
 /// the answer unsent. Past `TAKE_WAIT` the take is left to finish, never
 /// stopped: it may hold the session's lease by then.
 fn take(me: &Arc<Commands>, c: &Config, o: &Options, host: &str, session: &str, cwd: &str, tell: &dyn Fn(HostAnswer)) {
-    let Some(up) = &o.take else { return tell(HostAnswer::refused("take_unavailable", format!("{host} doesn't take sessions up from your other devices — upgrade krowk there"))) };
+    let Some(up) = &o.take else { return tell(HostAnswer::refused("take_unavailable", format!("{host} doesn't take sessions up from your other devices — upgrade gruntas there"))) };
     if std::mem::replace(&mut me.lock().taking, true) {
         return tell(HostAnswer::refused("busy", format!("{host} is taking another session up — try again once it has")));
     }
@@ -843,7 +843,7 @@ fn take(me: &Arc<Commands>, c: &Config, o: &Options, host: &str, session: &str, 
     };
     let (mut child, log) = match up(session, Path::new(cwd)) {
         Ok(started) => started,
-        Err(e) => return tell(HostAnswer::refused("host_failed", format!("{host} couldn't run krowk sync take: {e}"))),
+        Err(e) => return tell(HostAnswer::refused("host_failed", format!("{host} couldn't run gruntas sync take: {e}"))),
     };
     let moved = moved_line(session);
     let read = {
@@ -872,7 +872,7 @@ fn take(me: &Arc<Commands>, c: &Config, o: &Options, host: &str, session: &str, 
                     // it): it moved here the first time.
                     Some((code, _)) if code == "already_here" => taken(),
                     Some((_, fix)) => HostAnswer::refused("take_refused", fix),
-                    None => HostAnswer::refused("take_refused", format!("krowk sync take on {host} ended ({status}) and said nothing — the session stays on its host")),
+                    None => HostAnswer::refused("take_refused", format!("gruntas sync take on {host} ended ({status}) and said nothing — the session stays on its host")),
                 });
             }
             if Instant::now() >= until {
@@ -883,7 +883,7 @@ fn take(me: &Arc<Commands>, c: &Config, o: &Options, host: &str, session: &str, 
         (answer, held)
     });
     let answer = answer.unwrap_or_else(|| {
-        HostAnswer::refused("take_unfinished", format!("krowk sync take on {host} hasn't finished after {} minutes; it goes on, and the session may yet move — see {} there", TAKE_WAIT.as_secs() / 60, log.display()))
+        HostAnswer::refused("take_unfinished", format!("gruntas sync take on {host} hasn't finished after {} minutes; it goes on, and the session may yet move — see {} there", TAKE_WAIT.as_secs() / 60, log.display()))
     });
     let unfinished = matches!(answer, HostAnswer::Refused { ref code, .. } if code == "take_unfinished");
     if !matches!(answer, HostAnswer::Refused { ref code, .. } if code == "take_refused") {
@@ -913,7 +913,7 @@ fn refusal(out: &str) -> Option<(String, String)> {
         let fix = v["error"]["fix"].as_str().or_else(|| v["error"]["message"].as_str())?;
         Some((v["error"]["error"].as_str().unwrap_or_default().to_string(), fix.to_string()))
     });
-    error.or_else(|| out.lines().map(str::trim).rfind(|l| !l.is_empty()).map(|l| (String::new(), l.strip_prefix("krowk: ").unwrap_or(l).to_string())))
+    error.or_else(|| out.lines().map(str::trim).rfind(|l| !l.is_empty()).map(|l| (String::new(), l.strip_prefix("gruntas: ").unwrap_or(l).to_string())))
 }
 
 /// Stays, following the session, until another client answers its
@@ -1020,7 +1020,7 @@ mod tests {
         assert_eq!(super::super::auto::limited("limited-session").as_deref(), Some("Free syncs sessions from two machines"));
     }
 
-    /// A worktree krowk made, trusted for its backend, is not offered as a
+    /// A worktree gruntas made, trusted for its backend, is not offered as a
     /// clone; a repository beside it is.
     #[test]
     fn a_krowk_worktree_is_not_offered_as_a_clone() {
@@ -1046,16 +1046,16 @@ mod tests {
 
     #[test]
     fn r_hand_4_a_takes_refusal_is_its_last_errors_fix() {
-        // What `krowk sync take` writes when its output is no terminal: its
+        // What `gruntas sync take` writes when its output is no terminal: its
         // lines on stderr, then the error as JSON.
-        let out = "krowk: asking the session's host to hand it over…\n{\n  \"ok\": false,\n  \"error\": {\n    \"error\": \"instance_missing\",\n    \"fix\": \"session s runs on the work-claude instance, which this machine does not have — the session stays where it is\",\n    \"retryable\": false\n  }\n}\n";
+        let out = "gruntas: asking the session's host to hand it over…\n{\n  \"ok\": false,\n  \"error\": {\n    \"error\": \"instance_missing\",\n    \"fix\": \"session s runs on the work-claude instance, which this machine does not have — the session stays where it is\",\n    \"retryable\": false\n  }\n}\n";
         assert_eq!(refusal(out), Some(("instance_missing".into(), "session s runs on the work-claude instance, which this machine does not have — the session stays where it is".into())));
-        assert_eq!(refusal("krowk: something went wrong\n\n"), Some((String::new(), "something went wrong".into())));
+        assert_eq!(refusal("gruntas: something went wrong\n\n"), Some((String::new(), "something went wrong".into())));
         assert_eq!(refusal(""), None);
     }
 
     #[test]
     fn r_hand_4_the_moved_line_names_the_session() {
-        assert!(format!("{}, working in /w (branch b); hosting it until interrupted", moved_line("s1")).starts_with("krowk: session s1 moved here"));
+        assert!(format!("{}, working in /w (branch b); hosting it until interrupted", moved_line("s1")).starts_with("gruntas: session s1 moved here"));
     }
 }

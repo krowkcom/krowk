@@ -1,4 +1,4 @@
-$ krowk workspaces
+$ gruntas workspaces
 stdout:
 {
   "ok": true,
@@ -9,14 +9,14 @@ stdout:
   "breadcrumbs": [
     {
       "action": "log in",
-      "cmd": "krowk login",
+      "cmd": "gruntas login",
       "description": "approving it in the browser stores a key, and uploads stop expiring — `--token krowk_sk_...` stores one directly instead"
     }
   ]
 }
 exit: 0
 
-$ krowk workspaces list
+$ gruntas workspaces list
 stdout:
 {
   "ok": true,
@@ -27,14 +27,14 @@ stdout:
   "breadcrumbs": [
     {
       "action": "log in",
-      "cmd": "krowk login",
+      "cmd": "gruntas login",
       "description": "approving it in the browser stores a key, and uploads stop expiring — `--token krowk_sk_...` stores one directly instead"
     }
   ]
 }
 exit: 0
 
-$ krowk auth login --token krowk_sk_test
+$ gruntas auth login --token krowk_sk_test
 stdout:
 {
   "ok": true,
@@ -48,14 +48,14 @@ stdout:
   "breadcrumbs": [
     {
       "action": "push",
-      "cmd": "krowk push <file>",
+      "cmd": "gruntas push <file>",
       "description": "the key is stored and accepted, so nothing else is needed before uploading; <file> is the path to upload"
     }
   ]
 }
 exit: 0
 
-$ krowk workspaces
+$ gruntas workspaces
 stdout:
 {
   "ok": true,
@@ -76,19 +76,19 @@ stdout:
   "breadcrumbs": [
     {
       "action": "switch the default",
-      "cmd": "krowk workspaces use <workspace>",
+      "cmd": "gruntas workspaces use <workspace>",
       "description": "repoints the machine-wide default at another stored key — <workspace> is a name from this list"
     },
     {
       "action": "pin this repository",
-      "cmd": "krowk config set workspace <workspace>",
+      "cmd": "gruntas config set workspace <workspace>",
       "description": "writes .gruntas/config.json at the repository root, so every command run inside it uses that workspace's key whoever runs it — <workspace> is a name from this list"
     }
   ]
 }
 exit: 0
 
-$ krowk workspaces use nope
+$ gruntas workspaces use nope
 stderr:
 {
   "ok": false,
@@ -100,7 +100,7 @@ stderr:
 }
 exit: 1
 
-$ krowk workspaces --format human
+$ gruntas workspaces --format human
 stdout:
 Stored keys
   Local workspace — <ws_1> <key_1>  (default)

@@ -1,4 +1,4 @@
-//! "Did you mean": the nearest of the names krowk knows to one it does not,
+//! "Did you mean": the nearest of the names gruntas knows to one it does not,
 //! so a typo is answered with the fix rather than only the refusal.
 
 /// The candidate closest to `word` by edit distance, when it is close enough

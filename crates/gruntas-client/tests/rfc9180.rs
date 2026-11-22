@@ -1,4 +1,4 @@
-//! R-E2E-2: the HPKE suite krowk wraps account keys with, held to RFC 9180's
+//! R-E2E-2: the HPKE suite gruntas wraps account keys with, held to RFC 9180's
 //! own test vector for it — Appendix A.2.1, Base mode,
 //! DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305 — in both
 //! directions. tests/data/rfc9180-a2-base.json is that one entry of the

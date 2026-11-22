@@ -1,4 +1,4 @@
-//! The two settings only the terminal UI could change, now `krowk config`'s:
+//! The two settings only the terminal UI could change, now `gruntas config`'s:
 //! the default permission mode (`permissions.defaultMode`, nested, as the
 //! engine reads it) and the rollover (`rollover`). Both live in the global
 //! config.json; a pre-existing key this build does not know stays as written.

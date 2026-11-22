@@ -1,6 +1,6 @@
 //! The host: where commands are executed and the log is written. Clients
 //! talk to it only through `Command` and `StreamLine`, so the in-process
-//! client `krowk -p` uses today and the daemon's socket clients later speak
+//! client `gruntas -p` uses today and the daemon's socket clients later speak
 //! the same protocol. The in-process transport is a function call and two
 //! channels.
 //!
@@ -59,14 +59,14 @@ pub struct HostConfig {
     pub krowk_version: String,
     pub pricer: Pricer,
     pub catalog: Catalog,
-    /// krowk's provider credentials file, where OAuth logins live.
+    /// gruntas's provider credentials file, where OAuth logins live.
     pub credentials: PathBuf,
     /// Asked before a backend is spawned in a repository (R-BACK-6).
     pub trust: trust::Gate,
-    /// Pushes what `publish` is handed to krowk's registry (R-EVID-1);
+    /// Pushes what `publish` is handed to gruntas's registry (R-EVID-1);
     /// none, and the tool says it cannot run.
     pub publisher: Option<Publisher>,
-    /// The person's own settings and where krowk keeps its own: what the
+    /// The person's own settings and where gruntas keeps its own: what the
     /// permission rules, instructions, skills and hooks are read from, and
     /// whether a client answers approval requests (R-PERM-1, R-PERM-2).
     pub permissions: permissions::Config,
@@ -74,7 +74,7 @@ pub struct HostConfig {
     /// model is chosen from (R-SUB-1, R-SUB-5).
     pub agents: AgentsConfig,
     /// What the session this process was started for runs with, when it
-    /// works in a krowk worktree (WT6: `krowk --worktree`, or a session
+    /// works in a gruntas worktree (WT6: `gruntas --worktree`, or a session
     /// resumed in one).
     pub session: SessionSetup,
 }
@@ -90,7 +90,7 @@ pub struct SessionSetup {
     /// the top of that session's first prompt (`worktree::first_prompt`).
     pub notes: Vec<String>,
     /// What every session's commands get in their environment beyond
-    /// krowk's own: the worktree's `GRUNTAS_PORT_BASE`.
+    /// gruntas's own: the worktree's `GRUNTAS_PORT_BASE`.
     pub env: Vec<(String, String)>,
     /// Whether this process holds one of the machine's agent slots for its
     /// sessions, as a `--worktree` session's does (WT12): their subagents
@@ -108,7 +108,7 @@ pub struct Host {
 pub(crate) struct Shared {
     pub(crate) cfg: HostConfig,
     /// The instances, taken from `cfg.registry` (left empty) and replaced by
-    /// `set_registry`: a connection made while the host runs (`krowk connect`) is a turn's to use at once.
+    /// `set_registry`: a connection made while the host runs (`gruntas connect`) is a turn's to use at once.
     instances: std::sync::RwLock<Instances>,
     /// Each session with a turn running — a subagent's too: its cancel
     /// switch and the queue its steering waits in.
@@ -164,7 +164,7 @@ struct Running {
     /// A `switchModel` that arrived while the turn ran: logged once it is
     /// over, since the turn holds the log.
     switch: Option<ModelRef>,
-    /// A backend's agent (R-SUB-7): its turn is the backend's, which krowk
+    /// A backend's agent (R-SUB-7): its turn is the backend's, which gruntas
     /// cannot steer, and stops by asking the backend (R-SUB-10).
     backend_child: Option<BackendTask>,
     /// The turn has taken its switch and is letting go: it still holds the
@@ -715,7 +715,7 @@ impl Host {
                 let decoded = images::decode(&images)?;
                 let steers = shared.running.lock().unwrap_or_else(|e| e.into_inner()).get(&session_id).map(|r| (r.backend_child.is_some(), r.steers.clone()));
                 if let Some((true, _)) = steers {
-                    return Err(EngineError::new("not_steerable", format!("session {session_id} is an agent its session's backend runs, and takes nothing from krowk while it runs — steer the session that started it")));
+                    return Err(EngineError::new("not_steerable", format!("session {session_id} is an agent its session's backend runs, and takes nothing from gruntas while it runs — steer the session that started it")));
                 }
                 let steers = steers.map(|(_, s)| s);
                 let Some(steers) = steers else {
@@ -767,7 +767,7 @@ struct TurnPlan {
     permission_mode: PermissionMode,
     effort: Option<Effort>,
     cwd: PathBuf,
-    /// What the turn's commands get in their environment beyond krowk's
+    /// What the turn's commands get in their environment beyond gruntas's
     /// own: a worktree's `GRUNTAS_PORT_BASE`.
     env: Vec<(String, String)>,
     backend_session: Option<String>,
@@ -1059,7 +1059,7 @@ impl Shared {
     /// `Host::route_model`, off the runtime's thread: a vendor check blocks
     /// on a process. Routing asks no trust question: its vendors are asked
     /// in `cwd` when its repository is trusted already (so the turn's own
-    /// check there is the cache's), else in krowk's own directory — and the
+    /// check there is the cache's), else in gruntas's own directory — and the
     /// turn's own check then asks trust, and the vendor in the repository,
     /// before anything runs there.
     async fn route_model(self: &Arc<Self>, asked: Option<&Asked>, current: Option<&ModelRef>, cwd: &std::path::Path) -> Result<ModelRef, EngineError> {
@@ -1080,7 +1080,7 @@ impl Shared {
         .unwrap_or_else(|_| Err(EngineError::new("none_ready", "choosing an instance for the model failed — name one as <instance>/<model>")))
     }
 
-    /// Where a vendor is asked outside any repository: krowk's own `0700`
+    /// Where a vendor is asked outside any repository: gruntas's own `0700`
     /// directory in its home, beside the sessions (`readiness::neutral_dir`).
     fn neutral_probe(&self) -> Result<readiness::Probe, String> {
         let home = self.cfg.sessions_dir.parent().unwrap_or(&self.cfg.sessions_dir);
@@ -1103,7 +1103,7 @@ impl Shared {
             return self.check_model(&model, &self.cfg.cwd, None).await;
         };
         if !log::valid_id(id) {
-            return Err(EngineError::new("no_session", format!("{id:?} is not a krowk session id")));
+            return Err(EngineError::new("no_session", format!("{id:?} is not a gruntas session id")));
         }
         let events = log::read_events_off(&self.cfg.sessions_dir.join(id).join(log::EVENTS_FILE)).await.map_err(log_failure)?;
         let past = replay(&log::branch(&events, events.last().map(|e| e.id.as_str()).unwrap_or_default()), &self.registry());
@@ -1155,8 +1155,8 @@ impl Shared {
     /// each as `switchModel` does: the checks that need no process, trust,
     /// then the vendor in the repository. An offer never asks about trust —
     /// that is asked when the person takes it and the turn runs there — so
-    /// it asks the readiness check as `krowk status` does: the checks that
-    /// need no process, then the vendor in krowk's own directory, never the
+    /// it asks the readiness check as `gruntas status` does: the checks that
+    /// need no process, then the vendor in gruntas's own directory, never the
     /// repository nobody has trusted yet. A signed-out account is never
     /// offered; one whose login only a project's settings provide
     /// (Bedrock, an `apiKeyHelper`) is not offered either, and is reached
@@ -1338,7 +1338,7 @@ impl Shared {
         let family = info.as_ref().and_then(|i| i.family.clone());
         let (preset, _) = toolset::choose(toolset, registry.toolset.as_deref(), family.as_deref(), &model.model).map_err(|e| EngineError::new("bad_toolset", e))?;
         let wire = instance.wire_for(info.as_ref().and_then(|i| i.wire_api));
-        // D4: krowk runs a turn only in Claude Code or Codex.
+        // D4: gruntas runs a turn only in Claude Code or Codex.
         let Some(backend) = &instance.backend else { return Err(crate::connect::no_direct_models()) };
         // A backend runs the repository's own hooks and MCP servers, so it
         // is not started in one nobody trusted; and a binary that is not
@@ -1354,7 +1354,7 @@ impl Shared {
         // a backend that runs its own tools outside it, refuses the turn
         // rather than running it unsandboxed.
         if let Some(crate::sandbox::Sandbox { profile, .. }) = policy.sandbox {
-            return Err(staying(EngineError::new("sandbox_unsupported", format!("{} runs {} as a backend, which runs its own tools outside krowk's {} sandbox — run without --sandbox", instance.name, instance.vendor, profile.name()))));
+            return Err(staying(EngineError::new("sandbox_unsupported", format!("{} runs {} as a backend, which runs its own tools outside gruntas's {} sandbox — run without --sandbox", instance.name, instance.vendor, profile.name()))));
         }
         // R-ROLL-5: the session's value (asked now, else the last one logged),
         // else a trusted repository's, else the global config's.
@@ -1444,7 +1444,7 @@ impl Shared {
     }
 
     /// Where the agents a session's backend runs are written, as children
-    /// of its turn's session: none on krowk's own loop. An agent that ended
+    /// of its turn's session: none on gruntas's own loop. An agent that ended
     /// between turns is ended first, so the turn Claude Code begins to
     /// answer it finds it so (R-SUB-7); then the turn holds the session's
     /// writer (`SessionKids`) until it is done.
@@ -1459,7 +1459,7 @@ impl Shared {
         // Only Claude Code says `Woke` (its idle loop is the one writing
         // between turns): a turn on another backend waits for none, or its
         // first agent event would wait for ever. Codex says nothing between
-        // turns — krowk reads it only while one runs, and its children end
+        // turns — gruntas reads it only while one runs, and its children end
         // with the turn that ran them (`codex::children`) — so nothing is
         // queued ahead of its turn's writer. A Codex engine that ever
         // reports between turns through `Idle` must say `Woke` as a turn
@@ -1630,7 +1630,7 @@ impl Shared {
                     let (to, room) = (pick.model, room_note(pick.standing));
                     if let Some(err) = error {
                         let room = if room.is_empty() { String::new() } else { format!(" ({room})") };
-                        err.message.push_str(&format!(" — continue on {to}{room} with `krowk -p --resume {session_id} --model {to}`, or say yes when krowk offers it"));
+                        err.message.push_str(&format!(" — continue on {to}{room} with `gruntas -p --resume {session_id} --model {to}`, or say yes when gruntas offers it"));
                     }
                     (None, Some(SwitchOffer { from: model.clone(), to, resets_at_ms: e.resets_at_ms, room: Some(room).filter(|r| !r.is_empty()), early: false }), None)
                 }
@@ -1653,7 +1653,7 @@ impl Shared {
     /// run the most of the session among this vendor's instances is the
     /// one to continue: this instance's own, resumed; another account's,
     /// its transcript copied into this one's config directory first; none,
-    /// and a new thread is seeded with krowk's handoff.
+    /// and a new thread is seeded with gruntas's handoff.
     fn carry_over(&self, past: &Past, instance: &Resolved, b: &crate::instances::Backend, prompt: &str) -> (Option<String>, Option<handoff::Handoff>) {
         let vendor = match instance.wire_api {
             WireApi::CodexAppServer => crate::codex::BACKEND,
@@ -1905,7 +1905,7 @@ struct Past {
     backend: Option<BackendRecord>,
     /// Each backend instance's thread, and how much of the session it holds.
     vendors: Vec<Vendor>,
-    /// The krowk run its evidence goes under, once `publish` opened one.
+    /// The gruntas run its evidence goes under, once `publish` opened one.
     run: Option<String>,
     /// For a subagent: the session that started it.
     parent: Option<String>,
@@ -2044,9 +2044,9 @@ struct Writer<'a> {
     /// context record.
     handoff: Option<String>,
     /// Where the backend's own agents are written, as children of the
-    /// session (R-SUB-7): none for krowk's own loop.
+    /// session (R-SUB-7): none for gruntas's own loop.
     kids: Option<Kids>,
-    /// Each login's last known usage, in krowk's home (R-ROLL-2).
+    /// Each login's last known usage, in gruntas's home (R-ROLL-2).
     usage: crate::usage::Usage,
     /// The turn's last limits report per window, for the early switch.
     limits: std::collections::BTreeMap<String, LimitStatus>,
@@ -2269,7 +2269,7 @@ impl Writer<'_> {
             model: model.clone(),
             provider: self.provider.clone(),
             wire_api: self.wire,
-            // A backend brings its own tools; the preset is krowk's.
+            // A backend brings its own tools; the preset is gruntas's.
             toolset: match self.wire {
                 WireApi::ClaudeCode => crate::claude::BACKEND.into(),
                 WireApi::CodexAppServer => crate::codex::BACKEND.into(),
@@ -2350,7 +2350,7 @@ impl Writer<'_> {
     ///
     /// An approval it asks for is answered under its session: the request
     /// waiting is handed to it before any client sees it. One of an agent
-    /// krowk does not follow is the session's own, never lost.
+    /// gruntas does not follow is the session's own, never lost.
     async fn child_event(&self, session_id: &str, task_id: &str, ev: EngineEvent) {
         let unfollowed = match &ev {
             EngineEvent::Approval(req) => Some(LiveEvent::ApprovalRequested(req.clone())),

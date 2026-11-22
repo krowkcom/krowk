@@ -1,16 +1,16 @@
-//! krowk.db as a projection of the session logs (R-LOG-2): native sessions
+//! gruntas.db as a projection of the session logs (R-LOG-2): native sessions
 //! are one more `Source`, read by the same import, sync and rebuild as
 //! Claude's, Cursor's and opencode's transcripts, and written by the same
 //! store writer — so they list beside them with harness `gruntas` (R-LOG-5),
-//! and `krowk sessions rebuild` re-derives them from the JSONL alone.
+//! and `gruntas sessions rebuild` re-derives them from the JSONL alone.
 //!
 //! The mapping, event by event, along the head branch:
 //!
-//! | log                         | krowk.db                                             |
+//! | log                         | gruntas.db                                             |
 //! |-----------------------------|------------------------------------------------------|
 //! | `session.started`           | `session` (its id = the session id, directory, worktree) and its `session_binding` (provider and harness `gruntas`, foreign id = the session id) |
 //! | `turn.started` … `turn.completed` | one `turn`: status, and the token columns summed over the turn's responses |
-//! | `item.completed` userText   | a `user` message, one `text` part; a note of krowk's (a background job's end, the todo reminder) a `system` one |
+//! | `item.completed` userText   | a `user` message, one `text` part; a note of gruntas's (a background job's end, the todo reminder) a `system` one |
 //! | `response.completed`        | one `assistant` message holding the items it names: `thinking` (the signature in `part.signature`), `text`, `tool_call` parts |
 //! | `item.completed` toolResult | a `tool` message, one `tool_result` part              |
 //!
@@ -27,7 +27,7 @@ use serde_json::json;
 use std::path::Path;
 
 /// The harness and provider native sessions are stored under. Sessions
-/// stored before the rename say `krowk`; the store reads them as this.
+/// stored before the rename say `gruntas`; the store reads them as this.
 pub const HARNESS: &str = "gruntas";
 
 pub struct Gruntas;
@@ -120,8 +120,8 @@ pub fn thread(events: &[LogEvent], res: &mut ReadResult) -> Option<Thread> {
             foreign_session_id: session_id.clone(),
             resume_cmd: format!("gruntas -p --resume {session_id}"),
         },
-        // A subagent names the session that spawned it, so krowk.db's
-        // session tree — and `krowk sessions budget` — counts its spend there.
+        // A subagent names the session that spawned it, so gruntas.db's
+        // session tree — and `gruntas sessions budget` — counts its spend there.
         parent: parent_session_id.as_ref().map(|p| Binding { provider: HARNESS.into(), harness: HARNESS.into(), foreign_session_id: p.clone(), resume_cmd: String::new() }),
         ..Thread::default()
     };
@@ -137,7 +137,7 @@ pub fn thread(events: &[LogEvent], res: &mut ReadResult) -> Option<Thread> {
         res.classify(event_type(&ev.body));
         match &ev.body {
             // The vendor's own record of a backend session stays in the log:
-            // krowk.db lists the krowk session, not a second copy of it.
+            // gruntas.db lists the gruntas session, not a second copy of it.
             // So does the run its evidence went to: the registry holds the
             // run, and the tool result that published names it.
             // A subagent is its own session, projected from its own log and
@@ -213,7 +213,7 @@ fn flush(th: &mut Thread, pending: &mut Vec<(&str, &str, &Item)>, provider: &str
     }
 }
 
-/// Who said a user turn's text: krowk, for a note it sent the model in the
+/// Who said a user turn's text: gruntas, for a note it sent the model in the
 /// person's place (a background job's end, the todo reminder), so sync,
 /// web and search never show it as theirs; the person otherwise.
 fn said_by(text: &str) -> Role {

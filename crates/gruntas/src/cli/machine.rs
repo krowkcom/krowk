@@ -1,6 +1,6 @@
 //! What this machine is called: on the workspace's device list, and on the
 //! browser login that names it and the key that login mints. One rule for
-//! both, in the lean build too, where `krowk login` lives.
+//! both, in the lean build too, where `gruntas login` lives.
 
 use super::Ctx;
 
@@ -39,7 +39,7 @@ fn host_name() -> String {
             }
         }
     }
-    "krowk device".into()
+    "gruntas device".into()
 }
 
 #[cfg(test)]

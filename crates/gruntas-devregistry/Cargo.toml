@@ -24,7 +24,7 @@ jiff = { version = "0.2", default-features = false, features = ["std"] }
 sha2 = "0.11"
 
 [dev-dependencies]
-# The calls `krowk devices add` and `krowk sync join` make, so the device
+# The calls `gruntas devices add` and `gruntas sync join` make, so the device
 # tests drive the stand-in the way the CLI does. Test-only.
 gruntas-api = { path = "../gruntas-api" }
 serde_json = "1"

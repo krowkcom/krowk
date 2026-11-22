@@ -125,8 +125,8 @@ pub fn same_user(status: &tailscale::Status) -> Result<u64, String> {
 pub fn same_user_line(status: &tailscale::Status, user: u64) -> String {
     let login = status.user.as_ref().and_then(|u| u.get(&user.to_string())).map(|p| p.login_name.as_str()).filter(|l| !l.is_empty());
     match login {
-        Some(login) => format!("krowk: the same-user check admits only nodes of {login} (tailnet user {user})"),
-        None => format!("krowk: the same-user check admits only nodes of tailnet user {user}"),
+        Some(login) => format!("gruntas: the same-user check admits only nodes of {login} (tailnet user {user})"),
+        None => format!("gruntas: the same-user check admits only nodes of tailnet user {user}"),
     }
 }
 
@@ -225,7 +225,7 @@ pub fn listen(c: &Config, session: [u8; 16], host: gruntas_client::e2e::DeviceId
     };
     std::thread::spawn(move || {
         if let Err(e) = relay::run_changing(listeners, config, rx, changes) {
-            eprintln!("krowk: the direct listener stopped: {e}");
+            eprintln!("gruntas: the direct listener stopped: {e}");
         }
     });
     Ok(Listening { dial, candidates, stop, following, now })
@@ -248,7 +248,7 @@ fn follow_lan(session: [u8; 16], lan_check: Duration, port: u16, tailnet: Option
         if v4.is_empty() {
             return None;
         }
-        super::mdns::advertise(session, &v4, port).map_err(|e| eprintln!("krowk: {e}; the LAN path is offered without it")).ok()
+        super::mdns::advertise(session, &v4, port).map_err(|e| eprintln!("gruntas: {e}; the LAN path is offered without it")).ok()
     };
     let mut advertised = advertise(&bound);
     let on = || following.load(std::sync::atomic::Ordering::SeqCst) && !*stopped.borrow() && !changes.is_closed();
@@ -397,8 +397,8 @@ pub fn unreached_line(session: &str, device: &DeviceId, candidates: &[Candidate]
     let short: String = device.to_string().chars().take(8).collect();
     let why = if candidates.iter().any(|c| !c.on_lan()) { "if it is on this tailnet, a firewall here or the tailnet's access policy may be refusing the port" } else { "a firewall here may be refusing the port" };
     let check = if same_user { ", or the same-user check (GRUNTAS_TAILSCALE_SAME_USER) turned it away" } else { "" };
-    let mac = if cfg!(target_os = "macos") { " — on macOS, allow incoming connections for krowk under System Settings → Network → Firewall → Options" } else { "" };
-    format!("krowk: session {session}: device {short} stays on the relay — nothing it sent reached this machine's direct addresses ({at}); {why}{check}{mac}")
+    let mac = if cfg!(target_os = "macos") { " — on macOS, allow incoming connections for gruntas under System Settings → Network → Firewall → Options" } else { "" };
+    format!("gruntas: session {session}: device {short} stays on the relay — nothing it sent reached this machine's direct addresses ({at}); {why}{check}{mac}")
 }
 
 #[cfg(test)]
@@ -502,7 +502,7 @@ mod tests {
     #[test]
     fn the_same_user_line_names_the_login_and_its_id() {
         let status: tailscale::Status = serde_json::from_value(serde_json::json!({"BackendState": "Running", "Self": {"UserID": 7}, "User": {"7": {"ID": 7, "LoginName": "ada@example.com"}, "8": {"ID": 8, "LoginName": "ada@example.com"}}})).unwrap();
-        assert_eq!(same_user_line(&status, 7), "krowk: the same-user check admits only nodes of ada@example.com (tailnet user 7)");
-        assert_eq!(same_user_line(&status, 9), "krowk: the same-user check admits only nodes of tailnet user 9");
+        assert_eq!(same_user_line(&status, 7), "gruntas: the same-user check admits only nodes of ada@example.com (tailnet user 7)");
+        assert_eq!(same_user_line(&status, 9), "gruntas: the same-user check admits only nodes of tailnet user 9");
     }
 }

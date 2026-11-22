@@ -1,7 +1,7 @@
-//! One person's device list for a sync test: each krowk home the test
+//! One person's device list for a sync test: each gruntas home the test
 //! makes is put on it, and every home keeps the list as it now stands and
 //! the user key it leaves current — what adding a device will leave in a
-//! home once `krowk devices` does (D5/D6). Published, the registry holds the
+//! home once `gruntas devices` does (D5/D6). Published, the registry holds the
 //! list too, and each home has a key of its own that speaks for its device
 //! (`key`), as `sync init` and `sync join` leave a machine.
 

@@ -1,5 +1,5 @@
 //! A host's announcement of itself to the person's other devices
-//! (R-HOST-3): its name, OS and krowk version, its instances and their
+//! (R-HOST-3): its name, OS and gruntas version, its instances and their
 //! models, the directories it starts sessions in, and the ids of the
 //! sessions it runs. The registry carries it, and what the registry lists
 //! for a session is content, so the record is sealed to the person's
@@ -49,7 +49,7 @@ pub struct Announcement {
     pub name: String,
     /// Its OS, as on the device list. On open it is the list's.
     pub os: String,
-    /// krowk's version: "0.31.0", or "dev".
+    /// gruntas's version: "0.31.0", or "dev".
     pub version: String,
     /// When the daemon started, in milliseconds since the Unix epoch.
     pub online_since_ms: i64,
@@ -82,7 +82,7 @@ pub struct Announcement {
 /// How loaded a machine is (R-ALLOC-1, D5). Build and agent slots are the
 /// machine-wide pools of `gruntas_harness::slots`, counted without taking
 /// one; load and memory are read from the OS, since build slots see only
-/// the build commands krowk itself runs.
+/// the build commands gruntas itself runs.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Capacity {
@@ -280,7 +280,7 @@ pub fn open(sealed: &[u8], device: &DeviceId, keys: &UserKeys, chain: &Chain) ->
     // Any device that ever held an older generation could have sealed one
     // under it, a device removed since included.
     if generation < chain.generation() {
-        return Err(format!("the announcement from {device} is sealed under user key generation {generation}, older than the generation {} your device list names current; it opens once {device} catches up with the device list (`krowk machines`) and announces itself again", chain.generation()));
+        return Err(format!("the announcement from {device} is sealed under user key generation {generation}, older than the generation {} your device list names current; it opens once {device} catches up with the device list (`gruntas machines`) and announces itself again", chain.generation()));
     }
     let json = e2e::open_from_person(sealed, Label::Presence, &device.0, keys).map_err(|e| e.0)?;
     // serde's message can quote what the host wrote, so it is escaped.

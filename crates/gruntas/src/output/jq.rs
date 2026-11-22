@@ -251,11 +251,11 @@ fn run(expr: &str, rendered: &str, tty: bool) -> Result<(String, usize), Error> 
                     return Err(match exn.get_err() {
                         Ok(e) => fail("jq_failed", format!("--jq: {}", without_credentials(&e.to_string()))),
                         // halt and halt_error would choose the exit code, and
-                        // krowk's exit codes are what happened to the artifact.
+                        // gruntas's exit codes are what happened to the artifact.
                         Err(_) => fail(
                             "jq_failed",
                             "--jq: halt and halt_error are not honoured — in jq they choose the process's exit code, \
-                             and krowk's exit codes are what happened to the artifact",
+                             and gruntas's exit codes are what happened to the artifact",
                         ),
                     })
                 }
@@ -339,7 +339,7 @@ fn encode(v: &Val, out: &mut String) {
 }
 
 /// A float the way Go's encoder writes one, which is what a shell reading
-/// `$(krowk … --jq 'length/2')` gets: no `.0` on an integral value, positional
+/// `$(gruntas … --jq 'length/2')` gets: no `.0` on an integral value, positional
 /// digits below 1e21, and `1e+21`-style exponents outside that range.
 fn go_float(f: f64) -> String {
     let abs = f.abs();
@@ -361,7 +361,7 @@ fn key_text(k: &Val) -> String {
     }
 }
 
-/// The two secrets krowk mints, redacted to their prefix, and the message
+/// The two secrets gruntas mints, redacted to their prefix, and the message
 /// capped: `error(.)` hands back the whole document otherwise.
 fn without_credentials(message: &str) -> String {
     static SECRET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(krowk_(?:sk|claim)_)[A-Za-z0-9_-]+").unwrap());

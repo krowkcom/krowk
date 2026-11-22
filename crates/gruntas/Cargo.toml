@@ -16,13 +16,13 @@ path = "src/bin/gruntas-mcp.rs"
 
 [features]
 default = []
-# The device-side half: krowk.db, import, sync. Off by default so the agent
+# The device-side half: gruntas.db, import, sync. Off by default so the agent
 # build links none of it.
 sessions = ["dep:gruntas-store", "dep:gruntas-import"]
-# krowk's own agent engine: `krowk -p`, the session log, the Anthropic
+# gruntas's own agent engine: `gruntas -p`, the session log, the Anthropic
 # client. Needs the store it projects into, so it implies `sessions`; the
 # agent build links none of it.
-# `krowk sync`'s end-to-end keys (gruntas-client): sync is a full-build thing.
+# `gruntas sync`'s end-to-end keys (gruntas-client): sync is a full-build thing.
 harness = ["sessions", "dep:gruntas-harness", "dep:gruntas-client"]
 
 [dependencies]
@@ -30,7 +30,7 @@ gruntas-api = { path = "../gruntas-api" }
 gruntas-store = { path = "../gruntas-store", optional = true }
 gruntas-import = { path = "../gruntas-import", optional = true }
 gruntas-harness = { path = "../gruntas-harness", optional = true }
-# End-to-end keys for `krowk sync` (full build only). Its crates are in its
+# End-to-end keys for `gruntas sync` (full build only). Its crates are in its
 # own Cargo.toml.
 gruntas-client = { path = "../gruntas-client", optional = true }
 serde = { version = "1", features = ["derive"] }
@@ -44,11 +44,11 @@ jaq-std = "3"
 jaq-json = "2"
 # The two pickers (workspace, session) a person at a terminal may be asked.
 inquire = { version = "0.9", default-features = false, features = ["crossterm"] }
-# `krowk upgrade` unpacks the release archive it downloads.
+# `gruntas upgrade` unpacks the release archive it downloads.
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
 sha2 = "0.11"
-# `krowk upgrade` checks the release's Sigstore signature on checksums.txt
+# `gruntas upgrade` checks the release's Sigstore signature on checksums.txt
 # (cli/upgrade/sigstore.rs) with what TLS already links: rustls-webpki's
 # chain building and ring's ECDSA, through ureq's rustls, and the base64
 # jaq-std links. No crate is added to the lean build's list.

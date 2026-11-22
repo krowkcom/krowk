@@ -1,4 +1,4 @@
 @registry
 @file a.txt hello
 @stdin {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"golden","version":"0"}}}\n{"jsonrpc":"2.0","method":"notifications/initialized"}\n{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"gruntas_push","arguments":{"files":["a.txt"]}}}\n{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"gruntas_push","arguments":{"files":["../etc/passwd"]}}}\n{"jsonrpc":"2.0","id":5,"method":"nope"}\nnot json\n
-krowk-mcp --root {work}
+gruntas-mcp --root {work}

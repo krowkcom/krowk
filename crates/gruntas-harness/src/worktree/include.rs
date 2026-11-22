@@ -1,11 +1,11 @@
 //! Included files (WT7): the third prepare step. A new worktree has none
 //! of the main checkout's ignored files, and some of them are what an
 //! agent needs to run the project at all: `.env`, `.env.local`, a local
-//! config. Claude Code's answer is `.worktreeinclude`, and krowk follows
+//! config. Claude Code's answer is `.worktreeinclude`, and gruntas follows
 //! it: when the main checkout has one at its top, every file it matches
 //! (gitignore syntax) that git ignores is copied into the worktree.
 //!
-//! - **Matched by git, not by krowk**: `git ls-files --others --ignored
+//! - **Matched by git, not by gruntas**: `git ls-files --others --ignored
 //!   --exclude-from=.worktreeinclude` in the main checkout lists the
 //!   untracked files the patterns match, negations and all, and `git
 //!   check-ignore` keeps those git ignores in the main checkout and in the
@@ -135,7 +135,7 @@ fn ignored(dir: &Path, paths: &[String]) -> Result<HashSet<String>, String> {
 }
 
 /// NUL-separated paths, untrimmed: a name may start or end with a space.
-/// One that is not UTF-8 is left out (krowk names paths as text).
+/// One that is not UTF-8 is left out (gruntas names paths as text).
 fn split(raw: &[u8]) -> Vec<String> {
     raw.split(|b| *b == 0).filter(|p| !p.is_empty()).filter_map(|p| String::from_utf8(p.to_vec()).ok()).collect()
 }

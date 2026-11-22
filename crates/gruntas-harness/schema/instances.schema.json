@@ -30,7 +30,7 @@
       "$ref": "#/$defs/SubagentsConfig"
     },
     "worktrees": {
-      "description": "How krowk readies a worktree it makes for an agent.",
+      "description": "How gruntas readies a worktree it makes for an agent.",
       "$ref": "#/$defs/WorktreesConfig"
     },
     "builds": {
@@ -56,7 +56,7 @@
       }
     },
     "renamed": {
-      "description": "Names instances were renamed from, and the name each is now\n(`krowk providers rename`): a session that ran on the old name\nresumes on the new one, and `--model <old>/<model>` still runs.\nA name an instance has now is never read through it.",
+      "description": "Names instances were renamed from, and the name each is now\n(`gruntas providers rename`): a session that ran on the old name\nresumes on the new one, and `--model <old>/<model>` still runs.\nA name an instance has now is never read through it.",
       "type": "object",
       "additionalProperties": {
         "type": "string"
@@ -248,7 +248,7 @@
           ]
         },
         {
-          "description": "Any server that speaks Chat Completions (or the Responses API) at a\nbase URL: a local model, a gateway, a provider krowk has no kind for.",
+          "description": "Any server that speaks Chat Completions (or the Responses API) at a\nbase URL: a local model, a gateway, a provider gruntas has no kind for.",
           "type": "object",
           "properties": {
             "baseUrl": {
@@ -301,7 +301,7 @@
           ]
         },
         {
-          "description": "xAI with a SuperGrok (or X Premium) subscription, signed in with\nOAuth by `krowk providers add supergrok`. The tokens live in krowk's\nprovider credentials file, never here.",
+          "description": "xAI with a SuperGrok (or X Premium) subscription, signed in with\nOAuth by `gruntas providers add supergrok`. The tokens live in gruntas's\nprovider credentials file, never here.",
           "type": "object",
           "properties": {
             "baseUrl": {
@@ -319,7 +319,7 @@
               ]
             },
             "clientId": {
-              "description": "The OAuth client krowk signs in as. When absent, krowk registers\nitself where the server offers dynamic registration.",
+              "description": "The OAuth client gruntas signs in as. When absent, gruntas registers\nitself where the server offers dynamic registration.",
               "type": [
                 "string",
                 "null"
@@ -352,7 +352,7 @@
           ]
         },
         {
-          "description": "The user's own, unmodified `claude` binary — Claude Code — driven as\na backend: it runs the loop on its own login, a Claude subscription\nor whatever the config directory holds, and krowk never reads that\nlogin (R-BACK-2). Added with `krowk providers add claude`.",
+          "description": "The user's own, unmodified `claude` binary — Claude Code — driven as\na backend: it runs the loop on its own login, a Claude subscription\nor whatever the config directory holds, and gruntas never reads that\nlogin (R-BACK-2). Added with `gruntas providers add claude`.",
           "type": "object",
           "properties": {
             "binary": {
@@ -370,21 +370,21 @@
               ]
             },
             "env": {
-              "description": "More environment for the process, e.g. `ANTHROPIC_BASE_URL` for\na router. Literal values: a key belongs in the environment krowk\nruns in, never in a definition. `CLAUDE_CONFIG_DIR` is not one\nof them — `configDir` is the one way to name it. The ambient\n`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and\n`ANTHROPIC_BASE_URL` reach the process only when named here.",
+              "description": "More environment for the process, e.g. `ANTHROPIC_BASE_URL` for\na router. Literal values: a key belongs in the environment gruntas\nruns in, never in a definition. `CLAUDE_CONFIG_DIR` is not one\nof them — `configDir` is the one way to name it. The ambient\n`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and\n`ANTHROPIC_BASE_URL` reach the process only when named here.",
               "type": "object",
               "additionalProperties": {
                 "type": "string"
               }
             },
             "args": {
-              "description": "More launch arguments, after krowk's own.",
+              "description": "More launch arguments, after gruntas's own.",
               "type": "array",
               "items": {
                 "type": "string"
               }
             },
             "apiKeyEnv": {
-              "description": "The environment variable krowk reads a key from and hands the\nprocess — as `ANTHROPIC_AUTH_TOKEN` when `env` names a base URL\n(a router's bearer token), else as `ANTHROPIC_API_KEY`. The\nvariable's name is stored, never the key. None: Claude Code\nsigns in with its own login.",
+              "description": "The environment variable gruntas reads a key from and hands the\nprocess — as `ANTHROPIC_AUTH_TOKEN` when `env` names a base URL\n(a router's bearer token), else as `ANTHROPIC_API_KEY`. The\nvariable's name is stored, never the key. None: Claude Code\nsigns in with its own login.",
               "type": [
                 "string",
                 "null"
@@ -410,7 +410,7 @@
           ]
         },
         {
-          "description": "The user's own, unmodified `codex` binary, driven as `codex\napp-server` — OpenAI's own interface for third-party clients: it runs\nthe loop on its own login, a ChatGPT subscription or an API key, and\nkrowk never reads that login (R-BACK-3). Added with `krowk providers\nadd codex`.",
+          "description": "The user's own, unmodified `codex` binary, driven as `codex\napp-server` — OpenAI's own interface for third-party clients: it runs\nthe loop on its own login, a ChatGPT subscription or an API key, and\ngruntas never reads that login (R-BACK-3). Added with `gruntas providers\nadd codex`.",
           "type": "object",
           "properties": {
             "binary": {
@@ -428,7 +428,7 @@
               ]
             },
             "env": {
-              "description": "More environment for the process, e.g. `OPENAI_BASE_URL` for a\nrouter. Literal values: a key belongs in the environment krowk\nruns in, never in a definition — name it with `apiKeyEnv`.\n`CODEX_HOME` is not one of them: `codexHome` is the one way to\nname it. The ambient `OPENAI_API_KEY`, `OPENAI_BASE_URL` and\n`CODEX_API_KEY` reach the process only when named here or by\n`apiKeyEnv`.",
+              "description": "More environment for the process, e.g. `OPENAI_BASE_URL` for a\nrouter. Literal values: a key belongs in the environment gruntas\nruns in, never in a definition — name it with `apiKeyEnv`.\n`CODEX_HOME` is not one of them: `codexHome` is the one way to\nname it. The ambient `OPENAI_API_KEY`, `OPENAI_BASE_URL` and\n`CODEX_API_KEY` reach the process only when named here or by\n`apiKeyEnv`.",
               "type": "object",
               "additionalProperties": {
                 "type": "string"
@@ -442,7 +442,7 @@
               }
             },
             "apiKeyEnv": {
-              "description": "The environment variable krowk reads a key from and hands the\nprocess under the same name: the one a router's model provider\nreads (its `env_key`). The variable's name is stored, never the\nkey. None: Codex signs in with its own login.",
+              "description": "The environment variable gruntas reads a key from and hands the\nprocess under the same name: the one a router's model provider\nreads (its `env_key`). The variable's name is stored, never the\nkey. None: Codex signs in with its own login.",
               "type": [
                 "string",
                 "null"
@@ -509,12 +509,12 @@
           "const": "chat-completions"
         },
         {
-          "description": "The `claude` binary's stream-json protocol: Claude Code runs the\nloop and krowk drives it. A thinking signature it streams is\nClaude Code's to replay, never sent to the Messages API by krowk.",
+          "description": "The `claude` binary's stream-json protocol: Claude Code runs the\nloop and gruntas drives it. A thinking signature it streams is\nClaude Code's to replay, never sent to the Messages API by gruntas.",
           "type": "string",
           "const": "claude-code"
         },
         {
-          "description": "`codex app-server`'s JSON-RPC: Codex runs the loop, on its own\nlogin, and krowk drives it. Codex keeps its reasoning to itself, so\nnothing streamed here is ever replayed as a blob.",
+          "description": "`codex app-server`'s JSON-RPC: Codex runs the loop, on its own\nlogin, and gruntas drives it. Codex keeps its reasoning to itself, so\nnothing streamed here is ever replayed as a blob.",
           "type": "string",
           "const": "codex-app-server"
         }
@@ -534,7 +534,7 @@
           "minimum": 0
         },
         "maxHost": {
-          "description": "Agents every krowk on the machine runs at once — subagents and\n`--worktree` sessions, each holding one of the `agent-slots` for\nits life; twice the cores or twice the GiB of memory, whichever is\nfewer, kept to 4 … 64, when absent.",
+          "description": "Agents every gruntas on the machine runs at once — subagents and\n`--worktree` sessions, each holding one of the `agent-slots` for\nits life; twice the cores or twice the GiB of memory, whichever is\nfewer, kept to 4 … 64, when absent.",
           "type": [
             "integer",
             "null"
@@ -553,7 +553,7 @@
       "additionalProperties": false
     },
     "WorktreesConfig": {
-      "description": "`worktrees` in config.json: how a worktree krowk makes for an agent is\nreadied before the agent starts (`crate::worktree::STEPS`).",
+      "description": "`worktrees` in config.json: how a worktree gruntas makes for an agent is\nreadied before the agent starts (`crate::worktree::STEPS`).",
       "type": "object",
       "properties": {
         "seed": {
@@ -597,7 +597,7 @@
       "type": "object",
       "properties": {
         "slots": {
-          "description": "Build and test commands that run at once across every krowk on the\nmachine; a quarter of the cores (at least one) when absent.",
+          "description": "Build and test commands that run at once across every gruntas on the\nmachine; a quarter of the cores (at least one) when absent.",
           "type": [
             "integer",
             "null"

@@ -1,4 +1,4 @@
-//! gruntas-bench holds built krowk binaries to crates/gruntas-bench/budgets.toml
+//! gruntas-bench holds built gruntas binaries to crates/gruntas-bench/budgets.toml
 //! and exits non-zero when any budget is broken (R-PERF-7). `make bench`
 //! builds the two binaries and runs it; CI runs `make bench` on one pinned
 //! runner, so the numbers are always read on the same class of machine.

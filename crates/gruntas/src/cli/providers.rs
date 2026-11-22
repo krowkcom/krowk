@@ -1,8 +1,8 @@
-//! `krowk connect` and `krowk disconnect`: a model source, by vendor and
+//! `gruntas connect` and `gruntas disconnect`: a model source, by vendor and
 //! method — a Claude subscription through Claude Code's own login
 //! (`claude:work`, R-INST-2), a ChatGPT subscription through Codex's
 //! (`codex:team`), or an API key, which runs as one of those accounts —
-//! and `krowk providers add|list|remove`,
+//! and `gruntas providers add|list|remove`,
 //! the same instances by backend kind, one level down. The sign-in itself
 //! is `gruntas_harness::connect`, which every front end shares; this file is the
 //! terminal it asks and tells through, and the words of each result.
@@ -11,7 +11,7 @@
 //! key, so config.json stays something that can sync between hosts; a key
 //! pasted, piped (`--key-stdin`) or referenced (`--key-ref`) is stored in
 //! the provider credentials file instead (`gruntas_harness::keys`). A
-//! Claude Code login is Claude Code's: krowk asks `claude auth status`
+//! Claude Code login is Claude Code's: gruntas asks `claude auth status`
 //! whether there is one and never reads it (R-BACK-2); a Codex login is
 //! Codex's, asked of `codex app-server`'s `account/read`, or `codex login
 //! status` (R-BACK-3).
@@ -28,14 +28,14 @@ use serde_json::{json, Value};
 use std::io::Write;
 use std::path::PathBuf;
 
-/// krowk's home, for the harness: without one there is none, and the
+/// gruntas's home, for the harness: without one there is none, and the
 /// harness runs nothing rather than read keys, trust or commands from
 /// anywhere else.
 pub(super) fn krowk_dir() -> Result<PathBuf, Error> {
     gruntas_api::home::get()
 }
 
-/// krowk's one credentials file, in its home.
+/// gruntas's one credentials file, in its home.
 pub(super) fn credentials_path() -> Result<PathBuf, Error> {
     gruntas_api::creds::credentials_path()
 }
@@ -87,7 +87,7 @@ impl AuthInteraction for Terminal<'_> {
 
     fn notify(&mut self, notice: Notice<'_>) {
         let _ = match notice {
-            // krowk's own words around a vendor's, dimmed so the vendor's
+            // gruntas's own words around a vendor's, dimmed so the vendor's
             // prompts and the result stand out.
             Notice::Info(s) | Notice::Progress(s) => writeln!(self.stderr, "{}", crate::output::paint(self.colour, crate::output::DIM, s)),
             Notice::AuthUrl { url, message } => {
@@ -139,12 +139,12 @@ fn parts<'a>(ctx: &'a mut Ctx, asks: bool) -> Result<(ProviderAuth<'a>, Terminal
     Ok((pa, Terminal { stderr: &mut *ctx.io.stderr, interactive, open, colour }))
 }
 
-/// `krowk connect [vendor|instance]`: the vendor, its method and the
+/// `gruntas connect [vendor|instance]`: the vendor, its method and the
 /// account given or — with a person at the terminal — picked, then signed
 /// in; again on an instance that exists renews its login.
 pub(super) fn connect(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if args.len() > 1 {
-        return Err(fail("unexpected_argument", format!("`krowk connect` takes one vendor or instance, and got `{}`", args.join(" "))));
+        return Err(fail("unexpected_argument", format!("`gruntas connect` takes one vendor or instance, and got `{}`", args.join(" "))));
     }
     let method = match ctx.f.method.trim() {
         "" => None,
@@ -170,11 +170,11 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         let said = if provider.is_empty() { "no provider".to_string() } else { format!("{provider:?}") };
         // SuperGrok stays in PROVIDERS only to be refused with D4's line.
         let offered: Vec<&str> = PROVIDERS.iter().copied().filter(|p| *p != "supergrok").collect();
-        return Err(fail("bad_argument", format!("{said} is not a provider krowk's engine speaks — one of {}", offered.join(", "))));
+        return Err(fail("bad_argument", format!("{said} is not a provider gruntas's engine speaks — one of {}", offered.join(", "))));
     };
     // `add` asks nothing: what it makes is on its command line.
     if provider == "openai-compatible" && ctx.f.name.trim().is_empty() {
-        return Err(fail("bad_flag", "openai-compatible needs --name, e.g. `krowk providers add openai-compatible --name local --base-url http://127.0.0.1:11434/v1`"));
+        return Err(fail("bad_flag", "openai-compatible needs --name, e.g. `gruntas providers add openai-compatible --name local --base-url http://127.0.0.1:11434/v1`"));
     }
     if provider == "openai-compatible" && ctx.f.base_url.trim().is_empty() {
         return Err(fail("bad_flag", "openai-compatible needs --base-url, e.g. http://127.0.0.1:11434/v1"));
@@ -220,7 +220,7 @@ fn report(ctx: &mut Ctx, done: &Connected, verb: &str) -> Result<(), Error> {
         return super::sessions::emit_data(ctx, report, summary);
     }
     // For a person: what happened, in one line; what it is, dimmed; and the
-    // command to try it. Paths and binaries are `--json`'s and `krowk
+    // command to try it. Paths and binaries are `--json`'s and `gruntas
     // status`'s — a power user asks for them, nobody needs them to go on.
     let colour = ctx.colour;
     let dim = |s: &str| crate::output::paint(colour, crate::output::DIM, s);
@@ -228,13 +228,13 @@ fn report(ctx: &mut Ctx, done: &Connected, verb: &str) -> Result<(), Error> {
     let gruntas_harness::connect::Summary { facts, notes, signed_in_already } = done.summary(verb == "added");
     let another = signed_in_already.then(|| {
         let (vendor, method) = gruntas_harness::instances::kind_connect(kind.tag()).unwrap_or_default();
-        format!("krowk connect {vendor} --method {method} --name <new>")
+        format!("gruntas connect {vendor} --method {method} --name <new>")
     });
     lines.push(dim(&format!("  {}", capitalised(&facts.join(" · ")))));
     lines.extend(notes.iter().map(|n| format!("  {}", crate::output::warning(colour, n))));
     let try_it = match &done.default_model {
-        Some(_) => "krowk".to_string(),
-        None => format!("krowk --model {instance}/{}", done.model().unwrap_or("<model>")),
+        Some(_) => "gruntas".to_string(),
+        None => format!("gruntas --model {instance}/{}", done.model().unwrap_or("<model>")),
     };
     // A stored $VAR that is unset cannot run anything yet.
     if !matches!(&r.stored, gruntas_harness::keys::Stored::Env(_) if r.api_key.is_empty()) {
@@ -247,11 +247,11 @@ fn report(ctx: &mut Ctx, done: &Connected, verb: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// `krowk disconnect [instance] [--remove]`: signs an instance out the way
+/// `gruntas disconnect [instance] [--remove]`: signs an instance out the way
 /// its kind is signed in, and keeps its definition unless `--remove`.
 pub(super) fn disconnect(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if args.len() > 1 {
-        return Err(fail("unexpected_argument", format!("`krowk disconnect` takes one instance, and got `{}`", args.join(" "))));
+        return Err(fail("unexpected_argument", format!("`gruntas disconnect` takes one instance, and got `{}`", args.join(" "))));
     }
     let (remove, own) = (ctx.f.remove, ctx.f.sign_out_vendor);
     let done = {
@@ -294,7 +294,7 @@ pub(super) fn disconnect(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
             let at = home.as_ref().map(|h| format!(" in {}", h.display())).unwrap_or_default();
             writeln!(out, "disconnected {instance}: `{command}` signed it out{at}")
         }
-        SignedOut::Key { var } => writeln!(out, "{instance} reads its key from ${var}, the environment's and not krowk's to delete — unset it, and take it out of your shell's startup files, to sign it out"),
+        SignedOut::Key { var } => writeln!(out, "{instance} reads its key from ${var}, the environment's and not gruntas's to delete — unset it, and take it out of your shell's startup files, to sign it out"),
         SignedOut::StoredKey { var, set } => {
             let _ = writeln!(out, "disconnected {instance}: its stored key is deleted from {}", credentials_path()?.display());
             match var {
@@ -309,13 +309,13 @@ pub(super) fn disconnect(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         let _ = writeln!(out, "its definition is removed from {}", config.display());
     }
     if let Some(m) = &done.cleared_default {
-        let _ = writeln!(out, "the default model was {m}, so there is none now — `krowk connect <vendor> --method <method> --default` makes a connection the default");
+        let _ = writeln!(out, "the default model was {m}, so there is none now — `gruntas connect <vendor> --method <method> --default` makes a connection the default");
     }
     Ok(())
 }
 
 /// Every instance, where it runs, and whether it is ready — the readiness
-/// check `krowk status` prints, with the place each one runs beside it.
+/// check `gruntas status` prints, with the place each one runs beside it.
 pub(super) fn list(ctx: &mut Ctx) -> Result<(), Error> {
     let (cfg, reg, reports) = super::status::reports(ctx)?;
     let rows: Vec<Value> = reports
@@ -350,12 +350,12 @@ pub(super) fn list(ctx: &mut Ctx) -> Result<(), Error> {
     Ok(())
 }
 
-/// `krowk providers rename [instance] [new-name]`: a new name — whole,
+/// `gruntas providers rename [instance] [new-name]`: a new name — whole,
 /// never prefixed — for an instance, its login and every place config.json names it with it; each
 /// argument, left out at a terminal, is asked.
 pub(super) fn rename(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if args.len() > 2 {
-        return Err(fail("unexpected_argument", format!("`krowk providers rename` takes an instance and its new name, and got `{}`", args.join(" "))));
+        return Err(fail("unexpected_argument", format!("`gruntas providers rename` takes an instance and its new name, and got `{}`", args.join(" "))));
     }
     let done = {
         let (pa, mut ui) = parts(ctx, true)?;
@@ -377,16 +377,16 @@ pub(super) fn rename(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
 
 pub(super) fn remove(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let Some(instance) = args.first().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else {
-        return Err(fail("bad_argument", "name the instance: `krowk providers remove openai:work` — `krowk providers list` shows them"));
+        return Err(fail("bad_argument", "name the instance: `gruntas providers remove openai:work` — `gruntas providers list` shows them"));
     };
     let gone = {
         let (pa, _) = parts(ctx, false)?;
         pa.remove(&instance).map_err(engine)?
     };
     // A backend account's directory holds the vendor's own login, which is
-    // the vendor's to sign out of: krowk leaves it as it is.
+    // the vendor's to sign out of: gruntas leaves it as it is.
     let kept = gone.kept.map(|(dir, codex)| {
-        let how = if codex { format!("Codex's login in it — `krowk disconnect {instance}` first, or `CODEX_HOME={dir} codex logout`, signs it out") } else { format!("Claude Code's login in it — `krowk disconnect {instance}` first, or `CLAUDE_CONFIG_DIR={dir} claude auth logout`, signs it out") };
+        let how = if codex { format!("Codex's login in it — `gruntas disconnect {instance}` first, or `CODEX_HOME={dir} codex logout`, signs it out") } else { format!("Claude Code's login in it — `gruntas disconnect {instance}` first, or `CLAUDE_CONFIG_DIR={dir} claude auth logout`, signs it out") };
         (dir, how)
     });
     if ctx.format != Format::Human {

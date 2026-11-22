@@ -309,7 +309,7 @@ pub fn active(app: &App, req: &Req) -> Result<String, Resp> {
 /// A client from before devices belonged to a person calls an endpoint that
 /// is gone: 410, with the fix in the message (Api::V1::SyncResetsController).
 pub fn sync_reset() -> Resp {
-    error(410, "sync_reset", "sync was reset when devices moved to your account — update krowk, sign in with `krowk auth login` and run `krowk sync init`", None)
+    error(410, "sync_reset", "sync was reset when devices moved to your account — update gruntas, sign in with `gruntas auth login` and run `gruntas sync init`", None)
 }
 
 pub fn signature_headers(req: &Req) -> Result<(String, String, String), Resp> {
@@ -336,7 +336,7 @@ pub fn check_signature(s: &mut SyncStore, req: &Req, device: &str, at: &str, sig
     // Past the v1_until date, in UTC: the date itself is still v1's.
     if !v2 && s.v1_until.is_some_and(|until| jiff::tz::Offset::UTC.to_datetime(Timestamp::now()).date() > until) {
         let older = if s.v2_release.is_empty() { String::new() } else { format!("is older than {} and ", s.v2_release) };
-        return Err(refused("signature_version_retired", &format!("this krowk {older}signs registry requests with the retired v1 lines — run `krowk upgrade`")));
+        return Err(refused("signature_version_retired", &format!("this gruntas {older}signs registry requests with the retired v1 lines — run `gruntas upgrade`")));
     }
     if (Timestamp::now().as_millisecond() - millis).abs() > SIGNATURE_SKEW_MS {
         return Err(refused("signature_stale", "the request was signed more than 5 minutes from the registry's clock — check this machine's clock"));
@@ -410,7 +410,7 @@ pub fn gate(req: &Req) -> Result<String, Resp> {
         return Err(error(
             402,
             "sync_requires_paid_plan",
-            "Syncing sessions between devices requires a paid plan. Upgrade this workspace to Pro; everything else krowk does keeps working locally without it.",
+            "Syncing sessions between devices requires a paid plan. Upgrade this workspace to Pro; everything else gruntas does keeps working locally without it.",
             None,
         ));
     }
@@ -1832,7 +1832,7 @@ mod tests {
         };
         assert!(code(today, None).contains("signature_invalid"), "the date itself is still v1's");
         let retired = code(today.yesterday().unwrap(), None);
-        assert!(retired.contains("signature_version_retired") && retired.contains("this krowk is older than 0.42.0 and signs registry requests with the retired v1 lines — run `krowk upgrade`"), "{retired}");
+        assert!(retired.contains("signature_version_retired") && retired.contains("this gruntas is older than 0.42.0 and signs registry requests with the retired v1 lines — run `gruntas upgrade`"), "{retired}");
         assert!(code(today.yesterday().unwrap(), Some("2")).contains("signature_invalid"));
     }
 }

@@ -104,7 +104,7 @@
               "$ref": "#/$defs/PermissionMode"
             },
             "effort": {
-              "description": "The effort asked for, on krowk's ladder, when one was; what the\nmodel was sent is that rung mapped onto the ones it takes.",
+              "description": "The effort asked for, on gruntas's ladder, when one was; what the\nmodel was sent is that rung mapped onto the ones it takes.",
               "anyOf": [
                 {
                   "$ref": "#/$defs/Effort"
@@ -322,7 +322,7 @@
               "default": "gruntas"
             },
             "backendId": {
-              "description": "The backend's own id for it: Claude Code's `task_id`, Codex's\nthread id. Absent for krowk's own.",
+              "description": "The backend's own id for it: Claude Code's `task_id`, Codex's\nthread id. Absent for gruntas's own.",
               "type": [
                 "string",
                 "null"
@@ -343,7 +343,7 @@
           ]
         },
         {
-          "description": "The session's todo list, whole, as krowk's own `todo_write` last set\nit (R-TODO-2), in logs from before that engine went: each write\nreplaced the list before it.",
+          "description": "The session's todo list, whole, as gruntas's own `todo_write` last set\nit (R-TODO-2), in logs from before that engine went: each write\nreplaced the list before it.",
           "type": "object",
           "properties": {
             "turnId": {
@@ -367,7 +367,7 @@
           ]
         },
         {
-          "description": "The krowk run this session's evidence is grouped under, opened by\nits first `publish` (R-EVID-1). Logged once; every later publish, and\na resumed session's, attaches to it.",
+          "description": "The gruntas run this session's evidence is grouped under, opened by\nits first `publish` (R-EVID-1). Logged once; every later publish, and\na resumed session's, attaches to it.",
           "type": "object",
           "properties": {
             "turnId": {
@@ -578,7 +578,7 @@
               "minimum": 0
             },
             "reportedCostUsd": {
-              "description": "What a backend said the turn cost, when it says (Claude Code's\n`total_cost_usd`). A budget counts it when it is more than krowk\npriced the turn's calls at.",
+              "description": "What a backend said the turn cost, when it says (Claude Code's\n`total_cost_usd`). A budget counts it when it is more than gruntas\npriced the turn's calls at.",
               "type": [
                 "number",
                 "null"
@@ -656,19 +656,19 @@
           "const": "chat-completions"
         },
         {
-          "description": "The `claude` binary's stream-json protocol: Claude Code runs the\nloop and krowk drives it. A thinking signature it streams is\nClaude Code's to replay, never sent to the Messages API by krowk.",
+          "description": "The `claude` binary's stream-json protocol: Claude Code runs the\nloop and gruntas drives it. A thinking signature it streams is\nClaude Code's to replay, never sent to the Messages API by gruntas.",
           "type": "string",
           "const": "claude-code"
         },
         {
-          "description": "`codex app-server`'s JSON-RPC: Codex runs the loop, on its own\nlogin, and krowk drives it. Codex keeps its reasoning to itself, so\nnothing streamed here is ever replayed as a blob.",
+          "description": "`codex app-server`'s JSON-RPC: Codex runs the loop, on its own\nlogin, and gruntas drives it. Codex keeps its reasoning to itself, so\nnothing streamed here is ever replayed as a blob.",
           "type": "string",
           "const": "codex-app-server"
         }
       ]
     },
     "PermissionMode": {
-      "description": "Claude-Code-compatible permission modes (R-PERM-1): `default` asks\nbefore edits and commands, `acceptEdits` before commands, `plan` changes\nnothing, and `bypassPermissions` asks before nothing — though a deny\nrule, an ask rule and a hook's ask still hold in each of those. krowk's\nown `unhinged` holds nothing krowk's rules say: every call runs but one a\nhook blocks (`crate::permissions`).",
+      "description": "Claude-Code-compatible permission modes (R-PERM-1): `default` asks\nbefore edits and commands, `acceptEdits` before commands, `plan` changes\nnothing, and `bypassPermissions` asks before nothing — though a deny\nrule, an ask rule and a hook's ask still hold in each of those. gruntas's\nown `unhinged` holds nothing gruntas's rules say: every call runs but one a\nhook blocks (`crate::permissions`).",
       "type": "string",
       "enum": [
         "default",
@@ -782,7 +782,7 @@
           ]
         },
         {
-          "description": "A tool the model asked krowk to run. `callId` is the provider's id,\nwhich the matching result repeats.",
+          "description": "A tool the model asked gruntas to run. `callId` is the provider's id,\nwhich the matching result repeats.",
           "type": "object",
           "properties": {
             "callId": {
@@ -934,7 +934,7 @@
       "description": "Who runs a subagent's loop (R-SUB-7).",
       "oneOf": [
         {
-          "description": "gruntas's own loop, through its `subagent` tool, in logs from before\nthat engine went. Logs written before the rename say `krowk`.",
+          "description": "gruntas's own loop, through its `subagent` tool, in logs from before\nthat engine went. Logs written before the rename say `gruntas`.",
           "type": "string",
           "const": "gruntas"
         },
@@ -1009,7 +1009,7 @@
           "const": "catchUp"
         },
         {
-          "description": "A new vendor session, seeded with krowk's summary of the earlier\nturns and the most recent ones as they happened.",
+          "description": "A new vendor session, seeded with gruntas's summary of the earlier\nturns and the most recent ones as they happened.",
           "type": "string",
           "const": "summary"
         }
@@ -1172,7 +1172,7 @@
           ]
         },
         {
-          "description": "Something for the person at the client and nobody else: an\nanonymous upload's claim command, whose token is a secret. Never\nlogged, never in what a model reads; `krowk -p` prints it on stderr\nand leaves it out of `stream-json`. One sent between turns (a\nbackend let go with its agents) has an empty `turnId`.",
+          "description": "Something for the person at the client and nobody else: an\nanonymous upload's claim command, whose token is a secret. Never\nlogged, never in what a model reads; `gruntas -p` prints it on stderr\nand leaves it out of `stream-json`. One sent between turns (a\nbackend let go with its agents) has an empty `turnId`.",
           "type": "object",
           "properties": {
             "sessionId": {
@@ -1307,7 +1307,7 @@
           ]
         },
         {
-          "description": "How many background jobs and background children the session had\nrunning, from krowk's own engine (R-STEER-2, R-STEER-3). Nothing\nsends it since that engine went; kept so a client that reads it\nstill parses.",
+          "description": "How many background jobs and background children the session had\nrunning, from gruntas's own engine (R-STEER-2, R-STEER-3). Nothing\nsends it since that engine went; kept so a client that reads it\nstill parses.",
           "type": "object",
           "properties": {
             "sessionId": {
@@ -1702,7 +1702,7 @@
           "format": "int64"
         },
         "room": {
-          "description": "What `to` has left, when krowk knows (D12): `41% left as of 12:10,\nresets 13:20`.",
+          "description": "What `to` has left, when gruntas knows (D12): `41% left as of 12:10,\nresets 13:20`.",
           "type": [
             "string",
             "null"
@@ -1719,7 +1719,7 @@
       ]
     },
     "KeptWorktree": {
-      "description": "A session's own worktree (`krowk --worktree`), kept because the session\nchanged something in it: where it is and its branch, for the person to\nmerge or work in. `krowk worktrees` lists it from then on.",
+      "description": "A session's own worktree (`gruntas --worktree`), kept because the session\nchanged something in it: where it is and its branch, for the person to\nmerge or work in. `gruntas worktrees` lists it from then on.",
       "type": "object",
       "properties": {
         "path": {
@@ -1820,7 +1820,7 @@
           ]
         },
         "worktree": {
-          "description": "The worktree a `krowk -p --worktree` session worked in, kept when\nthe session ended because it changed something: set by the command\nline on the result it prints, after the session's turn. Absent when\nthe worktree was removed, and on every other result.",
+          "description": "The worktree a `gruntas -p --worktree` session worked in, kept when\nthe session ended because it changed something: set by the command\nline on the result it prints, after the session's turn. Absent when\nthe worktree was removed, and on every other result.",
           "anyOf": [
             {
               "$ref": "#/$defs/KeptWorktree"
@@ -1844,7 +1844,7 @@
       ]
     },
     "BackendAgent": {
-      "description": "One agent a backend runs by itself: it is the vendor's, with its own\nconversation, and krowk only reports it (its spend is metered as\n`subagent.response`).",
+      "description": "One agent a backend runs by itself: it is the vendor's, with its own\nconversation, and gruntas only reports it (its spend is metered as\n`subagent.response`).",
       "type": "object",
       "properties": {
         "taskId": {

@@ -1,6 +1,6 @@
 //! The Claude Code backend through the host, against a fake `claude` (a
 //! script replaying recorded stream-json, `fixtures/claude/fake-claude`), so
-//! no test needs a real login: a turn that calls krowk's injected
+//! no test needs a real login: a turn that calls gruntas's injected
 //! session_info tool, a denied Bash, one process serving the whole session
 //! and switching models in place, an interrupt the session survives, a
 //! resume from a new host, two instances with their own config
@@ -27,7 +27,7 @@ const VENDOR_SESSION: &str = "fa4e0000-0000-4000-8000-000000000001";
 /// One test at a time in this binary: a process another test is spawning
 /// holds a copy of every open descriptor between its fork and its exec —
 /// a session log's lock included — so a turn re-opening its log in that
-/// instant would read another krowk's lock. One krowk runs one session's
+/// instant would read another gruntas's lock. One gruntas runs one session's
 /// turns; tests running several at once in one process are the exception.
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -189,7 +189,7 @@ fn r_back_1_a_session_runs_on_one_claude_process_calls_krowks_tool_and_is_denied
     let dir = home.signed_in("cfg-work");
     let host = home.host(vec![("claude:work", home.instance(&dir, Some("session_info.jsonl")))], trust::allow_all());
     rt().block_on(async {
-        // Turn 1: the model calls mcp__gruntas__session_info, which krowk
+        // Turn 1: the model calls mcp__gruntas__session_info, which gruntas
         // answers over the control protocol.
         let (lines, r) = run(&host, prompt(None, "what session is this?", "claude:work/sonnet", PermissionMode::Default)).await;
         let first = r.unwrap().unwrap();
@@ -202,10 +202,10 @@ fn r_back_1_a_session_runs_on_one_claude_process_calls_krowks_tool_and_is_denied
         assert_eq!((b.provider.as_str(), b.wire_api, text.as_str()), ("anthropic", WireApi::ClaudeCode, "The person wants the session id."));
         assert!(matches!(&items[2], Item::ToolCall { name, .. } if name == "mcp__gruntas__session_info"));
         let Item::ToolResult { output, is_error: false, .. } = &items[3] else { panic!("{items:?}") };
-        assert!(output.contains(&format!("krowk session: {}", first.session_id)) && output.contains("instance: claude:work"), "the tool ran inside krowk, for this session: {output}");
+        assert!(output.contains(&format!("gruntas session: {}", first.session_id)) && output.contains("instance: claude:work"), "the tool ran inside gruntas, for this session: {output}");
         assert!(lines.iter().any(|l| matches!(l, StreamLine::Live(LiveEvent::ItemDelta { .. }))), "deltas stream live");
 
-        // Turn 2, same session: Bash is asked of krowk, and refused under
+        // Turn 2, same session: Bash is asked of gruntas, and refused under
         // the default mode.
         let (_, r) = run(&host, prompt(Some(&first.session_id), "clean the build", "claude:work/sonnet", PermissionMode::Default)).await;
         let second = r.unwrap().unwrap();
@@ -228,7 +228,7 @@ fn r_back_1_a_session_runs_on_one_claude_process_calls_krowks_tool_and_is_denied
     for want in ["--input-format stream-json", "--output-format stream-json", "--verbose", "--include-partial-messages", "--permission-prompt-tool stdio", r#""type":"sdk""#, "--strict-mcp-config", "--model sonnet"] {
         assert!(argv.contains(want), "{want} missing from {argv}");
     }
-    assert!(fake.contains(r#""behavior":"allow""#), "krowk's own tool is allowed");
+    assert!(fake.contains(r#""behavior":"allow""#), "gruntas's own tool is allowed");
     assert!(fake.contains(r#""name":"session_info""#), "tools/list named it");
     assert!(fake.lines().last().unwrap() == "eof", "shutdown closed stdin and the process exited");
 
@@ -253,7 +253,7 @@ fn r_back_1_a_session_runs_on_one_claude_process_calls_krowks_tool_and_is_denied
         assert!(validator.is_valid(&serde_json::from_str(l).unwrap()), "{l}");
     }
     // The context record: Claude Code's prompt is its own; the tools it
-    // announced include krowk's, with their schema.
+    // announced include gruntas's, with their schema.
     let ctx: Vec<ContextRecord> = std::fs::read_to_string(log::sessions_dir(&home.env()).unwrap().join(&sid).join(log::CONTEXT_FILE)).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(ctx[0].toolset, "claude-code");
     let info = ctx[0].tools.iter().find(|t| t.name == "mcp__gruntas__session_info").unwrap();
@@ -274,7 +274,7 @@ fn a_gh_post_with_a_bare_card_link_is_denied_by_krowks_hook_in_every_mode() {
         });
         let results: Vec<(bool, String)> = completed(&lines).into_iter().filter_map(|i| if let Item::ToolResult { is_error, output, .. } = i { Some((is_error, output)) } else { None }).collect();
         let [(true, refused), (false, _)] = results.as_slice() else { panic!("{mode:?}: the bare link is refused, the block is not: {results:?}") };
-        assert!(refused.contains("bare krowk card link") && refused.contains("krowk block"), "{mode:?}: the model reads why: {refused}");
+        assert!(refused.contains("bare gruntas card link") && refused.contains("gruntas block"), "{mode:?}: the model reads why: {refused}");
         let fake = home.fake_log();
         let init = fake.lines().find(|l| l.starts_with("in ") && l.contains(r#""subtype":"initialize""#)).unwrap();
         assert!(init.contains(r#""hooks":{"PreToolUse":[{"matcher":"Bash|EnterWorktree|Agent|Task","hookCallbackIds":["krowk_paste_guard"]}]}"#), "registered on every process: {init}");
@@ -302,7 +302,7 @@ fn r_compat_1_a_slash_skill_claude_code_does_not_have_reaches_it_loaded_ahead_of
 
     let items = completed(&lines);
     assert!(matches!(&items[0], Item::UserText { text, .. } if text == "/implement the login page"), "the person's words, as they typed them: {items:?}");
-    assert!(matches!(&items[1], Item::UserText { text, .. } if text.starts_with(gruntas_harness::compat::skills::INVOKED)), "the skill, logged as krowk's: {items:?}");
+    assert!(matches!(&items[1], Item::UserText { text, .. } if text.starts_with(gruntas_harness::compat::skills::INVOKED)), "the skill, logged as gruntas's: {items:?}");
     let fake = home.fake_log();
     let sent = fake.lines().find(|l| l.starts_with("in ") && l.contains(r#""type":"user""#)).unwrap_or_else(|| panic!("{fake}"));
     let msg: serde_json::Value = serde_json::from_str(&sent[3..]).unwrap();
@@ -368,7 +368,7 @@ fn r_back_5_a_new_host_resumes_the_claude_session_the_log_holds() {
         host.shutdown().await;
         r.unwrap().unwrap().session_id
     });
-    // A second krowk: a new host, a new process, on --resume.
+    // A second gruntas: a new host, a new process, on --resume.
     rt().block_on(async {
         let host = home.host(inst(), trust::allow_all());
         let (_, r) = run(&host, prompt(Some(&sid), "again", "claude:work/sonnet", PermissionMode::Default)).await;
@@ -429,7 +429,7 @@ fn a_missing_login_or_binary_is_named_with_its_fix() {
     // a session or a Claude process exists, with the fix.
     let e = rt().block_on(async { run(&host, prompt(None, "hello", "claude:personal/sonnet", PermissionMode::Default)).await.1 }).unwrap_err();
     assert_eq!(e.code, "not_authenticated");
-    assert!(e.message.contains("krowk connect anthropic --method subscription --name personal") && e.message.contains("Claude's own login"), "{}", e.message);
+    assert!(e.message.contains("gruntas connect anthropic --method subscription --name personal") && e.message.contains("Claude's own login"), "{}", e.message);
     assert_eq!(processes(&home.fake_log()), 0, "no turn process was started");
     assert!(home.fake_log().contains("argv auth status --json"), "{}", home.fake_log());
     assert!(log::list(&log::sessions_dir(&home.env()).unwrap()).unwrap_or_default().is_empty(), "a refusal leaves no session behind");
@@ -510,7 +510,7 @@ fn r_back_1_claude_runs_in_krowks_mode_and_a_looser_one_is_stopped_before_it_run
         assert_eq!(e.code, "backend_permission_mode");
         assert!(e.message.contains("`acceptEdits`") && e.message.contains("`default`") && e.message.contains("permissions.defaultMode"), "{}", e.message);
         assert!(completed(&lines).iter().all(|i| matches!(i, Item::UserText { .. })), "nothing ran: {:?}", completed(&lines));
-        // krowk in bypassPermissions allows any mode Claude Code reports.
+        // gruntas in bypassPermissions allows any mode Claude Code reports.
         let (_, r) = run(&host, prompt(None, "hello", "claude:loose/sonnet", PermissionMode::BypassPermissions)).await;
         assert_eq!(r.unwrap().unwrap().status, TurnStatus::Completed);
         host.shutdown().await;
@@ -646,7 +646,7 @@ fn r_inst_1_a_router_instance_gets_its_key_from_the_variable_it_names() {
 }
 
 /// R-EVID-1: a backend is offered `publish` through the bridge, and it runs
-/// the host's publisher for the krowk session, in its working directory —
+/// the host's publisher for the gruntas session, in its working directory —
 /// the run it opens logged once, like a native session's.
 #[test]
 fn r_evid_1_claude_code_publishes_through_krowks_bridge() {
@@ -720,7 +720,7 @@ fn mcp_turn(name: &str, scenario: &str, mode: PermissionMode, extra: serde_json:
     (out.0, std::fs::read_to_string(home.root.join("fake-mcp.log")).unwrap_or_default(), home.fake_log(), out.1)
 }
 
-/// krowk's MCP servers reach a Claude Code session through the bridge: the
+/// gruntas's MCP servers reach a Claude Code session through the bridge: the
 /// two tools are listed only when there are servers, a call is judged as
 /// `Mcp(server:tool)`, reaches the server, and its image goes back as an
 /// image block; a deny rule holds, and a call nobody was asked about is
@@ -783,7 +783,7 @@ fn r_budget_1_a_backend_turn_over_its_budget_is_interrupted_and_the_next_refused
 
 /// R-BUDGET-1: what Claude Code's own subagent (`Task`) spends is the
 /// session's spend. Its calls are metered and logged apart from the
-/// conversation, and Claude Code's reported total counts when krowk could
+/// conversation, and Claude Code's reported total counts when gruntas could
 /// not price the calls itself — here it prices nothing.
 #[test]
 fn r_budget_1_claude_codes_subagent_calls_count_toward_the_budget() {
@@ -809,7 +809,7 @@ fn r_budget_1_claude_codes_subagent_calls_count_toward_the_budget() {
     // One Home at a time: the next takes the lock this one holds.
     drop(host);
     drop(home);
-    // Without a limit: Claude Code's reported total prices what krowk could not.
+    // Without a limit: Claude Code's reported total prices what gruntas could not.
     let home = Home::new("subagent-cost");
     let dir = home.signed_in("cfg-work");
     let host = home.host(vec![("claude:work", home.instance(&dir, Some("subagent.jsonl")))], trust::allow_all());
@@ -836,10 +836,10 @@ fn within<F: std::future::Future>(f: F) -> F::Output {
 }
 
 /// Its instance changed while a session's process is up — a client's
-/// `krowk disconnect` or `krowk connect` of it — the process is not taken at its
+/// `gruntas disconnect` or `gruntas connect` of it — the process is not taken at its
 /// word: the next turn asks the vendor again, and a sign-out since is
 /// refused rather than run on the old, still signed-in process. Instances
-/// read again with nothing changed (a cancelled `krowk connect`), or another
+/// read again with nothing changed (a cancelled `gruntas connect`), or another
 /// instance changed, keep it.
 #[test]
 fn a_session_process_is_not_reused_once_its_instance_is_replaced() {
@@ -879,8 +879,8 @@ fn a_session_process_is_not_reused_once_its_instance_is_replaced() {
     assert!(fake.contains(&format!("resume {VENDOR_SESSION}")), "{fake}");
 }
 
-/// Renamed while a session's process is up — `krowk providers rename
-/// claude:work claude:personal`, or from `krowk connect` — it is the same account: the process goes on under
+/// Renamed while a session's process is up — `gruntas providers rename
+/// claude:work claude:personal`, or from `gruntas connect` — it is the same account: the process goes on under
 /// the new name, and a turn naming the old one runs there too.
 #[test]
 fn a_renamed_instance_keeps_its_session_process() {
@@ -941,7 +941,7 @@ fn continue_turn(session_id: &str) -> Command {
 /// its subagent's shell never counted — and what it asks meanwhile is
 /// answered under the last turn's permissions. The turn Claude Code then
 /// begins by itself waits for `continue`, which runs it as a turn of the
-/// session with krowk's note as its prompt; the agent's calls, made while
+/// session with gruntas's note as its prompt; the agent's calls, made while
 /// no turn ran, are metered once, in it (R-BUDGET-1).
 #[test]
 fn r_sub_3_a_background_agent_is_listed_while_idle_and_the_turn_claude_code_begins_waits_for_continue() {
@@ -970,7 +970,7 @@ fn r_sub_3_a_background_agent_is_listed_while_idle_and_the_turn_claude_code_begi
         let (lines, r) = run(&host, continue_turn(&first.session_id)).await;
         let second = r.unwrap().unwrap();
         assert_eq!((second.status, second.result.as_str()), (TurnStatus::Completed, "The agent is done: the repo is small."));
-        assert_eq!(completed(&lines).first(), Some(&Item::user(gruntas_harness::claude::unprompted(&reason))), "its prompt is krowk's note of why");
+        assert_eq!(completed(&lines).first(), Some(&Item::user(gruntas_harness::claude::unprompted(&reason))), "its prompt is gruntas's note of why");
         assert_eq!(home.fake_log().matches("in {\"type\":\"user\"").count(), 1, "and nothing was sent for it");
         let events = home.events(&first.session_id);
         let metered: Vec<i64> = events.iter().filter_map(|e| match &e.body {
@@ -1021,7 +1021,7 @@ fn r_back_5_a_prompt_runs_the_waiting_turn_first_and_ends_at_its_own_result() {
 
 /// R-BACK-5: a turn Claude Code begins as a prompt is on its way is read
 /// inside the prompt's turn — its `result` carries `origin`, so it is not
-/// the prompt's end — with krowk's note where it ended, and the prompt's
+/// the prompt's end — with gruntas's note where it ended, and the prompt's
 /// answer after it.
 #[test]
 fn r_back_5_a_turn_claude_code_begins_as_a_prompt_arrives_is_folded_into_the_prompts() {
@@ -1083,7 +1083,7 @@ fn r_back_1_a_process_with_a_background_agent_is_not_let_go_as_idle() {
 
 /// A plan turn whose ExitPlanMode was approved leaves Claude Code in
 /// default: the turn it then begins by itself runs in that mode, which
-/// krowk accepted, and is not stopped as looser than the plan asked for —
+/// gruntas accepted, and is not stopped as looser than the plan asked for —
 /// nor are the process and its agents killed for it.
 #[test]
 fn r_back_1_the_turn_claude_code_begins_after_an_approved_plan_runs_in_default() {
@@ -1103,7 +1103,7 @@ fn r_back_1_the_turn_claude_code_begins_after_an_approved_plan_runs_in_default()
             LogBody::TurnStarted { permission_mode, .. } => Some(*permission_mode),
             _ => None,
         }).collect();
-        assert_eq!(modes, [PermissionMode::Plan, PermissionMode::Default], "the mode the process was in, which krowk accepted");
+        assert_eq!(modes, [PermissionMode::Plan, PermissionMode::Default], "the mode the process was in, which gruntas accepted");
         host.shutdown().await;
     }));
     assert_eq!(processes(&home.fake_log()), 1, "never restarted");
@@ -1179,7 +1179,7 @@ impl Home {
     /// fake's own. Where the steer was written, the fake waits for it
     /// (`@await-steer`) when Claude Code read it in the same turn, and its
     /// replay is `@replay`; when Claude Code read it only in a turn of its
-    /// own after the `result`, the turn pauses there (`@sleep 1`) so krowk
+    /// own after the `result`, the turn pauses there (`@sleep 1`) so gruntas
     /// writes it in time, and that turn is the scenario's next, begun by
     /// the fake for the line it reads next, as Claude Code does.
     fn scenario_from(&self, recording: &str) -> String {
@@ -1291,7 +1291,7 @@ fn r_steer_1_a_steer_during_a_tool_call_is_logged_where_claude_code_replayed_it_
 
 /// R-STEER-1, against ST0's late recording: a steer written as the model
 /// writes its last answer is read in a turn Claude Code begins after the
-/// `result`; the krowk turn reads on into it and completes with the steer
+/// `result`; the gruntas turn reads on into it and completes with the steer
 /// read, logged where it was replayed.
 #[test]
 fn r_steer_1_a_steer_during_the_last_answer_is_read_in_a_second_claude_code_turn_inside_the_krowk_turn() {
@@ -1507,7 +1507,7 @@ fn r_sub_7_a_claude_agents_child_session_is_held_as_running_while_the_agent_runs
 }
 
 /// The recorded parallel turn after `init` as a scenario, its asks played
-/// as asks and the rest of the control lines — krowk's to answer, or its
+/// as asks and the rest of the control lines — gruntas's to answer, or its
 /// answers — left out; and the recording's printed lines.
 fn asking(home: &Home) -> (PathBuf, Vec<serde_json::Value>) {
     let raw = std::fs::read_to_string(fixture("recorded/agents_parallel.txt")).unwrap();
@@ -1681,7 +1681,7 @@ fn kid_of(lines: &[StreamLine], task: &str) -> String {
 }
 
 /// The recorded parallel turn after `init` as a scenario that waits for
-/// krowk's `stop_task` where the recording sent one (`@await-stop`), and
+/// gruntas's `stop_task` where the recording sent one (`@await-stop`), and
 /// the task ids of its two agents, the reader's and the sleeper's. The
 /// fake says the sleeper was stopped as Claude Code did; refusing, it says
 /// nothing, and the recording's own words for it follow.

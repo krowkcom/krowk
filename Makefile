@@ -188,7 +188,7 @@ bin/devregistry:
 GOLDEN_VERSION := 0.0.0-golden
 
 # Two builds. The device build runs every case. The full build runs
-# tests/golden/cases-full: bare `krowk` and the full build's help, so any
+# tests/golden/cases-full: bare `gruntas` and the full build's help, so any
 # difference is a behaviour change. The full
 # build has a target directory of its own, so the two build at once and
 # $(GOLDEN_DIR) holds the device build `golden-update` expects. The cases'

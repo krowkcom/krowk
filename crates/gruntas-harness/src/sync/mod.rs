@@ -128,7 +128,7 @@ fn runtime() -> Result<tokio::runtime::Runtime, String> {
     tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| format!("the async runtime could not start: {e}"))
 }
 
-/// `krowk sync host`: reaches this machine's daemon (starting it when none
+/// `gruntas sync host`: reaches this machine's daemon (starting it when none
 /// answers) as a client that answers approvals, and runs the bridge until
 /// Ctrl-C or SIGTERM. A machine over its limit is refused with
 /// `sync_machine_limit`, the refusal's details and its sentence.
@@ -153,7 +153,7 @@ pub fn run_host(o: host::Options, env: &dyn Fn(&str) -> String, cwd: &std::path:
         match ended.map_err(|e| gruntas_api::fail("sync_failed", e.to_string()))? {
             // Handed over: done here, as asked.
             Err(e) if e.starts_with(host::HANDED_OVER) => {
-                eprintln!("krowk: {e}");
+                eprintln!("gruntas: {e}");
                 Ok(())
             }
             r => r.map_err(|e| match host::machine_limit(&e) {
@@ -173,7 +173,7 @@ pub fn run_host(o: host::Options, env: &dyn Fn(&str) -> String, cwd: &std::path:
     ended
 }
 
-/// `krowk sync take`'s ask: attached to the session as a viewer, its host
+/// `gruntas sync take`'s ask: attached to the session as a viewer, its host
 /// asked to hand it to this device, and its answer — what to take the
 /// session up with, or why it stays. A host that does not answer in `wait`
 /// is a refusal too.
@@ -217,7 +217,7 @@ pub fn interrupt(o: viewer::Options, wait: Duration) -> Result<(), String> {
     })
 }
 
-/// What a line typed into `krowk sync attach` asks of the session.
+/// What a line typed into `gruntas sync attach` asks of the session.
 #[derive(Debug)]
 pub enum Typed {
     /// Sent as it is.
@@ -227,8 +227,8 @@ pub enum Typed {
     Switch,
 }
 
-/// What a line typed into `krowk sync attach` asks of the session: a
-/// prompt, unless it is one of the slash commands `krowk help sync attach`
+/// What a line typed into `gruntas sync attach` asks of the session: a
+/// prompt, unless it is one of the slash commands `gruntas help sync attach`
 /// lists. Any other line starting with `/` is a prompt as typed, so a skill
 /// (`/review x`) or a path still reaches the model; `//text` sends `/text`
 /// for a prompt that would otherwise read as a command.
@@ -270,7 +270,7 @@ pub fn typed(session: &str, line: String) -> Result<Typed, String> {
     Ok(Typed::Command(Command::Approve { session_id, request_id: arg.to_string(), decision, answers: Vec::new() }))
 }
 
-/// A prompt from `krowk sync attach`: the session's model, settings and
+/// A prompt from `gruntas sync attach`: the session's model, settings and
 /// mode, the host's to choose.
 fn prompt(session: &str, text: String) -> crate::protocol::Command {
     crate::protocol::Command::Prompt { session_id: Some(session.to_string()), text, images: Vec::new(), model: None, permission_mode: Default::default(), toolset: None, effort: None, rollover: None, budget: None }
@@ -292,7 +292,7 @@ fn with_images(session: &str, paths: &[std::path::PathBuf]) -> Result<(crate::pr
     Ok((first, rest, Command::Prompt { session_id, text: names.trim_end().to_string(), images: inputs, model, permission_mode, toolset, effort, rollover, budget }))
 }
 
-/// `krowk sync attach`: follows a synced session, writing each update as
+/// `gruntas sync attach`: follows a synced session, writing each update as
 /// one JSON line to `out`, and sends each line of stdin as a prompt or
 /// the command it names (`typed`). Stdin's end ends it, once every command
 /// sent has been answered: what a script piped in is taken before it goes,
@@ -342,7 +342,7 @@ pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<()
                                 owed.images = (rest.len() + 1, 0);
                                 owed.hand(&v.commands, first, rest.into_iter().chain([prompt]));
                             }
-                            Err(e) => eprintln!("krowk: {e}"),
+                            Err(e) => eprintln!("gruntas: {e}"),
                         },
                         None => match typed(&session, text) {
                             Ok(Typed::Command(c)) => {
@@ -351,9 +351,9 @@ pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<()
                             }
                             Ok(Typed::Switch) => match offered.switch(&session) {
                                 Ok((switch, again)) => owed.hand(&v.commands, switch, again),
-                                Err(e) => eprintln!("krowk: {e}"),
+                                Err(e) => eprintln!("gruntas: {e}"),
                             },
-                            Err(e) => eprintln!("krowk: {e}"),
+                            Err(e) => eprintln!("gruntas: {e}"),
                         },
                     },
                     Some(_) => {}
@@ -367,7 +367,7 @@ pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<()
     })
 }
 
-/// The commands `krowk sync attach` sent and has no answer to yet, and
+/// The commands `gruntas sync attach` sent and has no answer to yet, and
 /// whether stdin has ended: once it has and none is owed, it is done.
 #[derive(Default)]
 struct Owed {
@@ -393,7 +393,7 @@ impl Owed {
     fn hand(&mut self, commands: &tokio::sync::mpsc::UnboundedSender<crate::protocol::Command>, c: crate::protocol::Command, then: impl IntoIterator<Item = crate::protocol::Command>) {
         if matches!(c, crate::protocol::Command::PutImage { .. }) {
             self.images.1 += 1;
-            eprintln!("krowk: Sending image {} of {}…", self.images.1, self.images.0);
+            eprintln!("gruntas: Sending image {} of {}…", self.images.1, self.images.0);
         }
         if commands.send(c).is_ok() {
             self.handed.push_back(then.into_iter().collect());
@@ -427,7 +427,7 @@ impl Owed {
     }
 }
 
-/// The rate-limit offer `krowk sync attach` last saw for its session, and
+/// The rate-limit offer `gruntas sync attach` last saw for its session, and
 /// the last prompt it sent, which `/switch` sends again on the instance
 /// offered — the terminal's yes (R-INST-7, R-SWITCH-4); not after an early
 /// offer, whose turn succeeded (R-ROLL-12).
@@ -459,7 +459,7 @@ impl Offered {
                 if let Some((_, o)) = &self.offer {
                     let room = o.room.as_ref().map(|r| format!(" ({r})")).unwrap_or_default();
                     let state = if o.early { "is running low" } else { "is at its limit" };
-                    eprintln!("krowk: {} {state} — type /switch to continue on {}{room}", o.from, o.to);
+                    eprintln!("gruntas: {} {state} — type /switch to continue on {}{room}", o.from, o.to);
                 }
             }
             viewer::Update::Line(StreamLine::Log(e)) => self.logged(session, e, true),
@@ -510,13 +510,13 @@ impl Offered {
         // An early offer's turn succeeded: nothing is sent again (D10).
         let again = self.last_prompt.clone().filter(|p| !offer.early && asked == Some(p));
         if again.is_none() && !offer.early {
-            eprintln!("krowk: switching to {} — the limited turn was not prompted from here, so type the prompt to run there", offer.to);
+            eprintln!("gruntas: switching to {} — the limited turn was not prompted from here, so type the prompt to run there", offer.to);
         }
         Ok((switch, again.map(|text| prompt(session, text))))
     }
 }
 
-/// One update as `krowk sync attach` prints it: a stream line as the
+/// One update as `gruntas sync attach` prints it: a stream line as the
 /// protocol has it, the session's events one a line, or a `sync.*` line of
 /// the viewer's own. A note goes to stderr and prints nothing.
 fn jsonl(u: viewer::Update) -> Result<String, String> {
@@ -527,10 +527,10 @@ fn jsonl(u: viewer::Update) -> Result<String, String> {
             match &l {
                 // A question needs a picked answer, which this stream cannot give.
                 crate::protocol::StreamLine::Live(crate::protocol::LiveEvent::ApprovalRequested(r)) if !r.questions.is_empty() => {
-                    eprintln!("krowk: {} asks a question, which a stream cannot answer — type `/deny {id}` to decline", r.tool, id = r.request_id);
+                    eprintln!("gruntas: {} asks a question, which a stream cannot answer — type `/deny {id}` to decline", r.tool, id = r.request_id);
                 }
                 crate::protocol::StreamLine::Live(crate::protocol::LiveEvent::ApprovalRequested(r)) => {
-                    eprintln!("krowk: {} wants approval — type `/approve {id}`, `/allow-session {id}` or `/deny {id}`", r.tool, id = r.request_id);
+                    eprintln!("gruntas: {} wants approval — type `/approve {id}`, `/allow-session {id}` or `/deny {id}`", r.tool, id = r.request_id);
                 }
                 _ => {}
             }
@@ -545,10 +545,10 @@ fn jsonl(u: viewer::Update) -> Result<String, String> {
         // Answered while this viewer was away: whoever shows the request
         // shows it no more.
         viewer::Update::ApprovalGone(id) => json!({"type": "sync.approvalGone", "requestId": id}).to_string(),
-        // `krowk sync attach` never asks for one; the line is for whoever does.
+        // `gruntas sync attach` never asks for one; the line is for whoever does.
         viewer::Update::Handoff(r) => json!({"type": "sync.handoff", "error": r.err()}).to_string(),
         viewer::Update::Note(n) => {
-            eprintln!("krowk: {n}");
+            eprintln!("gruntas: {n}");
             String::new()
         }
         viewer::Update::Failed(e) => return Err(e),

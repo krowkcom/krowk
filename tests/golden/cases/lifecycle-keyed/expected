@@ -1,4 +1,4 @@
-$ krowk runs start --title "the work"
+$ gruntas runs start --title "the work"
 stdout:
 {
   "ok": true,
@@ -15,19 +15,19 @@ stdout:
   "breadcrumbs": [
     {
       "action": "attach uploads",
-      "cmd": "krowk push <file> --run <run_1>",
+      "cmd": "gruntas push <file> --run <run_1>",
       "description": "every push naming this run is grouped under it and inherits the metadata recorded on it; <file> is the path to upload"
     },
     {
       "action": "close",
-      "cmd": "krowk runs finish <run_1>",
+      "cmd": "gruntas runs finish <run_1>",
       "description": "marks the run finished; a run stays open until something says so"
     }
   ]
 }
 exit: 0
 
-$ krowk push a.txt
+$ gruntas push a.txt
 stdout:
 {
   "ok": true,
@@ -107,7 +107,7 @@ stdout:
 }
 exit: 0
 
-$ krowk artifacts show {ART}
+$ gruntas artifacts show {ART}
 stdout:
 {
   "ok": true,
@@ -178,19 +178,19 @@ stdout:
 }
 exit: 0
 
-$ krowk artifacts show {ART} --format human
+$ gruntas artifacts show {ART} --format human
 stdout:
 a.txt  5 B  ready
   http://<registry>/a/<art_1>
   run <run_2>
 exit: 0
 
-$ krowk artifacts show {ART} --format markdown
+$ gruntas artifacts show {ART} --format markdown
 stdout:
 **a.txt** · [View preview ↗](http://<registry>/a/<art_1>)
 exit: 0
 
-$ krowk artifacts attach {ART} --run {RUN}
+$ gruntas artifacts attach {ART} --run {RUN}
 stdout:
 {
   "ok": true,
@@ -262,7 +262,7 @@ stdout:
 }
 exit: 0
 
-$ krowk artifacts attach {ART} --run {RUN}
+$ gruntas artifacts attach {ART} --run {RUN}
 stdout:
 {
   "ok": true,
@@ -334,7 +334,7 @@ stdout:
 }
 exit: 0
 
-$ krowk runs show {RUN}
+$ gruntas runs show {RUN}
 stdout:
 {
   "ok": true,
@@ -351,19 +351,19 @@ stdout:
   "breadcrumbs": [
     {
       "action": "what it made",
-      "cmd": "krowk artifacts list --run <run_1>",
+      "cmd": "gruntas artifacts list --run <run_1>",
       "description": "a run holds the metadata; its artifacts and their links are listed separately"
     },
     {
       "action": "close",
-      "cmd": "krowk runs finish <run_1>",
+      "cmd": "gruntas runs finish <run_1>",
       "description": "marks the run finished; a run stays open until something says so"
     }
   ]
 }
 exit: 0
 
-$ krowk runs show {RUN} --format human
+$ gruntas runs show {RUN} --format human
 stdout:
 <run_1>  open
   Started       <time>
@@ -371,7 +371,7 @@ stdout:
   vcs.change.title the work
 exit: 0
 
-$ krowk push b.txt --run {RUN}
+$ gruntas push b.txt --run {RUN}
 stdout:
 {
   "ok": true,
@@ -443,7 +443,7 @@ stdout:
 }
 exit: 0
 
-$ krowk push b.txt --run {registry}/r/{RUN}
+$ gruntas push b.txt --run {registry}/r/{RUN}
 stdout:
 {
   "ok": true,
@@ -515,7 +515,7 @@ stdout:
 }
 exit: 0
 
-$ krowk runs list --limit 1
+$ gruntas runs list --limit 1
 stdout:
 {
   "ok": true,
@@ -537,14 +537,14 @@ stdout:
   "breadcrumbs": [
     {
       "action": "next page",
-      "cmd": "krowk runs list --limit 1 --before <run_2>",
+      "cmd": "gruntas runs list --limit 1 --before <run_2>",
       "description": "this page came back full, so any older rows are behind that cursor"
     }
   ]
 }
 exit: 0
 
-$ krowk runs list --limit 1 --before {RUNNEXT}
+$ gruntas runs list --limit 1 --before {RUNNEXT}
 stdout:
 {
   "ok": true,
@@ -566,14 +566,14 @@ stdout:
   "breadcrumbs": [
     {
       "action": "next page",
-      "cmd": "krowk runs list --limit 1 --before <run_1>",
+      "cmd": "gruntas runs list --limit 1 --before <run_1>",
       "description": "this page came back full, so any older rows are behind that cursor"
     }
   ]
 }
 exit: 0
 
-$ krowk artifacts list --limit 1
+$ gruntas artifacts list --limit 1
 stdout:
 {
   "ok": true,
@@ -625,14 +625,14 @@ stdout:
   "breadcrumbs": [
     {
       "action": "next page",
-      "cmd": "krowk artifacts list --limit 1 --before <art_3>",
+      "cmd": "gruntas artifacts list --limit 1 --before <art_3>",
       "description": "this page came back full, so any older rows are behind that cursor"
     }
   ]
 }
 exit: 0
 
-$ krowk artifacts list --limit 1 --before {NEXT}
+$ gruntas artifacts list --limit 1 --before {NEXT}
 stdout:
 {
   "ok": true,
@@ -684,14 +684,14 @@ stdout:
   "breadcrumbs": [
     {
       "action": "next page",
-      "cmd": "krowk artifacts list --limit 1 --before <art_2>",
+      "cmd": "gruntas artifacts list --limit 1 --before <art_2>",
       "description": "this page came back full, so any older rows are behind that cursor"
     }
   ]
 }
 exit: 0
 
-$ krowk artifacts list --run {RUN}
+$ gruntas artifacts list --run {RUN}
 stdout:
 {
   "ok": true,
@@ -820,7 +820,7 @@ stdout:
 }
 exit: 0
 
-$ krowk runs finish {RUN}
+$ gruntas runs finish {RUN}
 stdout:
 {
   "ok": true,
@@ -838,14 +838,14 @@ stdout:
   "breadcrumbs": [
     {
       "action": "what it made",
-      "cmd": "krowk artifacts list --run <run_1>",
+      "cmd": "gruntas artifacts list --run <run_1>",
       "description": "a run holds the metadata; its artifacts and their links are listed separately"
     }
   ]
 }
 exit: 0
 
-$ krowk runs finish {RUN}
+$ gruntas runs finish {RUN}
 stdout:
 {
   "ok": true,
@@ -863,14 +863,14 @@ stdout:
   "breadcrumbs": [
     {
       "action": "what it made",
-      "cmd": "krowk artifacts list --run <run_1>",
+      "cmd": "gruntas artifacts list --run <run_1>",
       "description": "a run holds the metadata; its artifacts and their links are listed separately"
     }
   ]
 }
 exit: 0
 
-$ krowk runs show {RUN} --format human
+$ gruntas runs show {RUN} --format human
 stdout:
 <run_1>  finished
   Started       <time>
@@ -879,7 +879,7 @@ stdout:
   vcs.change.title the work
 exit: 0
 
-$ krowk artifacts delete {ART}
+$ gruntas artifacts delete {ART}
 stdout:
 {
   "ok": true,
@@ -891,7 +891,7 @@ stdout:
 }
 exit: 0
 
-$ krowk artifacts delete {ART}
+$ gruntas artifacts delete {ART}
 stdout:
 {
   "ok": true,
@@ -903,7 +903,7 @@ stdout:
 }
 exit: 0
 
-$ krowk artifacts show {ART}
+$ gruntas artifacts show {ART}
 stderr:
 {
   "ok": false,
@@ -917,25 +917,25 @@ stderr:
 }
 exit: 8
 
-$ krowk artifacts attach
+$ gruntas artifacts attach
 stderr:
 {
   "ok": false,
   "error": {
     "error": "no_artifact",
-    "fix": "pass the artifact: `krowk artifacts attach art_... --run run_...`",
+    "fix": "pass the artifact: `gruntas artifacts attach art_... --run run_...`",
     "retryable": false
   }
 }
 exit: 1
 
-$ krowk artifacts attach {ART}
+$ gruntas artifacts attach {ART}
 stderr:
 {
   "ok": false,
   "error": {
     "error": "no_run",
-    "fix": "pass the run to attach it to: `krowk artifacts attach <art_1> --run run_...`",
+    "fix": "pass the run to attach it to: `gruntas artifacts attach <art_1> --run run_...`",
     "retryable": false
   }
 }

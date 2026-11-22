@@ -11,8 +11,8 @@
 //! pair of devices, does not open.
 //!
 //! Pure code: the host that runs a command is gruntas-harness's presence
-//! thread, and the clients that send one are `krowk sync new` and `krowk sync take`.
-//! A `take` runs there as `krowk sync take` runs: the target still asks.
+//! thread, and the clients that send one are `gruntas sync new` and `gruntas sync take`.
+//! A `take` runs there as `gruntas sync take` runs: the target still asks.
 
 use crate::device_chain::{Chain, Kind};
 use crate::e2e::{self, DeviceId, Label};
@@ -47,7 +47,7 @@ pub enum HostCommand {
     Start { cwd: String, model: ModelRef, prompt: String },
     /// Session `session_id`, held by another host, moved here into `cwd`,
     /// one of the directories the host announced and a clone of the
-    /// session's repository: what `krowk sync take` there does.
+    /// session's repository: what `gruntas sync take` there does.
     Take { session_id: String, cwd: String },
     /// A task a supervisor hands this host (R-ALLOC-3, D8–D14): run once,
     /// in a fresh worktree of the host's own clone of `origin`, from the
@@ -134,7 +134,7 @@ pub enum RunRefusal {
     NoModel,
     /// Every agent slot here is taken (D9).
     NoSlot,
-    /// This machine takes no handed-over tasks (`krowk machines accept off`, D14).
+    /// This machine takes no handed-over tasks (`gruntas machines accept off`, D14).
     NotAccepting,
     /// The child's lease was refused as over the person's machine limit (D15).
     MachineLimit,
@@ -227,7 +227,7 @@ pub fn open_command(sealed: &[u8], id: &str, from: &DeviceId, me: &DeviceId, key
     let typed: serde_json::Value = serde_json::from_slice(&json).map_err(|_| format!("the command from {from} is not JSON"))?;
     let kind = typed.get("type").and_then(|t| t.as_str()).unwrap_or_default().to_string();
     if !KNOWN.contains(&kind.as_str()) {
-        return Ok(Err(HostAnswer::refused("unknown_command", format!("this host does not know the command {kind:?} — upgrade krowk on it"))));
+        return Ok(Err(HostAnswer::refused("unknown_command", format!("this host does not know the command {kind:?} — upgrade gruntas on it"))));
     }
     let c: HostCommand = match serde_json::from_value(typed) {
         Ok(c) => c,
@@ -248,7 +248,7 @@ pub fn open_command(sealed: &[u8], id: &str, from: &DeviceId, me: &DeviceId, key
     if let HostCommand::Run(RunTask { job, .. }) = &c
         && !(session_id_shaped(&job.session) && slug_shaped(&job.transport) && key_shaped(&job.key))
     {
-        return Ok(Err(RunRefusal::BadJob.answer("the task's job is not named as a stored job is — send it again from an up-to-date krowk")));
+        return Ok(Err(RunRefusal::BadJob.answer("the task's job is not named as a stored job is — send it again from an up-to-date gruntas")));
     }
     // Passed on as an argument: only ever a session id.
     if let HostCommand::Take { session_id, .. } = &c

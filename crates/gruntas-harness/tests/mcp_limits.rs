@@ -1,5 +1,5 @@
 //! What a hostile or broken MCP server cannot do to a session (R-TOOL-3):
-//! fill the model's context or krowk's memory, page forever, outlive its
+//! fill the model's context or gruntas's memory, page forever, outlive its
 //! session through its children, reach the person's provider keys, or be a
 //! repository's file run by a relative `command`. Each server is a bash
 //! script written by the test.
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 fn base(name: &str) -> PathBuf {
-    let b = std::env::temp_dir().join(format!("krowk-mcp-limits-{name}-{}", std::process::id()));
+    let b = std::env::temp_dir().join(format!("gruntas-mcp-limits-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&b);
     std::fs::create_dir_all(b.join("repo/.git")).unwrap();
     std::fs::create_dir_all(b.join("home")).unwrap();
@@ -157,7 +157,7 @@ fn r_tool_3_a_servers_children_go_with_it() {
     assert!(gone, "the server's child {child} outlived it");
 }
 
-/// The two probes that change krowk's own process — its working directory
+/// The two probes that change gruntas's own process — its working directory
 /// and environment — in one test, so no other test in this binary sees them.
 #[test]
 fn r_tool_3_a_relative_command_never_runs_the_repositorys_file_and_keys_are_not_inherited() {
@@ -168,7 +168,7 @@ fn r_tool_3_a_relative_command_never_runs_the_repositorys_file_and_keys_are_not_
     let evil = repo.join("bin/mcp");
     std::fs::write(&evil, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
     std::fs::set_permissions(&evil, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    // krowk is launched in the untrusted repository.
+    // gruntas is launched in the untrusted repository.
     std::env::set_current_dir(&repo).unwrap();
     let cfg = Config {
         home: Some(b.join("home")),
@@ -183,7 +183,7 @@ fn r_tool_3_a_relative_command_never_runs_the_repositorys_file_and_keys_are_not_
     std::env::set_current_dir("/").unwrap();
     assert!(!marker.exists(), "a relative command in the person's config ran the untrusted repository's file");
 
-    // The person's provider keys stay krowk's, unless a server's own `env`
+    // The person's provider keys stay gruntas's, unless a server's own `env`
     // names one.
     // SAFETY: this binary's one test that touches the environment.
     unsafe {

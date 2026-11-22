@@ -70,7 +70,7 @@ pub const PRIVATE_LINK_SURFACES: &str =
 /// way to be wrong.
 pub fn surfaces_for_unknown(a: &Artifact) -> String {
     format!(
-        "nowhere yet — this artifact's visibility is {:?}, which this krowk does not know how to describe. Upgrade before promising anybody anything about the link",
+        "nowhere yet — this artifact's visibility is {:?}, which this gruntas does not know how to describe. Upgrade before promising anybody anything about the link",
         a.visibility
     )
 }
@@ -84,7 +84,7 @@ pub struct Paste {
     pub destinations: BTreeMap<String, String>,
 }
 
-/// The artifact's krowk block — the registry's, never composed here.
+/// The artifact's gruntas block — the registry's, never composed here.
 pub fn block_for(a: &Artifact) -> String {
     if let Some(p) = a.paste.as_ref().filter(|p| !p.markdown.is_empty()) {
         return p.markdown.clone();
@@ -297,7 +297,7 @@ pub fn unfurl_warning(r: &UploadResult, f: Format, dest: &str) -> String {
             continue;
         }
         return format!(
-            "{} card link: this krowk does not know who that reaches or whether it unfurls — upgrade before pasting it anywhere",
+            "{} card link: this gruntas does not know who that reaches or whether it unfurls — upgrade before pasting it anywhere",
             a.visibility
         );
     }
@@ -391,7 +391,7 @@ fn share_crumb(a: &Artifact) -> Breadcrumb {
         "hand this link on — whoever holds it opens the card with no key, so share it only with who should see it".into()
     } else if !a.public() {
         format!(
-            "check who this link reaches before handing it on: its visibility is {}, which this krowk does not know how to describe",
+            "check who this link reaches before handing it on: its visibility is {}, which this gruntas does not know how to describe",
             a.visibility
         )
     } else {
@@ -404,7 +404,7 @@ fn share_crumb(a: &Artifact) -> Breadcrumb {
 pub fn claim_crumb(a: &Artifact) -> Breadcrumb {
     crumb(
         "keep past expiry",
-        format!("krowk claim {} {}", a.slug, a.claim_token),
+        format!("gruntas claim {} {}", a.slug, a.claim_token),
         "this upload is anonymous and expires within the day; claiming it with a key moves it into that key's \
          workspace — a Pro workspace keeps it, a free one gives it another 24 hours. The token is shown once and spent once",
     )
@@ -496,7 +496,7 @@ pub fn list(p: &Page, l: &Listing, f: Format, quiet: bool, colour: bool, now: &j
             let crumbs = if p.next.is_empty() {
                 Vec::new()
             } else {
-                vec![crumb("next page", next_page_cmd("krowk artifacts list", l, &p.next), NEXT_PAGE)]
+                vec![crumb("next page", next_page_cmd("gruntas artifacts list", l, &p.next), NEXT_PAGE)]
             };
             ok(p, count(p.artifacts.len(), "artifact"), crumbs)
         }
@@ -530,7 +530,7 @@ fn human_list(p: &Page, l: &Listing, colour: bool, now: &jiff::Zoned) -> String 
         lines.push(line);
     }
     if !p.next.is_empty() {
-        lines.push(crumb_line("More", &next_page_cmd("krowk artifacts list", l, &p.next), colour));
+        lines.push(crumb_line("More", &next_page_cmd("gruntas artifacts list", l, &p.next), colour));
     }
     lines.join("\n")
 }
@@ -565,14 +565,14 @@ pub fn claimed(a: &Artifact, f: Format, quiet: bool, colour: bool, now: &jiff::Z
 fn attach_crumb(a: &Artifact) -> Breadcrumb {
     crumb(
         "group under a run",
-        format!("krowk artifacts attach {} --run <run>", a.slug),
+        format!("gruntas artifacts attach {} --run <run>", a.slug),
         "a claimed upload belongs to a workspace but to no run, and a run is where the pull request, commit and \
-         session are recorded — `krowk runs start` opens one, and its slug goes in place of <run>",
+         session are recorded — `gruntas runs start` opens one, and its slug goes in place of <run>",
     )
 }
 
 fn push_crumb(why: &str) -> Breadcrumb {
-    crumb("push", "krowk push <file>", format!("{why}; <file> is the path to upload"))
+    crumb("push", "gruntas push <file>", format!("{why}; <file> is the path to upload"))
 }
 
 /// A verified key and the workspace every call with it lands in.
@@ -636,7 +636,7 @@ pub struct Login {
 fn shadowed_crumb() -> Breadcrumb {
     crumb(
         "verify",
-        "krowk whoami",
+        "gruntas whoami",
         "GRUNTAS_TOKEN outranks the key just stored, so this reports the one that uploads will really use — unset GRUNTAS_TOKEN to use the stored one instead",
     )
 }
@@ -654,7 +654,7 @@ pub fn stored_key(l: &Login, f: Format, quiet: bool, colour: bool) -> String {
             summary = format!("token stored, unconfirmed — {}", l.reason);
             next = crumb(
                 "verify",
-                "krowk whoami",
+                "gruntas whoami",
                 "the token was written down but the registry never confirmed it, so whether it works is still unknown",
             );
         }
@@ -670,7 +670,7 @@ pub fn stored_key(l: &Login, f: Format, quiet: bool, colour: bool) -> String {
         vec![
             success(colour, &format!("Stored the token in {}", l.path)),
             format!("  {}", warning(colour, &format!("Not confirmed yet — {}", l.reason))),
-            crumb_line("Check it once the registry is reachable", "krowk whoami", colour),
+            crumb_line("Check it once the registry is reachable", "gruntas whoami", colour),
         ]
     };
     if l.shadowed {
@@ -778,7 +778,7 @@ pub fn run(r: &Run, f: Format, quiet: bool, colour: bool) -> String {
 fn run_crumbs(r: &Run, with_push: bool) -> Vec<Breadcrumb> {
     let artifacts = crumb(
         "what it made",
-        format!("krowk artifacts list --run {}", r.slug),
+        format!("gruntas artifacts list --run {}", r.slug),
         "a run holds the metadata; its artifacts and their links are listed separately",
     );
     if r.status == STATUS_FINISHED {
@@ -787,13 +787,13 @@ fn run_crumbs(r: &Run, with_push: bool) -> Vec<Breadcrumb> {
     let first = if with_push {
         crumb(
             "attach uploads",
-            format!("krowk push <file> --run {}", r.slug),
+            format!("gruntas push <file> --run {}", r.slug),
             "every push naming this run is grouped under it and inherits the metadata recorded on it; <file> is the path to upload",
         )
     } else {
         artifacts
     };
-    vec![first, crumb("close", format!("krowk runs finish {}", r.slug), "marks the run finished; a run stays open until something says so")]
+    vec![first, crumb("close", format!("gruntas runs finish {}", r.slug), "marks the run finished; a run stays open until something says so")]
 }
 
 /// A page of runs.
@@ -806,7 +806,7 @@ pub fn run_list(p: &RunPage, l: &Listing, f: Format, quiet: bool, colour: bool) 
         let crumbs = if p.next.is_empty() {
             Vec::new()
         } else {
-            vec![crumb("next page", next_page_cmd("krowk runs list", &l, &p.next), NEXT_PAGE)]
+            vec![crumb("next page", next_page_cmd("gruntas runs list", &l, &p.next), NEXT_PAGE)]
         };
         return ok(p, count(p.runs.len(), "run"), crumbs);
     }
@@ -828,7 +828,7 @@ pub fn run_list(p: &RunPage, l: &Listing, f: Format, quiet: bool, colour: bool) 
         })
         .collect();
     if !p.next.is_empty() {
-        lines.push(crumb_line("More", &next_page_cmd("krowk runs list", &l, &p.next), colour));
+        lines.push(crumb_line("More", &next_page_cmd("gruntas runs list", &l, &p.next), colour));
     }
     lines.join("\n")
 }
@@ -1076,21 +1076,21 @@ mod tests {
         let actions: Vec<&str> = env["breadcrumbs"].as_array().unwrap().iter().map(|c| c["action"].as_str().unwrap()).collect();
         assert_eq!(actions, ["keep past expiry", "keep past expiry", "share", "share"]);
         let human = upload(&r, Format::Human, true, false, &at("2026-01-01T00:00:00Z"));
-        assert!(!human.contains("krowk claim") && !human.contains("paste this"));
+        assert!(!human.contains("gruntas claim") && !human.contains("paste this"));
     }
 
     #[test]
     fn a_failure_reads_as_its_fix_with_the_command_on_its_own_line() {
-        let e = fail("not_authenticated", "no key to verify — run `krowk login --token krowk_sk_...`, or upload anonymously");
+        let e = fail("not_authenticated", "no key to verify — run `gruntas login --token krowk_sk_...`, or upload anonymously");
         assert_eq!(
             error(&e, Format::Human, false, false),
-            "✗ No key to verify.\n  Try: krowk login --token krowk_sk_...\n  Or upload anonymously.\n  Code: not_authenticated"
+            "✗ No key to verify.\n  Try: gruntas login --token krowk_sk_...\n  Or upload anonymously.\n  Code: not_authenticated"
         );
         let json: Value = serde_json::from_str(&error(&e, Format::Json, false, false)).unwrap();
         // No sentence before the command: the code stands in, and a status
         // is said even with no fix at all.
-        let lead = fail("not_authenticated", "run `krowk login`, or upload anonymously");
-        assert!(error(&lead, Format::Human, false, false).starts_with("✗ Not authenticated.\n  Try: krowk login\n  Or upload anonymously."));
+        let lead = fail("not_authenticated", "run `gruntas login`, or upload anonymously");
+        assert!(error(&lead, Format::Human, false, false).starts_with("✗ Not authenticated.\n  Try: gruntas login\n  Or upload anonymously."));
         let bare = Error { status: 502, ..fail("internal_server_error", "") };
         assert_eq!(error(&bare, Format::Human, false, false), "✗ Internal server error.\n  Code: internal_server_error · HTTP 502");
         assert_eq!((json["ok"].as_bool(), json["error"]["error"].as_str()), (Some(false), Some("not_authenticated")));

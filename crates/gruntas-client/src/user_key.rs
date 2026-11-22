@@ -225,7 +225,7 @@ impl UserKeys {
         let mut map = std::collections::BTreeMap::new();
         for w in wraps {
             if w.len() != WRAPPED_PREVIOUS {
-                return Err(Error("a wrapped earlier user key is not one this krowk reads".into()));
+                return Err(Error("a wrapped earlier user key is not one this gruntas reads".into()));
             }
             if map.insert(parse_head(&w).0, w).is_some() {
                 return Err(Error("two wraps name the same user key generation".into()));
@@ -335,7 +335,7 @@ fn cipher(key: &[u8; KEY]) -> XChaCha20Poly1305 {
 }
 
 fn newer(v: u8) -> Error {
-    Error(format!("the wrapped user key is format {v}, newer than this krowk reads — upgrade krowk"))
+    Error(format!("the wrapped user key is format {v}, newer than this gruntas reads — upgrade gruntas"))
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@
 
 use super::catalog::{self, Catalog, Command, Flag, ALL_ONLY, BOOL, GROUPS, MORE_HEADING};
 
-/// The Krowk mark: the logo's four-by-four grid of squares, two grid rows to a
+/// The Gruntas mark: the logo's four-by-four grid of squares, two grid rows to a
 /// text row so a square stays square.
 const MARK: [&str; 2] = ["█  █", "█▀▀▄"];
 
@@ -18,16 +18,16 @@ const TAGLINE: &str = "A coding agent harness: one session, any machine, model o
 const TAGLINE: &str = "Permalinks for agent output";
 
 fn banner(version: &str) -> String {
-    format!("\n{}\n{}\n\nKrowk {version}\n{TAGLINE}\n\n", MARK[0], MARK[1])
+    format!("\n{}\n{}\n\nGruntas {version}\n{TAGLINE}\n\n", MARK[0], MARK[1])
 }
 
 const GREETING_HINTS: &[(&str, &str)] = &[
-    ("krowk push screenshot.png", "Upload a file, get a link — no key, lasts a day"),
-    ("krowk login --token …", "Add a key: uploads keep, group under runs"),
-    ("krowk help", "The commands; --all for every one, --json as data"),
+    ("gruntas push screenshot.png", "Upload a file, get a link — no key, lasts a day"),
+    ("gruntas login --token …", "Add a key: uploads keep, group under runs"),
+    ("gruntas help", "The commands; --all for every one, --json as data"),
 ];
 
-/// What `krowk` alone says: the first upload, the key that makes uploads
+/// What `gruntas` alone says: the first upload, the key that makes uploads
 /// keep, and where the rest is.
 pub fn greeting(version: &str) -> String {
     // Unwrapped, as it always was: a hint is one line.
@@ -46,11 +46,11 @@ pub struct Files<'a> {
 
 #[cfg(feature = "harness")]
 const START: &[(&str, &str)] =
-    &[("krowk", "Set this machine up, then an overview of it"), ("krowk -p \"…\"", "One prompt, headless"), ("krowk -p --resume", "Continue a session")];
+    &[("gruntas", "Set this machine up, then an overview of it"), ("gruntas -p \"…\"", "One prompt, headless"), ("gruntas -p --resume", "Continue a session")];
 #[cfg(not(feature = "harness"))]
-const START: &[(&str, &str)] = &[("krowk <command> [flags]", ""), ("krowk push shot.png", "Upload a file, get a link")];
+const START: &[(&str, &str)] = &[("gruntas <command> [flags]", ""), ("gruntas push shot.png", "Upload a file, get a link")];
 
-/// The flags worth knowing before any command; `krowk help flags` has them all.
+/// The flags worth knowing before any command; `gruntas help flags` has them all.
 const FLAGS: &[(&str, &str)] = &[
     #[cfg(feature = "harness")]
     ("--model <instance/model>", "With -p: which model (e.g. claude/sonnet)"),
@@ -64,38 +64,38 @@ const FLAGS: &[(&str, &str)] = &[
 /// the shape of a scripted call.
 #[cfg(feature = "harness")]
 const EXAMPLES: &[(&str, &str)] = &[
-    ("krowk connect anthropic", "Connect a model to run the agent on"),
-    ("krowk push shot.png", "Upload a screenshot and get a link to paste"),
-    ("krowk sessions --json", "Every agent session on this machine, as data"),
+    ("gruntas connect anthropic", "Connect a model to run the agent on"),
+    ("gruntas push shot.png", "Upload a screenshot and get a link to paste"),
+    ("gruntas sessions --json", "Every agent session on this machine, as data"),
 ];
 #[cfg(not(feature = "harness"))]
 const EXAMPLES: &[(&str, &str)] = &[
-    ("krowk push shot.png", "Upload a screenshot and get a link to paste"),
-    ("krowk push shot.png --json", "The same, as JSON for a script or an agent"),
-    ("krowk login", "Add a key, so uploads keep and group under runs"),
+    ("gruntas push shot.png", "Upload a screenshot and get a link to paste"),
+    ("gruntas push shot.png --json", "The same, as JSON for a script or an agent"),
+    ("gruntas login", "Add a key, so uploads keep and group under runs"),
 ];
 
 const MORE: &[(&str, &str)] = &[
-    ("krowk help <command>", "A command's own flags"),
-    ("krowk help --all", "Every command and subcommand"),
-    ("krowk help topics", "Flags, exit codes, environment, workspaces, links"),
-    ("krowk help agents", "For AI agents and scripts: the output contract"),
+    ("gruntas help <command>", "A command's own flags"),
+    ("gruntas help --all", "Every command and subcommand"),
+    ("gruntas help topics", "Flags, exit codes, environment, workspaces, links"),
+    ("gruntas help agents", "For AI agents and scripts: the output contract"),
 ];
 
 const ALL_MORE: &[(&str, &str)] = &[
-    ("krowk help <command>", "A command's own flags and explanation"),
-    ("krowk help topics", "Flags, exit codes, environment, workspaces, links"),
-    ("krowk help agents", "For AI agents and scripts: the output contract"),
-    ("krowk help --json", "The whole surface as data, for tooling"),
+    ("gruntas help <command>", "A command's own flags and explanation"),
+    ("gruntas help topics", "Flags, exit codes, environment, workspaces, links"),
+    ("gruntas help agents", "For AI agents and scripts: the output contract"),
+    ("gruntas help --json", "The whole surface as data, for tooling"),
 ];
 
-/// `krowk help`: what krowk is, how to start, and one line per command; with
+/// `gruntas help`: what gruntas is, how to start, and one line per command; with
 /// `all`, one line per command and subcommand instead.
 pub fn help(c: &Catalog, all: bool, colour: bool) -> String {
     let mut out = if all {
-        format!("{}\n", bold(colour, "krowk — every command and subcommand"))
+        format!("{}\n", bold(colour, "gruntas — every command and subcommand"))
     } else {
-        format!("{}  {} {}\n{}  {}\n", MARK[0], bold(colour, "Krowk"), c.version, MARK[1], c.summary)
+        format!("{}  {} {}\n{}  {}\n", MARK[0], bold(colour, "Gruntas"), c.version, MARK[1], c.summary)
     };
     if !all {
         heading(&mut out, if cfg!(feature = "harness") { "Start" } else { "Usage" }, colour);
@@ -132,7 +132,7 @@ pub fn help(c: &Catalog, all: bool, colour: bool) -> String {
 /// What belongs to no one command. `workspaces` is the command's own help,
 /// which carries it; the rest are written here.
 pub const TOPICS: &[(&str, &str)] = &[
-    ("agents", "Driving krowk from an AI agent or a script"),
+    ("agents", "Driving gruntas from an AI agent or a script"),
     ("flags", "The flags every command takes"),
     ("exit-codes", "What each exit code means"),
     ("environment", "Environment variables, and where files live"),
@@ -140,15 +140,15 @@ pub const TOPICS: &[(&str, &str)] = &[
     ("links", "Naming an upload or a run by any link to it"),
 ];
 
-/// `krowk help topics`.
+/// `gruntas help topics`.
 pub fn topics(colour: bool) -> String {
     let mut out = format!("{}\n", bold(colour, "Topics"));
     rows(&mut out, "  ", 13, TOPICS);
-    out + "\nkrowk help <topic>"
+    out + "\ngruntas help <topic>"
 }
 
 const EXIT_CODES: &str = "  0  It worked.
-  1  The command was wrong, or krowk failed on its own — also anything
+  1  The command was wrong, or gruntas failed on its own — also anything
      unclassified.
   2  Not found — no such artifact or run in this workspace, or no such
      endpoint.
@@ -162,11 +162,11 @@ const EXIT_CODES: &str = "  0  It worked.
   6  The bytes did not move — the registry or object storage could not be
      reached.
   7  The registry failed on its side, or answered something unreadable — or a
-     login page krowk will not open, which is the same news.
+     login page gruntas will not open, which is the same news.
   8  Gone — the artifact expired or was taken down, or a browser login lapsed
      before anybody approved it; no retry brings any of them back.";
 
-/// `krowk help agents`: what an agent needs to drive krowk without reading
+/// `gruntas help agents`: what an agent needs to drive gruntas without reading
 /// every page — how a result comes back, how a failure does, and which
 /// command answers which question. Written for a model's context window.
 fn agents(colour: bool) -> String {
@@ -184,7 +184,7 @@ fn agents(colour: bool) -> String {
 const AGENTS_OUTPUT: &str = "\
 When stdout is not a terminal, commands answer with one JSON envelope — on
 stdout when they worked, on stderr when they failed. Help is text unless
---json is given, --version is always text, and `krowk help --json` marks
+--json is given, --version is always text, and `gruntas help --json` marks
 the other commands that print text `no_json`. --json asks for the envelope
 on a terminal too, --quiet drops it for the bare record, and --jq filters
 it with no jq binary needed. Pickers are skipped when piped, under --json
@@ -194,7 +194,7 @@ terminal, refusing without one.
 
   {\"ok\": true, \"data\": {…}, \"summary\": \"…\", \"breadcrumbs\": [{…}]}
   {\"ok\": false, \"error\": {\"error\": \"<code>\", \"fix\": \"…\", \"retryable\": false}}
-  breadcrumb: {\"action\": \"…\", \"cmd\": \"krowk …\", \"description\": \"…\"}
+  breadcrumb: {\"action\": \"…\", \"cmd\": \"gruntas …\", \"description\": \"…\"}
 
 Report `summary`. A breadcrumb's `cmd` is a command left to run, and its
 `description` says what it does; fill in any <placeholder> first. On a
@@ -206,40 +206,40 @@ each artifact carries its own `paste`.
 
 const AGENTS_EXIT: &str = "  0 ok · 1 the command was wrong · 2 not found · 3 credentials · 4 refused
   5 rate limited · 6 unreachable · 7 registry failed · 8 gone
-  Retry on 5 and 6; change the command on 1, 2 and 4. `krowk help exit-codes`
+  Retry on 5 and 6; change the command on 1, 2 and 4. `gruntas help exit-codes`
   says more.
 ";
 
 const AGENT_TASKS: &[(&str, &str)] = &[
-    ("krowk push <file> --json", "Publish a file; paste its .paste.markdown"),
-    ("krowk runs start --title \"…\"", "Open a run for several pushes (needs a key)"),
-    ("krowk push <file> --run <run>", "Add a file to that run"),
-    ("krowk whoami", "Which key and workspace are in use"),
+    ("gruntas push <file> --json", "Publish a file; paste its .paste.markdown"),
+    ("gruntas runs start --title \"…\"", "Open a run for several pushes (needs a key)"),
+    ("gruntas push <file> --run <run>", "Add a file to that run"),
+    ("gruntas whoami", "Which key and workspace are in use"),
     #[cfg(feature = "harness")]
-    ("krowk -p \"<prompt>\" --output-format json", "Run one prompt headless; the result as JSON"),
+    ("gruntas -p \"<prompt>\" --output-format json", "Run one prompt headless; the result as JSON"),
     #[cfg(feature = "harness")]
-    ("krowk status", "Which models are connected and ready"),
+    ("gruntas status", "Which models are connected and ready"),
     #[cfg(feature = "sessions")]
-    ("krowk sessions", "Agent sessions on this machine, newest first"),
-    ("krowk doctor", "What is wrong with the setup"),
+    ("gruntas sessions", "Agent sessions on this machine, newest first"),
+    ("gruntas doctor", "What is wrong with the setup"),
 ];
 
 const AGENT_DISCOVER: &[(&str, &str)] = &[
-    ("krowk help --json", "Every command, argument and flag, as data"),
-    ("krowk help <command> --json", "One command's arguments and flags"),
-    ("krowk help <command>", "The same, with what the command is for"),
+    ("gruntas help --json", "Every command, argument and flag, as data"),
+    ("gruntas help <command> --json", "One command's arguments and flags"),
+    ("gruntas help <command>", "The same, with what the command is for"),
 ];
 
 const LINKS: &str = "\
 Wherever an artifact or a run is named — a positional, or --run — a link that
 carries it does just as well: the card page, the CDN URL under it, or anything
-else krowk printed. A link carrying no slug of the kind the command wants, or
+else gruntas printed. A link carrying no slug of the kind the command wants, or
 two different ones, is refused before anything is sent.";
 
 /// A topic's page, or None for a name that is not one.
 pub fn topic(name: &str, c: &Catalog, files: &Files, colour: bool) -> Option<String> {
     let (_, summary) = TOPICS.iter().find(|(n, _)| *n == name)?;
-    let mut out = format!("{}\n", bold(colour, &format!("krowk help {name} — {summary}")));
+    let mut out = format!("{}\n", bold(colour, &format!("gruntas help {name} — {summary}")));
     match name {
         "agents" => out += &format!("\n{}\n", agents(colour)),
         "flags" => {
@@ -247,7 +247,7 @@ pub fn topic(name: &str, c: &Catalog, files: &Files, colour: bool) -> Option<Str
             flag_rows(&mut out, 0, &c.global_flags[..catalog::CORE_FLAGS]);
             #[cfg(feature = "harness")]
             {
-                heading(&mut out, "Agent flags (krowk, krowk -p)", colour);
+                heading(&mut out, "Agent flags (gruntas, gruntas -p)", colour);
                 flag_rows(&mut out, 0, &c.global_flags[catalog::CORE_FLAGS..]);
             }
         }
@@ -345,7 +345,7 @@ fn flag_rows(out: &mut String, width: usize, flags: &[Flag]) {
 pub fn command_help(cmd: &Command, globals: &[Flag], colour: bool) -> String {
     // The title and the `about` are held under 80 columns by the tests below;
     // only a usage runs long enough to need wrapping.
-    let mut out = format!("{}\n", bold(colour, &format!("krowk {} — {}", cmd.name, cmd.summary)));
+    let mut out = format!("{}\n", bold(colour, &format!("gruntas {} — {}", cmd.name, cmd.summary)));
     if !cmd.usage.is_empty() {
         heading(&mut out, "Usage", colour);
         wrap(&mut out, "  ", 6, cmd.usage);
@@ -355,9 +355,9 @@ pub fn command_help(cmd: &Command, globals: &[Flag], colour: bool) -> String {
         out += &format!("\n{about}\n");
     }
     if !cmd.subcommands.is_empty() {
-        // Each under the group's name, `krowk artifacts` read as said.
-        heading(&mut out, &format!("Commands (krowk {} …)", cmd.name), colour);
-        let prefix = format!("krowk {} ", cmd.name);
+        // Each under the group's name, `gruntas artifacts` read as said.
+        heading(&mut out, &format!("Commands (gruntas {} …)", cmd.name), colour);
+        let prefix = format!("gruntas {} ", cmd.name);
         let shown = || cmd.subcommands.iter().filter(|s| !s.hidden);
         let width = shown().map(|s| s.usage.len() - prefix.len() + 2).max().unwrap_or(0).min(28);
         for s in shown() {
@@ -445,7 +445,7 @@ mod tests {
         fits(&topics(false));
         fits(&greeting("0.11.0-rc.1"));
         assert!(greeting("dev").contains(&c.summary[1..]));
-        // Every command's own page, a group's and a leaf's, as `krowk help` prints it.
+        // Every command's own page, a group's and a leaf's, as `gruntas help` prints it.
         for cmd in c.commands.iter().chain(&c.leaves()) {
             let page = command_help(cmd, globals, false);
             assert!(page.contains("--jq"), "{page}");

@@ -1,2 +1,2 @@
 @registry
-krowk auth login --token nope
+gruntas auth login --token nope

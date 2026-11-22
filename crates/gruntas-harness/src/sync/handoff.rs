@@ -56,7 +56,7 @@ pub const JOB_TOO_BIG: &str = "This task carries more than 64 MiB of unpushed wo
 
 /// What a job fails with when its unpushed commits change a fenced
 /// directory or a submodule, which no other machine is handed.
-pub const JOB_FENCED: &str = "This task's unpushed commits change .git, .claude, .codex, .gruntas or a submodule, which krowk never hands to another machine. Push them, or run it on this machine.";
+pub const JOB_FENCED: &str = "This task's unpushed commits change .git, .claude, .codex, .gruntas or a submodule, which gruntas never hands to another machine. Push them, or run it on this machine.";
 
 /// What a handoff carries beside the log.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -126,9 +126,9 @@ impl Bundle {
     }
 
     pub fn decode(bytes: &[u8], session: &str) -> Result<Bundle, String> {
-        let b: Bundle = serde_json::from_slice(bytes).map_err(|e| format!("the handoff bundle is not one this krowk reads: {e}"))?;
+        let b: Bundle = serde_json::from_slice(bytes).map_err(|e| format!("the handoff bundle is not one this gruntas reads: {e}"))?;
         if b.v > BUNDLE_V1 {
-            return Err(format!("the handoff bundle is format {}, newer than this krowk reads — upgrade krowk", b.v));
+            return Err(format!("the handoff bundle is format {}, newer than this gruntas reads — upgrade gruntas", b.v));
         }
         if b.session != session {
             return Err(format!("the handoff bundle is session {}'s, not {session}'s", b.session));
@@ -317,11 +317,11 @@ pub struct JobApplied {
 /// files or its commits: once `base` is fetched, `git diff --name-only`
 /// from the newest ancestor of `base` an `origin` ref reaches to `base`
 /// must touch no fenced path and no gitlink. Such a job came from no
-/// krowk's `pack_job`.
+/// gruntas's `pack_job`.
 /// `base` is fetched, when the clone lacks it, from `commits` into a ref
-/// of krowk's own (`refs/krowk/jobs/…`), never a branch or tag the person
-/// has, then from origin. The snapshot is written with krowk's own
-/// identity (`-c user.name=krowk -c user.email=krowk@localhost`) from the
+/// of gruntas's own (`refs/krowk/jobs/…`), never a branch or tag the person
+/// has, then from origin. The snapshot is written with gruntas's own
+/// identity (`-c user.name=gruntas -c user.email=gruntas@localhost`) from the
 /// worktree's files, whatever the person's git config and the worktree's
 /// index say.
 pub fn apply_job(b: &Bundle, repo: &Path, worktrees: &Path) -> Result<JobApplied, String> {
@@ -332,24 +332,24 @@ pub fn apply_job(b: &Bundle, repo: &Path, worktrees: &Path) -> Result<JobApplied
         return Err(format!("the job names {:?} as its base, which is not a commit id", b.base));
     }
     if let Some(f) = b.untracked.iter().find(|f| crate::permissions::scope::fenced_dir(Path::new(&f.path)).is_some()) {
-        return Err(format!("the job carries {}, inside a directory krowk never hands to another machine", f.path));
+        return Err(format!("the job carries {}, inside a directory gruntas never hands to another machine", f.path));
     }
     if !b.diff.is_empty() {
         let text = String::from_utf8_lossy(&b.diff);
         // pack_job asks for no renames, so a patch with one or a copy is not its: the old name is not in `--numstat`.
         if text.lines().any(|l| l.starts_with("rename ") || l.starts_with("copy ") || l.starts_with("similarity ") || l.starts_with("dissimilarity ")) {
-            return Err("the job carries a rename or a copy, which krowk's jobs never do".to_string());
+            return Err("the job carries a rename or a copy, which gruntas's jobs never do".to_string());
         }
         let names = git_run(repo, &["apply", "--numstat", "-z", "-"], Some(&b.diff)).map_err(|e| format!("the job's changes are not a patch: {e}"))?;
         // `added<TAB>deleted<TAB>path`, NUL-ended.
         for t in names.split(|c| *c == 0).filter(|p| !p.is_empty()) {
             let t = String::from_utf8_lossy(t);
             if t.splitn(3, '\t').nth(2).is_none_or(|p| crate::permissions::scope::fenced_dir(Path::new(p)).is_some()) {
-                return Err("the job carries changes inside a directory krowk never hands to another machine".to_string());
+                return Err("the job carries changes inside a directory gruntas never hands to another machine".to_string());
             }
         }
         if text.lines().any(|l| l.trim_end() == "new file mode 160000" || l.starts_with("+Subproject commit ") || l.starts_with("-Subproject commit ") || l.ends_with(" 160000")) {
-            return Err("the job carries a submodule change, which krowk never hands to another machine".to_string());
+            return Err("the job carries a submodule change, which gruntas never hands to another machine".to_string());
         }
     }
     let commit = format!("{}^{{commit}}", b.base);
@@ -358,7 +358,7 @@ pub fn apply_job(b: &Bundle, repo: &Path, worktrees: &Path) -> Result<JobApplied
         let _ = gruntas_api::git::command(repo).and_then(|mut c| c.env("GIT_TERMINAL_PROMPT", "0").args(["fetch", "--quiet", "origin"]).output());
     };
     // The job's own commits first: read into the object store, and held by a
-    // ref of krowk's own (never a branch or tag the person has). They stand
+    // ref of gruntas's own (never a branch or tag the person has). They stand
     // on commits a remote has, which the clone may lack: then origin is
     // fetched and the bundle read again.
     let job_ref = format!("refs/krowk/jobs/{}", b.base);
@@ -379,18 +379,18 @@ pub fn apply_job(b: &Bundle, repo: &Path, worktrees: &Path) -> Result<JobApplied
     }
     if commits_touch_fence(repo, &b.base)? {
         let _ = git_run(repo, &["update-ref", "-d", &job_ref], None);
-        return Err("the job's commits change a directory or submodule krowk never hands to another machine".to_string());
+        return Err("the job's commits change a directory or submodule gruntas never hands to another machine".to_string());
     }
     let applied = apply(b, repo, worktrees)?;
     // The state recorded as a commit on top of the base, written from the
     // worktree's files: everything staged (the worktree is this job's own),
-    // krowk's own identity. HEAD stays the base, so the job's changes show
+    // gruntas's own identity. HEAD stays the base, so the job's changes show
     // as the work in progress they are.
     let dir = &applied.worktree.path;
     let snapshot = (|| {
         git_run(dir, &["add", "-A"], None)?;
         let tree = String::from_utf8_lossy(&git_run(dir, &["write-tree"], None)?).trim().to_string();
-        let out = git_run(dir, &["-c", "user.name=krowk", "-c", "user.email=krowk@localhost", "commit-tree", &tree, "-p", &b.base, "-m", "krowk: the job's state"], None)?;
+        let out = git_run(dir, &["-c", "user.name=gruntas", "-c", "user.email=gruntas@localhost", "commit-tree", &tree, "-p", &b.base, "-m", "gruntas: the job's state"], None)?;
         Ok::<_, String>(String::from_utf8_lossy(&out).trim().to_string())
     })();
     match snapshot {
@@ -595,7 +595,7 @@ pub fn apply_result(job: &Bundle, result: &Bundle, to: &Path, worktrees: &Path) 
             return Err(undo(format!("git add: {}", String::from_utf8_lossy(&out.stderr).trim())));
         }
         let mut commit = gruntas_api::git::command(&at.path).map_err(|e| undo(e.to_string()))?;
-        let out = commit.args(["-c", "user.name=krowk", "-c", "user.email=krowk@localhost", "commit", "--quiet", "--no-verify", "--no-gpg-sign", "-m", "krowk: the job's state"]).output().map_err(|e| undo(format!("git commit: {e}")))?;
+        let out = commit.args(["-c", "user.name=gruntas", "-c", "user.email=gruntas@localhost", "commit", "--quiet", "--no-verify", "--no-gpg-sign", "-m", "gruntas: the job's state"]).output().map_err(|e| undo(format!("git commit: {e}")))?;
         if !out.status.success() {
             return Err(undo(format!("git commit: {}", String::from_utf8_lossy(&out.stderr).trim())));
         }
@@ -640,11 +640,11 @@ fn inside(rel: &str) -> Option<PathBuf> {
 /// the bundle's base — fetched first when this clone lacks it — with the
 /// uncommitted changes applied and the untracked files written.
 pub fn apply(b: &Bundle, repo: &Path, worktrees: &Path) -> Result<Applied, String> {
-    git_text(repo, &["rev-parse", "--show-toplevel"]).map_err(|_| format!("{} is not in a git repository — run `krowk sync take` from a clone of the session's repository", repo.display()))?;
+    git_text(repo, &["rev-parse", "--show-toplevel"]).map_err(|_| format!("{} is not in a git repository — run `gruntas sync take` from a clone of the session's repository", repo.display()))?;
     let commit = format!("{}^{{commit}}", b.base);
     if git_text(repo, &["cat-file", "-e", &commit]).is_err() {
         let _ = gruntas_api::git::command(repo).and_then(|mut c| c.env("GIT_TERMINAL_PROMPT", "0").args(["fetch", "--quiet", "origin"]).output());
-        git_text(repo, &["cat-file", "-e", &commit]).map_err(|_| format!("this clone does not have commit {} the session was at, and `git fetch origin` did not bring it — push it from the other machine, or run `krowk sync take` from a clone that has it", b.base))?;
+        git_text(repo, &["cat-file", "-e", &commit]).map_err(|_| format!("this clone does not have commit {} the session was at, and `git fetch origin` did not bring it — push it from the other machine, or run `gruntas sync take` from a clone that has it", b.base))?;
     }
     let (worktree, held) = crate::worktree::create_at(repo, worktrees, &b.session, &b.base).map_err(|e| format!("the session's worktree could not be made: {e}"))?;
     let undo = |e: String| {
@@ -723,7 +723,7 @@ pub fn place_transcript(b: &Bundle, home: &Path, cwd: &Path) -> Result<Option<Pa
     for p in ["projects", dir.file_name().and_then(|n| n.to_str()).unwrap_or_default()] {
         at.push(p);
         if at.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {
-            return Err(format!("{} is a symbolic link, and krowk writes only into the account's own directories", at.display()));
+            return Err(format!("{} is a symbolic link, and gruntas writes only into the account's own directories", at.display()));
         }
     }
     let mut d = std::fs::DirBuilder::new();
@@ -942,7 +942,7 @@ mod tests {
             assert_eq!(git(wt, &["show", &format!("{}:{f}", landed.snapshot)]), want.trim_end(), "the snapshot holds {f} as the job left it");
         }
         assert!(git(wt, &["merge-base", "--is-ancestor", &head, &landed.snapshot]).is_empty(), "on top of the job's base");
-        assert_eq!(git(wt, &["log", "-1", "--format=%an <%ae>", &landed.snapshot]), "krowk <krowk@localhost>", "written as krowk, whatever the git config says");
+        assert_eq!(git(wt, &["log", "-1", "--format=%an <%ae>", &landed.snapshot]), "gruntas <gruntas@localhost>", "written as gruntas, whatever the git config says");
         let _ = std::fs::remove_dir_all(&root);
     }
 

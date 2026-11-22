@@ -1,4 +1,4 @@
-//! The Codex backend (R-BACK-3): krowk drives the user's own, unmodified
+//! The Codex backend (R-BACK-3): gruntas drives the user's own, unmodified
 //! `codex` binary as `codex app-server` — the JSON-RPC interface OpenAI
 //! built for third-party clients, and the sanctioned way to use a ChatGPT
 //! subscription from one — as one long-lived process per session:
@@ -9,30 +9,30 @@
 //!
 //! with `CODEX_HOME` set to the instance's home. One JSON object per line
 //! each way; requests carry an `id` and are answered under it, both ways.
-//! What krowk speaks, checked against the schema `codex app-server
+//! What gruntas speaks, checked against the schema `codex app-server
 //! generate-json-schema --experimental` writes for the pinned Codex
 //! (`schema/codex/`, kept fresh by `scripts/codex_schema.sh`):
 //!
-//! | message | direction | what krowk does |
+//! | message | direction | what gruntas does |
 //! |---|---|---|
-//! | `initialize`, `initialized` | krowk → codex | first on every process, as client `krowk`, opting into the experimental API for dynamic tools |
-//! | `hooks/list`, `config/value/write` | krowk → codex | the paste guard krowk passes as a `PreToolUse` hook (`-c hooks.PreToolUse=…`, `with_paste_guard`) is trusted, by its hash, in the instance's Codex config |
-//! | `account/read` | krowk → codex | whether the instance is signed in, and to what: a ChatGPT plan is a subscription, an API key a key (R-INST-3) |
-//! | `model/list` | krowk → codex | the efforts each model takes, so `--effort` lands on one it does |
-//! | `thread/start`, `thread/resume` | krowk → codex | the session's thread, in krowk's mode, with krowk's tools; resumed by the id the log's `backend.session` holds |
-//! | `turn/start` | krowk → codex | a prompt; the turn is everything up to its `turn/completed` |
-//! | `turn/steer` | krowk → codex | `Command::Steer`, into the running turn |
-//! | `turn/interrupt` | krowk → codex | `Command::Interrupt`; the process lives on for the next turn. With a child's session id, on the child's thread and turn alone (R-SUB-10) — checked against the schema, not live |
-//! | `item/*`, `thread/tokenUsage/updated` | codex → krowk | translated into krowk's events by `stream` (R-BACK-5) |
-//! | `thread/started`, another thread's `item/*`, `collabAgentToolCall`, `subAgentActivity` | codex → krowk | the session thread's direct children as child sessions, by `children` (R-SUB-7) — checked against the schema, not live |
-//! | `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, … | codex → krowk | judged by krowk's permission evaluator (`crate::permissions`), as `Bash(<command>)` and `Edit(<files>)`; one naming a child's `threadId` is asked under the child's session (R-SUB-9) — checked against the schema, not live |
-//! | `item/tool/call` | codex → krowk | a call of krowk's own tools, answered by `crate::bridge` |
-//! | `item/tool/requestUserInput` | codex → krowk | the model's questions, asked of the person (`crate::ask`) and answered by question id |
+//! | `initialize`, `initialized` | gruntas → codex | first on every process, as client `gruntas`, opting into the experimental API for dynamic tools |
+//! | `hooks/list`, `config/value/write` | gruntas → codex | the paste guard gruntas passes as a `PreToolUse` hook (`-c hooks.PreToolUse=…`, `with_paste_guard`) is trusted, by its hash, in the instance's Codex config |
+//! | `account/read` | gruntas → codex | whether the instance is signed in, and to what: a ChatGPT plan is a subscription, an API key a key (R-INST-3) |
+//! | `model/list` | gruntas → codex | the efforts each model takes, so `--effort` lands on one it does |
+//! | `thread/start`, `thread/resume` | gruntas → codex | the session's thread, in gruntas's mode, with gruntas's tools; resumed by the id the log's `backend.session` holds |
+//! | `turn/start` | gruntas → codex | a prompt; the turn is everything up to its `turn/completed` |
+//! | `turn/steer` | gruntas → codex | `Command::Steer`, into the running turn |
+//! | `turn/interrupt` | gruntas → codex | `Command::Interrupt`; the process lives on for the next turn. With a child's session id, on the child's thread and turn alone (R-SUB-10) — checked against the schema, not live |
+//! | `item/*`, `thread/tokenUsage/updated` | codex → gruntas | translated into gruntas's events by `stream` (R-BACK-5) |
+//! | `thread/started`, another thread's `item/*`, `collabAgentToolCall`, `subAgentActivity` | codex → gruntas | the session thread's direct children as child sessions, by `children` (R-SUB-7) — checked against the schema, not live |
+//! | `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, … | codex → gruntas | judged by gruntas's permission evaluator (`crate::permissions`), as `Bash(<command>)` and `Edit(<files>)`; one naming a child's `threadId` is asked under the child's session (R-SUB-9) — checked against the schema, not live |
+//! | `item/tool/call` | codex → gruntas | a call of gruntas's own tools, answered by `crate::bridge` |
+//! | `item/tool/requestUserInput` | codex → gruntas | the model's questions, asked of the person (`crate::ask`) and answered by question id |
 //!
 //! **The mode.** Every mode but `bypassPermissions` and `unhinged` runs Codex in its
-//! `read-only` sandbox with approvals `on-request` and krowk as the
+//! `read-only` sandbox with approvals `on-request` and gruntas as the
 //! reviewer, so every edit and every command that needs more than reading
-//! is asked about, and krowk's permission evaluator answers it — asking the
+//! is asked about, and gruntas's permission evaluator answers it — asking the
 //! person when a client is attached; `bypassPermissions` and `unhinged`
 //! are `danger-full-access` with no approvals. The mode
 //! is named on `thread/start` and `thread/resume`, so a default in Codex's
@@ -41,13 +41,13 @@
 //! sandbox lets a command do without asking — read the disk, not write it
 //! — and what the user's own Codex rules allow by themselves, is Codex's to
 //! decide: the vendor behaving as its user set it up, as with every
-//! backend. krowk's deny rules reach Codex only through what it asks, so a
+//! backend. gruntas's deny rules reach Codex only through what it asks, so a
 //! `Read(.env)` deny does not stop a command reading the file inside
 //! Codex's read-only sandbox; the OS sandbox (Harness ticket 26) is what
 //! closes that.
 //!
-//! **Compliance** (R-BACK-3) is structural: krowk starts the binary as the
-//! user installed it, as itself (client `krowk`), sends it no system
+//! **Compliance** (R-BACK-3) is structural: gruntas starts the binary as the
+//! user installed it, as itself (client `gruntas`), sends it no system
 //! prompt, never uses Codex's OAuth client and never opens Codex's login
 //! file — the login is Codex's, made by `codex login` and reported by
 //! `codex login status` and `account/read` (`auth`). A compliance test
@@ -100,8 +100,8 @@ const DRAIN_GRACE: Duration = Duration::from_millis(500);
 const STDERR_TAIL: usize = 4096;
 
 /// What a turn's context record says of the system prompt: it is Codex's,
-/// and krowk neither sees nor changes it.
-pub const SYSTEM_NOTE: &str = "(Codex's own system prompt: krowk sends none and does not see it)";
+/// and gruntas neither sees nor changes it.
+pub const SYSTEM_NOTE: &str = "(Codex's own system prompt: gruntas sends none and does not see it)";
 
 /// The ambient variables a Codex process does not inherit unless its
 /// instance names them (`env`, `apiKeyEnv`). Inherited, each would change
@@ -110,7 +110,7 @@ pub const SYSTEM_NOTE: &str = "(Codex's own system prompt: krowk sends none and 
 /// organization; Codex's own key, access token, workload identity and
 /// connector tokens; the sign-in and token endpoints and the client Codex
 /// signs in as; its originator; where it keeps its state database outside
-/// `CODEX_HOME`; and the ids of a Codex session krowk itself may be running
+/// `CODEX_HOME`; and the ids of a Codex session gruntas itself may be running
 /// inside. Read off the variables codex 0.154.0 names; everything else
 /// (proxies, certificates, the sandbox's own) is the person's environment,
 /// as when they start `codex` by hand.
@@ -146,7 +146,7 @@ pub fn cleared(b: &Backend) -> impl Iterator<Item = &'static str> + '_ {
     NOT_INHERITED.iter().copied().filter(|k| !b.env.contains_key(*k) && b.key.as_ref().is_none_or(|(to, _)| to != k))
 }
 
-/// The environment a Codex command gets on top of krowk's own: the
+/// The environment a Codex command gets on top of gruntas's own: the
 /// inherited keys and base URL taken away, the home, the instance's `env`,
 /// and its key under the name its model provider reads.
 pub fn environment(b: &Backend) -> (Vec<&'static str>, Vec<(String, String)>) {
@@ -173,7 +173,7 @@ pub fn args(extra: &[String]) -> Vec<String> {
 const TRUST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The command Codex runs the paste guard (`crate::paste_guard`) with:
-/// `exe` — this krowk — as `krowk __paste-guard`, quoted for the shell.
+/// `exe` — this gruntas — as `gruntas __paste-guard`, quoted for the shell.
 /// Linux names a binary replaced since it started `… (deleted)`; the hook
 /// runs the one now at that path.
 pub fn paste_guard_command(exe: &Path) -> String {
@@ -210,13 +210,13 @@ pub fn with_paste_guard(mut args: Vec<String>, command: &str) -> Vec<String> {
     args
 }
 
-/// Whether a hook `hooks/list` reports is the paste guard krowk passed:
+/// Whether a hook `hooks/list` reports is the paste guard gruntas passed:
 /// its command exactly, from the command line.
 fn is_paste_guard(hook: &Value, command: &str) -> bool {
     str_of(hook, "source") == "sessionFlags" && str_of(hook, "eventName") == "preToolUse" && str_of(hook, "command") == command
 }
 
-/// Codex's approval policy and sandbox for a krowk mode.
+/// Codex's approval policy and sandbox for a gruntas mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Policy {
     pub approval: &'static str,
@@ -268,7 +268,7 @@ pub fn effort_for(want: Option<Effort>, codex: Option<&[String]>, info: Option<&
     crate::effort::map(want, &takes).map(|e| e.name().to_string())
 }
 
-/// A command Codex asks to run outside its read-only sandbox, as krowk's
+/// A command Codex asks to run outside its read-only sandbox, as gruntas's
 /// permission evaluator judges it: `Bash(<command>)`, so the rules written
 /// for Claude Code hold for Codex's commands too.
 pub fn command_call(command: &str) -> Call {
@@ -277,14 +277,14 @@ pub fn command_call(command: &str) -> Call {
 
 /// A patch Codex asks to apply, by every file it names (each change's path
 /// and a move's destination, `stream::change_paths`): an `Edit` of them. A
-/// patch whose files krowk did not see, or that asks to write anywhere
+/// patch whose files gruntas did not see, or that asks to write anywhere
 /// under a root for the rest of the session, is refused before it is
-/// judged: krowk judges each change by its files.
+/// judged: gruntas judges each change by its files.
 pub fn file_change_call(paths: Option<&[String]>, grant_root: Option<&str>, cwd: &Path) -> Result<Call, String> {
     if let Some(root) = grant_root.filter(|r| !r.is_empty()) {
-        return Err(format!("krowk declined the change: it asked to write anywhere under {root} for the rest of the session, and krowk approves each change by its files"));
+        return Err(format!("gruntas declined the change: it asked to write anywhere under {root} for the rest of the session, and gruntas approves each change by its files"));
     }
-    let paths = paths.filter(|p| !p.is_empty()).ok_or("krowk declined the change: it did not see which files the patch changes")?;
+    let paths = paths.filter(|p| !p.is_empty()).ok_or("gruntas declined the change: it did not see which files the patch changes")?;
     let at = |p: &String| {
         let p = Path::new(p);
         if p.is_absolute() { p.to_path_buf() } else { cwd.join(p) }
@@ -426,7 +426,7 @@ fn sign_in_fix(instance: &str) -> String {
     crate::connect::connect_command(instance, "codex-app-server")
 }
 
-/// A turn Codex ended in failure, as krowk's error. A login gone stale is
+/// A turn Codex ended in failure, as gruntas's error. A login gone stale is
 /// named as one, with the command that renews it.
 fn failure(err: &Value, instance: &str) -> EngineError {
     let message = err.get("message").and_then(Value::as_str).unwrap_or("no reason given").trim().to_string();
@@ -444,7 +444,7 @@ fn failure(err: &Value, instance: &str) -> EngineError {
 }
 
 /// A rate-limit snapshot (`account/rateLimits/updated`'s `rateLimits`) as
-/// krowk's limit status (R-INST-6): the fuller of its two windows, limited
+/// gruntas's limit status (R-INST-6): the fuller of its two windows, limited
 /// when Codex says a limit was reached, a warning from 80% used.
 pub fn limit_of(snapshot: &Value) -> Option<LimitStatus> {
     let window = |k: &str| snapshot.get(k).filter(|w| w.is_object());
@@ -504,7 +504,7 @@ async fn stop_answer(stopper: &Mutex<Option<mpsc::UnboundedSender<StopAsk>>>, th
     let ((sent, written), (done, answer)) = (oneshot::channel(), oneshot::channel());
     let handed = stopper.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.send(StopAsk { thread: thread.to_string(), sent, done }).is_ok());
     if !handed {
-        return Err(refused("no turn of the session that started it is running, so krowk no longer follows it"));
+        return Err(refused("no turn of the session that started it is running, so gruntas no longer follows it"));
     }
     // Dropped unwritten: `answer` says why.
     if tokio::time::timeout(grace, written).await.is_err() {
@@ -609,11 +609,11 @@ impl Engine for CodexEngine {
             }
             .await;
             *self.stopper.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            // krowk reads Codex only while a turn runs, and sends it nothing
+            // gruntas reads Codex only while a turn runs, and sends it nothing
             // for an open child: one still open is no longer followed from
             // here, though Codex may still run it (R-SUB-7).
             let why = match &outcome {
-                Err(e) => format!("krowk stopped following it when the turn that ran it failed, before Codex said it finished ({}) — Codex may still be running it; what it does after this is not shown here", e.message),
+                Err(e) => format!("gruntas stopped following it when the turn that ran it failed, before Codex said it finished ({}) — Codex may still be running it; what it does after this is not shown here", e.message),
                 Ok(_) => children::UNFINISHED.to_string(),
             };
             forward(&events, p.kids.turn_ended(&why)).await;
@@ -673,7 +673,7 @@ impl Answers {
                 Verdict::Ask { reason, .. } => Err(format!("{} needs approval — {reason} — and Codex asked outside a turn, where nobody can be asked", permissions::summary(&call))),
             },
         };
-        r.map_err(|e| if e.starts_with("krowk declined") { e } else { format!("krowk declined it: {e}") })
+        r.map_err(|e| if e.starts_with("gruntas declined") { e } else { format!("gruntas declined it: {e}") })
     }
 
     /// `item/tool/requestUserInput`, asked of the person: each question's
@@ -769,18 +769,18 @@ impl Answers {
                 let verdict = self.permit(Ok(command_call(&command.unwrap_or_default())), "shell", params, asking).await;
                 Ok(json!({"decision": if verdict.is_ok() { "approved" } else { "denied" }}))
             }
-            m => Err((-32601, format!("krowk does not answer {m:?}"))),
+            m => Err((-32601, format!("gruntas does not answer {m:?}"))),
         }
     }
 
-    /// A call of one of krowk's tools, run by the bridge as a `tools/call`.
+    /// A call of one of gruntas's tools, run by the bridge as a `tools/call`.
     async fn tool_call(&self, params: &Value, asking: Asking<'_>) -> Value {
         let namespace = params.get("namespace").and_then(Value::as_str).unwrap_or_default();
         let tool = str_of(params, "tool");
         // A thread started before the rename keeps the namespace it was
         // given then: Codex resumes a thread with its own dynamic tools.
         if gruntas_store::current_name(namespace) != bridge::SERVER {
-            return json!({"contentItems": [{"type": "inputText", "text": format!("krowk has no tool {tool:?} in the namespace {namespace:?} — its tools are in {:?}", bridge::SERVER)}], "success": false});
+            return json!({"contentItems": [{"type": "inputText", "text": format!("gruntas has no tool {tool:?} in the namespace {namespace:?} — its tools are in {:?}", bridge::SERVER)}], "success": false});
         }
         let env = BridgeEnv {
             session_id: &self.session_id,
@@ -805,7 +805,7 @@ impl Answers {
     }
 }
 
-/// What a request krowk sent during a turn was.
+/// What a request gruntas sent during a turn was.
 enum Pending {
     TurnStart,
     Steer(Steer),
@@ -821,7 +821,7 @@ struct Proc {
     out: LineReader<BufReader<ChildStdout>>,
     stderr: Arc<Mutex<String>>,
     binary: String,
-    /// Started in `danger-full-access` (krowk's bypassPermissions or unhinged).
+    /// Started in `danger-full-access` (gruntas's bypassPermissions or unhinged).
     bypass: bool,
     next: u64,
     exited: bool,
@@ -980,7 +980,7 @@ async fn on_note(thread: &str, method: &str, params: &Value, (subs, kids, t): (&
     }
 }
 
-/// How krowk's turn ends with the Codex turn that completed, when it does:
+/// How gruntas's turn ends with the Codex turn that completed, when it does:
 /// interrupted, or failed for Codex's reason.
 async fn concluded(turn: &Value, interrupted: bool, t: &mut Translator, events: &Events, limit: Option<&LimitStatus>, instance: &str) -> Option<Result<TurnEnd, EngineError>> {
     match str_of(turn, "status") {
@@ -1003,9 +1003,9 @@ async fn concluded(turn: &Value, interrupted: bool, t: &mut Translator, events: 
     }
 }
 
-/// What the next Codex turn in krowk's reads, once Codex finished one:
+/// What the next Codex turn in gruntas's reads, once Codex finished one:
 /// the steering it refused, and any that arrived since, each logged where
-/// it landed. None when nothing is waiting, and krowk's turn ends.
+/// it landed. None when nothing is waiting, and gruntas's turn ends.
 async fn more_input(refused: Vec<Steer>, steers: &crate::engine::Steers, t: &mut Translator, events: &Events) -> Option<Vec<Steer>> {
     let mut more = refused;
     more.extend(steers.take());
@@ -1109,13 +1109,13 @@ impl Proc {
             cmd.env_remove(k);
         }
         cmd.envs(set);
-        // Its own process group: a Ctrl-C at the terminal is krowk's to turn
+        // Its own process group: a Ctrl-C at the terminal is gruntas's to turn
         // into an interrupt, not a signal that kills Codex mid-write.
         #[cfg(unix)]
         cmd.process_group(0);
         let mut child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                EngineError::new("backend_not_found", format!("{} was not found — install Codex (https://developers.openai.com/codex), or name the binary with `krowk connect openai --method subscription --binary <path>`", b.binary))
+                EngineError::new("backend_not_found", format!("{} was not found — install Codex (https://developers.openai.com/codex), or name the binary with `gruntas connect openai --method subscription --binary <path>`", b.binary))
             } else {
                 EngineError::new("backend_failed", format!("{} could not be started: {e}", b.binary))
             }
@@ -1175,7 +1175,7 @@ impl Proc {
     }
 
     /// Codex runs a hook only once its user has trusted it, by its hash.
-    /// The paste guard krowk passed is trusted here, by Codex's own config
+    /// The paste guard gruntas passed is trusted here, by Codex's own config
     /// write, so it holds from the first thread. A Codex that lists no
     /// hooks runs without it.
     async fn trust_paste_guard(&mut self, cwd: &Path, command: &str, ask: &Answers) {
@@ -1212,9 +1212,9 @@ impl Proc {
     async fn send(&mut self, v: &Value) -> Result<(), EngineError> {
         let mut line = v.to_string();
         line.push('\n');
-        let Some(stdin) = self.stdin.as_mut() else { return Err(self.died("before krowk could write to it")) };
+        let Some(stdin) = self.stdin.as_mut() else { return Err(self.died("before gruntas could write to it")) };
         if stdin.write_all(line.as_bytes()).await.is_err() || stdin.flush().await.is_err() {
-            return Err(self.died("while krowk was writing to it"));
+            return Err(self.died("while gruntas was writing to it"));
         }
         Ok(())
     }
@@ -1268,8 +1268,8 @@ impl Proc {
     }
 
     /// Starts the session's thread, or resumes the one the log names, in
-    /// krowk's mode and with krowk's tools; a thread Codex reports in a
-    /// looser sandbox, or with another reviewer than krowk, is refused.
+    /// gruntas's mode and with gruntas's tools; a thread Codex reports in a
+    /// looser sandbox, or with another reviewer than gruntas, is refused.
     async fn open_thread(&mut self, resume: Option<&str>, path: Option<&str>, ctx: &TurnContext, ask: &Answers, instance: &str) -> Result<(), EngineError> {
         let pol = policy(ctx.permission_mode);
         let cwd = ctx.cwd.display().to_string();
@@ -1290,9 +1290,9 @@ impl Proc {
         // names them, and the thread turns each off. MCP servers an
         // installed Codex plugin brings may not be listed there, and are
         // not reached by this — still open: the pinned protocol has no
-        // thread setting krowk can verify turns a plugin's server off.
+        // thread setting gruntas can verify turns a plugin's server off.
         if !ctx.permission_mode.asks_nothing() {
-            let config = self.request("config/read", json!({ "cwd": cwd }), ask, INITIALIZE_TIMEOUT).await.map_err(|e| EngineError::new(&e.code, format!("krowk asks Codex which MCP servers its config names, to keep them off, and it did not say: {}", e.message)))?;
+            let config = self.request("config/read", json!({ "cwd": cwd }), ask, INITIALIZE_TIMEOUT).await.map_err(|e| EngineError::new(&e.code, format!("gruntas asks Codex which MCP servers its config names, to keep them off, and it did not say: {}", e.message)))?;
             if let Some(off) = mcp_off(&config) {
                 params["config"] = off;
             }
@@ -1311,7 +1311,7 @@ impl Proc {
             return Err(EngineError::new(
                 "backend_permission_mode",
                 format!(
-                    "Codex on {instance} opened the thread in its `{sandbox}` sandbox with `{reviewer}` reviewing approvals, looser than krowk's `{}` for this turn, so krowk stopped it before it ran anything — check `sandbox_mode`, `approvals_reviewer` and any managed requirements in its config, and the instance's `args`",
+                    "Codex on {instance} opened the thread in its `{sandbox}` sandbox with `{reviewer}` reviewing approvals, looser than gruntas's `{}` for this turn, so gruntas stopped it before it ran anything — check `sandbox_mode`, `approvals_reviewer` and any managed requirements in its config, and the instance's `args`",
                     ctx.permission_mode.name()
                 ),
             ));
@@ -1327,7 +1327,7 @@ impl Proc {
         Ok(())
     }
 
-    /// Runs one krowk turn: the prompt as a Codex turn, steering passed in
+    /// Runs one gruntas turn: the prompt as a Codex turn, steering passed in
     /// as it arrives, until Codex completes it with nothing left unread.
     async fn turn(&mut self, prompt: Steer, ctx: &mut TurnContext, ask: &Answers, events: &Events, stops: &mut mpsc::UnboundedReceiver<StopAsk>, instance: &str) -> Result<TurnEnd, EngineError> {
         let thread = self.thread.clone().expect("opened before a turn");
@@ -1428,7 +1428,7 @@ impl Proc {
         let (tx, mut rx) = mpsc::channel(4);
         // The turn's interrupt, or a stop of this child.
         let (mine, theirs) = watch::channel(*cancel.borrow());
-        // The call it asks about: an approval's item, a krowk tool's call.
+        // The call it asks about: an approval's item, a gruntas tool's call.
         let call = Some(str_of(params, "itemId")).filter(|i| !i.is_empty()).unwrap_or(str_of(params, "callId")).to_string();
         let asked = async {
             let tx = tx;
@@ -1506,7 +1506,7 @@ impl Proc {
         }
     }
 
-    /// Codex's answer to a request krowk sent in the turn: `turn/start`'s
+    /// Codex's answer to a request gruntas sent in the turn: `turn/start`'s
     /// gives the turn's id; a steer's says whether it landed, else it is
     /// kept for the next turn; a child's `turn/interrupt`'s goes to whoever
     /// asked for the stop.
@@ -1596,7 +1596,7 @@ mod tests {
     #[test]
     fn r_back_3_the_process_is_app_server_on_stdio_in_krowks_mode() {
         assert_eq!(args(&["-c".into(), "model_provider=openrouter".into()]).join(" "), "app-server --listen stdio:// -c model_provider=openrouter");
-        // The hook's command is this krowk's path, quoted for the shell
+        // The hook's command is this gruntas's path, quoted for the shell
         // Codex runs it in, inside a TOML string.
         let command = paste_guard_command(Path::new("/opt/my tools/krowk (deleted)"));
         assert_eq!(command, "'/opt/my tools/krowk' __paste-guard");
@@ -1744,7 +1744,7 @@ mod tests {
             assert!(change(ae, Some(&f(p)), None).is_err(), "{p}");
         }
         assert!(change(ae, Some(&f("a.txt")), Some("/")).unwrap_err().contains("rest of the session"));
-        assert!(change(ae, None, None).is_err(), "a patch whose files krowk did not see is not approved blind");
+        assert!(change(ae, None, None).is_err(), "a patch whose files gruntas did not see is not approved blind");
         // A move is judged by where it lands too, in both protocols.
         let moved = stream::change_paths(&json!([{"path": cwd.join("a.txt"), "kind": {"type": "update", "move_path": cwd.join(".git/hooks/pre-commit")}, "diff": ""}]));
         assert_eq!(moved.len(), 2);
@@ -1805,7 +1805,7 @@ mod tests {
         let a = ask.answer("item/tool/call", &json!({"threadId": "th", "turnId": "tu", "callId": "c", "namespace": "gruntas", "tool": "session_info", "arguments": {}}), &mut t, None).await.unwrap();
         assert_eq!(a["success"], true);
         let text = a["contentItems"][0]["text"].as_str().unwrap();
-        assert!(text.contains("krowk session: s-1") && text.contains("instance: codex:team") && text.contains("backend: codex-app-server"), "{text}");
+        assert!(text.contains("gruntas session: s-1") && text.contains("instance: codex:team") && text.contains("backend: codex-app-server"), "{text}");
         let resumed = json!({"threadId": "th", "turnId": "tu", "callId": "c", "namespace": "krowk", "tool": "session_info", "arguments": {}});
         assert_eq!(ask.answer("item/tool/call", &resumed, &mut t, None).await.unwrap()["success"], true, "a thread started before the rename keeps its namespace");
         assert_eq!(ask.answer("item/tool/call", &json!({"namespace": "other", "tool": "x", "arguments": {}}), &mut t, None).await.unwrap()["success"], false);
@@ -1821,7 +1821,7 @@ mod tests {
         let refused = ask.answer("item/tool/call", &json!({"namespace": "gruntas", "tool": "publish", "arguments": {"files": ["a.png"]}}), &mut t, None).await.unwrap();
         assert_eq!(refused["success"], false);
         assert!(refused["contentItems"][0]["text"].as_str().unwrap().contains("needs approval"), "{refused}");
-        assert_eq!(ask.answer("account/chatgptAuthTokens/refresh", &json!({}), &mut t, None).await.unwrap_err().0, -32601, "krowk never handles Codex's tokens");
+        assert_eq!(ask.answer("account/chatgptAuthTokens/refresh", &json!({}), &mut t, None).await.unwrap_err().0, -32601, "gruntas never handles Codex's tokens");
     }
 
     /// R-SUB-10: a stop of one child with no turn to take it, one the turn
@@ -1872,7 +1872,7 @@ mod tests {
     fn r_back_3_a_failed_turn_names_a_stale_login_as_one() {
         let e = failure(&json!({"message": "unexpected status 401 Unauthorized: Missing bearer", "codexErrorInfo": "other"}), "codex:team");
         assert_eq!((e.code.as_str(), e.status), ("not_authenticated", 401));
-        assert!(e.message.contains("krowk connect openai --method subscription --name team"), "{}", e.message);
+        assert!(e.message.contains("gruntas connect openai --method subscription --name team"), "{}", e.message);
         let e = failure(&json!({"message": "slow down", "codexErrorInfo": {"responseStreamDisconnected": {"httpStatusCode": 429}}}), "codex");
         assert_eq!((e.code.as_str(), e.status), ("backend_failed", 429));
         assert_eq!(failure(&json!({"message": "limit", "codexErrorInfo": "usageLimitExceeded"}), "codex").code, "usage_limit");

@@ -6,7 +6,7 @@
 //!
 //! Here, the data path through the placement, job and result interfaces,
 //! with no registry between the machines. The same case through the
-//! binaries, krowk-mcp's delegate and collect and a target that drops
+//! binaries, gruntas-mcp's delegate and collect and a target that drops
 //! mid-task, is `crates/gruntas/tests/sync_cli.rs`'s `alloc_10_…`.
 
 #![cfg(unix)]

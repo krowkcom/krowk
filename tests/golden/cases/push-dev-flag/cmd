@@ -1,7 +1,7 @@
 # --dev and GRUNTAS_DEV point at the local registry at localhost:8787.
 @unenv GRUNTAS_API_URL
-krowk doctor --dev
+gruntas doctor --dev
 @env GRUNTAS_DEV=1
-krowk doctor
+gruntas doctor
 @env GRUNTAS_DEV=off
-krowk doctor --jq .api
+gruntas doctor --jq .api

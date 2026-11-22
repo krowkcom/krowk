@@ -1,9 +1,9 @@
-//! git as krowk runs it, the one place a git process is made. A repository
+//! git as gruntas runs it, the one place a git process is made. A repository
 //! is a directory the person may not trust, and git runs some commands on
-//! its own. Three are turned off for every call krowk makes: hooks (looked
-//! for in an empty directory of krowk's instead, `<home>/no-hooks`, which
+//! its own. Three are turned off for every call gruntas makes: hooks (looked
+//! for in an empty directory of gruntas's instead, `<home>/no-hooks`, which
 //! works on Windows as `/dev/null` does not), `core.fsmonitor`, and commit
-//! and tag signing (krowk's own commits need none, and with stdin closed a
+//! and tag signing (gruntas's own commits need none, and with stdin closed a
 //! pinentry could only hang). Filters a checkout maps files to — git-lfs's
 //! smudge, say — still run, deliberately: a checkout without them is wrong,
 //! and their commands come from config, not from the repository's files.
@@ -16,7 +16,7 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
 /// git in `dir`, with hooks, fsmonitor and signing off. For a call that
-/// writes (a commit, a checkout, `worktree add`). An error when krowk has
+/// writes (a commit, a checkout, `worktree add`). An error when gruntas has
 /// no empty directory to offer git as hooks: then nothing is run.
 pub fn command(dir: &Path) -> std::io::Result<Command> {
     let mut hooks = OsString::from("core.hooksPath=");
@@ -47,13 +47,13 @@ fn no_hooks() -> std::io::Result<PathBuf> {
     pick(home.as_deref(), &std::env::temp_dir(), &mut fresh)
 }
 
-/// `<home>/no-hooks` when it is krowk's own and empty. Else — no home, a
+/// `<home>/no-hooks` when it is gruntas's own and empty. Else — no home, a
 /// home on a read-only disk, one with something in its `no-hooks` — the
 /// same held to `tmp/krowk-no-hooks-<uid>`, one name per user so processes
 /// without a home share it rather than leave one each. When that is
 /// refused too (another user's, something in it), a directory this
 /// process made itself under a new name, so nothing can be waiting in it;
-/// another when that one has filled. Never a path krowk did not make:
+/// another when that one has filled. Never a path gruntas did not make:
 /// `/dev/null` is a directory anyone may create on a Windows drive.
 fn pick(home: Option<&Path>, tmp: &Path, fresh: &mut Option<PathBuf>) -> std::io::Result<PathBuf> {
     let shared = shared(tmp);
@@ -83,7 +83,7 @@ fn shared(_tmp: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Whether `d` is a directory of krowk's own (made when missing) with
+/// Whether `d` is a directory of gruntas's own (made when missing) with
 /// nothing in it.
 fn empty(d: &Path) -> bool {
     crate::home::make(d).is_ok() && std::fs::read_dir(d).is_ok_and(|mut e| e.next().is_none())
@@ -119,7 +119,7 @@ mod tests {
     }
 
     /// A repository's hooks touch a marker: a plain git commit runs them,
-    /// krowk's commit and checkout run neither, and do what they were
+    /// gruntas's commit and checkout run neither, and do what they were
     /// asked.
     #[test]
     #[cfg(unix)]
@@ -160,7 +160,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// The home's directory while it is empty and krowk's own; else one
+    /// The home's directory while it is empty and gruntas's own; else one
     /// this process made, and a new one once that has something in it.
     #[test]
     #[cfg(unix)]
@@ -192,7 +192,7 @@ mod tests {
         std::fs::remove_dir_all(&own).unwrap();
         std::os::unix::fs::symlink(&tmp, &own).unwrap();
         assert_eq!(pick(Some(&home), &tmp, &mut fresh).unwrap(), second);
-        // Nowhere to make one: an error, not a path krowk did not make.
+        // Nowhere to make one: an error, not a path gruntas did not make.
         std::fs::write(second.join("x"), "").unwrap();
         assert!(pick(None, &d.join("gone"), &mut fresh).is_err());
         let _ = std::fs::remove_dir_all(&d);

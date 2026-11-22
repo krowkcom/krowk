@@ -1,8 +1,8 @@
-//! The end-to-end constructions, and the only place krowk calls a
+//! The end-to-end constructions, and the only place gruntas calls a
 //! cryptographic primitive (R-E2E-2). Three layers, each key wrapping the
 //! next (engineering/crypto.md in Canon has the diagram):
 //!
-//! - A **device key**: an X25519 keypair per machine and krowk home. The
+//! - A **device key**: an X25519 keypair per machine and gruntas home. The
 //!   private half never leaves the machine.
 //! - The **account key**: 32 random bytes, one per account, wrapped to each
 //!   device's public key with HPKE (RFC 9180) — Base mode,
@@ -89,15 +89,15 @@ fn err(s: impl Into<String>) -> Error {
     Error(s.into())
 }
 
-/// A blob from a later krowk: the one refusal that says more than "does not
+/// A blob from a later gruntas: the one refusal that says more than "does not
 /// open", since only the version byte is looked at to say it. A version
-/// below this krowk's is not a format that ever existed, and does not open.
+/// below this gruntas's is not a format that ever existed, and does not open.
 fn newer(what: &str, v: u8) -> Error {
-    err(format!("the wrapped {what} key is format {v}, newer than this krowk reads — upgrade krowk"))
+    err(format!("the wrapped {what} key is format {v}, newer than this gruntas reads — upgrade gruntas"))
 }
 
 /// Random bytes from the operating system. A machine that cannot give them
-/// cannot make a key, and nothing krowk could do instead would be safe.
+/// cannot make a key, and nothing gruntas could do instead would be safe.
 pub fn random<const N: usize>() -> [u8; N] {
     let mut b = [0u8; N];
     getrandom::fill(&mut b).expect("the operating system's random number generator failed");
@@ -413,7 +413,7 @@ pub fn open_session_index(blob: &[u8], session: &[u8; 16], key: &SessionKey) -> 
     let refused = || err("the session index does not open with this session's key: it was changed, or belongs to another session");
     if blob.len() < 2 + NONCE + TAG || blob[0] != INDEX_V1 || blob[1] != SUITE_XCHACHA20_POLY1305 {
         return Err(match blob.first() {
-            Some(&v) if v > INDEX_V1 => err(format!("the session index is format {v}, newer than this krowk reads — upgrade krowk")),
+            Some(&v) if v > INDEX_V1 => err(format!("the session index is format {v}, newer than this gruntas reads — upgrade gruntas")),
             _ => refused(),
         });
     }
@@ -444,7 +444,7 @@ pub const VINTAGE_V2: u8 = 2;
 pub fn seal_vintage(keys: &UserKeys, current_generation: u32, week: &str, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
     let user = keys.newest();
     if user.generation() < current_generation {
-        return Err(err(format!("this device holds user key generation {}, but the device list names generation {current_generation} — nothing is sealed under an old key; catch this device up with the device list (`krowk machines`) and try again", user.generation())));
+        return Err(err(format!("this device holds user key generation {}, but the device list names generation {current_generation} — nothing is sealed under an old key; catch this device up with the device list (`gruntas machines`) and try again", user.generation())));
     }
     let head = [VINTAGE_V2, SUITE_XCHACHA20_POLY1305];
     let generation = user.generation().to_be_bytes();
@@ -464,10 +464,10 @@ pub fn seal_vintage(keys: &UserKeys, current_generation: u32, week: &str, plaint
 /// deployment never stored one.
 pub fn open_vintage(blob: &[u8], week: &str, keys: &UserKeys) -> Result<Vec<u8>, Error> {
     match blob.first() {
-        Some(&VINTAGE_V1) => Err(err(format!("the vintage for {week} was sealed under the old account key, from before the user key, which this krowk no longer reads"))),
+        Some(&VINTAGE_V1) => Err(err(format!("the vintage for {week} was sealed under the old account key, from before the user key, which this gruntas no longer reads"))),
         Some(&VINTAGE_V2) => open_vintage_v2(blob, week, keys),
-        Some(&v) if v > VINTAGE_V2 => Err(err(format!("the vintage is format {v}, newer than this krowk reads — upgrade krowk"))),
-        _ => Err(err(format!("the vintage for {week} is not one this krowk reads"))),
+        Some(&v) if v > VINTAGE_V2 => Err(err(format!("the vintage is format {v}, newer than this gruntas reads — upgrade gruntas"))),
+        _ => Err(err(format!("the vintage for {week} is not one this gruntas reads"))),
     }
 }
 
@@ -541,7 +541,7 @@ impl Label {
 pub fn seal_to_person(keys: &UserKeys, current_generation: u32, label: Label, binding: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
     let user = keys.newest();
     if user.generation() < current_generation {
-        return Err(err(format!("this device holds user key generation {}, but the device list names generation {current_generation} — nothing is sealed under an old key; catch this device up with the device list (`krowk machines`) and try again", user.generation())));
+        return Err(err(format!("this device holds user key generation {}, but the device list names generation {current_generation} — nothing is sealed under an old key; catch this device up with the device list (`gruntas machines`) and try again", user.generation())));
     }
     let head = [PERSON_V1, SUITE_XCHACHA20_POLY1305];
     let generation = user.generation().to_be_bytes();
@@ -565,10 +565,10 @@ pub const PERSON_OVERHEAD: usize = 2 + 4 + NONCE + KEY + TAG + NONCE + TAG;
 /// and a device removed since still holds the older generations.
 pub fn person_generation(blob: &[u8]) -> Result<u32, Error> {
     if let Some(&v) = blob.first().filter(|&&v| v > PERSON_V1) {
-        return Err(err(format!("the record is format {v}, newer than this krowk reads — upgrade krowk")));
+        return Err(err(format!("the record is format {v}, newer than this gruntas reads — upgrade gruntas")));
     }
     if blob.len() < PERSON_OVERHEAD || blob[0] != PERSON_V1 || blob[1] != SUITE_XCHACHA20_POLY1305 {
-        return Err(err("the record is not one this krowk reads"));
+        return Err(err("the record is not one this gruntas reads"));
     }
     Ok(u32::from_be_bytes(blob[2..6].try_into().expect("four bytes")))
 }
@@ -582,7 +582,7 @@ pub fn open_from_person(blob: &[u8], label: Label, binding: &[u8], keys: &UserKe
     let refused = || err("the record does not open with your user key: it was changed, or belongs to another device or person");
     match blob.first() {
         Some(&PERSON_V1) => {}
-        Some(&v) if v > PERSON_V1 => return Err(err(format!("the record is format {v}, newer than this krowk reads — upgrade krowk"))),
+        Some(&v) if v > PERSON_V1 => return Err(err(format!("the record is format {v}, newer than this gruntas reads — upgrade gruntas"))),
         _ => return Err(refused()),
     }
     let body = 2 + 4 + NONCE + KEY + TAG;
@@ -625,7 +625,7 @@ pub fn open_transport(blob: &[u8], session: &[u8; 16], key: &[u8; KEY]) -> Resul
     let refused = || err("the handoff bundle does not open with the key its host sent: it was changed, or belongs to another session");
     if blob.len() < 2 + NONCE + TAG || blob[0] != TRANSPORT_V1 || blob[1] != SUITE_XCHACHA20_POLY1305 {
         return Err(match blob.first() {
-            Some(&v) if v > TRANSPORT_V1 => err(format!("the handoff bundle is format {v}, newer than this krowk reads — upgrade krowk")),
+            Some(&v) if v > TRANSPORT_V1 => err(format!("the handoff bundle is format {v}, newer than this gruntas reads — upgrade gruntas")),
             _ => refused(),
         });
     }
@@ -700,7 +700,7 @@ pub fn open_image(blob: &[u8], session: &[u8; 16], sha256: &[u8; 32], keys: &Ses
     let refused = || err("the image does not open with this session's key: it was changed, or is another session's or another image's");
     if blob.len() < IMAGE_OVERHEAD || blob[0] != IMAGE_V1 || blob[1] != SUITE_XCHACHA20_POLY1305 {
         return Err(match blob.first() {
-            Some(&v) if v > IMAGE_V1 => err(format!("the image is format {v}, newer than this krowk reads — upgrade krowk")),
+            Some(&v) if v > IMAGE_V1 => err(format!("the image is format {v}, newer than this gruntas reads — upgrade gruntas")),
             _ => refused(),
         });
     }
@@ -895,7 +895,7 @@ impl ChunkReader {
         let head = match blob.first() {
             Some(&CHUNK_V1) => CHUNK_HEAD,
             Some(&CHUNK_V2) => CHUNK_HEAD_V2,
-            Some(&v) if v > CHUNK_V2 => return Err(err(format!("the chunk is format {v}, newer than this krowk reads — upgrade krowk"))),
+            Some(&v) if v > CHUNK_V2 => return Err(err(format!("the chunk is format {v}, newer than this gruntas reads — upgrade gruntas"))),
             _ => return Err(refused()),
         };
         if blob.len() < head + NONCE + TAG || blob[1] != SUITE_XCHACHA20_POLY1305 || blob[2] & !CHUNK_FINAL != 0 {
@@ -959,7 +959,7 @@ pub fn wrap_session_key(session_key: &SessionKey, session: &[u8; 16], user: &Use
 
 /// A session's key ring wrapped under its owner's user key. A ring of one,
 /// a session never rotated, is `wrap_session_key`'s version-2 blob, byte
-/// for byte, so an older krowk still opens it. A longer one is version 3:
+/// for byte, so an older gruntas still opens it. A longer one is version 3:
 /// the same layout and nonce, the plaintext every epoch's key oldest first
 /// (32 bytes each, so 42 + 32 × epochs bytes), and the associated data
 /// labelled `"krowk/session-keys/v3"`. A version-2 reader refuses it as
@@ -999,7 +999,7 @@ pub fn seal_session_key(session_key: &SessionKey, session: &[u8; 16], keys: &Use
 pub fn seal_session_keys(ring: &SessionKeys, session: &[u8; 16], keys: &UserKeys, current_generation: u32) -> Result<Vec<u8>, Error> {
     let held = keys.newest().generation();
     if held < current_generation {
-        return Err(err(format!("this device holds user key generation {held}, but the device list names generation {current_generation} — nothing is sealed under an old key; catch this device up with the device list (`krowk machines`) and try again")));
+        return Err(err(format!("this device holds user key generation {held}, but the device list names generation {current_generation} — nothing is sealed under an old key; catch this device up with the device list (`gruntas machines`) and try again")));
     }
     Ok(wrap_session_keys(ring, session, keys.newest()))
 }
@@ -1016,7 +1016,7 @@ pub fn session_key_generation(blob: &[u8]) -> Result<u32, Error> {
     if !fits || blob[1] != SUITE_XCHACHA20_POLY1305 {
         return Err(match blob.first() {
             Some(&v) if v > SESSION_KEY_V3 => newer("session", v),
-            _ => err("the wrapped session key is not one this krowk reads: it was changed, or was sealed before session keys were sealed under the user key"),
+            _ => err("the wrapped session key is not one this gruntas reads: it was changed, or was sealed before session keys were sealed under the user key"),
         });
     }
     match u32::from_be_bytes(blob[2..6].try_into().expect("four bytes")) {
@@ -1437,7 +1437,7 @@ mod tests {
         let mut relabelled = newer.clone();
         relabelled[5] = 0;
         assert!(open_image(&relabelled, &session, &sha, &rotated).is_err(), "the epoch is bound");
-        assert!(open_image(&[2, 2], &session, &sha, &keys).unwrap_err().0.contains("upgrade krowk"));
+        assert!(open_image(&[2, 2], &session, &sha, &keys).unwrap_err().0.contains("upgrade gruntas"));
     }
 
     /// R-RELAY-1: a join's signature verifies only for its own role,
@@ -1648,7 +1648,7 @@ mod tests {
         assert!(unwrap_session_keys(&blob[..blob.len() - 32], &SESSION, &held[1]).is_err(), "a key dropped");
         assert!(unwrap_session_keys(&[&[SESSION_KEY_V2][..], &blob[1..]].concat(), &SESSION, &held[1]).is_err(), "relabelled as version 2");
         assert!(unwrap_session_keys(&blob, &SESSION, &held[0]).unwrap_err().0.contains("generation 2"), "a device behind it");
-        // A ring of one is the version-2 blob an older krowk reads.
+        // A ring of one is the version-2 blob an older gruntas reads.
         let one = wrap_session_keys(&SessionKey::generate().into(), &SESSION, &users[1]);
         assert_eq!((one[0], one.len()), (SESSION_KEY_V2, WRAPPED_SESSION_KEY));
         let mut full = SessionKeys::from(SessionKey::generate());
@@ -1670,7 +1670,7 @@ mod tests {
         let new = old.rotated().unwrap();
         let mut a = ChunkSealer::new(&old, SESSION, 0, NO_PREVIOUS_CHUNK, 1);
         let zero = a.seal(b"zero", false).unwrap();
-        assert_eq!(zero[0], CHUNK_V1, "unrotated, the format an older krowk reads");
+        assert_eq!(zero[0], CHUNK_V1, "unrotated, the format an older gruntas reads");
         let mut b = ChunkSealer::new(&new, SESSION, 1, chunk_digest(&zero), 2);
         let one = b.seal(b"one", false).unwrap();
         assert_eq!((one[0], &one[CHUNK_HEAD..CHUNK_HEAD_V2]), (CHUNK_V2, &1u32.to_be_bytes()[..]));
@@ -1828,7 +1828,7 @@ mod tests {
         assert!(open_session_index(&changed, &SESSION, &key).is_err());
         let mut newer = sealed;
         newer[0] = INDEX_V1 + 1;
-        assert!(open_session_index(&newer, &SESSION, &key).unwrap_err().0.contains("upgrade krowk"));
+        assert!(open_session_index(&newer, &SESSION, &key).unwrap_err().0.contains("upgrade gruntas"));
     }
 
     #[test]
@@ -1870,7 +1870,7 @@ mod tests {
         assert!(ChunkReader::new(&key, SESSION).open(&refenced).is_err(), "the fence is bound");
         let mut newer = a;
         newer[0] = CHUNK_V2 + 1;
-        assert!(ChunkReader::new(&key, SESSION).open(&newer).unwrap_err().0.contains("upgrade krowk"));
+        assert!(ChunkReader::new(&key, SESSION).open(&newer).unwrap_err().0.contains("upgrade gruntas"));
     }
 
     /// R-SYNC-2: a holder taking up a log chains onto it as it stands, and a

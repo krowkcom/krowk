@@ -1,16 +1,16 @@
-krowk help push
-krowk help uploads
-krowk help runs
-krowk help claim
-krowk help auth
-krowk help workspaces
-krowk help config
-krowk help doctor
-krowk help sessions
-krowk help pricing
-krowk help upgrade
-krowk help help
-krowk help bogus
-krowk help push --json
-krowk help uploads --json
-krowk help sessions --json
+gruntas help push
+gruntas help uploads
+gruntas help runs
+gruntas help claim
+gruntas help auth
+gruntas help workspaces
+gruntas help config
+gruntas help doctor
+gruntas help sessions
+gruntas help pricing
+gruntas help upgrade
+gruntas help help
+gruntas help bogus
+gruntas help push --json
+gruntas help uploads --json
+gruntas help sessions --json

@@ -101,10 +101,10 @@ pub fn run(home: &Path, env: Env) -> Result<(), String> {
     }
     // Read everything first: an old key file krowk cannot read stops the
     // move before anything is written, and keeps the file.
-    let aside = |e: String| format!("{e} — fix it or move it aside, and krowk moves its config and keys into {}", home.display());
+    let aside = |e: String| format!("{e} — fix it or move it aside, and gruntas moves its config and keys into {}", home.display());
     let [reg, prov] = &creds_files;
     let mut merged: Map<String, Value> = creds::read(prov).map_err(aside)?;
-    merge(&mut merged, creds::registry_section(reg).map_err(aside)?).map_err(|e| format!("{} and {} {e} — keep the one you want in one file, and krowk moves its config and keys into {}", prov.display(), reg.display(), home.display()))?;
+    merge(&mut merged, creds::registry_section(reg).map_err(aside)?).map_err(|e| format!("{} and {} {e} — keep the one you want in one file, and gruntas moves its config and keys into {}", prov.display(), reg.display(), home.display()))?;
     let config = match std::fs::read(&conf) {
         Ok(b) => Some(b),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -138,7 +138,7 @@ pub fn run(home: &Path, env: Env) -> Result<(), String> {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(e);
     }
-    eprintln!("krowk: moved krowk's config and keys to {}", home.display());
+    eprintln!("gruntas: moved krowk's config and keys to {}", home.display());
     #[cfg(test)]
     if CRASH_AFTER_RENAME.with(|c| c.get()) {
         return Ok(());
@@ -150,7 +150,7 @@ pub fn run(home: &Path, env: Env) -> Result<(), String> {
     // A directory linked in from a dotfiles repository: the files were
     // deleted in it, and its history still holds them.
     if let Some(to) = std::fs::symlink_metadata(&cfg).is_ok_and(|m| m.file_type().is_symlink()).then(|| std::fs::read_link(&cfg).ok()).flatten() {
-        eprintln!("krowk: {} is a link to {}, where the old keys were deleted — if a repository tracks it, its history still holds them", cfg.display(), to.display());
+        eprintln!("gruntas: {} is a link to {}, where the old keys were deleted — if a repository tracks it, its history still holds them", cfg.display(), to.display());
     }
     let _ = std::fs::remove_file(conf);
     leftovers(&cfg, &cache);
@@ -314,7 +314,7 @@ fn remove_secret(f: &Path) {
     let link = std::fs::symlink_metadata(f).is_ok_and(|m| m.file_type().is_symlink()).then(|| std::fs::read_link(f).ok()).flatten();
     let _ = std::fs::remove_file(f);
     if let Some(to) = link {
-        eprintln!("krowk: {} was a link to {}, which still holds the old keys — delete it (and its history, if a repository tracks it)", f.display(), to.display());
+        eprintln!("gruntas: {} was a link to {}, which still holds the old keys — delete it (and its history, if a repository tracks it)", f.display(), to.display());
     }
 }
 
@@ -379,14 +379,14 @@ pub fn note_old(home: &Path, env: Env) {
                 // Not old: where krowk keeps worktrees now
                 // (`home::worktrees_root`), outside its home on purpose.
                 "worktrees" if dir == &data => {}
-                "krowk.db" => lines.push(format!("the session index {} is not used — run `krowk sessions rebuild`, then delete it", p.display())),
-                "config.json" | "credentials.json" | "providers" => lines.push(format!("{} is not used — krowk reads {h}; copy what you need across, then delete it", p.display())),
+                "krowk.db" => lines.push(format!("the session index {} is not used — run `gruntas sessions rebuild`, then delete it", p.display())),
+                "config.json" | "credentials.json" | "providers" => lines.push(format!("{} is not used — gruntas reads {h}; copy what you need across, then delete it", p.display())),
                 "claude" | "codex" => {
                     for a in std::fs::read_dir(&p).into_iter().flatten().flatten() {
                         let dir = a.file_name().to_string_lossy().into_owned();
                         let (key, method, vendor) = if name == "claude" { ("configDir", "anthropic", "claude-") } else { ("codexHome", "openai", "codex-") };
                         lines.push(format!(
-                            "account {}: `mkdir -p {h}/accounts && mv {} {h}/accounts/{dir}` and set its {key} in {h}/config.json to {h}/accounts/{dir} — or sign in again, `krowk connect {method} --method subscription --name {}`",
+                            "account {}: `mkdir -p {h}/accounts && mv {} {h}/accounts/{dir}` and set its {key} in {h}/config.json to {h}/accounts/{dir} — or sign in again, `gruntas connect {method} --method subscription --name {}`",
                             a.path().display(),
                             a.path().display(),
                             dir.strip_prefix(vendor).unwrap_or(&dir)
@@ -404,7 +404,7 @@ pub fn note_old(home: &Path, env: Env) {
         lines.push(format!("to keep the rest, {}", other.join(", ")));
     }
     if !lines.is_empty() {
-        eprintln!("krowk: old krowk files krowk no longer reads:\n  {}", lines.join("\n  "));
+        eprintln!("gruntas: old krowk files gruntas no longer reads:\n  {}", lines.join("\n  "));
     }
     if lines.is_empty() {
         for d in [&cfg, &data] {

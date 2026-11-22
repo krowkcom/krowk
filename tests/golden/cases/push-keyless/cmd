@@ -1,6 +1,6 @@
 @registry
 @file a.txt hello
 @file shot.png \x89PNG\r\n\x1a\n0000
-krowk push a.txt
-krowk push shot.png --caption "a screenshot" --format markdown
-krowk push shot.png --format url
+gruntas push a.txt
+gruntas push shot.png --caption "a screenshot" --format markdown
+gruntas push shot.png --format url

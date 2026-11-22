@@ -17,7 +17,7 @@ pub struct Roster {
 }
 
 impl Roster {
-    /// Reads the JSON above; a key krowk cannot read is refused by name.
+    /// Reads the JSON above; a key gruntas cannot read is refused by name.
     /// Other fields are ignored, so the conformance fixture serves as is.
     pub fn parse(text: &str) -> Result<Roster, String> {
         let v: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("the ticket keys are not JSON: {e}"))?;

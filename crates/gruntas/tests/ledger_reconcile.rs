@@ -59,16 +59,16 @@ fn a_request_killed_client_side_is_still_counted_from_the_provider_ledger() {
     provider.join().unwrap();
     assert_eq!(std::fs::read_to_string(&ledger).unwrap().lines().count(), 2, "the provider metered both");
 
-    let imported = krowk(&home, &["sessions", "import", "--from", "all"]);
+    let imported = gruntas(&home, &["sessions", "import", "--from", "all"]);
     assert_eq!(imported["data"]["ledger"], serde_json::json!({ "observed": 1, "unobserved": 1, "duplicate": 0 }), "{imported}");
 
-    let listed = krowk(&home, &["sessions", "--harness", "ledger"]);
+    let listed = gruntas(&home, &["sessions", "--harness", "ledger"]);
     let sessions = listed["data"]["sessions"].as_array().unwrap();
     assert_eq!(sessions.len(), 1, "{listed}");
     assert_eq!(sessions[0]["turns"].as_i64(), Some(2));
 
     let id = sessions[0]["id"].as_str().unwrap();
-    let shown = krowk(&home, &["sessions", "show", id]);
+    let shown = gruntas(&home, &["sessions", "show", id]);
     let turns = &shown["data"]["turns"];
     assert_eq!((turns[0]["status"].as_str(), turns[0]["total_tokens"].as_i64()), (Some("observed"), Some(0)), "the transcript counts it: {shown}");
     assert_eq!(turns[1]["status"], "unobserved", "{shown}");
@@ -81,15 +81,15 @@ fn a_request_killed_client_side_is_still_counted_from_the_provider_ledger() {
     let solo = home.join(".gruntas/ledger/solo.jsonl");
     std::fs::copy(&ledger, &solo).unwrap();
     std::fs::remove_file(&ledger).unwrap();
-    krowk(&home, &["sessions", "import", "--from", "all"]);
-    let listed = krowk(&home, &["sessions", "--harness", "ledger"]);
+    gruntas(&home, &["sessions", "import", "--from", "all"]);
+    let listed = gruntas(&home, &["sessions", "--harness", "ledger"]);
     let solo_row = listed["data"]["sessions"].as_array().unwrap().iter().find(|s| s["title"].as_str().unwrap().contains("(solo)")).unwrap().clone();
     assert_eq!((solo_row["cost_display"].as_str(), solo_row["cost_counted_elsewhere"].as_bool()), (Some("counted elsewhere"), Some(true)), "{listed}");
-    let shown = krowk(&home, &["sessions", "show", solo_row["id"].as_str().unwrap()]);
+    let shown = gruntas(&home, &["sessions", "show", solo_row["id"].as_str().unwrap()]);
     assert_eq!((shown["data"]["cost_display"].as_str(), shown["data"]["cost_usd"].as_f64()), (Some("counted elsewhere"), Some(0.0)));
 
     // A second import converges on the same rows.
-    let again = krowk(&home, &["sessions", "import", "--from", "all"]);
+    let again = gruntas(&home, &["sessions", "import", "--from", "all"]);
     let ledger_row = again["data"]["providers"].as_array().unwrap().iter().find(|p| p["provider"] == "ledger").unwrap();
     assert_eq!(ledger_row["messages_inserted"], 0);
     assert_eq!(again["data"]["ledger"]["unobserved"], 1);
@@ -137,7 +137,7 @@ fn scratch() -> PathBuf {
     home.canonicalize().unwrap()
 }
 
-fn krowk(home: &Path, args: &[&str]) -> Value {
+fn gruntas(home: &Path, args: &[&str]) -> Value {
     let out = Command::new(env!("CARGO_BIN_EXE_gruntas"))
         .args(args)
         .arg("--json")
@@ -149,6 +149,6 @@ fn krowk(home: &Path, args: &[&str]) -> Value {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "krowk {args:?}: {stdout}{}", String::from_utf8_lossy(&out.stderr));
-    serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("krowk {args:?}: {e}: {stdout}"))
+    assert!(out.status.success(), "gruntas {args:?}: {stdout}{}", String::from_utf8_lossy(&out.stderr));
+    serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("gruntas {args:?}: {e}: {stdout}"))
 }

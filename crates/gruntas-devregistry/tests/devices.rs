@@ -1,8 +1,8 @@
 //! Devices a person owns, against the stand-in: the signed device list, the
 //! user key wrapped to it, keys bound to their device, and pairing a new
 //! machine over the mailbox — driven by gruntas-client's own chain and
-//! pairing, through gruntas-api's calls, since those are what `krowk devices
-//! add` and `krowk sync join` run (canon, engineering/devices.md).
+//! pairing, through gruntas-api's calls, since those are what `gruntas devices
+//! add` and `gruntas sync join` run (canon, engineering/devices.md).
 
 mod common;
 
@@ -295,7 +295,7 @@ fn the_account_key_designs_endpoints_answer_sync_reset() {
     for (method, path, body) in [("POST", "/v1/devices", register), ("GET", "/v1/device_approvals", "{}"), ("POST", "/v1/device_approvals", "{}"), ("GET", "/v1/device_approvals/dap_x", "{}"), ("PUT", "/v1/device_approvals/dap_x/approval", "{}")] {
         let r = request(method, &server.at(path), "krowk_sk_old", "application/json", body);
         assert_eq!((r.status, r.code()), (410, "sync_reset".to_owned()), "{method} {path}");
-        assert!(r.text().contains("krowk sync init"));
+        assert!(r.text().contains("gruntas sync init"));
     }
     let r = request("GET", &server.at("/v1/devices"), "krowk_sk_old", "", "");
     assert_eq!((r.status, r.code()), (404, "no_such_endpoint".to_owned()));

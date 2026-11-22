@@ -41,10 +41,10 @@ fn the_zen_demo_prices_per_turn_and_an_unknown_model_reads_as_a_dash() {
     std::fs::write(cache.join("models.json"), RATES).unwrap();
     std::fs::write(cache.join("models.meta.json"), r#"{"etag":"","fetched_at_ms":1789031459675}"#).unwrap();
 
-    let imported = krowk(&home, &["sessions", "import", "--from", "ledger"]);
+    let imported = gruntas(&home, &["sessions", "import", "--from", "ledger"]);
     assert_eq!(imported["data"]["unpriced_models"], serde_json::json!(["opencode/mystery-model"]), "{imported}");
 
-    let listed = krowk(&home, &["sessions"]);
+    let listed = gruntas(&home, &["sessions"]);
     let sessions = listed["data"]["sessions"].as_array().unwrap();
     let by_title = |t: &str| sessions.iter().find(|s| s["title"].as_str().unwrap().contains(t)).unwrap().clone();
     let (zen, mystery) = (by_title("(zen)"), by_title("(mystery)"));
@@ -54,7 +54,7 @@ fn the_zen_demo_prices_per_turn_and_an_unknown_model_reads_as_a_dash() {
     assert_eq!(listed["data"]["priced_with"], "priced at current rates (models.dev prices fetched 2026-09-10), not the rates in force at the time");
     close(zen["cost_usd"].as_f64().unwrap(), 0.000_123_284 + 0.001_195 + 0.006_422_8 + 0.0041);
 
-    let shown = krowk(&home, &["sessions", "show", zen["id"].as_str().unwrap()]);
+    let shown = gruntas(&home, &["sessions", "show", zen["id"].as_str().unwrap()]);
     let d = &shown["data"];
     let by_model = &d["cost_by_model"];
     close(by_model["opencode/deepseek-v4-flash"].as_f64().unwrap(), 0.000_123_284);
@@ -97,13 +97,13 @@ fn run(home: &Path, args: &[&str]) -> String {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(out.status.success(), "krowk {args:?}: {stdout}{}", String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success(), "gruntas {args:?}: {stdout}{}", String::from_utf8_lossy(&out.stderr));
     stdout
 }
 
-fn krowk(home: &Path, args: &[&str]) -> Value {
+fn gruntas(home: &Path, args: &[&str]) -> Value {
     let mut all = args.to_vec();
     all.push("--json");
     let stdout = run(home, &all);
-    serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("krowk {args:?}: {e}: {stdout}"))
+    serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("gruntas {args:?}: {e}: {stdout}"))
 }

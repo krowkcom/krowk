@@ -1,4 +1,4 @@
-//! R-BILL-4: `krowk whoami` names the workspace's plan, and an owner or
+//! R-BILL-4: `gruntas whoami` names the workspace's plan, and an owner or
 //! admin of a paid plan when it renews or ends; `--json` carries the same.
 //! Against the stand-in registry, whose key markers fake the plan and role.
 
@@ -23,11 +23,11 @@ impl Gruntas {
             .env("GRUNTAS_NO_UPDATE_CHECK", "1")
             .env("GRUNTAS_TOKEN", token)
             .current_dir(&self.home);
-        // Piped, krowk answers in JSON unless asked for the human form.
+        // Piped, gruntas answers in JSON unless asked for the human form.
         cmd.args(["--format", if json { "json" } else { "human" }]);
         let out = cmd.output().unwrap();
         let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-        assert!(out.status.success(), "krowk whoami failed:\n{text}");
+        assert!(out.status.success(), "gruntas whoami failed:\n{text}");
         text
     }
 }
@@ -38,10 +38,10 @@ fn r_bill_4_whoami_shows_the_plan_and_dates_only_to_who_manages_billing() {
     let home = std::env::temp_dir().join(format!("krowk-whoami-plan-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
-    let krowk = Gruntas { home: home.clone(), api: format!("{}/v1", registry.url()) };
+    let gruntas = Gruntas { home: home.clone(), api: format!("{}/v1", registry.url()) };
 
     let plan = |token: &str| {
-        let out = krowk.whoami(token, false);
+        let out = gruntas.whoami(token, false);
         out.lines().find(|l| l.trim_start().starts_with("Plan")).map(|l| l.trim_start()["Plan".len()..].trim().to_string()).unwrap_or_else(|| panic!("no plan line:\n{out}"))
     };
     assert_eq!(plan("krowk_sk_free_owner"), "Free");
@@ -51,7 +51,7 @@ fn r_bill_4_whoami_shows_the_plan_and_dates_only_to_who_manages_billing() {
     assert_eq!(plan("krowk_sk_pro_member"), "Pro");
     assert_eq!(plan("krowk_sk_business_member"), "Business");
 
-    let json = |token: &str| -> Value { serde_json::from_str::<Value>(&krowk.whoami(token, true)).unwrap()["data"].clone() };
+    let json = |token: &str| -> Value { serde_json::from_str::<Value>(&gruntas.whoami(token, true)).unwrap()["data"].clone() };
     let owner = json("krowk_sk_pro_owner");
     assert_eq!((owner["plan"].as_str(), owner["can_manage_billing"].as_bool()), (Some("pro"), Some(true)), "{owner}");
     assert!(owner["plan_renews_at"].is_string() && owner["plan_ends_at"].is_null(), "{owner}");

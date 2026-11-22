@@ -1,5 +1,5 @@
-//! Stored API keys: a key kept in krowk's one credentials file
-//! (`credentials.json` in krowk's home, the file SuperGrok's tokens and the
+//! Stored API keys: a key kept in gruntas's one credentials file
+//! (`credentials.json` in gruntas's home, the file SuperGrok's tokens and the
 //! registry's keys are in — `0600` in the `0700` home, every write one
 //! locked read-modify-write),
 //! for an instance that would otherwise read it from an environment
@@ -7,25 +7,25 @@
 //! R-CRED-1): a person edited a shell's startup file, and nothing could
 //! take a pasted key.
 //!
-//! A stored key is one of three things, as `krowk connect <vendor> --method
+//! A stored key is one of three things, as `gruntas connect <vendor> --method
 //! api-key` stores it:
 //!
 //! - **a literal** — pasted at a prompt that does not echo, or piped to
 //!   `--key-stdin`; never an argument (`--key sk-…` would be in the shell's
 //!   history and in every process listing);
-//! - **`$VAR`** — a reference to a variable of krowk's environment, read
+//! - **`$VAR`** — a reference to a variable of gruntas's environment, read
 //!   when the registry is resolved, as a variable the definition names is;
 //! - **`!command`** — a command whose standard output, trimmed, is the key
-//!   (`!pass show anthropic`), run once per krowk process when it works:
+//!   (`!pass show anthropic`), run once per gruntas process when it works:
 //!   its key is kept for the process, two checks at once wait for one run,
 //!   and a failure is theirs alone — the next call runs it again (`run`).
 //!
 //! **Precedence is here and nowhere else** (`apply`): a stored key, then the
 //! variable. A stored key owns its instance — when it cannot be had (its
 //! variable unset, its command failing, the file unreadable) the instance
-//! has no key, and the error says why; krowk never falls back to the
+//! has no key, and the error says why; gruntas never falls back to the
 //! environment behind it, which would send a key the person replaced.
-//! `krowk disconnect` removes the stored key, and the environment is read
+//! `gruntas disconnect` removes the stored key, and the environment is read
 //! again.
 //!
 //! **Only the person's own file is read.** The references are honoured
@@ -33,7 +33,7 @@
 //! (read, never run), a repository's `.gruntas/config.json` defines no
 //! instances, and the file's path is set by whoever loads the person's own
 //! config (`InstancesConfig::keys_from`, which no JSON can set). The file
-//! sits in krowk's home, which the file tools neither read, search nor
+//! sits in gruntas's home, which the file tools neither read, search nor
 //! change without a person's say (`Policy::secrets`).
 //!
 //! **How a command runs**: `sh -c <command>` (`cmd /C` on Windows) — a shell,
@@ -48,7 +48,7 @@
 //! pinentry on the person's screen from under a status check), killed with
 //! everything it started after `COMMAND_TIMEOUT`; the failure says to
 //! unlock the password manager first or use a graphical pinentry. The one
-//! exception is `krowk connect` at a terminal, where the person is there:
+//! exception is `gruntas connect` at a terminal, where the person is there:
 //! the command runs in the foreground, on that terminal, with no timeout,
 //! so they can type its passphrase and the agent's cache is unlocked for
 //! the runs after. Its standard output is kept to 64 KiB (more fails, the
@@ -59,13 +59,13 @@
 //!
 //! **Readiness runs the command** (`readiness::check`, never `local`, which
 //! only reads a kept key and never waits), once per process,
-//! bounded like a vendor check: `krowk status` saying `ready`
+//! bounded like a vendor check: `gruntas status` saying `ready`
 //! for a key it has not seen, and the turn then failing, is what readiness
-//! exists to prevent, and the command is one the person gave krowk to run.
+//! exists to prevent, and the command is one the person gave gruntas to run.
 //! It runs in parallel with the vendor checks, and a turn in the same
 //! process reuses the key. A command that fails is `unknown`, with why.
 //!
-//! No key reaches a log, an error, `{:?}` or `krowk status`: status shows
+//! No key reaches a log, an error, `{:?}` or `gruntas status`: status shows
 //! where it comes from — `stored`, `stored ($VAR)`, `stored (!pass …)`, the
 //! command cut to its program — and never the value.
 
@@ -80,7 +80,7 @@ use std::time::Duration;
 
 /// How long a key's command may run with no terminal: it cannot ask for a
 /// passphrase there, so this bounds a slow password manager or a network
-/// fetch, not a person typing. At a terminal (`krowk connect`) there is no
+/// fetch, not a person typing. At a terminal (`gruntas connect`) there is no
 /// limit: the person is there to stop it.
 pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -135,7 +135,7 @@ impl KeyRef {
         }
     }
 
-    /// Where the key comes from, as `krowk status` says it: never the key,
+    /// Where the key comes from, as `gruntas status` says it: never the key,
     /// and of a command only its program.
     pub fn source(&self) -> String {
         match self {
@@ -285,7 +285,7 @@ pub fn forget() {
 /// or why there is none. Everything else is as it was resolved.
 pub fn materialise(inst: &Resolved) -> Result<Cow<'_, Resolved>, EngineError> {
     match &inst.stored {
-        Stored::Unreadable(why) => Err(EngineError::new("not_authenticated", format!("{why} — so whether {} has a stored key is not known, and krowk does not fall back to ${} for it", inst.name, inst.api_key_env))),
+        Stored::Unreadable(why) => Err(EngineError::new("not_authenticated", format!("{why} — so whether {} has a stored key is not known, and gruntas does not fall back to ${} for it", inst.name, inst.api_key_env))),
         Stored::Command { command, dir } if inst.api_key.is_empty() => {
             let key = run(&inst.name, command, dir, None).map_err(|why| EngineError::new("not_authenticated", no_fallback(inst, &why)))?;
             let mut r = inst.clone();
@@ -301,7 +301,7 @@ pub fn materialise(inst: &Resolved) -> Result<Cow<'_, Resolved>, EngineError> {
 /// one, where there is one, else the variable.
 pub fn auth_fix(inst: &Resolved) -> String {
     match inst.stored.source() {
-        Some(s) => format!("check its key ({s} in krowk's provider credentials file), or store another with `{}`", crate::connect::connect_command(&inst.name, inst.kind)),
+        Some(s) => format!("check its key ({s} in gruntas's provider credentials file), or store another with `{}`", crate::connect::connect_command(&inst.name, inst.kind)),
         None if inst.api_key_env.is_empty() => "the server wants a key: give the instance an apiKeyEnv".into(),
         None => format!("check {}", inst.api_key_env),
     }
@@ -310,7 +310,7 @@ pub fn auth_fix(inst: &Resolved) -> String {
 /// A stored key that cannot be had, said with what is not done about it.
 fn no_fallback(inst: &Resolved, why: &str) -> String {
     let var = if inst.api_key_env.is_empty() { String::new() } else { format!(" to ${}", inst.api_key_env) };
-    format!("{why} — the stored key is {}'s own, so krowk does not fall back{var}; fix it, store another with `{}`, or `krowk disconnect {}` to read the environment again", inst.name, crate::connect::connect_command(&inst.name, inst.kind), inst.name)
+    format!("{why} — the stored key is {}'s own, so gruntas does not fall back{var}; fix it, store another with `{}`, or `gruntas disconnect {}` to read the environment again", inst.name, crate::connect::connect_command(&inst.name, inst.kind), inst.name)
 }
 
 /// Runs a key's command (see the module's notes), once per process: a
@@ -318,7 +318,7 @@ fn no_fallback(inst: &Resolved, why: &str) -> String {
 /// (see `Memo`: a failure only for the calls that waited on it). The
 /// error never holds anything it printed.
 ///
-/// `at` is a person's terminal to run it on (`krowk connect` at one): in
+/// `at` is a person's terminal to run it on (`gruntas connect` at one): in
 /// the foreground there, its prompts and errors theirs to see, so a
 /// password manager can ask for its passphrase — and a run made there is
 /// made again, whatever was remembered. Otherwise it runs with no terminal
@@ -394,7 +394,7 @@ fn run_once(instance: &str, command: &str, dir: &Path, at: Option<&mut dyn crate
 }
 
 /// Said of a command that failed with no terminal: the likeliest reason.
-const UNLOCK: &str = ". krowk runs it with no terminal, so if it asks for a passphrase it cannot — unlock your password manager first (run the command once yourself), or use a graphical pinentry";
+const UNLOCK: &str = ". gruntas runs it with no terminal, so if it asks for a passphrase it cannot — unlock your password manager first (run the command once yourself), or use a graphical pinentry";
 
 #[cfg(test)]
 mod tests {

@@ -11,7 +11,7 @@
 //! a rewind abandoned was still spent. `--max-tokens` counts generated
 //! tokens — output and reasoning, the part a cap is meant to bound — and
 //! `--max-usd` the whole cost, priced from models.dev at current rates the
-//! way every krowk figure is. Both are the limits `krowk sessions budget`
+//! way every gruntas figure is. Both are the limits `gruntas sessions budget`
 //! takes, with its meaning: at the limit is inside it.
 //!
 //! A call's cost is not known before it is made, so once a call on
@@ -36,7 +36,7 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// The code a refused call ends its turn with: `krowk sessions budget`'s,
+/// The code a refused call ends its turn with: `gruntas sessions budget`'s,
 /// so a script branches on one code and one exit status (4) for both.
 pub const EXCEEDED: &str = "budget_exceeded";
 
@@ -93,8 +93,8 @@ struct LastCall {
 }
 
 /// A turn's spend once its backend has said what it cost: the larger of
-/// the two, since a vendor's total counts what krowk never saw metered, and
-/// a reported total prices what krowk could not.
+/// the two, since a vendor's total counts what gruntas never saw metered, and
+/// a reported total prices what gruntas could not.
 fn reconcile(turn: &mut Spend, reported: f64) {
     if reported > turn.known_usd || !turn.unpriced.is_empty() {
         turn.known_usd = turn.known_usd.max(reported);
@@ -280,7 +280,7 @@ pub enum Trip {
 }
 
 impl Trip {
-    /// The sentence `krowk sessions budget` words the same trip in.
+    /// The sentence `gruntas sessions budget` words the same trip in.
     fn sentence(&self) -> String {
         match self {
             Trip::Tokens { generated, limit, next: false } => format!("{generated} tokens generated, over --max-tokens {limit}"),
@@ -304,7 +304,7 @@ impl Trip {
     }
 }
 
-/// Dollars as `krowk sessions budget` prints them: cents from a dollar up,
+/// Dollars as `gruntas sessions budget` prints them: cents from a dollar up,
 /// three significant figures below it, so a limit of a cent and a spend of
 /// nine tenths of one never both read $0.01.
 pub fn usd(v: f64) -> String {
@@ -521,7 +521,7 @@ impl Budget {
     }
 
     /// After a metered call: whether the session is already past a limit —
-    /// for a backend, whose next call is not krowk's to refuse, the moment
+    /// for a backend, whose next call is not gruntas's to refuse, the moment
     /// to interrupt it.
     pub fn over(&self) -> Option<EngineError> {
         let spent = Budget::total(&self.state());
@@ -529,15 +529,15 @@ impl Budget {
     }
 
     /// What a turn stopped by the budget ends with: the code and exit status
-    /// of `krowk sessions budget`, its sentence, and the next action.
+    /// of `gruntas sessions budget`, its sentence, and the next action.
     fn refusal(&self, trip: &Trip, before_call: bool) -> EngineError {
         let id = &self.0.session_id;
-        let stopped = if before_call { "krowk refused the turn before it started" } else { "krowk interrupted the turn; what it produced is kept" };
+        let stopped = if before_call { "gruntas refused the turn before it started" } else { "gruntas interrupted the turn; what it produced is kept" };
         let fix = match trip {
             Trip::Unknown { .. } => format!(
-                "refresh the prices with `krowk pricing refresh`, or hold it to --max-tokens instead: `krowk -p --resume {id} --max-tokens <count> \"…\"`"
+                "refresh the prices with `gruntas pricing refresh`, or hold it to --max-tokens instead: `gruntas -p --resume {id} --max-tokens <count> \"…\"`"
             ),
-            _ => format!("to go on, raise the limit: `krowk -p --resume {id} {} <more> \"…\"`", trip.flag()),
+            _ => format!("to go on, raise the limit: `gruntas -p --resume {id} {} <more> \"…\"`", trip.flag()),
         };
         EngineError::new(EXCEEDED, format!("session {id} is over budget: {} — {stopped}; {fix}", trip.sentence()))
     }
@@ -713,7 +713,7 @@ mod tests {
         clog.append(LogBody::ResponseCompleted { turn_id: "t1".into(), response_id: None, model: "m".into(), usage: Usage { output_tokens: 60, ..Usage::default() }, stop_reason: None, item_ids: vec![] }).unwrap();
         let e = rt.block_on(b.admit_turn()).unwrap_err();
         assert_eq!(e.code, EXCEEDED);
-        assert!(e.message.contains("660 tokens generated of --max-tokens 650") && e.message.contains(&format!("krowk -p --resume {parent} --max-tokens")), "{}", e.message);
+        assert!(e.message.contains("660 tokens generated of --max-tokens 650") && e.message.contains(&format!("gruntas -p --resume {parent} --max-tokens")), "{}", e.message);
         // Priced the same way: $0.66 across the tree.
         let snap = b.record("m", &Usage::default());
         assert!((snap.total.cost().unwrap() - 0.66).abs() < 1e-9, "{:?}", snap.total);

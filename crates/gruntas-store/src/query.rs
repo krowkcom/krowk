@@ -189,7 +189,7 @@ fn escape_like(s: &str) -> String {
 
 /// The foreign id `provider` knows the session `session_id` by, if it has
 /// a binding there: for a native session stored before its row took its
-/// log's id, the log id `krowk sync host` and `--resume` need.
+/// log's id, the log id `gruntas sync host` and `--resume` need.
 pub fn foreign_session_id(conn: &Connection, session_id: &str, provider: &str) -> Result<Option<String>, StoreError> {
     conn.query_row(
         "SELECT foreign_session_id FROM session_binding WHERE session_id = ? AND provider IN (?, ?) ORDER BY id LIMIT 1",
@@ -206,7 +206,7 @@ pub fn foreign_session_id(conn: &Connection, session_id: &str, provider: &str) -
 pub fn resolve_session_id(conn: &Connection, reference: &str) -> Result<String, StoreError> {
     let r = reference.trim();
     if r.is_empty() {
-        return Err(StoreError::NotFound("store: pass a session id: `krowk sessions show <id>`".into()));
+        return Err(StoreError::NotFound("store: pass a session id: `gruntas sessions show <id>`".into()));
     }
     if let Some(id) = conn.query_row("SELECT id FROM session WHERE id = ?", [r], |row| row.get::<_, String>(0)).optional().map_err(|e| other("resolve session", e))? {
         return Ok(id);

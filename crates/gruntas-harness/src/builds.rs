@@ -1,6 +1,6 @@
 //! Build slots: the bash tool runs a command that starts a build or a test
 //! run — `cargo test`, `npm install`, `make` — only once it holds one of
-//! `builds.slots` slots shared by every krowk on the machine
+//! `builds.slots` slots shared by every gruntas on the machine
 //! (`crate::slots`, the `build-slots` pool), and holds it for the
 //! command's life. Agents mostly wait on their model, so a machine hosts
 //! many; what runs it out of memory is several of them building at once.
@@ -18,13 +18,13 @@
 //!
 //! The slot is held until the shell exits. A build the command puts in the
 //! background (`cargo build &`, `nohup make &`) keeps running after that,
-//! and is no longer held to a slot: krowk does not follow what a command
+//! and is no longer held to a slot: gruntas does not follow what a command
 //! leaves behind.
 //!
 //! A heavy command also gets `CARGO_BUILD_JOBS`: the machine's cores split
 //! between the slots, so the builds that run at once share the cores
 //! rather than each taking all of them — or the person's own value, when
-//! krowk's environment sets one. It is passed explicitly, so a sandboxed
+//! gruntas's environment sets one. It is passed explicitly, so a sandboxed
 //! command, whose environment is an allowlist, gets it too.
 
 use schemars::JsonSchema;
@@ -42,7 +42,7 @@ pub const POOL: &str = "build-slots";
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BuildsConfig {
-    /// Build and test commands that run at once across every krowk on the
+    /// Build and test commands that run at once across every gruntas on the
     /// machine; a quarter of the cores (at least one) when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slots: Option<usize>,

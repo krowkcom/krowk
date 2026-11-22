@@ -2,8 +2,8 @@
 //! worktree can be made from in no time. Even seeded, a worktree checks out
 //! every file, which takes seconds on a large repository; a btrfs snapshot
 //! of a subvolume takes the same moment whatever its size. The repository
-//! is not a subvolume, but a directory krowk owns can be one, made and
-//! removed without privileges. So krowk keeps one per repository,
+//! is not a subvolume, but a directory gruntas owns can be one, made and
+//! removed without privileges. So gruntas keeps one per repository,
 //! `<root>/<repo-id>/template`: the tree at a commit and the main checkout's
 //! heavy directories, with no `.git`.
 //!
@@ -311,7 +311,7 @@ pub(super) enum FailAt {
 thread_local! {
     pub(super) static FAIL_AT: std::cell::Cell<FailAt> = const { std::cell::Cell::new(FailAt::Nowhere) };
     /// Set by a test: run once the next snapshot is made, the repository's
-    /// lock let go, as another krowk might at that moment.
+    /// lock let go, as another gruntas might at that moment.
     pub(super) static MEANWHILE: std::cell::Cell<Option<fn(&Worktree)>> = const { std::cell::Cell::new(None) };
 }
 
@@ -764,7 +764,7 @@ mod tests {
         }
     }
 
-    /// What krowk and git hold of worktrees in `dir` and `common`: the
+    /// What gruntas and git hold of worktrees in `dir` and `common`: the
     /// entries of `dir` that are not files, the admin directories, the
     /// `gruntas/` branches.
     fn leftovers(dir: &Path, common: &Path, main: &Path) -> (Vec<String>, Vec<String>, String) {
@@ -834,7 +834,7 @@ mod tests {
     fn wt11_a_worktree_of_this_repository_takes_under_a_second() {
         let this = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         if !has_git() || !this.join(".git").exists() {
-            eprintln!("not in a checkout of krowk: skipping");
+            eprintln!("not in a checkout of gruntas: skipping");
             return;
         }
         // Beside the build (`target/debug/deps/<test>`), on a disk's file

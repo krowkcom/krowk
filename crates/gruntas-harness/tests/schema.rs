@@ -23,7 +23,7 @@ fn r_proto_2_the_checked_in_schema_is_generated_from_the_types_and_current() {
         }
     }
     // No file in the directory that the generator does not write — save
-    // `codex/`, the schema of the protocol krowk speaks to Codex, which is
+    // `codex/`, the schema of the protocol gruntas speaks to Codex, which is
     // Codex's own, pinned by scripts/codex_schema.sh.
     let generated: Vec<&str> = gruntas_harness::schema::files().iter().map(|(n, _)| *n).collect();
     for entry in std::fs::read_dir(dir()).unwrap() {

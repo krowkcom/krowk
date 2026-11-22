@@ -66,9 +66,9 @@ pub fn seal(entries: &[SignedEntry], keys: &UserKeys, generation: u32, wrapped_k
 /// and `device` its key. The message says which check failed; it is for a
 /// test or a debugger, not the person, to whom every failure reads alike.
 pub fn check(payload: &[u8], a_device: DeviceId, me: &NewDevice, device: &DeviceKey) -> Result<Checked, String> {
-    let p: Payload = serde_json::from_slice(payload).map_err(|_| "the reply is not a payload krowk reads")?;
+    let p: Payload = serde_json::from_slice(payload).map_err(|_| "the reply is not a payload gruntas reads")?;
     if p.v != 1 {
-        return Err("the reply is from a newer krowk".into());
+        return Err("the reply is from a newer gruntas".into());
     }
     let entries = p
         .entries

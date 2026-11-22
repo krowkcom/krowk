@@ -71,7 +71,7 @@ pub struct Config {
     /// `signature_version_retired`. Empty, v1 is accepted. `devregistry`
     /// reads it from GRUNTAS_DEVREGISTRY_V1_UNTIL.
     pub v1_until: String,
-    /// The registry's `signed_requests.v2_release`, the krowk release that
+    /// The registry's `signed_requests.v2_release`, the gruntas release that
     /// refusal names; GRUNTAS_DEVREGISTRY_V2_RELEASE for `devregistry`.
     pub v2_release: String,
 }

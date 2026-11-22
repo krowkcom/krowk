@@ -695,7 +695,7 @@ impl<'a> Builder<'a> {
     }
 }
 
-/// opencode's part types onto krowk's; anything else passes through to be
+/// opencode's part types onto gruntas's; anything else passes through to be
 /// counted as unknown.
 fn canonical_kind(t: &str) -> &str {
     match t {

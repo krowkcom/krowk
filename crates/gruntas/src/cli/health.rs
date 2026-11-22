@@ -1,12 +1,12 @@
-//! What `krowk doctor` checks about the person's setup beyond the store, the
-//! prices and the providers (D9, R-EASE-8): the krowk account, this machine's
+//! What `gruntas doctor` checks about the person's setup beyond the store, the
+//! prices and the providers (D9, R-EASE-8): the gruntas account, this machine's
 //! registration for sync, the always-on service, repository trust, the
 //! recovery kit, and the plan with its machine limit. Each is one line with
 //! its state and, when it needs fixing, the visible command that fixes it.
 //!
 //! The decisions are plain functions of what was read, so each has a passing
 //! and a failing test; reading is `Machine::here` and friends. The overview
-//! bare `krowk` prints asks for the one most important problem
+//! bare `gruntas` prints asks for the one most important problem
 //! (`top_problem`), from what is on disk alone: it never waits on the
 //! registry.
 //!
@@ -84,11 +84,11 @@ pub(super) enum Lookup {
 }
 
 pub(super) fn account(signed_in: bool, local: bool, lookup: &Lookup) -> Check {
-    const FIX: &str = "krowk login";
+    const FIX: &str = "gruntas login";
     if !signed_in {
         return match local {
-            true => Check::new("account", Status::Skip, "Using krowk locally, without an account", Some(FIX)),
-            false => Check::new("account", Status::Fail, "Not signed in to krowk", Some(FIX)),
+            true => Check::new("account", Status::Skip, "Using gruntas locally, without an account", Some(FIX)),
+            false => Check::new("account", Status::Fail, "Not signed in to gruntas", Some(FIX)),
         };
     }
     match lookup {
@@ -115,7 +115,7 @@ pub(super) enum Machine {
 }
 
 pub(super) fn registered(signed_in: bool, machine: &Machine) -> Check {
-    const FIX: &str = "krowk login";
+    const FIX: &str = "gruntas login";
     if !signed_in {
         return Check::new("machine", Status::Skip, "This machine is not registered for sync: there is no account", None);
     }
@@ -132,7 +132,7 @@ pub(super) fn registered(signed_in: bool, machine: &Machine) -> Check {
 /// platform has none. It keeps a registered machine syncing, so a machine
 /// that is not one has nothing to keep on.
 pub(super) fn always_on(machine: &Machine, service: Option<bool>) -> Check {
-    const FIX: &str = "krowk machines always-on on";
+    const FIX: &str = "gruntas machines always-on on";
     match (machine, service) {
         (_, None) => Check::new("always_on", Status::Skip, "The always-on service is not available on this platform", None),
         (Machine::Registered { .. }, Some(true)) => Check::new("always_on", Status::Pass, "Always-on service is on", None),
@@ -155,12 +155,12 @@ pub(super) fn trusted(t: &Trust) -> Check {
         Trust::Trusted(dir) => Check::new("trust", Status::Pass, format!("{dir} is trusted"), None),
         // Also what a repository reads as once something in it that can run
         // code has changed since it was trusted.
-        Trust::Untrusted(dir) => Check::new("trust", Status::Fail, format!("{dir} is not trusted, or something in it that can run code changed"), Some("krowk trust")),
+        Trust::Untrusted(dir) => Check::new("trust", Status::Fail, format!("{dir} is not trusted, or something in it that can run code changed"), Some("gruntas trust")),
     }
 }
 
 /// D5's rule, the one place it is decided (`recovery::reminder_due` reads a
-/// device list through it, for `krowk machines` and the overview):
+/// device list through it, for `gruntas machines` and the overview):
 /// remind while there are fewer than two machines (phones are devices, not
 /// machines) and no kit on the list.
 pub(super) fn reminder_due(machines: usize, kit: bool) -> bool {
@@ -171,7 +171,7 @@ pub(super) fn recovery_kit(machine: &Machine) -> Check {
     match machine {
         Machine::Registered { kit: true, .. } => Check::new("recovery_kit", Status::Pass, "Recovery kit is on your device list", None),
         Machine::Registered { machines, kit, .. } if !reminder_due(*machines, *kit) => Check::new("recovery_kit", Status::Pass, format!("No recovery kit, but you have {machines} machines to stand in for each other"), None),
-        Machine::Registered { .. } => Check::new("recovery_kit", Status::Fail, "One machine, no recovery kit: losing it loses your sessions", Some("krowk machines recovery")),
+        Machine::Registered { .. } => Check::new("recovery_kit", Status::Fail, "One machine, no recovery kit: losing it loses your sessions", Some("gruntas machines recovery")),
         _ => Check::new("recovery_kit", Status::Skip, "No device list here to hold a recovery kit", None),
     }
 }
@@ -200,7 +200,7 @@ pub(super) fn plan(plan: Option<&str>, machine: &Machine) -> Check {
         _ => None,
     };
     match (machine_limit(plan), machines) {
-        (Some(limit), Some(n)) if n > limit => Check::new("plan", Status::Warn, format!("{name} syncs sessions from {limit} machines, and your device list names {n}: the extra ones stay viewers"), Some("krowk billing")),
+        (Some(limit), Some(n)) if n > limit => Check::new("plan", Status::Warn, format!("{name} syncs sessions from {limit} machines, and your device list names {n}: the extra ones stay viewers"), Some("gruntas billing")),
         (Some(limit), Some(n)) => Check::new("plan", Status::Pass, format!("{name} plan: {n} of {limit} machines"), None),
         (Some(limit), None) => Check::new("plan", Status::Pass, format!("{name} plan: up to {limit} machines"), None),
         (None, _) => Check::new("plan", Status::Pass, format!("{name} plan: unlimited machines"), None),
@@ -216,12 +216,12 @@ pub(super) fn local(ctx: &Ctx, signed_in: bool, lookup: &Lookup) -> (Vec<Check>,
 }
 
 /// The most important problem with this setup, said for the overview bare
-/// `krowk` prints: from the disk alone, so it costs no wait. Only what is
+/// `gruntas` prints: from the disk alone, so it costs no wait. Only what is
 /// broken counts, and only for a person who has an account: one who never
 /// signed in is not nagged on every run (doctor says so, and the first run
 /// asked), and a key the registry rejects is found by asking it, which is
 /// doctor's. Left out on purpose: the recovery kit (the overview's own
-/// reminder line), repository trust (`krowk -p` asks it before it runs), and
+/// reminder line), repository trust (`gruntas -p` asks it before it runs), and
 /// the always-on service (a person may have said no).
 pub(super) fn top_problem(ctx: &Ctx) -> Option<String> {
     let client = super::agent::new_client(ctx).ok()?;
@@ -323,10 +323,10 @@ mod tests {
 
     fn assert_fixed_by_a_visible_command(c: &Check) {
         let fix = c.fix.as_deref().unwrap_or_else(|| panic!("{c:?} names no fix"));
-        for hidden in ["host enable", "sync init", "devices", "krowk hosts"] {
+        for hidden in ["host enable", "sync init", "devices", "gruntas hosts"] {
             assert!(!fix.contains(hidden), "{fix} names the hidden `{hidden}`");
         }
-        assert!(fix.contains("krowk"), "{fix}");
+        assert!(fix.contains("gruntas"), "{fix}");
     }
 
     #[test]
@@ -335,10 +335,10 @@ mod tests {
         let pass = account(true, false, &ok);
         assert_eq!((pass.status, pass.message.as_str(), pass.fix), (Status::Pass, "Signed in as you@example.com", None));
         let fail = account(false, false, &Lookup::Unchecked);
-        assert_eq!((fail.status, fail.fix.as_deref()), (Status::Fail, Some("krowk login")));
+        assert_eq!((fail.status, fail.fix.as_deref()), (Status::Fail, Some("gruntas login")));
         assert_fixed_by_a_visible_command(&fail);
         let rejected = account(true, false, &Lookup::Rejected("unauthorized".into()));
-        assert_eq!((rejected.status, rejected.fix.as_deref()), (Status::Fail, Some("krowk login")));
+        assert_eq!((rejected.status, rejected.fix.as_deref()), (Status::Fail, Some("gruntas login")));
         // Offline, a key is neither good nor bad; and "locally" is a choice, not a fault.
         assert_eq!(account(true, false, &Lookup::Offline).status, Status::Pass);
         assert_eq!(account(false, true, &Lookup::Unchecked).status, Status::Skip);
@@ -362,7 +362,7 @@ mod tests {
         let here = registered_machine("desk", 2, true);
         assert_eq!(always_on(&here, Some(true)).status, Status::Pass);
         let off = always_on(&here, Some(false));
-        assert_eq!((off.status, off.fix.as_deref(), off.message.as_str()), (Status::Fail, Some("krowk machines always-on on"), "Always-on service off"));
+        assert_eq!((off.status, off.fix.as_deref(), off.message.as_str()), (Status::Fail, Some("gruntas machines always-on on"), "Always-on service off"));
         assert_fixed_by_a_visible_command(&off);
         assert_eq!(always_on(&Machine::NotApplicable("a key"), Some(false)).status, Status::Skip);
         assert_eq!(always_on(&Machine::NotRegistered, Some(false)).status, Status::Skip);
@@ -381,7 +381,7 @@ mod tests {
     #[test]
     fn the_kit_line_fails_only_for_fewer_than_two_machines_and_no_kit() {
         let one = recovery_kit(&registered_machine("a", 1, false));
-        assert_eq!((one.status, one.fix.as_deref()), (Status::Fail, Some("krowk machines recovery")));
+        assert_eq!((one.status, one.fix.as_deref()), (Status::Fail, Some("gruntas machines recovery")));
         assert_eq!(one.message, "One machine, no recovery kit: losing it loses your sessions");
         assert_fixed_by_a_visible_command(&one);
         assert_eq!(recovery_kit(&registered_machine("a", 2, false)).status, Status::Pass);
@@ -394,7 +394,7 @@ mod tests {
         let pass = plan(Some("free"), &registered_machine("a", 2, true));
         assert_eq!((pass.status, pass.message.as_str()), (Status::Pass, "Free plan: 2 of 2 machines"));
         let over = plan(Some("free"), &registered_machine("a", 3, true));
-        assert_eq!((over.status, over.fix.as_deref()), (Status::Warn, Some("krowk billing")));
+        assert_eq!((over.status, over.fix.as_deref()), (Status::Warn, Some("gruntas billing")));
         assert_fixed_by_a_visible_command(&over);
         assert_eq!(plan(Some("business"), &registered_machine("a", 40, true)).status, Status::Pass);
         assert_eq!(plan(Some("pro"), &registered_machine("a", 11, true)).status, Status::Warn);

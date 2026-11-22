@@ -34,7 +34,7 @@
 //! Beside the bytes, not in them: a list keyed by signer, `count u8`, then
 //! for each signer in the order the bytes list them, `device id [16] ‖
 //! Ed25519 signature [64]` over `"krowk/device-list/v1" ‖ bytes` (strict
-//! verification; no other signature in krowk starts with that label). The
+//! verification; no other signature in gruntas starts with that label). The
 //! ids must be exactly the bytes' `signers`, so the hash that chains and
 //! pins an entry — SHA-256 over the bytes alone — also commits to who
 //! signed it.
@@ -101,7 +101,7 @@ use crate::e2e::{DeviceId, DevicePublic, Error, SigningKey, SigningPublic};
 use crate::user_key::{UserKey, UserKeyId};
 use sha2::{Digest, Sha256};
 
-/// The entry format this krowk writes and reads.
+/// The entry format this gruntas writes and reads.
 pub const ENTRY_V1: u8 = 1;
 /// What every entry's signature starts with.
 pub const SIGNATURE_LABEL: &[u8] = b"krowk/device-list/v1";
@@ -215,7 +215,7 @@ impl Entry {
         let mut r = Reader { b: bytes, seq: 0 };
         let version = r.u8()?;
         if version != ENTRY_V1 {
-            return Err(Error(format!("the device list entry is format {version}, which this krowk does not read — upgrade krowk")));
+            return Err(Error(format!("the device list entry is format {version}, which this gruntas does not read — upgrade gruntas")));
         }
         r.seq = u64::from_be_bytes(r.array()?);
         let entry = r.entry_after_seq()?;

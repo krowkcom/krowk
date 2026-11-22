@@ -1,10 +1,10 @@
-//! krowk.db: the local session store — every agent thread on this machine,
+//! gruntas.db: the local session store — every agent thread on this machine,
 //! whichever harness wrote it, read into one schema.
 //!
-//! The schema is the compatibility boundary with the Go build: a krowk.db
+//! The schema is the compatibility boundary with the Go build: a gruntas.db
 //! either one wrote opens in the other, so the SQL is the Go build's, verbatim,
 //! and the gate refuses what v1 never writes rather than repairing it — every
-//! row is re-derivable from transcripts, so `krowk sessions rebuild` is the
+//! row is re-derivable from transcripts, so `gruntas sessions rebuild` is the
 //! migration.
 
 mod clock;
@@ -34,10 +34,10 @@ pub type Env<'a> = &'a dyn Fn(&str) -> String;
 /// CLI answers differently.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StoreError {
-    /// Nowhere for krowk.db to live: no home, or a GRUNTAS_HOME that is not
+    /// Nowhere for gruntas.db to live: no home, or a GRUNTAS_HOME that is not
     /// absolute.
     NoHome(String),
-    /// The file is not the v1 schema; `krowk sessions rebuild` is the fix.
+    /// The file is not the v1 schema; `gruntas sessions rebuild` is the fix.
     SchemaMismatch(String),
     /// No such session.
     NotFound(String),
@@ -79,12 +79,12 @@ pub fn db_path(env: Env) -> Result<PathBuf, StoreError> {
 
 fn rebuild_hint(path: &Path, why: &str) -> StoreError {
     StoreError::SchemaMismatch(format!(
-        "store: schema mismatch: {why}; run `krowk sessions rebuild` (delete {} and re-import)",
+        "store: schema mismatch: {why}; run `gruntas sessions rebuild` (delete {} and re-import)",
         path.display()
     ))
 }
 
-/// Opens krowk.db, creating it with the v1 schema when it is new. The
+/// Opens gruntas.db, creating it with the v1 schema when it is new. The
 /// directory is 0700 and the files 0600: transcripts are what an agent was
 /// told, secrets included. A file that is not v1 is refused, never repaired.
 pub fn open(env: Env) -> Result<Connection, StoreError> {
@@ -283,7 +283,7 @@ pub fn check(env: Env) -> StatusCheck {
         Err(StoreError::SchemaMismatch(m)) => status(
             "fail",
             m,
-            format!("run `krowk sessions rebuild` (delete {} and re-import)", path.display()),
+            format!("run `gruntas sessions rebuild` (delete {} and re-import)", path.display()),
         ),
         Err(e) => {
             let msg = e.message().to_string();

@@ -1,4 +1,4 @@
-$ krowk push a.txt
+$ gruntas push a.txt
 stdout:
 {
   "ok": true,
@@ -55,7 +55,7 @@ stdout:
   "breadcrumbs": [
     {
       "action": "keep past expiry",
-      "cmd": "krowk claim <art_1> <claim_1>",
+      "cmd": "gruntas claim <art_1> <claim_1>",
       "description": "this upload is anonymous and expires within the day; claiming it with a key moves it into that key's workspace — a Pro workspace keeps it, a free one gives it another 24 hours. The token is shown once and spent once"
     },
     {
@@ -67,13 +67,13 @@ stdout:
 }
 exit: 0
 
-$ krowk push shot.png --caption "a screenshot" --format markdown
+$ gruntas push shot.png --caption "a screenshot" --format markdown
 stdout:
 [![shot.png](http://<registry>/_storage/weur/<ws_1>/<art_2>/shot.png)](http://<registry>/a/<art_2>)
 shot.png · [View preview ↗](http://<registry>/a/<art_2>) · expires <date>
 exit: 0
 
-$ krowk push shot.png --format url
+$ gruntas push shot.png --format url
 stdout:
 http://<registry>/a/<art_3>
 exit: 0

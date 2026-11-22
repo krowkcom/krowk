@@ -1,4 +1,4 @@
-$ krowk push a.txt --jq '.data.artifacts[0] | error'
+$ gruntas push a.txt --jq '.data.artifacts[0] | error'
 stderr:
 {
   "ok": false,
@@ -10,7 +10,7 @@ stderr:
 }
 exit: 1
 
-$ krowk auth token --jq .
+$ gruntas auth token --jq .
 stderr:
 {
   "ok": false,
@@ -22,7 +22,7 @@ stderr:
 }
 exit: 1
 
-$ krowk auth verify --jq '.data | tonumber'
+$ gruntas auth verify --jq '.data | tonumber'
 stderr:
 {
   "ok": false,

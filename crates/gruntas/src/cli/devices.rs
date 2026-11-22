@@ -1,11 +1,11 @@
-//! `krowk devices`: the machines that sync this workspace's sessions, and
+//! `gruntas devices`: the machines that sync this workspace's sessions, and
 //! adding one (R-E2E-3; canon, engineering/crypto.md → Adding a device).
 //!
 //! - `list`: the devices on the person's device list, verified against the
 //!   one this machine keeps, this one marked, and any revoked on the
 //!   dashboard that the list still names.
 //! - `add`: pairs a new machine by a short code (`pairing.rs`), the other
-//!   end of its `krowk sync join`.
+//!   end of its `gruntas sync join`.
 //!
 //! - `remove NAME`: takes a device off the person's device list and rotates
 //!   the user key away from it (`remove`).
@@ -22,7 +22,7 @@ use serde_json::json;
 pub(super) fn list(ctx: &mut Ctx) -> Result<(), Error> {
     use super::chain::{self, describe, Me};
     let me = Me::load(ctx)?;
-    let client = keyed_client(ctx, "`krowk machines`")?;
+    let client = keyed_client(ctx, "`gruntas machines`")?;
     let v = chain::verified(ctx, &client, &me)?;
     let listed = chain::listed_devices(ctx, &client);
     let revoked = chain::revoked_on_dashboard(&v.chain, &listed);
@@ -38,7 +38,7 @@ pub(super) fn list(ctx: &mut Ctx) -> Result<(), Error> {
         .iter()
         .map(|d| {
             let this = if d.id() == me.device.id() { "  (this device)" } else { "" };
-            let gone = if revoked.iter().any(|r| r.id() == d.id()) { "  (revoked on the dashboard — `krowk machines remove` finishes it)" } else { "" };
+            let gone = if revoked.iter().any(|r| r.id() == d.id()) { "  (revoked on the dashboard — `gruntas machines remove` finishes it)" } else { "" };
             format!("{}{this}{gone}", describe(d, &v.entries))
         })
         .collect();
@@ -46,7 +46,7 @@ pub(super) fn list(ctx: &mut Ctx) -> Result<(), Error> {
     chain::say(ctx, json!({ "devices": rows, "generation": v.chain.generation() }), summary)
 }
 
-/// `krowk machines remove NAME` (canon, engineering/devices.md → Removing a
+/// `gruntas machines remove NAME` (canon, engineering/devices.md → Removing a
 /// device): the device is taken off the person's list and the user key
 /// rotated away from it, in one post. Before anything is asked of the
 /// person, the prompt names every device the new key goes to; then the
@@ -60,20 +60,20 @@ pub(super) fn list(ctx: &mut Ctx) -> Result<(), Error> {
 /// wrap to it, so every such device is removed in the same post.
 pub(super) fn remove(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     use super::chain::{self, need_person, Me};
-    need_person(ctx, "`krowk machines remove` takes a device off your list and rotates your key", false)?;
-    let wanted = args.first().map(|a| a.trim()).filter(|a| !a.is_empty()).ok_or_else(|| fail("missing_argument", "name the device to remove: `krowk machines remove NAME` — `krowk sync status` lists them"))?.to_string();
+    need_person(ctx, "`gruntas machines remove` takes a device off your list and rotates your key", false)?;
+    let wanted = args.first().map(|a| a.trim()).filter(|a| !a.is_empty()).ok_or_else(|| fail("missing_argument", "name the device to remove: `gruntas machines remove NAME` — `gruntas sync status` lists them"))?.to_string();
     let me = Me::load(ctx)?;
-    let client = keyed_client(ctx, "`krowk machines remove`")?;
+    let client = keyed_client(ctx, "`gruntas machines remove`")?;
     let v = chain::verified(ctx, &client, &me)?;
     let target = v.chain.devices().iter().find(|d| gruntas_client::device_chain::same_name(&d.name, &wanted)).ok_or_else(|| {
         let names: Vec<String> = v.chain.devices().iter().filter(|d| d.kind == Kind::Device).map(|d| format!("'{}'", printable(&d.name))).collect();
         fail("no_such_device", format!("no device on your list is called '{}' — it has {}", printable(&wanted), names.join(", ")))
     })?;
     if target.kind == Kind::Recovery {
-        return Err(fail("recovery_not_removable", "the recovery kit can't be removed, only replaced — `krowk machines recovery new`"));
+        return Err(fail("recovery_not_removable", "the recovery kit can't be removed, only replaced — `gruntas machines recovery new`"));
     }
     if target.id() == me.device.id() {
-        return Err(fail("removing_this_device", "that is the device you're on — remove it from another of your devices, or with the recovery kit (`krowk sync recover` on a new machine)"));
+        return Err(fail("removing_this_device", "that is the device you're on — remove it from another of your devices, or with the recovery kit (`gruntas sync recover` on a new machine)"));
     }
     let listed = chain::listed_devices(ctx, &client);
     let targets = removals(target, &chain::revoked_on_dashboard(&v.chain, &listed), me.device.id());
@@ -89,7 +89,7 @@ fn removals<'a>(target: &'a ChainDevice, revoked: &[&'a ChainDevice], me: Device
 }
 
 /// Asks, signs in again, and posts the removal of `targets` with the key
-/// rotated to everything else on the list. `krowk sync status` comes here
+/// rotated to everything else on the list. `gruntas sync status` comes here
 /// too, to finish a dashboard Revoke.
 pub(super) fn finish(ctx: &mut Ctx, me: &super::chain::Me, v: &super::chain::Verified, targets: &[&ChainDevice]) -> Result<(), Error> {
     use super::chain::{self, ask, describe, now, post_of};
@@ -108,7 +108,7 @@ pub(super) fn finish(ctx: &mut Ctx, me: &super::chain::Me, v: &super::chain::Ver
     let changes = targets.iter().map(|d| Change::Remove(Subject::of(d))).collect();
     let (next, batch) = v.chain.batch(keys.newest(), changes, me.device.id(), &me.signing, now()).map_err(|e| fail("sync_setup_failed", e.0))?;
     me.sign(&client).append_device_list(&post_of(&batch)).map_err(|e| match e.code().as_str() {
-        "device_list_stale" => fail("device_list_stale", "your device list changed while this ran — nothing was removed; run `krowk machines remove` again"),
+        "device_list_stale" => fail("device_list_stale", "your device list changed while this ran — nothing was removed; run `gruntas machines remove` again"),
         _ => e,
     })?;
     chain::keep(ctx, &v.entries, &next, &batch, me, chain::older_of(&keys))?;

@@ -1,4 +1,4 @@
-//! `krowk machines` (R-ALLOC-2, R-ALLOC-12): the built binary on a scratch
+//! `gruntas machines` (R-ALLOC-2, R-ALLOC-12): the built binary on a scratch
 //! home. Turning this machine's acceptance of handed-over tasks off and on
 //! writes `sync.accept` in the person's own config, which the announcement
 //! and the `run` command's admission read.
@@ -16,7 +16,7 @@ fn home(name: &str) -> PathBuf {
     root.canonicalize().unwrap()
 }
 
-fn krowk(home: &Path, args: &[&str]) -> Output {
+fn gruntas(home: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_gruntas"))
         .args(args)
         .env_clear()
@@ -41,16 +41,16 @@ fn config(home: &Path) -> Value {
 fn alloc_09_accept_off_and_on_set_sync_accept() {
     let home = home("accept");
     std::fs::write(home.join(".gruntas/config.json"), json!({"sync": {"idleMinutes": 5}}).to_string()).unwrap();
-    let off = krowk(&home, &["machines", "accept", "off"]);
+    let off = gruntas(&home, &["machines", "accept", "off"]);
     assert!(off.status.success(), "{}", String::from_utf8_lossy(&off.stderr));
     assert_eq!(config(&home)["sync"], json!({"idleMinutes": 5, "accept": false}));
-    let on = krowk(&home, &["machines", "accept", "on"]);
+    let on = gruntas(&home, &["machines", "accept", "on"]);
     assert!(on.status.success(), "{}", String::from_utf8_lossy(&on.stderr));
     assert_eq!(config(&home)["sync"], json!({"idleMinutes": 5}), "on is the default, so the key goes");
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// R-EASE-9: each `krowk machines` subcommand answers exactly as the old
+/// R-EASE-9: each `gruntas machines` subcommand answers exactly as the old
 /// command it stands for, and every old command still routes. Off a terminal
 /// and with no sync set up, each refuses the same way, in the same words.
 #[test]
@@ -66,7 +66,7 @@ fn ease_07_each_machines_subcommand_answers_as_its_old_command() {
         (&["sync", "status"], &["machines", "recovery"]),
     ];
     for (old, new) in pairs {
-        let (o, n) = (krowk(&home, old), krowk(&home, new));
+        let (o, n) = (gruntas(&home, old), gruntas(&home, new));
         assert_eq!(o.status.code(), n.status.code(), "{old:?} against {new:?}");
         assert_eq!(String::from_utf8_lossy(&o.stderr), String::from_utf8_lossy(&n.stderr), "{old:?} against {new:?}");
         assert_eq!(o.stdout, n.stdout, "{old:?} against {new:?}");
@@ -81,27 +81,27 @@ fn ease_07_each_machines_subcommand_answers_as_its_old_command() {
 fn ease_07_always_on_needs_on_or_off_and_the_host_forms_still_route() {
     let home = home("always-on");
     for args in [&["machines", "always-on"][..], &["machines", "always-on", "maybe"]] {
-        let out = krowk(&home, args);
+        let out = gruntas(&home, args);
         assert!(!out.status.success());
         assert!(String::from_utf8_lossy(&out.stderr).contains("always-on on"), "{}", String::from_utf8_lossy(&out.stderr));
     }
     for args in [&["host", "enable"][..], &["host", "disable"], &["hosts"], &["machines", "accept", "on"]] {
-        let out = krowk(&home, args);
+        let out = gruntas(&home, args);
         assert!(!String::from_utf8_lossy(&out.stderr).contains("unknown_command"), "{args:?} still routes");
     }
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// The old names leave `krowk help`, stay in `help --all`, and no hint any
+/// The old names leave `gruntas help`, stay in `help --all`, and no hint any
 /// command prints sends a person to one of them.
 #[test]
 fn ease_07_old_commands_are_hidden_from_help_but_listed_by_all() {
     let home = home("hidden");
-    let help = String::from_utf8_lossy(&krowk(&home, &["help"]).stdout).to_string();
+    let help = String::from_utf8_lossy(&gruntas(&home, &["help"]).stdout).to_string();
     for old in ["devices", "hosts"] {
         assert!(!help.lines().any(|l| l.trim_start().starts_with(old)), "{old} is hidden:\n{help}");
     }
-    let all = String::from_utf8_lossy(&krowk(&home, &["help", "--all"]).stdout).to_string();
+    let all = String::from_utf8_lossy(&gruntas(&home, &["help", "--all"]).stdout).to_string();
     for sub in ["machines add", "machines remove", "machines always-on", "machines recovery", "devices add", "host enable"] {
         assert!(all.contains(sub), "{sub} in help --all:\n{all}");
     }

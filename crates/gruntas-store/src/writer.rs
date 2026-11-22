@@ -41,8 +41,8 @@ pub struct Worktree {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Session {
     /// The id a new session is stored under when its source already minted
-    /// one of krowk's own: a native session's log id, so the session the
-    /// person lists is the one `krowk sync host` and `--resume` name. Empty
+    /// one of gruntas's own: a native session's log id, so the session the
+    /// person lists is the one `gruntas sync host` and `--resume` name. Empty
     /// mints one, as for every vendor's transcript. Dedup is still the
     /// binding's foreign id; this is only which uuidv7 the row carries.
     pub id: String,
@@ -645,7 +645,7 @@ mod tests {
         assert!(!holds_stand_ins(&conn, "anthropic", "s1").unwrap());
     }
 
-    /// A session whose source minted krowk's own id is stored under it, and
+    /// A session whose source minted gruntas's own id is stored under it, and
     /// a re-import finds it by its binding as before; a malformed id, or one
     /// a session already has, is never stored as if it were this one's.
     #[test]

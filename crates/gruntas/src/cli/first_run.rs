@@ -1,18 +1,18 @@
-//! The first machine's setup, from bare `krowk` on a terminal (D4, D5), as
-//! plain prompts on stderr answered with a line on stdin: sign in to krowk
-//! (or use it locally), connect a model with `krowk connect`'s own flow, keep
+//! The first machine's setup, from bare `gruntas` on a terminal (D4, D5), as
+//! plain prompts on stderr answered with a line on stdin: sign in to gruntas
+//! (or use it locally), connect a model with `gruntas connect`'s own flow, keep
 //! this machine available while you're away, and the recovery kit. Signing
 //! in leaves a workspace key and this machine registered for sync, with no
 //! further prompt; an account that already has machines adds this one to
 //! them with a code instead. Without a terminal nothing is asked.
 //!
-//! Each step can be cancelled and resumed by running `krowk` again, so what
+//! Each step can be cancelled and resumed by running `gruntas` again, so what
 //! is left to do is read from what is on disk: the key, the device list, and
-//! `first-run.json` — `local` once the person chose to use krowk without an
+//! `first-run.json` — `local` once the person chose to use gruntas without an
 //! account (never offered again), `pending` between signing in and the
 //! registration that finishes it, and the two questions once asked. The
-//! file is there once the setup has begun. `krowk login` on a terminal runs
-//! the account step from the top, and the next `krowk` goes on from there.
+//! file is there once the setup has begun. `gruntas login` on a terminal runs
+//! the account step from the top, and the next `gruntas` goes on from there.
 
 use super::recovery::{self, register_first_device, Registered};
 use super::{agent, auth, Ctx};
@@ -23,7 +23,7 @@ use std::path::PathBuf;
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 pub(super) struct State {
-    /// Chosen: use krowk locally, without an account.
+    /// Chosen: use gruntas locally, without an account.
     local: bool,
     /// Signed in, and not yet registered or handed to the add-a-machine flow.
     pending: bool,
@@ -31,7 +31,7 @@ pub(super) struct State {
     /// the end of input: not asked again.
     always_on_asked: bool,
     /// The recovery kit was offered once, made or put off: not offered again
-    /// (`krowk machines recovery` makes one, and the reminder stays).
+    /// (`gruntas machines recovery` makes one, and the reminder stays).
     kit_offered: bool,
 }
 
@@ -49,17 +49,17 @@ fn save(ctx: &mut Ctx, s: &State) {
     }
 }
 
-/// Whether the person chose to use krowk locally, without an account.
+/// Whether the person chose to use gruntas locally, without an account.
 pub(super) fn chose_local(ctx: &Ctx) -> bool {
     load(ctx).local
 }
 
-/// Bare `krowk` with a person at the terminal: the setup's steps still to
+/// Bare `gruntas` with a person at the terminal: the setup's steps still to
 /// do, in order, before the overview. The sign-in step is asked only when
 /// nothing here can run a model yet and there is no key; the rest only once
 /// the setup has begun (`first-run.json` is there), the account step is
-/// behind it (signed in, or using krowk locally), and until both questions
-/// are asked. A step cancelled or failed is said, and the next `krowk`
+/// behind it (signed in, or using gruntas locally), and until both questions
+/// are asked. A step cancelled or failed is said, and the next `gruntas`
 /// takes it up again.
 pub(super) fn bare(ctx: &mut Ctx) {
     account_step(ctx, runnable(ctx));
@@ -73,9 +73,9 @@ pub(super) fn bare(ctx: &mut Ctx) {
     }
 }
 
-/// What can run a model without asking a vendor: a key, a login krowk
+/// What can run a model without asking a vendor: a key, a login gruntas
 /// keeps, a server. A vendor's own login is not told apart from none, so a
-/// machine on one with no krowk account is asked to sign in once.
+/// machine on one with no gruntas account is asked to sign in once.
 fn runnable(ctx: &Ctx) -> bool {
     use gruntas_harness::readiness::{self, Readiness};
     let (Ok(config), Ok(credentials)) = (super::prompt::load_instances(), super::providers::credentials_path()) else { return true };
@@ -83,7 +83,7 @@ fn runnable(ctx: &Ctx) -> bool {
     registry.instances.values().filter_map(|i| readiness::local(i, &credentials)).any(|r| matches!(r, Readiness::Ready { .. } | Readiness::Unknown { .. }))
 }
 
-/// Step 2: a model, connected with `krowk connect`'s own pickers when none
+/// Step 2: a model, connected with `gruntas connect`'s own pickers when none
 /// is ready here, vendors asked too. Whether the setup goes on.
 fn model_step(ctx: &mut Ctx) -> bool {
     let ready = super::status::reports(ctx).is_ok_and(|(_, _, r)| r.iter().any(|r| r.readiness.is_ready()));
@@ -94,24 +94,24 @@ fn model_step(ctx: &mut Ctx) -> bool {
     match super::providers::connect(ctx, &[]) {
         Ok(()) => true,
         Err(e) => {
-            ctx.warn(&format!("no model is connected: {} — run krowk again to connect one", e.fix()));
+            ctx.warn(&format!("no model is connected: {} — run gruntas again to connect one", e.fix()));
             false
         }
     }
 }
 
-/// The lines bare `krowk` puts under its overview: the most important
+/// The lines bare `gruntas` puts under its overview: the most important
 /// problem with this setup and its fix (D9), and the recovery-kit reminder
 /// while the person has fewer than two machines (D5). From the disk alone.
 pub(super) fn overview_lines(ctx: &Ctx) -> Vec<String> {
     super::health::top_problem(ctx).into_iter().chain(recovery::reminder_due_here(ctx).then(|| recovery::REMINDER.to_string())).collect()
 }
 
-/// Step 1: sign in to krowk, or use it locally. A registration left
-/// unfinished is taken up whenever bare `krowk` runs on a terminal; the
+/// Step 1: sign in to gruntas, or use it locally. A registration left
+/// unfinished is taken up whenever bare `gruntas` runs on a terminal; the
 /// question is asked only when nothing here can run a model yet
 /// (`runnable` false) and there is no key. A failure is said and left for
-/// the next `krowk` to retry, and any other answer is "not now": asked
+/// the next `gruntas` to retry, and any other answer is "not now": asked
 /// again next time.
 fn account_step(ctx: &mut Ctx, runnable: bool) {
     let mut state = load(ctx);
@@ -131,7 +131,7 @@ fn account_step(ctx: &mut Ctx, runnable: bool) {
     if runnable || state.local {
         return;
     }
-    match super::chain::ask_key(ctx, "Sign in to krowk", &[("Enter", "open the browser"), ("l", "use krowk locally, without an account")]).as_str() {
+    match super::chain::ask_key(ctx, "Sign in to gruntas", &[("Enter", "open the browser"), ("l", "use gruntas locally, without an account")]).as_str() {
         "l" => {
             state.local = true;
             state.pending = false;
@@ -142,7 +142,7 @@ fn account_step(ctx: &mut Ctx, runnable: bool) {
     }
 }
 
-/// `krowk login` on a terminal, once the browser has minted `token`: the
+/// `gruntas login` on a terminal, once the browser has minted `token`: the
 /// same step from the top — the machine is no longer "local", and is
 /// registered if it is not.
 pub(super) fn after_login(ctx: &mut Ctx, token: &str) {
@@ -167,7 +167,7 @@ fn sign_in(ctx: &mut Ctx, state: &mut State) {
         Err(e) => {
             state.pending = false;
             save(ctx, state);
-            ctx.warn(&format!("could not sign in: {} — run krowk again to retry", e.fix()));
+            ctx.warn(&format!("could not sign in: {} — run gruntas again to retry", e.fix()));
         }
     }
 }
@@ -190,9 +190,9 @@ fn finish(ctx: &mut Ctx, client: Client, state: &mut State) {
         Err(e) if e.status == 401 || e.status == 403 => {
             state.pending = false;
             save(ctx, state);
-            ctx.warn(&format!("this machine is not set up to sync: {} — `krowk login` signs in again", e.fix()));
+            ctx.warn(&format!("this machine is not set up to sync: {} — `gruntas login` signs in again", e.fix()));
         }
-        Err(e) => ctx.warn(&format!("signed in, but this machine is not set up to sync yet: {} — run krowk again to retry", e.fix())),
+        Err(e) => ctx.warn(&format!("signed in, but this machine is not set up to sync yet: {} — run gruntas again to retry", e.fix())),
     }
 }
 
@@ -202,7 +202,7 @@ fn finish(ctx: &mut Ctx, client: Client, state: &mut State) {
 /// The new machine asks the person's others to show a code, takes it at a
 /// prompt, and joins (`pairing::join_new_machine`: R-EASE-5, D6). `pending`
 /// stays set until the machine has joined, so a cancelled or failed one —
-/// no machine online, a wrong code — resumes at the next `krowk`; the model
+/// no machine online, a wrong code — resumes at the next `gruntas`; the model
 /// step follows either way.
 pub(super) fn add_a_machine(ctx: &mut Ctx, client: Client, state: &mut State) {
     let _ = writeln!(ctx.io.stderr, "Your account already has machines. Adding this one to them takes a code from one of them.");
@@ -216,7 +216,7 @@ pub(super) fn add_a_machine(ctx: &mut Ctx, client: Client, state: &mut State) {
             state.pending = false;
             save(ctx, state);
         }
-        Err(e) => ctx.warn(&format!("this machine is not added to your others yet: {} — run krowk again to retry", e.fix())),
+        Err(e) => ctx.warn(&format!("this machine is not added to your others yet: {} — run gruntas again to retry", e.fix())),
     }
 }
 
@@ -240,10 +240,10 @@ fn after_model_step(ctx: &mut Ctx) {
         save(ctx, &state);
     }
     // Only a machine that is on a device list has a kit to offer on it: one
-    // using krowk locally is offered it the day it signs in, by the reminder.
+    // using gruntas locally is offered it the day it signs in, by the reminder.
     if !state.kit_offered && recovery::reminder_due_here(ctx) {
         if let Err(e) = recovery::offer_kit(ctx) {
-            ctx.warn(&format!("no recovery kit was made: {} — `krowk machines recovery` makes one", e.fix()));
+            ctx.warn(&format!("no recovery kit was made: {} — `gruntas machines recovery` makes one", e.fix()));
         }
         state.kit_offered = true;
         save(ctx, &state);
@@ -262,14 +262,14 @@ fn always_on(ctx: &mut Ctx) {
         _ => false,
     };
     if !yes {
-        let _ = writeln!(ctx.io.stderr, "Not enabled. `krowk machines always-on on` does it later.");
+        let _ = writeln!(ctx.io.stderr, "Not enabled. `gruntas machines always-on on` does it later.");
         return;
     }
     match super::host::set_service(ctx, true) {
         Ok((file, _)) => {
             let _ = writeln!(ctx.io.stderr, "This machine stays available: the host runs as a service ({}).", file.display());
         }
-        Err(e) => ctx.warn(&format!("the always-on service did not start: {} — `krowk machines always-on on` tries again", e.fix())),
+        Err(e) => ctx.warn(&format!("the always-on service did not start: {} — `gruntas machines always-on on` tries again", e.fix())),
     }
 }
 

@@ -1,4 +1,4 @@
-$ krowk doctor
+$ gruntas doctor
 stdout:
 {
   "version": "0.0.0-golden",
@@ -17,13 +17,13 @@ stdout:
     "name": "store",
     "status": "fail",
     "message": "gruntas.db has nowhere to live",
-    "hint": "there is no home directory to keep krowk's files in — set HOME, or GRUNTAS_HOME to an absolute path"
+    "hint": "there is no home directory to keep gruntas's files in — set HOME, or GRUNTAS_HOME to an absolute path"
   },
   "pricing": {
     "name": "pricing",
     "status": "warn",
     "message": "no price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build",
-    "hint": "run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day"
+    "hint": "run `gruntas pricing refresh`, or `gruntas sessions sync`, which refreshes prices once a day"
   },
   "providers": {
     "name": "providers",
@@ -35,8 +35,8 @@ stdout:
     {
       "name": "account",
       "status": "fail",
-      "message": "Not signed in to krowk",
-      "fix": "krowk login"
+      "message": "Not signed in to gruntas",
+      "fix": "gruntas login"
     },
     {
       "name": "machine",
@@ -72,15 +72,15 @@ stdout:
       "name": "store",
       "status": "fail",
       "message": "gruntas.db has nowhere to live",
-      "hint": "there is no home directory to keep krowk's files in — set HOME, or GRUNTAS_HOME to an absolute path",
-      "fix": "there is no home directory to keep krowk's files in — set HOME, or GRUNTAS_HOME to an absolute path"
+      "hint": "there is no home directory to keep gruntas's files in — set HOME, or GRUNTAS_HOME to an absolute path",
+      "fix": "there is no home directory to keep gruntas's files in — set HOME, or GRUNTAS_HOME to an absolute path"
     },
     {
       "name": "pricing",
       "status": "warn",
       "message": "no price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build",
-      "hint": "run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day",
-      "fix": "run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day"
+      "hint": "run `gruntas pricing refresh`, or `gruntas sessions sync`, which refreshes prices once a day",
+      "fix": "run `gruntas pricing refresh`, or `gruntas sessions sync`, which refreshes prices once a day"
     }
   ]
 }

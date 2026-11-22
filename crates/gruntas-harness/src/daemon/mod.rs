@@ -15,17 +15,17 @@
 //!   a client up, bounded by a snapshot (R-LAG-10).
 //! - `ws` — the WebSocket listener: the same frames in batches, compressed,
 //!   windowed, with heartbeats of their own (R-PROTO-1, R-LAG-3/5/9).
-//! - `service` — `krowk machines always-on on`: the systemd user unit and the launchd
+//! - `service` — `gruntas machines always-on on`: the systemd user unit and the launchd
 //!   agent that keep it running on an always-on machine (R-HOST-2).
 //!
 //! Where it listens: `$XDG_RUNTIME_DIR/gruntas/<home>/host.sock`, and where
 //! there is no runtime directory (macOS), `$TMPDIR/gruntas-<uid>/<home>/…`.
-//! `<home>` is the first twelve hex digits of the SHA-256 of krowk's home
+//! `<home>` is the first twelve hex digits of the SHA-256 of gruntas's home
 //! (`~/.gruntas`, or `GRUNTAS_HOME`): a daemon serves one home's config, keys
 //! and sessions, so each home gets its own. The directories are `0700` and
 //! must be this user's own, the socket `0600`: the socket runs turns with
 //! the user's keys, so nobody else may reach it. Beside it, `host.lock` is
-//! held by whichever `krowk` is starting the daemon, so two started at once
+//! held by whichever `gruntas` is starting the daemon, so two started at once
 //! spawn one.
 
 pub mod client;
@@ -47,11 +47,11 @@ pub const LOCK: &str = "host.lock";
 /// connected, unless `GRUNTAS_HOST_IDLE` or config says otherwise.
 pub const DEFAULT_IDLE: Duration = Duration::from_secs(10 * 60);
 
-/// How long a `krowk` that spawned the daemon waits for its socket.
+/// How long a `gruntas` that spawned the daemon waits for its socket.
 const SPAWN_WAIT: Duration = Duration::from_secs(5);
 
 /// The daemon's directory: made `0700` when it is not there, and refused
-/// when it is a symlink or another user's — the same rules krowk's home is
+/// when it is a symlink or another user's — the same rules gruntas's home is
 /// held to (`gruntas_api::home::own`).
 pub fn dir(env: &dyn Fn(&str) -> String) -> Result<PathBuf, String> {
     // The runtime directory the build slots share (`crate::slots`).
@@ -102,7 +102,7 @@ pub fn idle_window(env: &dyn Fn(&str) -> String, config: Option<&serde_json::Val
 
 /// Where the WebSocket listener binds, from `GRUNTAS_HOST_WS`, else
 /// `host.websocket` in config.json: a loopback `address:port` (port 0
-/// picks one; `krowk host status` names it), or `off`. Off when neither
+/// picks one; `gruntas host status` names it), or `off`. Off when neither
 /// says. Anything but loopback is refused: this listener proves who a
 /// client is only with the daemon's token, and reaching other devices is
 /// the relay's job.
@@ -124,7 +124,7 @@ pub fn websocket_addr(env: &dyn Fn(&str) -> String, config: Option<&serde_json::
     Ok(Some(addr))
 }
 
-/// The lock a starting `krowk` holds while it checks for a daemon and
+/// The lock a starting `gruntas` holds while it checks for a daemon and
 /// spawns one: `flock` on `host.lock`, let go when dropped (or when the
 /// process dies, so a crashed starter never wedges the next).
 pub struct Lock {
@@ -153,7 +153,7 @@ pub(crate) fn absent(e: &std::io::Error) -> bool {
 
 /// The daemon's client, connecting to the one running or — when none is —
 /// starting it with `spawn` and waiting for its socket. Under the lock, so
-/// of two `krowk`s started together one spawns and the other connects to
+/// of two `gruntas`s started together one spawns and the other connects to
 /// what it spawned; a socket a dead daemon left is removed only under it.
 /// Starts the daemon: the process, when it is a child of this one, so a
 /// daemon that exits at start is noticed at once rather than waited for.
@@ -184,7 +184,7 @@ pub async fn ensure(env: &dyn Fn(&str) -> String, cwd: &Path, version: &str, ans
             Ok(c) => {
                 drop(lock);
                 // Reaped when it exits, however long that is, so it never
-                // sits as a zombie under a krowk that stays open: a thread
+                // sits as a zombie under a gruntas that stays open: a thread
                 // blocked in wait(2) costs nothing while it waits.
                 if let Some(mut child) = child {
                     std::thread::spawn(move || {
@@ -197,7 +197,7 @@ pub async fn ensure(env: &dyn Fn(&str) -> String, cwd: &Path, version: &str, ans
             Err(client::ConnectError::Absent) if tokio::time::Instant::now() >= deadline => {
                 return Err(EngineError::new(
                     "host_unavailable",
-                    format!("the host daemon did not open {} within {} s — its log says why: `krowk host status`", path.display(), SPAWN_WAIT.as_secs()),
+                    format!("the host daemon did not open {} within {} s — its log says why: `gruntas host status`", path.display(), SPAWN_WAIT.as_secs()),
                 ));
             }
             Err(client::ConnectError::Absent) => {
@@ -212,7 +212,7 @@ pub async fn ensure(env: &dyn Fn(&str) -> String, cwd: &Path, version: &str, ans
     }
 }
 
-/// Whether a daemon of krowk `daemon` is of an older release than `mine`.
+/// Whether a daemon of gruntas `daemon` is of an older release than `mine`.
 /// Only releases compare: a version with anything past its three numbers
 /// (a golden build's `0.0.0-golden`) is older than nothing.
 pub fn older(daemon: &str, mine: &str) -> bool {
@@ -239,7 +239,7 @@ pub fn spawn_detached(program: &Path, args: &[&str], log: &Path) -> Result<std::
     unsafe { detached(program, args, Path::new("/"), log, || Ok(())) }
 }
 
-/// `spawn_detached`, run in `cwd` rather than `/`: a `krowk sync take` a
+/// `spawn_detached`, run in `cwd` rather than `/`: a `gruntas sync take` a
 /// `take` command asks for, in the clone it takes the session into.
 pub fn spawn_detached_in(program: &Path, args: &[&str], cwd: &Path, log: &Path) -> Result<std::process::Child, String> {
     // SAFETY: the closure does nothing.
@@ -329,7 +329,7 @@ async fn running(env: &dyn Fn(&str) -> String, version: &str) -> Result<Option<c
     }
 }
 
-/// `krowk host status`: how the daemon is, or none when none runs. Never
+/// `gruntas host status`: how the daemon is, or none when none runs. Never
 /// starts one.
 pub fn status(env: &dyn Fn(&str) -> String, version: &str) -> Result<Option<crate::protocol::HostStatus>, EngineError> {
     runtime()?.block_on(async {
@@ -362,7 +362,7 @@ pub fn pairing_answer(env: &dyn Fn(&str) -> String, version: &str, pairing: &str
 }
 
 /// Stops the daemon that runs, if one does, and waits for its socket to go:
-/// `krowk machines always-on on` hands over to the service, which could not bind
+/// `gruntas machines always-on on` hands over to the service, which could not bind
 /// while it listens. Refused while a turn runs. Answers the pid stopped.
 pub fn stop(env: &dyn Fn(&str) -> String, version: &str, force: bool) -> Result<Option<u32>, EngineError> {
     let path = socket(env).map_err(|e| EngineError::new("host_unavailable", e))?;
@@ -382,7 +382,7 @@ pub fn stop(env: &dyn Fn(&str) -> String, version: &str, force: bool) -> Result<
     })
 }
 
-/// `krowk host attach`: every frame of `session` as stream-json — what its
+/// `gruntas host attach`: every frame of `session` as stream-json — what its
 /// log holds, the running turn so far, then live until that turn's result.
 /// A session with no turn running prints its log and ends.
 pub fn attach(env: &dyn Fn(&str) -> String, version: &str, session: &str, out: &mut dyn std::io::Write) -> Result<(), EngineError> {
@@ -393,7 +393,7 @@ pub fn attach(env: &dyn Fn(&str) -> String, version: &str, session: &str, out: &
     };
     runtime()?.block_on(async {
         let Some(c) = running(env, version).await? else {
-            return Err(EngineError::new("host_not_running", format!("no host daemon runs, so session {session} is not running there — `krowk -p --resume {session} …` continues it")));
+            return Err(EngineError::new("host_not_running", format!("no host daemon runs, so session {session} is not running there — `gruntas -p --resume {session} …` continues it")));
         };
         let (tx, mut rx) = tokio::sync::mpsc::channel::<StreamLine>(1024);
         let attach = c.attach(session, None, tx);
@@ -421,7 +421,7 @@ pub fn attach(env: &dyn Fn(&str) -> String, version: &str, session: &str, out: &
                     }
                     live = true;
                 }
-                else => return Err(EngineError::new("host_gone", "the host daemon closed the connection before the turn ended — `krowk host status` says whether it is up")),
+                else => return Err(EngineError::new("host_gone", "the host daemon closed the connection before the turn ended — `gruntas host status` says whether it is up")),
             }
         }
     })
@@ -586,7 +586,7 @@ mod tests {
         assert!(older("0.13.0", "0.13.1"));
         assert!(older("0.9.0", "0.10.0"), "by number, not as text");
         assert!(!older("0.13.0", "0.13.0"));
-        assert!(!older("0.14.0", "0.13.0"), "a newer daemon is never replaced by an older krowk");
+        assert!(!older("0.14.0", "0.13.0"), "a newer daemon is never replaced by an older gruntas");
         assert!(!older("0.0.0-golden", "0.13.0"));
         assert!(!older("0.12.1", "0.0.0-golden"));
         assert!(!older("", "0.13.0"));

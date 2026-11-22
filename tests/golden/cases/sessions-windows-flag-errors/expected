@@ -1,4 +1,4 @@
-$ krowk sessions --limit 0
+$ gruntas sessions --limit 0
 stdout:
 {
   "ok": true,
@@ -9,7 +9,7 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions --limit -1
+$ gruntas sessions --limit -1
 stderr:
 {
   "ok": false,
@@ -21,25 +21,25 @@ stderr:
 }
 exit: 1
 
-$ krowk sessions show a b
+$ gruntas sessions show a b
 stderr:
 {
   "ok": false,
   "error": {
     "error": "bad_flag",
-    "fix": "`krowk sessions show` takes one session id, got extra b",
+    "fix": "`gruntas sessions show` takes one session id, got extra b",
     "retryable": false
   }
 }
 exit: 1
 
-$ krowk sessions rebuild extra
+$ gruntas sessions rebuild extra
 stderr:
 {
   "ok": false,
   "error": {
     "error": "confirmation_required",
-    "fix": "rebuilding deletes <scratch>/home/.gruntas/sessions/gruntas.db and re-imports every transcript — run `krowk sessions rebuild --yes` to confirm when nobody is at a terminal to ask",
+    "fix": "rebuilding deletes <scratch>/home/.gruntas/sessions/gruntas.db and re-imports every transcript — run `gruntas sessions rebuild --yes` to confirm when nobody is at a terminal to ask",
     "retryable": false
   }
 }

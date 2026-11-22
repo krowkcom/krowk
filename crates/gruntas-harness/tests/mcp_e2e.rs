@@ -2,12 +2,12 @@
 //! in Claude Code — the fake `claude` (`common/fake.rs`) — against a
 //! stand-in stdio MCP server (`fixtures/mcp/fake-mcp`, a bash script) and a
 //! stand-in streamable-HTTP one: a repository's `.mcp.json`, what trust
-//! turns on, the two deferred meta-tools krowk's bridge offers Claude Code,
+//! turns on, the two deferred meta-tools gruntas's bridge offers Claude Code,
 //! the permission rules a call is judged by, and the life of a session's
 //! connections across its turns.
 //!
-//! Claude Code is started `--strict-mcp-config` with only krowk's bridge,
-//! so every server here is krowk's to start, judge and close: the model's
+//! Claude Code is started `--strict-mcp-config` with only gruntas's bridge,
+//! so every server here is gruntas's to start, judge and close: the model's
 //! `mcp_search` and `mcp_call` are Claude Code's calls of
 //! `mcp__gruntas__mcp_search` and `mcp__gruntas__mcp_call`, asked about with
 //! `can_use_tool` and run over the bridge (`mcp_message`).
@@ -37,7 +37,7 @@ impl Home {
     /// A home whose one instance, `claude`, is the fake playing `scenario`.
     fn new(name: &str, scenario: Option<&str>) -> Home {
         let root =
-            std::env::temp_dir().join(format!("krowk-mcp-e2e-{name}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("gruntas-mcp-e2e-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
@@ -110,8 +110,8 @@ impl Home {
         })
     }
 
-    /// The names of the tools krowk's bridge last listed to Claude Code
-    /// (`tools/list`, asked when a process starts): krowk's own and, when
+    /// The names of the tools gruntas's bridge last listed to Claude Code
+    /// (`tools/list`, asked when a process starts): gruntas's own and, when
     /// the session has servers, the two MCP meta-tools.
     fn listed(&self) -> Vec<String> {
         let log = fake::log(&self.root, "claude");
@@ -142,8 +142,8 @@ fn prompt(mode: PermissionMode) -> Command {
     }
 }
 
-/// The model calls krowk's bridged `tool` (`mcp_search` or `mcp_call`)
-/// with `input`: Claude Code asks krowk whether it may (`can_use_tool`),
+/// The model calls gruntas's bridged `tool` (`mcp_search` or `mcp_call`)
+/// with `input`: Claude Code asks gruntas whether it may (`can_use_tool`),
 /// runs it over the bridge when `runs`, and the model reads what came back
 /// — the bridge's answer, or the denial's message.
 fn bridged(id: &str, tool: &str, input: Value, runs: bool) -> String {
@@ -236,7 +236,7 @@ fn r_tool_3_a_trusted_projects_mcp_server_is_found_by_search_and_called() {
         log.contains("\"method\":\"initialize\"") && log.contains("\"method\":\"tools/call\""),
         "{log}"
     );
-    // Claude Code loads no server itself: only krowk's bridge is passed.
+    // Claude Code loads no server itself: only gruntas's bridge is passed.
     let argv = fake::log(&h.root, "claude").lines().find(|l| l.starts_with("argv -p ")).unwrap().to_string();
     assert!(argv.contains("--strict-mcp-config") && !argv.contains("fake-mcp"), "{argv}");
 }
@@ -341,7 +341,7 @@ fn r_tool_3_a_streamable_http_server_from_the_persons_own_config_is_called() {
         "mcp_call",
         json!({"tool": "web:echo", "input": {"text": "over http"}}),
     )])));
-    // krowk's own config.json, which needs no trust: it is the person's.
+    // gruntas's own config.json, which needs no trust: it is the person's.
     let host = h.host(
         false,
         json!({"mcpServers": {"web": {"type": "http", "url": server.url}}}),

@@ -1,4 +1,4 @@
-$ krowk push a.txt --format json
+$ gruntas push a.txt --format json
 stdout:
 {
   "ok": true,
@@ -55,7 +55,7 @@ stdout:
   "breadcrumbs": [
     {
       "action": "keep past expiry",
-      "cmd": "krowk claim <art_1> <claim_1>",
+      "cmd": "gruntas claim <art_1> <claim_1>",
       "description": "this upload is anonymous and expires within the day; claiming it with a key moves it into that key's workspace — a Pro workspace keeps it, a free one gives it another 24 hours. The token is shown once and spent once"
     },
     {
@@ -67,7 +67,7 @@ stdout:
 }
 exit: 0
 
-$ krowk push a.txt --json
+$ gruntas push a.txt --json
 stdout:
 {
   "ok": true,
@@ -124,7 +124,7 @@ stdout:
   "breadcrumbs": [
     {
       "action": "keep past expiry",
-      "cmd": "krowk claim <art_2> <claim_2>",
+      "cmd": "gruntas claim <art_2> <claim_2>",
       "description": "this upload is anonymous and expires within the day; claiming it with a key moves it into that key's workspace — a Pro workspace keeps it, a free one gives it another 24 hours. The token is shown once and spent once"
     },
     {
@@ -136,7 +136,7 @@ stdout:
 }
 exit: 0
 
-$ krowk push a.txt --quiet
+$ gruntas push a.txt --quiet
 stdout:
 {
   "artifacts": [
@@ -175,27 +175,27 @@ stdout:
 }
 exit: 0
 
-$ krowk push a.txt --format human
+$ gruntas push a.txt --format human
 stdout:
 ✓ Uploaded a.txt → http://<registry>/a/<art_4>
   5 B · expires tomorrow
-  Keep it: krowk claim <art_4> <claim_4>
+  Keep it: gruntas claim <art_4> <claim_4>
 
   Paste this:
 **a.txt** · [View preview ↗](http://<registry>/a/<art_4>) · expires <date>
 exit: 0
 
-$ krowk push a.txt --format markdown
+$ gruntas push a.txt --format markdown
 stdout:
 **a.txt** · [View preview ↗](http://<registry>/a/<art_5>) · expires <date>
 exit: 0
 
-$ krowk push a.txt --format url
+$ gruntas push a.txt --format url
 stdout:
 http://<registry>/a/<art_6>
 exit: 0
 
-$ krowk push a.txt --format yaml
+$ gruntas push a.txt --format yaml
 stderr:
 {
   "ok": false,

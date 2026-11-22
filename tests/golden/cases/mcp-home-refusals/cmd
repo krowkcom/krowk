@@ -1,4 +1,4 @@
-# gruntas_push never publishes anything in krowk's home, wherever GRUNTAS_HOME
+# gruntas_push never publishes anything in gruntas's home, wherever GRUNTAS_HOME
 # puts it and however the path reaches it, nor a directory named .gruntas; a
 # root inside the home is refused.
 @registry
@@ -8,6 +8,6 @@
 @file ok.txt fine
 @sh ln -s state alias
 @stdin {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"golden","version":"0"}}}\n{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"gruntas_push","arguments":{"files":["state/config.json"]}}}\n{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"gruntas_push","arguments":{"files":["alias/../state/config.json"]}}}\n{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"gruntas_push","arguments":{"files":["alias/config.json"]}}}\n{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"gruntas_push","arguments":{"files":[".gruntas/config.json"]}}}\n
-krowk-mcp --root {work}
+gruntas-mcp --root {work}
 @stdin {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"golden","version":"0"}}}\n{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"gruntas_push","arguments":{"files":["config.json"]}}}\n
-krowk-mcp --root {work}/state
+gruntas-mcp --root {work}/state

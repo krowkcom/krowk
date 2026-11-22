@@ -1,14 +1,14 @@
-//! The tool bridge: krowk's own tools, offered to a vendor backend over MCP
+//! The tool bridge: gruntas's own tools, offered to a vendor backend over MCP
 //! (R-BACK-1). A backend runs its own loop with its own tools; what it
-//! cannot have without krowk — `publish`, the subagent bridge later, and the
+//! cannot have without gruntas — `publish`, the subagent bridge later, and the
 //! trivial `session_info` that proved the path — is injected as one MCP server named `gruntas`, so the backend's
 //! model calls it as `mcp__gruntas__<tool>`.
 //!
 //! The bridge is transport-free: `handle` answers one JSON-RPC message with
 //! one JSON-RPC answer, and each backend carries the messages its own way,
-//! on the pipes krowk already drives it over — so there is no socket, no
+//! on the pipes gruntas already drives it over — so there is no socket, no
 //! port and no second process for anything else on the host to reach, and a
-//! call runs inside the krowk process that owns the session. Claude Code
+//! call runs inside the gruntas process that owns the session. Claude Code
 //! carries MCP inside its control protocol (an `sdk` server). `codex
 //! app-server` has its own in-band channel instead: the tools are declared
 //! as the thread's dynamic tools, in one `gruntas` namespace, and each call
@@ -33,7 +33,7 @@ pub const SERVER: &str = "gruntas";
 /// The MCP revision answered when the client names none.
 const MCP_VERSION: &str = "2025-06-18";
 
-/// What a bridged tool call runs with: the krowk session it belongs to.
+/// What a bridged tool call runs with: the gruntas session it belongs to.
 pub struct BridgeEnv<'a> {
     pub session_id: &'a str,
     pub turn_id: &'a str,
@@ -134,7 +134,7 @@ async fn mcp_tool(name: &str, input: &Value, env: &BridgeEnv<'_>, mcp: &crate::m
     json!({"content": content, "isError": is_error})
 }
 
-/// A krowk tool offered to backends.
+/// A gruntas tool offered to backends.
 pub struct Exposed {
     pub name: &'static str,
     pub description: &'static str,
@@ -147,12 +147,12 @@ pub struct Exposed {
 pub const EXPOSED: &[Exposed] = &[
     Exposed {
         name: "session_info",
-        description: "What krowk knows about this session: its krowk session id, the turn, the instance and model it runs on, and its working directory. Takes no input.",
+        description: "What gruntas knows about this session: its gruntas session id, the turn, the instance and model it runs on, and its working directory. Takes no input.",
         input_schema: crate::schema::input_schema::<SessionInfoInput>,
         run: |env, input| Box::pin(std::future::ready(session_info(env, input))),
     },
     // `publish`: a backend's evidence lands under the session's run,
-    // tagged with its krowk session.
+    // tagged with its gruntas session.
     Exposed { name: evidence::PUBLISH, description: evidence::DESCRIPTION, input_schema: crate::schema::input_schema::<evidence::PublishInput>, run: publish },
 ];
 
@@ -160,7 +160,7 @@ fn publish<'a>(env: &'a BridgeEnv<'a>, input: &'a Value) -> BoxFuture<'a, (Strin
     Box::pin(async move {
         // Judged here, whatever the vendor asked or allowed by itself: an
         // allow rule in Claude Code's settings approves a call without
-        // asking krowk, and Codex's dynamic tools are never asked about.
+        // asking gruntas, and Codex's dynamic tools are never asked about.
         let call = match evidence::call(env.cwd, input) {
             Ok(c) => c,
             Err(e) => return e,
@@ -195,7 +195,7 @@ fn session_info(env: &BridgeEnv<'_>, input: &Value) -> (String, bool) {
         return (format!("invalid input for session_info: {e}"), true);
     }
     let out = format!(
-        "krowk session: {}\nturn: {}\ninstance: {}\nmodel: {}\nbackend: {}\nworking directory: {}\nkrowk: {}\nresume with: krowk -p --resume {} \"…\"",
+        "gruntas session: {}\nturn: {}\ninstance: {}\nmodel: {}\nbackend: {}\nworking directory: {}\nkrowk: {}\nresume with: gruntas -p --resume {} \"…\"",
         env.session_id,
         env.turn_id,
         env.model.instance,
@@ -241,14 +241,14 @@ pub async fn handle(msg: &Value, env: &BridgeEnv<'_>) -> Value {
                 // An unknown tool is answered as a tool error the model can
                 // read, naming the ones there are.
                 None => Ok(json!({
-                    "content": [{"type": "text", "text": format!("krowk has no tool {name:?} — it offers {}", EXPOSED.iter().map(|t| t.name).collect::<Vec<_>>().join(", "))}],
+                    "content": [{"type": "text", "text": format!("gruntas has no tool {name:?} — it offers {}", EXPOSED.iter().map(|t| t.name).collect::<Vec<_>>().join(", "))}],
                     "isError": true,
                 })),
             }
         }
         "ping" => Ok(json!({})),
         m if m.starts_with("notifications/") => Ok(json!({})),
-        m => Err((-32601, format!("krowk's MCP server does not implement {m:?}"))),
+        m => Err((-32601, format!("gruntas's MCP server does not implement {m:?}"))),
     };
     let mut answer = json!({"jsonrpc": "2.0"});
     if let Some(id) = id {
@@ -281,7 +281,7 @@ mod tests {
         assert_eq!(list["result"]["tools"][0]["inputSchema"]["type"], "object");
         let call = handle(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "session_info", "arguments": {}}}));
         let text = call["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("krowk session: s-1") && text.contains("instance: claude:work") && text.contains("backend: claude-code"), "{text}");
+        assert!(text.contains("gruntas session: s-1") && text.contains("instance: claude:work") && text.contains("backend: claude-code"), "{text}");
         assert_eq!(call["result"]["isError"], false);
         let bad = handle(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "session_info", "arguments": {"x": 1}}}));
         assert_eq!(bad["result"]["isError"], true);
@@ -313,7 +313,7 @@ mod tests {
         assert_eq!(rx.try_recv().unwrap(), crate::engine::EngineEvent::RunOpened { run: "run_x".into() });
         assert_eq!(definitions()[1].name, "mcp__gruntas__publish");
         // Under the default mode it is refused, even when Claude Code's own
-        // allow rules let the call through without asking krowk.
+        // allow rules let the call through without asking gruntas.
         let default = crate::permissions::Gate::modes_only(Path::new("/repo"), crate::protocol::PermissionMode::Default);
         let plain = BridgeEnv { gate: &default, ..env };
         let refused = rt.block_on(handle(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "publish", "arguments": {"files": ["shot.png"]}}}), &plain));

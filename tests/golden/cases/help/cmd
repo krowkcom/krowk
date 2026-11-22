@@ -1,4 +1,4 @@
-krowk --help
-krowk help
-krowk -h
-krowk --help --json
+gruntas --help
+gruntas help
+gruntas -h
+gruntas --help --json

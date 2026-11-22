@@ -1,4 +1,4 @@
-$ krowk sessions import --from all --quiet
+$ gruntas sessions import --from all --quiet
 stdout:
 {
   "dry_run": false,
@@ -78,7 +78,7 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions --harness claude
+$ gruntas sessions --harness claude
 stdout:
 {
   "ok": true,
@@ -161,7 +161,7 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions --harness cursor
+$ gruntas sessions --harness cursor
 stdout:
 {
   "ok": true,
@@ -207,7 +207,7 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions --harness opencode
+$ gruntas sessions --harness opencode
 stdout:
 {
   "ok": true,
@@ -249,7 +249,7 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions --harness nope
+$ gruntas sessions --harness nope
 stdout:
 {
   "ok": true,
@@ -260,7 +260,7 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions --worktree {work}
+$ gruntas sessions --worktree {work}
 stdout:
 {
   "ok": true,
@@ -325,7 +325,7 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions --worktree {work}/claude
+$ gruntas sessions --worktree {work}/claude
 stdout:
 {
   "ok": true,
@@ -336,7 +336,7 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions --worktree /nonexistent
+$ gruntas sessions --worktree /nonexistent
 stdout:
 {
   "ok": true,

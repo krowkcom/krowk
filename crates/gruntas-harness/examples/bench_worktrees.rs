@@ -19,7 +19,7 @@
 //! 5. Three subagents' worktrees: one adds a file, two change the same
 //!    line. Applied back to the clone by `finish_into` in turn: the first
 //!    two land, the third is reported as a conflict, then applied by
-//!    `krowk worktrees apply`'s path (`manage::apply`) once the clone's
+//!    `gruntas worktrees apply`'s path (`manage::apply`) once the clone's
 //!    line is put back.
 //! 6. What is left: `git worktree list`, `gruntas/` branches, and worktrees
 //!    under the root.
@@ -234,11 +234,11 @@ fn subagents(repo: &Path, root: &Path, config: &WorktreesConfig) -> Result<Strin
     // The person resolves it their way, then applies the kept one.
     git(repo, &["checkout", "--", SHARED])?;
     drop(hc);
-    let (_, applied) = manage::apply(root, &c.hex, Some(repo)).map_err(|e| format!("krowk worktrees apply {}: {e:?}", c.hex))?;
+    let (_, applied) = manage::apply(root, &c.hex, Some(repo)).map_err(|e| format!("gruntas worktrees apply {}: {e:?}", c.hex))?;
     if applied != Applied::Applied(vec![SHARED.into()]) || first_line(&repo.join(SHARED))? != "# changed by subagent C" {
-        return Err(format!("krowk worktrees apply {}: {applied:?}", c.hex));
+        return Err(format!("gruntas worktrees apply {}: {applied:?}", c.hex));
     }
-    Ok("subagents: A's new file and B's edit applied; C's edit of the same line reported as a conflict, then applied by `krowk worktrees apply`".into())
+    Ok("subagents: A's new file and B's edit applied; C's edit of the same line reported as a conflict, then applied by `gruntas worktrees apply`".into())
 }
 
 fn expect(got: Result<Option<Applied>, worktree::Error>, want: &Applied) -> Result<(), String> {
@@ -260,7 +260,7 @@ fn set_first_line(file: &Path, line: &str) -> Result<(), String> {
 }
 
 /// What git printed in `repo`, or what it said when it failed: through
-/// `gruntas_api::git`, as every git krowk runs is.
+/// `gruntas_api::git`, as every git gruntas runs is.
 fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
     let out = gruntas_api::git::command(repo).and_then(|mut c| c.args(args).output()).map_err(|e| format!("git: {e}"))?;
     if !out.status.success() {
@@ -270,10 +270,10 @@ fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 /// Everything a worktree leaves that should be gone: git's worktrees other
-/// than the clone, `gruntas/` branches, what `krowk worktrees` lists, and a
+/// than the clone, `gruntas/` branches, what `gruntas worktrees` lists, and a
 /// worktree's files under the root. Not the `refs/gruntas/snapshots/<hex>`
 /// an applied worktree leaves as the way back: kept on purpose, for 30
-/// days (`krowk worktrees prune`).
+/// days (`gruntas worktrees prune`).
 fn leftovers(repo: &Path, root: &Path) -> Vec<String> {
     let mut left = Vec::new();
     match git(repo, &["worktree", "list", "--porcelain"]) {

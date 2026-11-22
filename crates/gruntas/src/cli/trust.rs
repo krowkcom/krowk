@@ -1,4 +1,4 @@
-//! `krowk trust`: which repositories a backend or the agent may run what
+//! `gruntas trust`: which repositories a backend or the agent may run what
 //! they configure in, grant, revoke and list, with no terminal needed. The
 //! list is the one `-p`, the host and `sync take` read.
 
@@ -16,7 +16,7 @@ fn store(ctx: &Ctx) -> Result<trust::Store, Error> {
 }
 
 /// The repository `arg` (default: the working directory) belongs to,
-/// canonical. A krowk worktree is its main repository, as `-p` trusts it.
+/// canonical. A gruntas worktree is its main repository, as `-p` trusts it.
 fn repository(ctx: &Ctx, arg: Option<&str>, revoke: bool) -> Result<PathBuf, Error> {
     let cwd = std::env::current_dir().map_err(|e| fail("no_directory", format!("the working directory cannot be read: {e}")))?;
     let dir = arg.map_or(cwd.clone(), |a| cwd.join(a));
@@ -39,10 +39,10 @@ pub(super) fn run(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         return Err(fail("bad_flag", "`--list` and `--revoke` do different things: pass one"));
     }
     if args.len() > 1 {
-        return Err(fail("unexpected_argument", format!("`krowk trust` takes one directory, and got `{}`", args.join(" "))));
+        return Err(fail("unexpected_argument", format!("`gruntas trust` takes one directory, and got `{}`", args.join(" "))));
     }
     if list && !args.is_empty() {
-        return Err(fail("unexpected_argument", "`krowk trust --list` lists every directory and takes no path"));
+        return Err(fail("unexpected_argument", "`gruntas trust --list` lists every directory and takes no path"));
     }
     let store = store(ctx)?;
     if list {
@@ -54,7 +54,7 @@ pub(super) fn run(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         }
         let out = &mut *ctx.io.stdout;
         if dirs.is_empty() {
-            let _ = writeln!(out, "No trusted repositories. `krowk trust` trusts the one you are in.");
+            let _ = writeln!(out, "No trusted repositories. `gruntas trust` trusts the one you are in.");
         }
         for d in &dirs {
             let _ = writeln!(out, "{}", d.display());
@@ -78,7 +78,7 @@ pub(super) fn run(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let runs = trust::what_runs(&root);
     let _ = writeln!(ctx.io.stdout, "Trusting {shown}");
     if !runs.is_empty() {
-        let _ = writeln!(ctx.io.stdout, "It has {}, which a backend or krowk's agent may now run there.", runs.join(", "));
+        let _ = writeln!(ctx.io.stdout, "It has {}, which a backend or gruntas's agent may now run there.", runs.join(", "));
     }
     Ok(())
 }

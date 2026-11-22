@@ -13,7 +13,7 @@ use gruntas_api::{fail, Error};
 /// it meaning to steer uploads.
 pub(crate) fn resolve_workspace(ctx: &Ctx) -> Result<(String, String), Error> {
     let cfg = config::load("", ctx.io.env, &ctx.f.workspace)
-        .map_err(|e| fail("bad_config", format!("{e} — fix the file or remove it; `krowk config show` names every layer")))?;
+        .map_err(|e| fail("bad_config", format!("{e} — fix the file or remove it; `gruntas config show` names every layer")))?;
     let source = cfg.sources.get("workspace").cloned().unwrap_or_default();
     Ok((cfg.workspace, source))
 }
@@ -36,14 +36,14 @@ pub(crate) fn workspaces_list(ctx: &mut Ctx) -> Result<(), Error> {
 
 pub(crate) fn workspaces_use(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if creds::stored_workspaces().is_empty() {
-        return Err(fail("not_authenticated", "no keys are stored to choose between — `krowk login` adds one"));
+        return Err(fail("not_authenticated", "no keys are stored to choose between — `gruntas login` adds one"));
     }
     let name = match args.first() {
         Some(name) => name.clone(),
         None => ask_for_workspace(
             ctx,
             "Which workspace should be the default?",
-            fail("no_workspace", "pass the workspace: `krowk workspaces use <name>` — `krowk workspaces` lists them"),
+            fail("no_workspace", "pass the workspace: `gruntas workspaces use <name>` — `gruntas workspaces` lists them"),
         )?,
     };
     let path = creds::set_default_workspace(&name).map_err(|e| fail("unknown_workspace", e))?;
@@ -68,7 +68,7 @@ pub(crate) fn config_set(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         fail(
             "missing_argument",
             format!(
-                "pass the key and the value: `krowk config set workspace <name>` — keys: {}",
+                "pass the key and the value: `gruntas config set workspace <name>` — keys: {}",
                 config::known_keys().join(", ")
             ),
         )
@@ -98,7 +98,7 @@ fn config_set_global(ctx: &mut Ctx, key: &str, value: Option<&str>) -> Result<()
     use gruntas_harness::protocol::Rollover;
     let valid = if key == "rollover" { Rollover::NAMES.join("|") } else { settings::DEFAULT_MODES.map(|m| m.name()).join("|") };
     let Some(value) = value else {
-        return Err(fail("missing_argument", format!("pass the value: `krowk config set {key} <{valid}>`")));
+        return Err(fail("missing_argument", format!("pass the value: `gruntas config set {key} <{valid}>`")));
     };
     let path = config::global_path()?;
     let write_failed = |e: String| fail("config_unwritable", format!("could not write {}: {e}", path.display()));
@@ -118,7 +118,7 @@ fn config_set_global(ctx: &mut Ctx, key: &str, value: Option<&str>) -> Result<()
 /// `config get <key>`: the effective value and the layer it came from.
 pub(crate) fn config_get(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let Some(key) = args.first() else {
-        return Err(fail("missing_argument", format!("pass the key: `krowk config get workspace` — keys: {}", config::known_keys().join(", "))));
+        return Err(fail("missing_argument", format!("pass the key: `gruntas config get workspace` — keys: {}", config::known_keys().join(", "))));
     };
     config::known(key).map_err(|e| fail("unknown_config_key", e))?;
     let (value, source) = match key.as_str() {
@@ -170,11 +170,11 @@ pub(crate) fn config_unset(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
     let Some(key) = args.first() else {
         return Err(fail(
             "missing_argument",
-            format!("pass the key: `krowk config unset workspace` — keys: {}", config::known_keys().join(", ")),
+            format!("pass the key: `gruntas config unset workspace` — keys: {}", config::known_keys().join(", ")),
         ));
     };
     if config::GLOBAL_ONLY.contains(&key.as_str()) {
-        return Err(fail("bad_config_key", format!("{key} cannot be removed — set it to a value instead: `krowk config set {key} <value>`")));
+        return Err(fail("bad_config_key", format!("{key} cannot be removed — set it to a value instead: `gruntas config set {key} <value>`")));
     }
     config::known(key).map_err(|e| fail("unknown_config_key", e))?;
     let path = config_file(ctx)?;
@@ -206,7 +206,7 @@ fn ask_for_workspace(ctx: &Ctx, title: &str, otherwise: Error) -> Result<String,
     }
     let stored = creds::stored_workspaces();
     if stored.is_empty() {
-        return Err(fail("not_authenticated", "no keys are stored to pick from — `krowk login` adds one"));
+        return Err(fail("not_authenticated", "no keys are stored to pick from — `gruntas login` adds one"));
     }
     pick_workspace(title, &stored)
 }

@@ -145,7 +145,7 @@ fn paste_for(a: &Artifact) -> Json {
     ])
 }
 
-/// The krowk block: an image embeds its bytes and clicks through to the card;
+/// The gruntas block: an image embeds its bytes and clicks through to the card;
 /// anything else is the same line with the caption bolded. An unclaimed
 /// artifact says when it goes.
 fn paste_block(a: &Artifact) -> String {

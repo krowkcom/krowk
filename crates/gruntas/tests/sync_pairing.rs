@@ -1,12 +1,12 @@
 //! Adding a device by a short code, end to end on two scratch homes against
 //! the stand-in registry (R-E2E-3; canon, engineering/devices.md → Adding a
-//! device): the laptop, already on the person's device list, runs `krowk
-//! devices add` and shows a code; the desktop runs `krowk sync join`, types
+//! device): the laptop, already on the person's device list, runs `gruntas
+//! devices add` and shows a code; the desktop runs `gruntas sync join`, types
 //! it, and ends up holding the person's user key and a pin of the chain
 //! that adds it. Nothing reaches the chain before the reply goes out; once
 //! it has, the desktop is listed whether or not it acknowledges.
 //!
-//! The laptop's list is made here with gruntas-client, as `krowk sync init`
+//! The laptop's list is made here with gruntas-client, as `gruntas sync init`
 //! will make it (D6), so this tests pairing alone.
 
 #![cfg(all(feature = "harness", unix))]
@@ -41,9 +41,9 @@ fn now() -> u64 {
     jiff::Timestamp::now().as_second() as u64
 }
 
-/// krowk with `home` as HOME and nothing else of this machine's, with the
+/// gruntas with `home` as HOME and nothing else of this machine's, with the
 /// debug build's stand-in for the person at the terminal on.
-fn krowk(home: &Path, api: &str, token: &str, args: &[&str]) -> Command {
+fn gruntas(home: &Path, api: &str, token: &str, args: &[&str]) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
     c.args(args)
         .env_clear()
@@ -121,7 +121,7 @@ fn code_shown(rx: &std::sync::mpsc::Receiver<String>) -> String {
             seen.push('\n');
         }
     }
-    panic!("`krowk machines add` showed no code:\n{seen}");
+    panic!("`gruntas machines add` showed no code:\n{seen}");
 }
 
 fn rest(rx: &std::sync::mpsc::Receiver<String>) -> String {
@@ -134,7 +134,7 @@ fn join(home: &Path, api: &str, typed: &str) -> std::process::Output {
 }
 
 fn join_as(home: &Path, api: &str, token: &str, typed: &str) -> std::process::Output {
-    let mut b = krowk(home, api, token, &["sync", "join", "--json"]).spawn().unwrap();
+    let mut b = gruntas(home, api, token, &["sync", "join", "--json"]).spawn().unwrap();
     b.stdin.take().unwrap().write_all(format!("{typed}\n").as_bytes()).unwrap();
     wait(b, Duration::from_secs(60))
 }
@@ -145,7 +145,7 @@ fn wait(mut child: Child, within: Duration) -> std::process::Output {
         if Instant::now() > deadline {
             let _ = child.kill();
             let out = child.wait_with_output().unwrap();
-            panic!("a krowk did not finish in {within:?}:\n{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            panic!("a gruntas did not finish in {within:?}:\n{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -163,7 +163,7 @@ fn r_e2e_3_a_device_added_by_its_code_holds_the_user_key_and_a_pin_of_the_chain(
     let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
     let key = set_up(&laptop, &api);
 
-    let mut a = krowk(&laptop, &api, LAPTOP, &["devices", "add", "--json"]).spawn().unwrap();
+    let mut a = gruntas(&laptop, &api, LAPTOP, &["devices", "add", "--json"]).spawn().unwrap();
     let a_err = lines(&mut a);
     let code = code_shown(&a_err);
     assert!(code.len() == 9 && code.as_bytes()[4] == b'-', "{code}");
@@ -205,13 +205,13 @@ fn r_e2e_3_a_wrong_code_adds_nothing_and_the_new_device_asks_for_a_new_one() {
     let r = root("wrong");
     let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
     set_up(&laptop, &api);
-    let mut a = krowk(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
+    let mut a = gruntas(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
     let a_err = lines(&mut a);
     let code = code_shown(&a_err);
     let wrong = if code.starts_with('2') { "3" } else { "2" }.to_string() + &code[1..];
     let b = join(&desktop, &api, &wrong);
     let err = String::from_utf8_lossy(&b.stderr);
-    assert!(!b.status.success() && err.contains("pairing_failed") && err.contains("run `krowk` here again") && err.contains("a code works once"), "{err}");
+    assert!(!b.status.success() && err.contains("pairing_failed") && err.contains("run `gruntas` here again") && err.contains("a code works once"), "{err}");
     let a = wait(a, Duration::from_secs(30));
     let said = rest(&a_err);
     assert!(!a.status.success() && !said.contains("[Y/n]"), "the laptop asked nothing: {said}");
@@ -316,12 +316,12 @@ fn r_e2e_3_a_connection_dropped_after_confirming_asks_for_a_new_code() {
     let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
     set_up(&laptop, &api);
     let (proxy, seen) = dropping_proxy(registry.addr(), "/confirmation");
-    let mut a = krowk(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
+    let mut a = gruntas(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
     let a_err = lines(&mut a);
     let code = code_shown(&a_err);
     let b = join(&desktop, &format!("http://{proxy}/v1"), &code);
     let err = String::from_utf8_lossy(&b.stderr);
-    assert!(!b.status.success() && err.contains("pairing_failed") && err.contains("a code works once") && err.contains("run `krowk` here again for a new one from 'laptop'"), "{err}");
+    assert!(!b.status.success() && err.contains("pairing_failed") && err.contains("a code works once") && err.contains("run `gruntas` here again for a new one from 'laptop'"), "{err}");
     let calls = seen.lock().unwrap().clone();
     assert_eq!(calls.iter().filter(|l| l.contains("/join")).count(), 1, "one start with the code, never a second: {calls:?}");
     assert!(calls.last().unwrap().contains("/confirmation"), "{calls:?}");
@@ -346,7 +346,7 @@ fn r_e2e_3_an_ack_whose_answer_was_lost_still_joins() {
     let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
     let key = set_up(&laptop, &api);
     let (proxy, seen) = losing_proxy(registry.addr(), "/acknowledgement");
-    let mut a = krowk(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
+    let mut a = gruntas(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
     let a_err = lines(&mut a);
     let code = code_shown(&a_err);
     let b = join(&desktop, &format!("http://{proxy}/v1"), &code);
@@ -369,7 +369,7 @@ fn d5_a_reply_whose_answer_and_read_back_were_lost_still_adds_the_device() {
     let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
     let key = set_up(&laptop, &api);
     let (proxy, seen) = losing_then_dropping_proxy(registry.addr(), "/reply", 3);
-    let mut a = krowk(&laptop, &format!("http://{proxy}/v1"), LAPTOP, &["devices", "add"]).spawn().unwrap();
+    let mut a = gruntas(&laptop, &format!("http://{proxy}/v1"), LAPTOP, &["devices", "add"]).spawn().unwrap();
     let a_err = lines(&mut a);
     let code = code_shown(&a_err);
     let b = join(&desktop, &api, &code);
@@ -407,7 +407,7 @@ fn a_device_behind_a_rotation_catches_up_before_it_adds_one() {
     client.append_device_list(&post(&remove)).unwrap();
     assert_eq!(store.user_keys().unwrap().unwrap().newest().generation(), 1);
 
-    let mut a = krowk(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
+    let mut a = gruntas(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
     let a_err = lines(&mut a);
     let code = code_shown(&a_err);
     let b = join(&desktop, &api, &code);
@@ -430,7 +430,7 @@ fn an_interrupted_add_ends_its_pairing() {
     let r = root("interrupted");
     let laptop = r.join("laptop");
     set_up(&laptop, &api);
-    let mut a = krowk(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
+    let mut a = gruntas(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
     let a_err = lines(&mut a);
     code_shown(&a_err);
     let b = gruntas_api::Client::new(&api, DESKTOP);
@@ -470,7 +470,7 @@ fn a_new_device_that_never_acknowledges_is_listed_so_it_can_be_removed() {
     let r = root("unacked");
     let laptop = r.join("laptop");
     set_up(&laptop, &api);
-    let mut a = krowk(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
+    let mut a = gruntas(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
     let a_err = lines(&mut a);
     let code = gruntas_client::pairing::PairingCode::parse(&code_shown(&a_err)).unwrap();
     // B by hand: it runs the pairing to the reply, then ends it unacked.
@@ -497,7 +497,7 @@ fn a_new_device_that_never_acknowledges_is_listed_so_it_can_be_removed() {
 
     let a = wait(a, Duration::from_secs(30));
     let said = rest(&a_err);
-    assert!(!a.status.success() && said.contains("pairing_unconfirmed") && said.contains("krowk machines remove 'stranger'"), "{said}");
+    assert!(!a.status.success() && said.contains("pairing_unconfirmed") && said.contains("gruntas machines remove 'stranger'"), "{said}");
     let chain = served(&api);
     assert!(chain.devices().iter().any(|d| d.name == "stranger"), "listed, so it can be removed");
     let _ = std::fs::remove_dir_all(&r);
@@ -508,10 +508,10 @@ fn a_new_device_that_never_acknowledges_is_listed_so_it_can_be_removed() {
 #[test]
 fn a_code_given_as_an_argument_is_refused() {
     let r = root("argv");
-    let out = krowk(&r.join("desktop"), "http://127.0.0.1:9/v1", DESKTOP, &["sync", "join", "K7QF-9M3X"]).output().unwrap();
+    let out = gruntas(&r.join("desktop"), "http://127.0.0.1:9/v1", DESKTOP, &["sync", "join", "K7QF-9M3X"]).output().unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success() && err.contains("bad_argument") && err.contains("never as an argument"), "{err}");
-    let out = krowk(&r.join("laptop"), "http://127.0.0.1:9/v1", LAPTOP, &["devices", "add", "desktop"]).output().unwrap();
+    let out = gruntas(&r.join("laptop"), "http://127.0.0.1:9/v1", LAPTOP, &["devices", "add", "desktop"]).output().unwrap();
     assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("bad_argument"));
     let _ = std::fs::remove_dir_all(&r);
 }
@@ -527,7 +527,7 @@ fn r_ease_5_a_removed_machine_is_offered_a_start_over_and_its_old_keys_move_asid
     let r = root("removed");
     let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
     let key = set_up(&laptop, &api);
-    let mut a = krowk(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
+    let mut a = gruntas(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
     let a_err = lines(&mut a);
     let code = code_shown(&a_err);
     assert!(join(&desktop, &api, &code).status.success());
@@ -543,18 +543,18 @@ fn r_ease_5_a_removed_machine_is_offered_a_start_over_and_its_old_keys_move_asid
     let old = keys(&desktop).device().unwrap().unwrap().id();
 
     // Nothing online and nothing open: the start over is still offered and
-    // done, and the person is told to run `krowk machines add` on a machine.
+    // done, and the person is told to run `gruntas machines add` on a machine.
     let nobody = join_as(&desktop, &api, "krowk_sk_pairing#desktop-again", "");
     let said = format!("{}{}", String::from_utf8_lossy(&nobody.stdout), String::from_utf8_lossy(&nobody.stderr));
     assert!(!nobody.status.success() && said.contains("This machine was removed from your devices. Start it over as a new machine? [Y/n] y"), "{said}");
-    assert!(said.contains("None of your machines is online to show a code. Run krowk machines add on one of them."), "{said}");
+    assert!(said.contains("None of your machines is online to show a code. Run gruntas machines add on one of them."), "{said}");
     let aside: Vec<_> = std::fs::read_dir(desktop.join(".gruntas")).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.contains(".removed-")).collect();
     assert_eq!(aside.len(), 2, "the device and signing keys, renamed: {aside:?}");
     let fresh = keys(&desktop).device().unwrap().unwrap().id();
     assert_ne!(fresh, old, "a new device key");
 
     // With a pairing open it joins as the new machine it started over as.
-    let mut a = krowk(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
+    let mut a = gruntas(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
     let code = code_shown(&lines(&mut a));
     let again = join_as(&desktop, &api, "krowk_sk_pairing#desktop-again", &code);
     assert!(again.status.success(), "{}", String::from_utf8_lossy(&again.stderr));
@@ -615,7 +615,7 @@ fn r_ease_5_a_new_machine_asks_and_the_hosts_code_joins_it() {
         })
     };
 
-    let mut b = krowk(&desktop, &api, DESKTOP, &["sync", "join"]).spawn().unwrap();
+    let mut b = gruntas(&desktop, &api, DESKTOP, &["sync", "join"]).spawn().unwrap();
     let b_err = lines(&mut b);
     let code = {
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -662,15 +662,15 @@ fn alloc_09_a_join_ends_offering_the_host_service_and_saying_it_takes_work() {
     let r = root("offer");
     let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
     set_up(&laptop, &api);
-    let mut a = krowk(&laptop, &api, LAPTOP, &["devices", "add", "--json"]).spawn().unwrap();
+    let mut a = gruntas(&laptop, &api, LAPTOP, &["devices", "add", "--json"]).spawn().unwrap();
     let code = code_shown(&lines(&mut a));
-    let mut b = krowk(&desktop, &api, DESKTOP, &["sync", "join"]).spawn().unwrap();
+    let mut b = gruntas(&desktop, &api, DESKTOP, &["sync", "join"]).spawn().unwrap();
     b.stdin.take().unwrap().write_all(format!("{code}\nn\n").as_bytes()).unwrap();
     let b = wait(b, Duration::from_secs(60));
     let said = format!("{}{}", String::from_utf8_lossy(&b.stdout), String::from_utf8_lossy(&b.stderr));
     assert!(b.status.success(), "{said}");
     assert!(said.contains("[Y/n]") && said.to_lowercase().contains("host service"), "the offer, yes by default: {said}");
-    assert!(said.contains("This machine now takes work from your other machines in trusted repositories. Turn it off with krowk machines accept off."), "{said}");
+    assert!(said.contains("This machine now takes work from your other machines in trusted repositories. Turn it off with gruntas machines accept off."), "{said}");
     let _ = wait(a, Duration::from_secs(30));
     let _ = std::fs::remove_dir_all(&r);
 }

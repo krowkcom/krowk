@@ -1,7 +1,7 @@
 //! Applying a worktree's changes back (WT13): a subagent's worktree leaves
 //! its work on a `gruntas/<hex>` branch its parent cannot use — the parent's
 //! sandbox keeps `.git` read-only, so it cannot merge — and a `--worktree`
-//! session's person has the same gap. krowk, outside any sandbox, brings
+//! session's person has the same gap. gruntas, outside any sandbox, brings
 //! the changes into a working tree as uncommitted changes:
 //!
 //! - **Its final state recorded** (`snapshot`): every change `git add
@@ -29,7 +29,7 @@
 //!   by) names what runs, or what is allowed, in the target. The file tools
 //!   change those only with a person's say, so applying a subagent's back
 //!   (`Approval::Agent`) applies nothing of a worktree with any, keeps it,
-//!   and names them; `krowk worktrees apply`, a person's own command
+//!   and names them; `gruntas worktrees apply`, a person's own command
 //!   (`Approval::Person`), applies them.
 //! - **Submodules** (WT15): a change to what a submodule records, or edits
 //!   inside one, cannot be applied as a file change; a worktree with any is
@@ -45,10 +45,10 @@ const MAX_NAMED: usize = 20;
 /// Who asked for a worktree's changes to be applied: what may land.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Approval {
-    /// Krowk, as a subagent finished: changes inside a fenced directory
+    /// Gruntas, as a subagent finished: changes inside a fenced directory
     /// are not applied.
     Agent,
-    /// A person, by `krowk worktrees apply`: everything is.
+    /// A person, by `gruntas worktrees apply`: everything is.
     Person,
 }
 
@@ -83,19 +83,19 @@ impl Applied {
             Applied::Applied(files) if files.is_empty() => None,
             Applied::Applied(files) => Some(format!("Changes applied to your working tree: {}", named(files))),
             Applied::AppliedLeft(files, why) => Some(format!(
-                "Changes applied to your working tree: {}. The worktree {} could not be removed afterwards ({why}); `krowk worktrees remove {} --force` removes it — do not apply it again",
+                "Changes applied to your working tree: {}. The worktree {} could not be removed afterwards ({why}); `gruntas worktrees remove {} --force` removes it — do not apply it again",
                 named(files),
                 wt.path.display(),
                 wt.hex
             )),
             Applied::Protected(files) => Some(format!(
-                "Changes not applied (they touch protected files: {}). {} — a person can apply them with `krowk worktrees apply {}`",
+                "Changes not applied (they touch protected files: {}). {} — a person can apply them with `gruntas worktrees apply {}`",
                 named(files),
                 kept(),
                 wt.hex
             )),
             Applied::Conflicts(files) => Some(format!("Changes not applied (conflicts in {}). {}", named(files), kept())),
-            Applied::Submodules(paths) => Some(format!("Changes not applied (they change submodules, which krowk does not apply: {}). {}", named(paths), kept())),
+            Applied::Submodules(paths) => Some(format!("Changes not applied (they change submodules, which gruntas does not apply: {}). {}", named(paths), kept())),
         }
     }
 }
@@ -193,10 +193,10 @@ fn snapshot(wt: &Worktree) -> Result<String, Error> {
     read(staged()?.args(["add", "--all", "--", ":/"]), "add")?;
     let tree = read(staged()?.arg("write-tree"), "write-tree")?;
     let head = read(query(&wt.path)?.args(["rev-parse", "HEAD"]), "rev-parse HEAD")?;
-    let message = format!("krowk: final state of worktree {}", wt.hex);
-    // The person's identity when git has one, krowk's when it has none.
+    let message = format!("gruntas: final state of worktree {}", wt.hex);
+    // The person's identity when git has one, gruntas's when it has none.
     let commit = |identity: &[&str]| read(git(&wt.path)?.args(identity).args(["commit-tree", &tree, "-p", &head, "-m", &message]), "commit-tree");
-    let commit = commit(&[]).or_else(|_| commit(&["-c", "user.name=krowk", "-c", "user.email=krowk@localhost"]))?;
+    let commit = commit(&[]).or_else(|_| commit(&["-c", "user.name=gruntas", "-c", "user.email=gruntas@localhost"]))?;
     read(git(&wt.path)?.args(["update-ref", "-m", &message, &format!("{SNAPSHOTS}{}", wt.hex), &commit]), "update-ref")?;
     Ok(commit)
 }
@@ -370,7 +370,7 @@ mod tests {
         std::fs::write(w.path.join("mid/f"), "changed\n").unwrap();
         let kept = finish_into(&w, &main).unwrap().unwrap();
         assert_eq!(kept, Applied::Submodules(vec!["mid".into()]));
-        assert!(kept.note(&w).unwrap().starts_with("Changes not applied (they change submodules, which krowk does not apply: mid). Worktree: "));
+        assert!(kept.note(&w).unwrap().starts_with("Changes not applied (they change submodules, which gruntas does not apply: mid). Worktree: "));
         assert_eq!(std::fs::read_to_string(main.join("a.txt")).unwrap(), "a\n", "nothing applied");
         assert_eq!(std::fs::read_to_string(w.path.join("mid/f")).unwrap(), "changed\n");
         let _ = std::fs::remove_dir_all(&base);
@@ -378,7 +378,7 @@ mod tests {
 
     /// A subagent's change inside `.gruntas` or `.claude` is not applied: the
     /// worktree is kept, nothing lands, and the note names the files and
-    /// the command a person runs. That person's `krowk worktrees apply`
+    /// the command a person runs. That person's `gruntas worktrees apply`
     /// applies them.
     #[test]
     fn wt13_protected_files_are_left_to_a_person() {
@@ -397,7 +397,7 @@ mod tests {
         assert_eq!(kept, Applied::Protected(vec![".gruntas/config.json".into(), "sub/.Claude/settings.json".into()]));
         assert_eq!(
             kept.note(&w).unwrap(),
-            format!("Changes not applied (they touch protected files: .gruntas/config.json, sub/.Claude/settings.json). Worktree: {}, branch {} — a person can apply them with `krowk worktrees apply {}`", w.path.display(), w.branch(), w.hex)
+            format!("Changes not applied (they touch protected files: .gruntas/config.json, sub/.Claude/settings.json). Worktree: {}, branch {} — a person can apply them with `gruntas worktrees apply {}`", w.path.display(), w.branch(), w.hex)
         );
         assert_eq!(std::fs::read_to_string(main.join("a.txt")).unwrap(), "a\n", "nothing applied");
         assert!(!main.join(".gruntas").exists() && w.path.is_dir());
@@ -434,6 +434,6 @@ mod tests {
         assert_eq!(glob_escape("a[1]*?.txt"), r"a\[1\]\*\?.txt");
         let w = Worktree { path: PathBuf::from("/w/0badf00d"), hex: "0badf00d".into(), base: String::new(), common: PathBuf::new(), main: PathBuf::new(), repo_id: String::new() };
         let left = Applied::AppliedLeft(vec!["a.txt".into()], "busy".into()).note(&w).unwrap();
-        assert_eq!(left, "Changes applied to your working tree: a.txt. The worktree /w/0badf00d could not be removed afterwards (busy); `krowk worktrees remove 0badf00d --force` removes it — do not apply it again");
+        assert_eq!(left, "Changes applied to your working tree: a.txt. The worktree /w/0badf00d could not be removed afterwards (busy); `gruntas worktrees remove 0badf00d --force` removes it — do not apply it again");
     }
 }

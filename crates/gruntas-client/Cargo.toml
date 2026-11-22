@@ -1,11 +1,11 @@
-# What every krowk client shares (R-CLIENT-1): the end-to-end encryption and the protocol types, and in
+# What every gruntas client shares (R-CLIENT-1): the end-to-end encryption and the protocol types, and in
 # time sync. Crypto is implemented here and nowhere else (R-E2E-2); the
 # crypto-import test (tests/crypto_boundary.rs) fails when another crate
 # names a crypto crate as a dependency.
 #
 # This crate never depends on gruntas-harness, tokio or reqwest: a GUI or a
 # phone links it without an engine, a runtime or an HTTP stack. Compiled
-# into `krowk` only by the `harness` feature, so the agent build links none
+# into `gruntas` only by the `harness` feature, so the agent build links none
 # of it. Each dependency below says what it costs against full.size in
 # crates/gruntas-bench/budgets.toml.
 [package]
@@ -17,7 +17,7 @@ license-file.workspace = true
 publish.workspace = true
 
 [dependencies]
-# krowk's home and its one atomic 0600 write (the credentials file's), for
+# gruntas's home and its one atomic 0600 write (the credentials file's), for
 # the device key and the wrapped account key. No crypto of its own.
 gruntas-api = { path = "../gruntas-api" }
 # HPKE (RFC 9180), Base mode, DHKEM(X25519, HKDF-SHA256) + HKDF-SHA256 +

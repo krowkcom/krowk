@@ -1,16 +1,16 @@
-$ krowk help push
+$ gruntas help push
 stdout:
-krowk push — Upload files, get a link for each
+gruntas push — Upload files, get a link for each
 
 Usage
-  krowk push <file...> [flags]
+  gruntas push <file...> [flags]
 
-The short form of `krowk artifacts create`.
+The short form of `gruntas artifacts create`.
 
 Run metadata — the pull request, the links, the references, the session — is
 recorded on a run, and a run belongs to a workspace, so it needs an API key.
 Without one an upload still works: it lands anonymously, expires within a
-day, and comes back with a claim token that `krowk claim` spends to move it
+day, and comes back with a claim token that `gruntas claim` spends to move it
 into a workspace — where a paid plan keeps it and a free one gives it another
 day.
 
@@ -24,10 +24,11 @@ Flags
                            `krowk.caption` and used wherever it is pasted.
                            Repeat to caption several files, in the order they
                            are given
-  --destination <string>   Print what this tool wants pasted into it: the krowk
-                           block for github, linear and the like, the bare link
-                           for the ones that unfurl it themselves, like slack. A
-                           tool krowk has not been told about gets the block
+  --destination <string>   Print what this tool wants pasted into it: the
+                           gruntas block for github, linear and the like, the
+                           bare link for the ones that unfurl it themselves,
+                           like slack. A tool gruntas has not been told about
+                           gets the block
   --private                Upload where only this workspace can read it. The
                            image still embeds — the byte URL is the capability —
                            but the card opens only for a signed-in member, reads
@@ -60,32 +61,32 @@ Flags
 Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
 exit: 0
 
-$ krowk help uploads
+$ gruntas help uploads
 stdout:
-krowk artifacts — Create, list, show, attach, delete or claim artifacts
+gruntas artifacts — Create, list, show, attach, delete or claim artifacts
 
-An artifact is a file published to a link. `krowk push` and `krowk claim`
+An artifact is a file published to a link. `gruntas push` and `gruntas claim`
 are the short forms of `create` and `claim`; `uploads` is an older name.
 
-Commands (krowk artifacts …)
-  create <file...> [flags]    Upload files: the long form of `krowk push`
-  list [flags]                List artifacts, newest first: a run's, or the
-                              workspace's
+Commands (gruntas artifacts …)
+  create <file...> [flags]    Upload files: the long form of `gruntas push`
+  list [flags]                List artifacts, newest first, of a run or the
+                              workspace
   show <artifact>             Read one artifact back
   attach <art> --run <run>    Put an artifact under a run afterwards
   delete <art> [token]        Take an artifact down — immediate, cannot be
                               undone
   claim <art> <token> [--run]
-                              The long form of `krowk claim`
+                              The long form of `gruntas claim`
 
 Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
 exit: 0
 
-$ krowk help runs
+$ gruntas help runs
 stdout:
-krowk runs — Group uploads under a run
+gruntas runs — Group uploads under a run
 
-Commands (krowk runs …)
+Commands (gruntas runs …)
   start [flags]            Open a run to group uploads under
   list [--limit --before]  List the workspace's runs, newest first
   show <run>               Read one run back, with its metadata
@@ -94,15 +95,15 @@ Commands (krowk runs …)
 Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
 exit: 0
 
-$ krowk help claim
+$ gruntas help claim
 stdout:
-krowk claim — Keep an anonymous upload past expiry
+gruntas claim — Keep an anonymous upload past expiry
 
 Usage
-  krowk claim <artifact> <token> [--run]
+  gruntas claim <artifact> <token> [--run]
 
 Moves an anonymous upload into this key's workspace, spending the claim token
-it came back with: `krowk help push`.
+it came back with: `gruntas help push`.
 
 Arguments
   <artifact>      The artifact slug, or a link carrying it — the card page or
@@ -116,52 +117,52 @@ Flags
 Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
 exit: 0
 
-$ krowk help auth
+$ gruntas help auth
 stdout:
-krowk auth — Long forms of login, logout and whoami
+gruntas auth — Long forms of login, logout and whoami
 
-Manage the API key — your krowk account.
+Manage the API key — your gruntas account.
 
-Commands (krowk auth …)
+Commands (gruntas auth …)
   login [--token <token>] [--no-browser]
-                              The long form of `krowk login`
-  logout                      The long form of `krowk logout`
+                              The long form of `gruntas login`
+  logout                      The long form of `gruntas logout`
   token                       Print the stored token
-  verify                      The long form of `krowk whoami`
+  verify                      The long form of `gruntas whoami`
 
 Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
 exit: 0
 
-$ krowk help workspaces
+$ gruntas help workspaces
 stdout:
-krowk workspaces — Switch between stored keys
+gruntas workspaces — Switch between stored keys
 
 The stored keys, one per workspace. A key belongs to one workspace, and the
 credentials file holds one key per workspace: logging in against a second
 workspace adds a key rather than replacing the first. Which key a command uses
 is decided in order by --workspace, GRUNTAS_WORKSPACE, the repository's
 .gruntas/config.json, the global config, and finally whichever key logged in
-last. `krowk config set workspace <name>` pins a repository to a workspace, so
+last. `gruntas config set workspace <name>` pins a repository to a workspace, so
 every command run inside it — by anyone, agent or person — lands there
-without saying so. Where the files live: `krowk help environment`.
+without saying so. Where the files live: `gruntas help environment`.
 
-Commands (krowk workspaces …)
-  [list]           List the stored keys, and which workspace resolves here
+Commands (gruntas workspaces …)
+  [list]           List the stored keys, and the one in use here
   use <workspace>  Make a stored key the machine-wide default
 
 Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
 exit: 0
 
-$ krowk help config
+$ gruntas help config
 stdout:
-krowk config — Show or set configuration
+gruntas config — Show or set configuration
 
-Pins a repository, or the machine, to a workspace: `krowk help workspaces`.
+Pins a repository, or the machine, to a workspace: `gruntas help workspaces`.
 `config get <key>` prints one key's effective value and its source.
 
-Commands (krowk config …)
-  show                        The effective configuration, and which layer set
-                              each value
+Commands (gruntas config …)
+  show                        The effective config, and which layer set each
+                              value
   get <key>                   One key's effective value and where it comes from
   set <key> <value> [--global]
                               Write one value into the repo config, or the
@@ -172,30 +173,30 @@ Commands (krowk config …)
 Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
 exit: 0
 
-$ krowk help doctor
+$ gruntas help doctor
 stdout:
-krowk doctor — Check this machine's setup
+gruntas doctor — Check this machine's setup
 
 Usage
-  krowk doctor
+  gruntas doctor
 
 Checks the local setup, and that the registry answers.
 
 Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
 exit: 0
 
-$ krowk help sessions
+$ gruntas help sessions
 stdout:
-krowk sessions — List and read agent sessions on this machine
+gruntas sessions — List and read agent sessions on this machine
 
 Usage
-  krowk sessions [--harness <name>] [--worktree <path>] [--limit N] [--all]
+  gruntas sessions [--harness <name>] [--worktree <path>] [--limit N] [--all]
 
 Lists every agent thread on this machine, newest first.
 
-Commands (krowk sessions …)
-  show <id> [--thinking]      Read one session back, with its turns, messages
-                              and parts
+Commands (gruntas sessions …)
+  show <id> [--thinking]      Read one session back: its turns, messages and
+                              parts
   import --from <provider|all> [--dry-run] [--limit N]
                               Import this machine's agent transcripts
   rebuild [--yes]             Delete the local store and re-import every
@@ -212,34 +213,34 @@ Flags
 Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
 exit: 0
 
-$ krowk help pricing
+$ gruntas help pricing
 stdout:
-krowk pricing — Refresh model prices
+gruntas pricing — Refresh model prices
 
-Commands (krowk pricing …)
+Commands (gruntas pricing …)
   refresh  Refresh the models.dev price cache
 
 Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
 exit: 0
 
-$ krowk help upgrade
+$ gruntas help upgrade
 stdout:
-krowk upgrade — Upgrade krowk
+gruntas upgrade — Upgrade gruntas
 
 Usage
-  krowk upgrade
+  gruntas upgrade
 
-Upgrades krowk to the latest release.
+Upgrades gruntas to the latest release.
 
 Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
 exit: 0
 
-$ krowk help help
+$ gruntas help help
 stdout:
-krowk help — This, a command's help, or a topic
+gruntas help — This, a command's help, or a topic
 
 Usage
-  krowk help [command|topic] [--all]
+  gruntas help [command|topic] [--all]
 
 Arguments
   [command]  The command or topic to describe, e.g. `artifacts attach` or
@@ -251,23 +252,23 @@ Flags
 Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
 exit: 0
 
-$ krowk help bogus
+$ gruntas help bogus
 stderr:
 {
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "`bogus` is not a krowk command or help topic — run `krowk help`",
+    "fix": "`bogus` is not a gruntas command or help topic — run `gruntas help`",
     "retryable": false
   }
 }
 exit: 1
 
-$ krowk help push --json
+$ gruntas help push --json
 stdout:
 {
   "name": "push",
-  "usage": "krowk push <file...> [flags]",
+  "usage": "gruntas push <file...> [flags]",
   "summary": "Upload files, get a link for each",
   "args": [
     {
@@ -295,7 +296,7 @@ stdout:
       "name": "destination",
       "type": "string",
       "default": "",
-      "usage": "Print what this tool wants pasted into it: the krowk block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool krowk has not been told about gets the block"
+      "usage": "Print what this tool wants pasted into it: the gruntas block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool gruntas has not been told about gets the block"
     },
     {
       "name": "private",
@@ -379,7 +380,7 @@ stdout:
 }
 exit: 0
 
-$ krowk help uploads --json
+$ gruntas help uploads --json
 stdout:
 {
   "name": "artifacts",
@@ -387,8 +388,8 @@ stdout:
   "subcommands": [
     {
       "name": "create",
-      "usage": "krowk artifacts create <file...> [flags]",
-      "summary": "Upload files: the long form of `krowk push`",
+      "usage": "gruntas artifacts create <file...> [flags]",
+      "summary": "Upload files: the long form of `gruntas push`",
       "args": [
         {
           "name": "file",
@@ -415,7 +416,7 @@ stdout:
           "name": "destination",
           "type": "string",
           "default": "",
-          "usage": "Print what this tool wants pasted into it: the krowk block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool krowk has not been told about gets the block"
+          "usage": "Print what this tool wants pasted into it: the gruntas block for github, linear and the like, the bare link for the ones that unfurl it themselves, like slack. A tool gruntas has not been told about gets the block"
         },
         {
           "name": "private",
@@ -499,8 +500,8 @@ stdout:
     },
     {
       "name": "list",
-      "usage": "krowk artifacts list [flags]",
-      "summary": "List artifacts, newest first: a run's, or the workspace's",
+      "usage": "gruntas artifacts list [flags]",
+      "summary": "List artifacts, newest first, of a run or the workspace",
       "flags": [
         {
           "name": "limit",
@@ -525,7 +526,7 @@ stdout:
     },
     {
       "name": "show",
-      "usage": "krowk artifacts show <artifact>",
+      "usage": "gruntas artifacts show <artifact>",
       "summary": "Read one artifact back",
       "args": [
         {
@@ -538,7 +539,7 @@ stdout:
     },
     {
       "name": "attach",
-      "usage": "krowk artifacts attach <art> --run <run>",
+      "usage": "gruntas artifacts attach <art> --run <run>",
       "summary": "Put an artifact under a run afterwards",
       "args": [
         {
@@ -559,7 +560,7 @@ stdout:
     },
     {
       "name": "delete",
-      "usage": "krowk artifacts delete <art> [token]",
+      "usage": "gruntas artifacts delete <art> [token]",
       "summary": "Take an artifact down — immediate, cannot be undone",
       "args": [
         {
@@ -577,8 +578,8 @@ stdout:
     },
     {
       "name": "claim",
-      "usage": "krowk artifacts claim <art> <token> [--run]",
-      "summary": "The long form of `krowk claim`",
+      "usage": "gruntas artifacts claim <art> <token> [--run]",
+      "summary": "The long form of `gruntas claim`",
       "args": [
         {
           "name": "artifact",
@@ -606,11 +607,11 @@ stdout:
 }
 exit: 0
 
-$ krowk help sessions --json
+$ gruntas help sessions --json
 stdout:
 {
   "name": "sessions",
-  "usage": "krowk sessions [--harness <name>] [--worktree <path>] [--limit N] [--all]",
+  "usage": "gruntas sessions [--harness <name>] [--worktree <path>] [--limit N] [--all]",
   "summary": "List and read agent sessions on this machine",
   "flags": [
     {
@@ -641,8 +642,8 @@ stdout:
   "subcommands": [
     {
       "name": "show",
-      "usage": "krowk sessions show <id> [--thinking]",
-      "summary": "Read one session back, with its turns, messages and parts",
+      "usage": "gruntas sessions show <id> [--thinking]",
+      "summary": "Read one session back: its turns, messages and parts",
       "args": [
         {
           "name": "id",
@@ -662,7 +663,7 @@ stdout:
     },
     {
       "name": "import",
-      "usage": "krowk sessions import --from <provider|all> [--dry-run] [--limit N]",
+      "usage": "gruntas sessions import --from <provider|all> [--dry-run] [--limit N]",
       "summary": "Import this machine's agent transcripts",
       "flags": [
         {
@@ -688,7 +689,7 @@ stdout:
     },
     {
       "name": "rebuild",
-      "usage": "krowk sessions rebuild [--yes]",
+      "usage": "gruntas sessions rebuild [--yes]",
       "summary": "Delete the local store and re-import every transcript",
       "flags": [
         {
@@ -702,7 +703,7 @@ stdout:
     },
     {
       "name": "budget",
-      "usage": "krowk sessions budget <id> [--max-usd N] [--max-tokens N]",
+      "usage": "gruntas sessions budget <id> [--max-usd N] [--max-tokens N]",
       "summary": "Check a session against a spend limit",
       "args": [
         {
@@ -729,8 +730,8 @@ stdout:
     },
     {
       "name": "sync",
-      "usage": "krowk sessions sync [--no-network]",
-      "summary": "Import what changed since the last import, refresh prices",
+      "usage": "gruntas sessions sync [--no-network]",
+      "summary": "Import what changed since last import, refresh prices",
       "flags": [
         {
           "name": "no-network",

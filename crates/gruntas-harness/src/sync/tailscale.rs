@@ -1,7 +1,7 @@
 //! What the local `tailscaled` says of this machine and its tailnet, read
 //! through its LocalAPI (R-NET-1): a unix socket on Linux and for the
 //! open-source daemon on macOS, 127.0.0.1 behind a password for the macOS
-//! app. Two `GET`s and their JSON are all krowk asks of it: `status`, for
+//! app. Two `GET`s and their JSON are all gruntas asks of it: `status`, for
 //! this node's addresses, its MagicDNS name and its peers, and `whois`, for
 //! who is on the far end of a connection. The daemon answers HTTP/1.0 and
 //! closes, so a request is one write and one read to the end, with no client
@@ -25,7 +25,7 @@ pub const SOCKET: &str = "/var/run/tailscale/tailscaled.sock";
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const MACOS_SOCKETS: [&str; 2] = ["/var/run/tailscaled.socket", SOCKET];
 
-/// The three ways to name a LocalAPI krowk found none of, for every error
+/// The three ways to name a LocalAPI gruntas found none of, for every error
 /// that ends a search.
 const OPTIONS: &str = "start Tailscale, name tailscaled's socket in GRUNTAS_TAILSCALE_SOCKET, or name the macOS app's LocalAPI in GRUNTAS_TAILSCALE_LOCALAPI (http://127.0.0.1:<port> with GRUNTAS_TAILSCALE_LOCALAPI_TOKEN, or the path of its sameuserproof file)";
 
@@ -85,7 +85,7 @@ pub fn socket(env: &dyn Fn(&str) -> String) -> LocalApi {
 /// `GRUNTAS_TAILSCALE_LOCALAPI`: `http://127.0.0.1:<port>` with the token in
 /// `GRUNTAS_TAILSCALE_LOCALAPI_TOKEN`, or the path of a sameuserproof file.
 /// Only loopback is taken: the token is the Tailscale app's password, and
-/// krowk sends it nowhere else.
+/// gruntas sends it nowhere else.
 fn localapi_override(v: &str, token: &str) -> Result<LocalApi, String> {
     let Some((scheme, rest)) = v.split_once("://") else {
         return proof_file(Path::new(v));
@@ -144,7 +144,7 @@ fn proof_file(path: &Path) -> Result<LocalApi, String> {
     }
 }
 
-/// macOS has three Tailscales, and krowk tries them in turn:
+/// macOS has three Tailscales, and gruntas tries them in turn:
 /// - the open-source `tailscaled` (Homebrew, or built by hand), on a unix
 ///   socket at one of `sockets` that answers a connect;
 /// - the App Store app, whose network extension writes
@@ -156,7 +156,7 @@ fn proof_file(path: &Path) -> Result<LocalApi, String> {
 ///   the token, into `/Library/Tailscale` (`macsys`), readable by admins.
 ///
 /// These are the files tailscale's own CLI reads (`safesocket_darwin.go`);
-/// it finds the App Store one through `lsof` on IPNExtension, which krowk
+/// it finds the App Store one through `lsof` on IPNExtension, which gruntas
 /// skips for reading the directory it names.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn discover(sockets: &[PathBuf], containers: Option<&Path>, macsys: &Path) -> LocalApi {
@@ -213,7 +213,7 @@ fn answers(port: u16) -> bool {
 }
 
 /// The App Store app's ports and tokens, from the sameuserproof files in
-/// its group container, newest first. A container krowk may not read is an
+/// its group container, newest first. A container gruntas may not read is an
 /// error, so the reason reaches the person rather than "none found".
 fn app_store(containers: &Path) -> Result<Vec<LocalApi>, String> {
     let mut found: Vec<(std::time::SystemTime, u16, String)> = Vec::new();
@@ -404,12 +404,12 @@ fn exchange(mut s: impl Read + Write, path: &str, request: &str) -> Result<Vec<u
 
 /// This node, its addresses and its peers.
 pub fn status(api: &LocalApi) -> Result<Status, String> {
-    serde_json::from_slice(&get(api, "/localapi/v0/status")?).map_err(|e| format!("tailscaled's status is not what krowk reads: {e}"))
+    serde_json::from_slice(&get(api, "/localapi/v0/status")?).map_err(|e| format!("tailscaled's status is not what gruntas reads: {e}"))
 }
 
 /// Who holds the tailnet node at `peer`.
 pub fn whois(api: &LocalApi, peer: SocketAddr) -> Result<WhoIs, String> {
-    serde_json::from_slice(&get(api, &format!("/localapi/v0/whois?addr={peer}"))?).map_err(|e| format!("tailscaled's whois is not what krowk reads: {e}"))
+    serde_json::from_slice(&get(api, &format!("/localapi/v0/whois?addr={peer}"))?).map_err(|e| format!("tailscaled's whois is not what gruntas reads: {e}"))
 }
 
 /// The optional hardening (R-NET-3): a direct connection is let in only

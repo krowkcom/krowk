@@ -1,4 +1,4 @@
-//! The reference relay (`krowk relay serve`): the contract in Canon's
+//! The reference relay (`gruntas relay serve`): the contract in Canon's
 //! `engineering/relay.md`, implemented in Rust so the relay is replaceable
 //! (R-RELAY-1). It is the hermetic stand-in the tests run against, a
 //! self-hosting path, and the implementation ticket 18's Durable Object is
@@ -231,13 +231,13 @@ pub struct Config {
     /// what they dialed. Without it, `ws://` and the request's `Host` —
     /// for loopback only, since a relay that trusts the `Host` a client
     /// sends lets a relay in the middle pass its challenge through
-    /// (`krowk relay serve` refuses another address without `--origin`).
+    /// (`gruntas relay serve` refuses another address without `--origin`).
     pub origin: Option<String>,
     pub limits: Limits,
     /// Where each channel's admission facts — its workspace, its fence and
     /// that fence's ticket expiry — are kept across restarts, so a restart
     /// never lets a displaced lease holder host again (relay.md → Tickets).
-    /// None keeps them in memory, for loopback only (`krowk relay serve`
+    /// None keeps them in memory, for loopback only (`gruntas relay serve`
     /// refuses another address without `--state`).
     pub state: Option<std::path::PathBuf>,
     /// A host's direct listener (R-NET-1): the origins it may be dialed as,
@@ -569,7 +569,7 @@ impl Pool {
     }
 }
 
-/// Evictions by pool. `krowk relay serve` runs one relay a process and has
+/// Evictions by pool. `gruntas relay serve` runs one relay a process and has
 /// no status but stderr, so the count rides each `evict` line.
 static EVICTED: [std::sync::atomic::AtomicU64; 6] = [const { std::sync::atomic::AtomicU64::new(0) }; 6];
 
@@ -1206,7 +1206,7 @@ fn admit(relay: &Relay, key: Key, nonce: &[u8; 32], origin: &str, mut j: Join, t
         // with a higher fence has joined since.
         let other_at_fence = channel.fence == Some(t.fence) && channel.fence_device.is_some_and(|d| d != t.device);
         if t.role != RELAY_ROLE_HOST || channel.fence.is_some_and(|f| t.fence < f) || other_at_fence {
-            return Err(refuse("not_lease_holder", "only the device holding the session's lease may host it, and the lease has moved on from this ticket's", "take the session's lease (krowk resumes it on this device), or join as a viewer"));
+            return Err(refuse("not_lease_holder", "only the device holding the session's lease may host it, and the lease has moved on from this ticket's", "take the session's lease (gruntas resumes it on this device), or join as a viewer"));
         }
         if j.fence != Some(t.fence) {
             return Err(refuse("stale_lease", format!("the ticket's fence is {}, not {}", t.fence, j.fence.map_or("absent".into(), |f| f.to_string())), "send the fence of the lease the ticket came with"));

@@ -1,8 +1,8 @@
-//! `krowk config set defaultMode|rollover` and `krowk config get`, the built
+//! `gruntas config set defaultMode|rollover` and `gruntas config get`, the built
 //! binary against a temp home: both keys always write the global config
 //! (defaultMode nested as the engine reads it) and leave other keys alone,
 //! an invalid value names the valid ones, `rollover`'s source is repo when a
-//! trusted repository sets it, else global, else default, and a `krowk -p`
+//! trusted repository sets it, else global, else default, and a `gruntas -p`
 //! started afterwards runs in the mode that was set.
 
 #![cfg(feature = "harness")]
@@ -21,11 +21,11 @@ impl Sandbox {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
-        std::fs::write(root.join("repo/README.md"), "# krowk\n\nPermalinks for agent output.\n").unwrap();
+        std::fs::write(root.join("repo/README.md"), "# gruntas\n\nPermalinks for agent output.\n").unwrap();
         Sandbox { root: root.canonicalize().unwrap() }
     }
 
-    fn krowk(&self, args: &[&str]) -> Output {
+    fn gruntas(&self, args: &[&str]) -> Output {
         let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
         c.args(args)
             .env_clear()
@@ -44,9 +44,9 @@ impl Sandbox {
     }
 
     fn ok(&self, args: &[&str]) -> Value {
-        let out = self.krowk(args);
-        assert!(out.status.success(), "krowk {args:?}: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-        serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("krowk {args:?}: {e}"))
+        let out = self.gruntas(args);
+        assert!(out.status.success(), "gruntas {args:?}: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("gruntas {args:?}: {e}"))
     }
 
     fn global(&self) -> PathBuf {
@@ -92,13 +92,13 @@ fn r_cut_6_default_mode_is_set_nested_in_the_global_config_and_read_back() {
 fn r_cut_6_an_invalid_value_is_refused_naming_the_valid_ones() {
     let b = Sandbox::new("invalid");
     for (key, bad, valid) in [("defaultMode", "plan", "default, unhinged"), ("rollover", "sometimes", "auto, offer, off")] {
-        let out = b.krowk(&["config", "set", key, bad]);
+        let out = b.gruntas(&["config", "set", key, bad]);
         let err = String::from_utf8_lossy(&out.stderr).into_owned() + &String::from_utf8_lossy(&out.stdout);
         assert!(!out.status.success() && err.contains(valid), "{key}: {err}");
     }
-    let out = b.krowk(&["config", "set", "rollover"]);
+    let out = b.gruntas(&["config", "set", "rollover"]);
     assert!(!out.status.success() && (String::from_utf8_lossy(&out.stderr) + String::from_utf8_lossy(&out.stdout)).contains("auto|offer|off"), "a missing value names them too");
-    let out = b.krowk(&["config", "unset", "defaultMode"]);
+    let out = b.gruntas(&["config", "unset", "defaultMode"]);
     assert!(!out.status.success(), "these two are set, not removed");
     assert!(!b.global().exists(), "nothing was written");
 }
@@ -126,13 +126,13 @@ fn r_cut_7_get_reads_workspace_and_refuses_an_unknown_key() {
     assert_eq!(b.get("workspace").1, "none");
     b.ok(&["config", "set", "workspace", "ws_one", "--global"]);
     assert_eq!(b.get("workspace"), ("ws_one".into(), "global config".into()));
-    let out = b.krowk(&["config", "get", "nonsense"]);
+    let out = b.gruntas(&["config", "get", "nonsense"]);
     assert!(!out.status.success() && (String::from_utf8_lossy(&out.stderr) + String::from_utf8_lossy(&out.stdout)).contains("workspace, defaultMode, rollover"));
 }
 
 /// A session on Claude Code (the fake `claude`, signed in to the default
 /// account) started after `config set defaultMode unhinged` runs in that
-/// mode: krowk answers Claude Code's permission asks itself, and allows a
+/// mode: gruntas answers Claude Code's permission asks itself, and allows a
 /// command it would refuse headless in default with nobody to ask.
 #[cfg(unix)]
 #[test]
@@ -149,7 +149,7 @@ fn r_cut_6_a_session_started_after_config_set_uses_the_default_mode() {
     let done = r#"{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"{{SESSION}}"}"#;
     std::fs::write(b.root.join("scenario.jsonl"), format!("{call}\n@ask {ask}\n@tool_result toolu_rm\n{done}\n")).unwrap();
     b.ok(&["config", "set", "defaultMode", "unhinged"]);
-    let out = b.krowk(&["-p", "read README.md and summarise it in one line", "--model", "claude/sonnet", "--output-format", "stream-json"]);
+    let out = b.gruntas(&["-p", "read README.md and summarise it in one line", "--model", "claude/sonnet", "--output-format", "stream-json"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
     let started = stdout.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).find(|l| l["type"] == "turn.started").expect("turn.started");
