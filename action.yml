@@ -131,7 +131,7 @@ runs:
               want="${GITHUB_ACTION_REF#v}"
               got=$(gruntas --version)
               if [ "${got%%.*}" != "$want" ]; then
-                echo "::error::krowk@${GITHUB_ACTION_REF} resolved to the latest release, ${got}, which is not on the ${want}.x line. Pin a release tag to stay on ${want}.x, or move the action to @v${got%%.*}." >&2
+                echo "::error::gruntas@${GITHUB_ACTION_REF} resolved to the latest release, ${got}, which is not on the ${want}.x line. Pin a release tag to stay on ${want}.x, or move the action to @v${got%%.*}." >&2
                 exit 1
               fi
               ;;

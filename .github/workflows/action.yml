@@ -22,7 +22,28 @@ permissions:
   contents: read
 
 jobs:
+  # The action installs a release, and the installer only knows the gruntas
+  # archives: until this repository has published one, there is nothing for
+  # the smoke test to install, so it is skipped and says so. `pin` is the
+  # oldest gruntas release, for the step that pins one.
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      pin: ${{ steps.find.outputs.pin }}
+    steps:
+      - id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pin=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '[.[] | select(.draft | not) | select(.prerelease | not) | select(any(.assets[]; .name | startswith("gruntas_")))] | last | .tag_name // ""')
+          echo "pin=$pin" >> "$GITHUB_OUTPUT"
+          [[ -n "$pin" ]] || echo "::notice::no gruntas release yet, so the action smoke test is skipped"
+
   smoke:
+    needs: release
+    if: needs.release.outputs.pin != ''
     strategy:
       # macOS is in the matrix because its stock bash is 3.2; its failure (or
       # ubuntu's) must not cancel the other leg — the whole point is seeing
@@ -78,15 +99,17 @@ jobs:
       # scripts, which is the same code by construction.
       - name: A tag-pinned action installs that release
         if: runner.os == 'Linux'
+        env:
+          PIN: ${{ needs.release.outputs.pin }}
         run: |
           set -euo pipefail
           ruby -ryaml -e 'puts YAML.load_file("action.yml")["runs"]["steps"][0]["run"]' > /tmp/install_step.sh
-          export GITHUB_ACTION_PATH="$PWD" GITHUB_ACTION_REF=v0.7.0 GRUNTAS_SKIP_SKILL=1
+          export GITHUB_ACTION_PATH="$PWD" GITHUB_ACTION_REF="$PIN" GRUNTAS_SKIP_SKILL=1
           export RUNNER_TEMP=/tmp/pin GITHUB_PATH=/tmp/pin_path
           mkdir -p /tmp/pin && : > /tmp/pin_path
           bash /tmp/install_step.sh
           got=$(/tmp/pin/gruntas-bin/gruntas --version)
-          [ "$got" = "0.7.0" ] || { echo "::error::installed $got, want the pinned 0.7.0" >&2; exit 1; }
+          [ "$got" = "${PIN#v}" ] || { echo "::error::installed $got, want the pinned ${PIN#v}" >&2; exit 1; }
 
       # A remote `uses: owner/repo@ref`: the runner fetches the whole
       # repository as the action, crates/ and all, and names it in
@@ -94,12 +117,14 @@ jobs:
       # the consumer's repository — here, a made-up acme/webapp.
       - name: A remote action installs from its own repository
         if: runner.os == 'Linux'
+        env:
+          PIN: ${{ needs.release.outputs.pin }}
         run: |
           set -euo pipefail
           action="$(mktemp -d)"
           git archive HEAD | tar -x -C "$action"
           ruby -ryaml -e 'puts YAML.load_file("action.yml")["runs"]["steps"][0]["run"]' > /tmp/remote_step.sh
-          export GITHUB_ACTION_PATH="$action" GITHUB_ACTION_REF=v0.7.0 GRUNTAS_SKIP_SKILL=1
+          export GITHUB_ACTION_PATH="$action" GITHUB_ACTION_REF="$PIN" GRUNTAS_SKIP_SKILL=1
           export GITHUB_ACTION_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_REPOSITORY=acme/webapp
           export RUNNER_TEMP=/tmp/remote GITHUB_PATH=/tmp/remote_path
           mkdir -p /tmp/remote && : > /tmp/remote_path
