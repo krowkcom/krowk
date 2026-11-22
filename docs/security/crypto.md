@@ -1,6 +1,6 @@
 # End-to-end encryption
 
-> Published from Canon, krowk's private design specs (`canon/engineering/crypto.md` in `gruntas/cloud` at 7614c20). `threat-model.md` is in this directory. The other design files it cites, such as `relay.md`, `harness.md` and `devices.md`, are not published.
+> Published from Canon, krowk's private design specs (`canon/engineering/crypto.md` in `gruntas/cloud` at 5de0b00). `threat-model.md` is in this directory. The other design files it cites, such as `relay.md`, `harness.md` and `devices.md`, are not published.
 
 Sessions leave the machine they ran on — to the registry, the relay and R2 — so that a person can pick one up on another device. A transcript is the most sensitive thing krowk touches: source code, credentials pasted into a prompt, whatever a tool read. This file is the crypto design every sync, relay and client ticket reads instead of choosing again: the constructions and their suite, the key hierarchy, the blob formats, what the server side can and cannot learn, and what is not done yet.
 
@@ -335,10 +335,10 @@ METHOD
 TIMESTAMP               the header's digits, verbatim
 hex(SHA-256(body))      of the empty string for a call with no body
 DEVICE                  the X-Krowk-Device fingerprint, lowercase hex
-ORIGIN                  the API origin, https://api.krowk.com in production
+ORIGIN                  the API origin, https://api.gruntas.com in production (https://api.krowk.com from a client released before the move)
 ```
 
-The origin is the registry's configured canonical origin, reduced as `relay.md` → The canonical origin reduces a relay's but keeping `http` and `https` as they are: the scheme, `://`, the host lowercased (an IPv6 address bracketed, in RFC 5952's text), `:port` only when it is not the scheme's default (80 for `http`, 443 for `https`), and nothing else: no user name (a URL with one is refused), no path, no query, no trailing slash. So a client pointed at `https://API.krowk.com:443/v1` signs `https://api.krowk.com`. It is never the `Host` header, which behind Cloudflare is what the edge forwarded rather than what the device addressed. Neither new line can hold a newline either: the fingerprint is checked as hex, and the origin is config. **The workspace is not a line, on purpose.** A device belongs to the person, not to one of their workspaces (`devices.md`), so any of the person's API keys may carry its signature, and the replay memory is global: a signed request is accepted once, whichever workspace's key it arrives with.
+The origin is the API origin the client was pointed at, reduced as `relay.md` → The canonical origin reduces a relay's but keeping `http` and `https` as they are: the scheme, `://`, the host lowercased (an IPv6 address bracketed, in RFC 5952's text), `:port` only when it is not the scheme's default (80 for `http`, 443 for `https`), and nothing else: no user name (a URL with one is refused), no path, no query, no trailing slash. So a client pointed at `https://API.gruntas.com:443/v1` signs `https://api.gruntas.com`. The registry verifies against an **ordered list of origins** in its config, `https://api.gruntas.com` first, then `https://api.krowk.com`, trying each in turn and accepting the request if any verifies; the two are one deployment, the second kept at least until 2027-01-20 for clients released before the move. The origin is never derived from the `Host` header, which behind Cloudflare is what the edge forwarded rather than what the device addressed. Neither new line can hold a newline either: the fingerprint is checked as hex, the client's origin is reduced as above and the registry's come from its config. **The workspace is not a line, on purpose.** A device belongs to the person, not to one of their workspaces (`devices.md`), so any of the person's API keys may carry its signature, and the replay memory is global: a signed request is accepted once, whichever workspace's key it arrives with.
 
 A request without the header is checked over v1's lines, as before. Each one that verifies is logged, and sent to PostHog as `registry.signed_request.v1` (device, user agent and path) at most once per device per day, so the registry can tell when v1 is no longer used and retire it. A header with any value but `2` is refused, so no spelling of the header names v1. The registry accepts both versions; the client signs v2 only once a registry that accepts it is deployed.
 
@@ -354,7 +354,7 @@ The registry's setting `signed_requests.v1_until` (an ISO date; blank accepts v1
 The registry refuses, each as a `401`:
 
 - a call with any of the three missing (`signature_required`);
-- a signature that does not verify under the signing key on record for that device of the key's person, or a device the person does not have, or an `X-Krowk-Signature-Version` other than `2` (`signature_invalid`) — under v2, a signature presented with another device's fingerprint, or made for another origin, is one of these;
+- a signature that does not verify under the signing key on record for that device of the key's person, or a device the person does not have, or an `X-Krowk-Signature-Version` other than `2` (`signature_invalid`) — under v2, a signature presented with another device's fingerprint, or made for an origin not on the registry's list, is one of these;
 - a timestamp more than five minutes from the registry's clock (`signature_stale`);
 - a v1 request once v1 has retired (`signature_version_retired`, above);
 - a signed request it has already accepted (`signature_replayed`): each one it accepts is remembered, by a digest of the device and the lines, in a table with a unique index until its window closes, so two processes cannot both accept one.
@@ -410,6 +410,7 @@ Every secret type in `krowk-client` — the account key, every user key generati
 
 ## Change log
 
+- **2026-11-22** — Move to gruntas.com, GD09: a v2 signature binds `https://api.gruntas.com` in production, and the registry verifies against an ordered list of API origins (`https://api.gruntas.com`, then `https://api.krowk.com`), never the `Host` header.
 - **2026-11-19** — Sync paywall: an expired start (Free) — when a reader accepts a log that starts after chunk 0, what the registry must declare, and the trade-off that a hostile registry can drop a log's start, shown as expired history.
 - **2026-10-30** — Images everywhere IMG9: Image objects (sealing, associated data, keyed name under the epoch-0 key, what the registry learns). What the server side can see gains the exact size of an image object.
 - **2026-10-27** — Harness P1 follow-ups ticket 153: v2 signed registry requests, chosen by `X-Krowk-Signature-Version: 2`, bind the device's fingerprint and the configured API origin; the workspace is deliberately not a line. v1 is still accepted, and logged, until it retires.
