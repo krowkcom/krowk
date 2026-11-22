@@ -61,6 +61,10 @@ jobs:
       - name: Install shellcheck
         run: brew install shellcheck
 
+      # Which credentials npm/publish.mjs publishes with, against a fake npm.
+      - name: Test the publish script
+        run: node --test npm/publish_test.mjs
+
       # Also checks the platform tables in npm/build.mjs and both launchers
       # still name the platforms the release built.
       - name: Assemble the npm packages

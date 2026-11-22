@@ -5,9 +5,13 @@
 //
 // Two things this handles that a `for` loop in the workflow would not:
 //
-//   No token — the npm names may not be claimed yet, and a release that cannot
-//   publish should still be a release. Missing credentials skip the publish and
-//   say so; they do not fail the tag.
+//   Credentials — with a token (NODE_AUTH_TOKEN or NPM_TOKEN), publish with it.
+//   Without one, publish through trusted publishing: npm 11.5.1 or later trades
+//   the workflow's OIDC token for a short-lived one, for packages whose
+//   trusted publisher names this workflow. Either way the OIDC token also signs
+//   provenance. Neither available fails the step: a release without its npm
+//   packages is not a release to skip past quietly. Only --dry-run, which
+//   publishes nothing, runs without credentials.
 //
 //   Already published — npm versions are immutable, so a re-run of a release
 //   that got halfway must be able to finish rather than die on the first
@@ -54,14 +58,48 @@ try {
 // repo secret is called, so accept either and let a human running this by hand
 // use whichever they have exported.
 const token = process.env.NODE_AUTH_TOKEN || process.env.NPM_TOKEN;
-if (!token && !dryRun) {
-  notice(
-    "NPM_TOKEN is not set — skipping npm publish for " + manifest.version + ". " +
-      "The GitHub release is unaffected. Set the NPM_TOKEN repo secret with " +
-      "publish rights on the @gruntas scope, then re-run this workflow.",
-  );
-  process.exit(0);
+// What GitHub Actions sets when the job has `id-token: write`: npm reads these
+// both for trusted publishing and for provenance.
+const oidc = Boolean(
+  process.env.ACTIONS_ID_TOKEN_REQUEST_URL && process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN,
+);
+
+// The first npm that publishes through OIDC.
+const TRUSTED_NPM = [11, 5, 1];
+
+function npmVersion() {
+  const ran = spawnSync("npm", ["--version"], { encoding: "utf8" });
+  if (ran.status !== 0) die("could not run `npm --version`");
+  return ran.stdout.trim();
 }
+
+function atLeast(version, floor) {
+  const parts = version.split(/[.-]/).slice(0, 3).map(Number);
+  for (let i = 0; i < floor.length; i++) {
+    if (parts[i] !== floor[i]) return parts[i] > floor[i];
+  }
+  return true;
+}
+
+let auth;
+if (token) {
+  auth = "token";
+} else if (oidc) {
+  const version = npmVersion();
+  if (!atLeast(version, TRUSTED_NPM)) {
+    die("no npm token, and npm " + version + " cannot publish through OIDC" +
+      "\n  (trusted publishing needs npm " + TRUSTED_NPM.join(".") + " or later).");
+  }
+  auth = "trusted publishing (OIDC)";
+} else if (dryRun) {
+  auth = "none (dry run)";
+} else {
+  die("no way to publish " + manifest.version + ": NODE_AUTH_TOKEN and NPM_TOKEN are unset," +
+    "\n  and there is no OIDC token for trusted publishing (the job needs" +
+    "\n  `permissions: id-token: write`). Set the NPM_TOKEN repo secret or configure" +
+    "\n  a trusted publisher for each package, then re-run this workflow.");
+}
+process.stdout.write("npm/publish.mjs: publishing with " + auth + "\n");
 
 // A prerelease under `latest` would hand every `npx @gruntas/cli` an rc. Park it on
 // `next` and leave `latest` where it was.
@@ -86,6 +124,8 @@ for (const pkg of manifest.packages) {
   }
 
   const args = ["publish", "--access", "public", "--tag", tag];
+  // Provenance needs the OIDC token; a human publishing by hand has none.
+  if (oidc) args.push("--provenance");
   if (dryRun) args.push("--dry-run");
 
   process.stdout.write("publishing " + pkg.name + "@" + manifest.version + " (" + tag + ")\n");
@@ -93,7 +133,10 @@ for (const pkg of manifest.packages) {
   if (published.status !== 0) {
     die("npm publish failed for " + pkg.name + "@" + manifest.version +
       "\n  The packages before it in the manifest are already out; re-running this" +
-      "\n  workflow will skip those and pick up here.");
+      "\n  workflow will skip those and pick up here." +
+      (auth === "token" ? "" :
+        "\n  Without a token, npm needs a trusted publisher on " + pkg.name +
+        "\n  naming this repository and .github/workflows/release.yml."));
   }
 }
 

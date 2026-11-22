@@ -146,6 +146,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   the steering itself, so a long silent turn costs no CPU, and steering is
   passed on the moment you send it rather than within a tenth of a second.
 
+- **npm packages can be published without a stored token.** The release
+  workflow publishes the `@gruntas/*` packages with npm's trusted publishing
+  (the workflow's own GitHub identity) when no npm token is set, with
+  provenance either way, and a release with neither now fails instead of
+  skipping npm.
+
 ## [0.18.0] - 2026-11-20
 
 ### Added
