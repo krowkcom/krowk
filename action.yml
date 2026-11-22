@@ -97,7 +97,7 @@ runs:
         if [ -z "${KROWK_REPO:-}" ]; then
           if [ -n "${GITHUB_ACTION_REPOSITORY:-}" ]; then
             KROWK_REPO="$GITHUB_ACTION_REPOSITORY"
-          elif [ -d "${GITHUB_ACTION_PATH:?}/crates/krowk" ]; then
+          elif [ -d "${GITHUB_ACTION_PATH:?}/crates/gruntas" ]; then
             KROWK_REPO="${GITHUB_REPOSITORY:-krowkcom/krowk}"
           else
             KROWK_REPO="krowkcom/krowk"

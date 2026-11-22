@@ -1,0 +1,2542 @@
+//! The host: where commands are executed and the log is written. Clients
+//! talk to it only through `Command` and `StreamLine`, so the in-process
+//! client `krowk -p` uses today and the daemon's socket clients later speak
+//! the same protocol. The in-process transport is a function call and two
+//! channels.
+//!
+//! The host is the one writer of a session's log (R-SYNC-2): an engine
+//! reports events, and the host gives each logged one its id and parent,
+//! appends it, and only then forwards it — a client never sees an event the
+//! log does not have.
+
+use crate::catalog::ModelInfo;
+use crate::budget::Budget;
+use crate::engine::{BoxFuture, Engine, EngineError, EngineEvent, HistoryItem, Idle, Steer, Steers, TurnContext, TurnEnd};
+use crate::images;
+use crate::agents::AgentsConfig;
+use crate::children::ChildWatch;
+use crate::evidence::{Evidence, Publisher};
+use crate::instances::{Asked, Registry, Resolved};
+use crate::log::{self, LogError, SessionLog};
+use crate::toolset;
+use crate::handoff::{self, TurnSpan};
+use crate::instances::Rollover;
+use crate::protocol::{
+    Billing, BudgetLimits, ChildState, Command, ContextRecord, Effort, Item, LimitStatus, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RanBy, RunResult, StreamLine, SwitchOffer, SwitchReason, TurnStatus, Usage,
+    WireApi,
+};
+use crate::claude::ClaudeEngine;
+use crate::codex::CodexEngine;
+use crate::trust;
+use crate::usage;
+use crate::{compat, permissions, readiness};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+use tokio::sync::{broadcast, mpsc, watch};
+
+/// Prices a model call: (provider, model, usage) to USD, or none when the
+/// model has no price. Supplied by the caller, which owns the price cache.
+pub type Pricer = Arc<dyn Fn(&str, &str, &Usage) -> Option<f64> + Send + Sync>;
+
+/// What the catalog knows of a model: (provider, model) to its family,
+/// limits, efforts and wire API, or none when the catalog does not know it.
+/// The family picks the toolset preset, the wire API the client, and the
+/// efforts what the ladder maps onto. Supplied by the caller, which owns the
+/// models.dev cache.
+pub type Catalog = Arc<dyn Fn(&str, &str) -> Option<ModelInfo> + Send + Sync>;
+
+pub struct HostConfig {
+    /// Where session logs live: `log::sessions_dir`.
+    pub sessions_dir: PathBuf,
+    /// The working directory a new session starts in. A resumed session
+    /// keeps the one it started in, so its system prompt stays byte-identical.
+    pub cwd: PathBuf,
+    /// The instances: moved into the host by `Host::new` and read with
+    /// `Host::registry` from then on.
+    pub registry: Registry,
+    pub krowk_version: String,
+    pub pricer: Pricer,
+    pub catalog: Catalog,
+    /// krowk's provider credentials file, where OAuth logins live.
+    pub credentials: PathBuf,
+    /// Asked before a backend is spawned in a repository (R-BACK-6).
+    pub trust: trust::Gate,
+    /// Pushes what `publish` is handed to krowk's registry (R-EVID-1);
+    /// none, and the tool says it cannot run.
+    pub publisher: Option<Publisher>,
+    /// The person's own settings and where krowk keeps its own: what the
+    /// permission rules, instructions, skills and hooks are read from, and
+    /// whether a client answers approval requests (R-PERM-1, R-PERM-2).
+    pub permissions: permissions::Config,
+    /// The person's agent definitions and the model listing a subagent's
+    /// model is chosen from (R-SUB-1, R-SUB-5).
+    pub agents: AgentsConfig,
+    /// What the session this process was started for runs with, when it
+    /// works in a krowk worktree (WT6: `krowk --worktree`, or a session
+    /// resumed in one).
+    pub session: SessionSetup,
+}
+
+/// What a session in a worktree of its own (WT6) runs with. Default:
+/// nothing, as any other session.
+#[derive(Debug, Clone, Default)]
+pub struct SessionSetup {
+    /// The id the host's first new session takes: its worktree is locked
+    /// in that session's name before the session exists.
+    pub id: Option<String>,
+    /// What readying its worktree had to say (`crate::worktree::prepare`):
+    /// the top of that session's first prompt (`worktree::first_prompt`).
+    pub notes: Vec<String>,
+    /// What every session's commands get in their environment beyond
+    /// krowk's own: the worktree's `KROWK_PORT_BASE`.
+    pub env: Vec<(String, String)>,
+    /// Whether this process holds one of the machine's agent slots for its
+    /// sessions, as a `--worktree` session's does (WT12): their subagents
+    /// run on it rather than taking more, so a session holding the last
+    /// slot is never left waiting on a child that waits for one.
+    pub on_agent_slot: bool,
+}
+
+/// What executes commands. Cheap to share: its state is behind one `Arc`,
+/// which a turn's subagents hold too, since each is a turn of this host.
+pub struct Host {
+    shared: Arc<Shared>,
+}
+
+pub(crate) struct Shared {
+    pub(crate) cfg: HostConfig,
+    /// The instances, taken from `cfg.registry` (left empty) and replaced by
+    /// `set_registry`: a connection made while the host runs (`krowk connect`) is a turn's to use at once.
+    instances: std::sync::RwLock<Instances>,
+    /// Each session with a turn running — a subagent's too: its cancel
+    /// switch and the queue its steering waits in.
+    running: Mutex<HashMap<String, Running>>,
+    /// Each session's backend engine, with the instance it runs on: its
+    /// process outlives a turn and serves the session's next one.
+    backends: Mutex<HashMap<String, Backend>>,
+    /// Each native session's MCP connections, kept open across its turns
+    /// (`mcp::Pool`) and let go of with the backends' idle sweep and at
+    /// shutdown, with when a turn last used them.
+    mcp: Mutex<HashMap<String, (Arc<crate::mcp::Pool>, Instant)>>,
+    /// How long a session's backend process is kept without a turn.
+    backend_idle: std::time::Duration,
+    /// How long the writer between turns lags each event (`SessionKids`),
+    /// standing for a slow disk: tests only (`test-hooks`).
+    #[cfg(feature = "test-hooks")]
+    between_lag: std::time::Duration,
+    /// Approval requests waiting for a client's answer, every session's —
+    /// a subagent's included.
+    approvals: permissions::Approvals,
+    /// What a person allowed for the rest of each session. A subagent
+    /// shares its parent's: a grant for the session holds in its subagents.
+    grants: Mutex<HashMap<String, permissions::SessionGrants>>,
+    /// What the backends say between turns, to whoever watches (`watch`).
+    watch: broadcast::Sender<StreamLine>,
+    /// Each session's early offers, in memory (D14): not kept across a
+    /// daemon restart.
+    early: Mutex<HashMap<String, EarlyOffers>>,
+    /// The clock the early switch reads: the store's, except in tests
+    /// (`with_clock`).
+    clock: Arc<dyn Fn() -> i64 + Send + Sync>,
+}
+
+/// What a session's early offers come to (D14): the offer its last turn
+/// made, which its next prompt answers, and the logins it was declined for,
+/// each until that login's binding window resets (`None`: never).
+#[derive(Default)]
+struct EarlyOffers {
+    offered: Option<EarlyOffer>,
+    declined: HashMap<String, Option<i64>>,
+}
+
+/// An early offer, and the instance and login it was made from.
+struct EarlyOffer {
+    instance: String,
+    login: String,
+    resets_at_ms: Option<i64>,
+}
+
+struct Running {
+    cancel: Arc<watch::Sender<bool>>,
+    steers: Steers,
+    /// A `switchModel` that arrived while the turn ran: logged once it is
+    /// over, since the turn holds the log.
+    switch: Option<ModelRef>,
+    /// A backend's agent (R-SUB-7): its turn is the backend's, which krowk
+    /// cannot steer, and stops by asking the backend (R-SUB-10).
+    backend_child: Option<BackendTask>,
+    /// The turn has taken its switch and is letting go: it still holds the
+    /// log, so a prompt is refused as busy, but a `switchModel` now waits
+    /// for the log rather than being kept for a turn that has closed.
+    closing: bool,
+}
+
+/// A backend's agent, as the backend knows it: the session whose backend
+/// runs it, and the backend's id for it.
+#[derive(Clone)]
+struct BackendTask {
+    parent: String,
+    task_id: String,
+}
+
+/// A backend's own agents as the session's children (R-SUB-7): each one's
+/// child session, by the backend's id for it, and the logs of those still
+/// running. Kept with the session's backend process, not a turn: an agent
+/// run in the background outlives the turn that started it, and its lines
+/// between turns are written to the same logs by the session's own writer
+/// (`SessionKids`); a stop and an approval are routed by `sessions`.
+#[derive(Default)]
+pub(crate) struct BackendChildren {
+    /// Every agent the process ran, its `backendId` to its child session.
+    pub sessions: HashMap<String, String>,
+    /// The ones still running, by `backendId`.
+    open: HashMap<String, OpenChild>,
+}
+
+/// A session's backend agents and the writer that is the session's, not a
+/// turn's: what the backend says between turns (`Idle`) is queued, in the
+/// order said, to one task that writes each agent's lines to its child log
+/// and sends them to the host's watchers — a background agent's items, its
+/// end, and the process's other frames, so none overtakes another.
+///
+/// A turn writes its agents' lines itself, and the two never cross: a turn
+/// waits for what was queued before it (`settle`) and holds the `pen`
+/// until its writer is done; at the backend's `Woke` — said as the turn
+/// takes the process, so everything said before it is before the turn's
+/// events — the task counts it in `woke`, which the turn waits for before
+/// it writes an agent, then waits for the pen, so what is said after it is
+/// written after the turn's lines, however far behind the turn's writer is.
+#[derive(Clone)]
+struct SessionKids {
+    state: Arc<tokio::sync::Mutex<BackendChildren>>,
+    /// The writer's queue; none outside a runtime, where the frames go
+    /// straight to the watchers and the agents' lines are not written.
+    jobs: Option<mpsc::UnboundedSender<Told>>,
+    pen: Arc<tokio::sync::Mutex<()>>,
+    woke: Arc<watch::Sender<u64>>,
+}
+
+/// What the session's writer is handed: an event said between turns, or
+/// a mark to answer once everything before it is written.
+enum Told {
+    Event(Box<EngineEvent>),
+    Settle(tokio::sync::oneshot::Sender<()>),
+}
+
+impl SessionKids {
+    /// The children of `session_id`, with their writer running.
+    fn new(session_id: &str, watch: broadcast::Sender<StreamLine>, lag: Lag) -> SessionKids {
+        let mut kids = SessionKids { state: Arc::default(), jobs: None, pen: Arc::default(), woke: Arc::new(watch::channel(0).0) };
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            let (tx, rx) = mpsc::unbounded_channel();
+            rt.spawn(write_between(rx, kids.clone(), watch, session_id.to_string(), lag));
+            kids.jobs = Some(tx);
+        }
+        kids
+    }
+
+    /// Waits until everything said before now is written and sent.
+    async fn settle(&self) {
+        let Some(jobs) = &self.jobs else { return };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if jobs.send(Told::Settle(tx)).is_ok() {
+            let _ = rx.await;
+        }
+    }
+
+    /// Waits until the writer has reached the `Woke` after the `from`th:
+    /// everything said before the turn took the process is written.
+    async fn woken(&self, from: u64) {
+        if self.jobs.is_none() {
+            return;
+        }
+        let _ = self.woke.subscribe().wait_for(|n| *n > from).await;
+    }
+}
+
+/// The session's writer between turns (`SessionKids`): each event in the
+/// order it was said, until the backend and every turn let go of it. It
+/// holds no sender of its own queue, so it ends with them.
+/// How long the writer between turns lags each event: a duration with
+/// `test-hooks`, nothing otherwise.
+#[cfg(feature = "test-hooks")]
+type Lag = std::time::Duration;
+#[cfg(not(feature = "test-hooks"))]
+type Lag = ();
+
+async fn write_between(mut jobs: mpsc::UnboundedReceiver<Told>, kids: SessionKids, watch: broadcast::Sender<StreamLine>, session_id: String, lag: Lag) {
+    #[cfg(not(feature = "test-hooks"))]
+    let () = lag;
+    while let Some(job) = jobs.recv().await {
+        match job {
+            Told::Settle(done) => {
+                let _ = done.send(());
+            }
+            // A turn took the process: what follows waits for its writer.
+            Told::Event(ev) if matches!(*ev, EngineEvent::Woke) => {
+                kids.woke.send_modify(|n| *n += 1);
+                drop(kids.pen.lock().await);
+            }
+            Told::Event(ev) => {
+                #[cfg(feature = "test-hooks")]
+                if !lag.is_zero() {
+                    tokio::time::sleep(lag).await;
+                }
+                for l in between(&kids.state, &session_id, *ev).await {
+                    let _ = watch.send(l);
+                }
+            }
+        }
+    }
+}
+
+/// One event a session's backend said between turns, as the lines to
+/// send: a background agent's item or response written to its child log,
+/// its end ending it (`end_child`), and the process's own frames. An agent
+/// starts in a turn — its `Agent` call is one — so one said to start here
+/// has no turn to name it and is not followed.
+async fn between(state: &tokio::sync::Mutex<BackendChildren>, session_id: &str, ev: EngineEvent) -> Vec<StreamLine> {
+    let said = |text: String| StreamLine::Live(LiveEvent::Notice { session_id: session_id.into(), turn_id: String::new(), text });
+    let live = match ev {
+        EngineEvent::BackendChild { task_id, event } => {
+            let (mut lines, lost) = child_line(state, &task_id, *event).await;
+            if let Some((c, e)) = lost {
+                lines.push(said(lost_words(&c.log.session_id, &e)));
+                lines.push(StreamLine::Live(c.watch.frame(ChildState::Failed)));
+            }
+            return lines;
+        }
+        EngineEvent::BackendChildEnded { task_id, status, error } => {
+            let Some(c) = state.lock().await.open.remove(&task_id) else { return Vec::new() };
+            let (mut lines, lost) = end_child(c, status, error).await;
+            if let Some(text) = lost {
+                lines.insert(0, said(text));
+            }
+            return lines;
+        }
+        EngineEvent::BackendAgents { agents } => LiveEvent::BackendAgents { session_id: session_id.into(), agents },
+        EngineEvent::Unprompted { reason } => LiveEvent::TurnUnprompted { session_id: session_id.into(), reason },
+        // No turn to name: the frame's turn id is empty.
+        EngineEvent::Notice { text } => return vec![said(text)],
+        _ => return Vec::new(),
+    };
+    vec![StreamLine::Live(live)]
+}
+
+/// A backend's agent still running: its log, its one turn, its state, and
+/// its place among the sessions running here, given up with it.
+struct OpenChild {
+    log: SessionLog,
+    turn_id: String,
+    watch: ChildWatch,
+    started: Instant,
+    _here: ChildHeld,
+}
+
+/// A backend's agent held as a session running here, as a turn holds its
+/// own (`Registration`): a prompt to it is refused as busy, an interrupt
+/// or a steer is answered for what it is. Weak: what the host keeps of a
+/// backend's agents never keeps the host.
+///
+/// Lock order: `backends`, then `running`. Its drop takes `running`, and
+/// can run where `backends` is held (a backend let go with agents open —
+/// `Host::shutdown` drains them under it); nothing takes `backends` while
+/// it holds `running`.
+struct ChildHeld {
+    shared: std::sync::Weak<Shared>,
+    id: String,
+}
+
+impl ChildHeld {
+    fn new(shared: &Arc<Shared>, id: &str, task: BackendTask) -> ChildHeld {
+        let running = Running { cancel: Arc::new(watch::channel(false).0), steers: Steers::default(), switch: None, backend_child: Some(task), closing: false };
+        shared.running.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), running);
+        ChildHeld { shared: Arc::downgrade(shared), id: id.to_string() }
+    }
+}
+
+impl Drop for ChildHeld {
+    /// Let go however it ended — in a turn, between turns, its log lost,
+    /// its process gone: no longer running here, and a request handed to
+    /// it (`Approvals::hand_to`) that its turn never forgot goes with it,
+    /// which the parent's turn's end no longer covers.
+    fn drop(&mut self) {
+        if let Some(s) = self.shared.upgrade() {
+            s.running.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.id);
+            s.approvals.forget_session(&self.id);
+        }
+    }
+}
+
+/// The instances, and how many times each was changed while the host ran:
+/// read together, so a backend is stamped with the change its instance
+/// was read at.
+#[derive(Default)]
+struct Instances {
+    registry: Arc<Registry>,
+    /// Bumped by `set_registry` for the instance it names. A backend process
+    /// made before its instance's last change may run on a login signed out
+    /// since, or a key replaced: its session's next turn checks the instance
+    /// again and starts a new one. Every other instance's process is kept.
+    changed: HashMap<String, u64>,
+}
+
+impl Instances {
+    fn generation(&self, instance: &str) -> u64 {
+        self.changed.get(instance).copied().unwrap_or(0)
+    }
+}
+
+/// A session's backend engine, the instance it was made for, and when a
+/// turn last finished on it.
+struct Backend {
+    instance: String,
+    engine: Arc<dyn Engine>,
+    used: Instant,
+    /// Its instance's generation when it was read (`Instances::changed`):
+    /// one made before a connection or sign-out changed it is not reused.
+    generation: u64,
+    /// The agents its process runs, as the session's children (R-SUB-7):
+    /// they live as long as the process does.
+    children: SessionKids,
+}
+
+/// A backend process kept this long without a turn is let go: a long-lived
+/// host (the daemon, an interactive client) holds many sessions, and an idle `claude` or
+/// `codex app-server` is a few hundred megabytes. The next turn starts it
+/// again on the vendor's resume.
+pub const BACKEND_IDLE: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// How long letting go of one backend may take: its own polite stop (stdin
+/// closed, five seconds, then its group stopped) and a margin.
+pub const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn log_failure(e: LogError) -> EngineError {
+    match e {
+        LogError::NotFound(m) => EngineError::new("no_session", m),
+        LogError::Busy(m) => EngineError::new("session_busy", m),
+        LogError::Io(m) => EngineError::new("session_log_failed", m),
+    }
+}
+
+impl Host {
+    pub fn new(mut cfg: HostConfig) -> Host {
+        let registry = Arc::new(std::mem::take(&mut cfg.registry));
+        let watch = broadcast::channel(64).0;
+        Host {
+            shared: Arc::new(Shared {
+                instances: std::sync::RwLock::new(Instances { registry, changed: HashMap::new() }),
+                cfg,
+                running: Mutex::new(HashMap::new()),
+                backends: Mutex::new(HashMap::new()),
+                mcp: Mutex::new(HashMap::new()),
+                backend_idle: BACKEND_IDLE,
+                #[cfg(feature = "test-hooks")]
+                between_lag: std::time::Duration::ZERO,
+                approvals: permissions::Approvals::default(),
+                grants: Mutex::new(HashMap::new()),
+                watch,
+                early: Mutex::new(HashMap::new()),
+                clock: Arc::new(gruntas_store::now_ms),
+            }),
+        }
+    }
+
+    /// The frames sent while no turn of their session runs — a backend's
+    /// agents (`backend.agents`), and a turn it began by itself
+    /// (`turn.unprompted`), which `continue` runs. A client that stays
+    /// open between turns, as an interactive client does, subscribes once.
+    pub fn watch(&self) -> broadcast::Receiver<StreamLine> {
+        self.shared.watch.subscribe()
+    }
+
+    /// How many sessions have work under way between turns — a backend's
+    /// agents, a turn it began by itself — which goes with their process.
+    pub fn background(&self) -> u32 {
+        self.background_sessions().len() as u32
+    }
+
+    /// Those sessions, by id.
+    pub fn background_sessions(&self) -> Vec<String> {
+        self.shared.backends.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|(_, b)| b.engine.busy()).map(|(id, _)| id.clone()).collect()
+    }
+
+    /// Whether `session` is held running here — a turn's, from its
+    /// prompt's acceptance until its command lets go, or a backend's agent
+    /// — so that a prompt to it is refused as busy.
+    pub fn holds(&self, session: &str) -> bool {
+        self.shared.running.lock().unwrap_or_else(|e| e.into_inner()).contains_key(session)
+    }
+
+    /// Denies every approval request of these sessions still waiting: the
+    /// daemon's, when the last client that could answer them went away.
+    pub fn deny_waiting(&self, sessions: &[String]) {
+        for s in sessions {
+            self.shared.approvals.deny_session(s);
+        }
+    }
+
+    /// Each server of the session's MCP pool with its status and tools
+    /// (`mcp::ServerStatus`); empty for a session with no pool.
+    pub fn mcp_status(&self, session_id: &str) -> Vec<crate::mcp::ServerStatus> {
+        let pool = self.shared.mcp.lock().unwrap_or_else(|e| e.into_inner()).get(session_id).map(|(p, _)| p.clone());
+        pool.map(|p| p.status()).unwrap_or_default()
+    }
+
+    /// `mcp_status` as the protocol carries it (`mcpStatus`).
+    pub fn mcp_servers(&self, session_id: &str) -> Vec<crate::protocol::McpServer> {
+        use crate::mcp::Status;
+        use crate::protocol::{McpServer, McpState, McpTool};
+        self.mcp_status(session_id)
+            .into_iter()
+            .map(|s| {
+                let (state, reason) = match s.status {
+                    Status::Connecting => (McpState::Connecting, None),
+                    Status::Connected => (McpState::Connected, None),
+                    Status::NeedsSignIn => (McpState::NeedsSignIn, None),
+                    Status::Failed(r) => (McpState::Failed, Some(r)),
+                };
+                McpServer { name: s.name, source: s.source, state, reason, tools: s.tools.into_iter().map(|(name, description)| McpTool { name, description }).collect() }
+            })
+            .collect()
+    }
+
+    /// Starts one of the session's MCP servers again at once, ending its
+    /// connection; it connects in the background, so poll `mcp_status`.
+    /// False when the session has no such server.
+    pub async fn mcp_reconnect(&self, session_id: &str, server: &str) -> bool {
+        let pool = self.shared.mcp.lock().unwrap_or_else(|e| e.into_inner()).get(session_id).map(|(p, _)| p.clone());
+        match pool {
+            Some(p) => p.reconnect(server).await,
+            None => false,
+        }
+    }
+
+    /// Signs the session's MCP server out (`mcp::Pool::sign_out`): its
+    /// tokens are removed and its connection closed. False when the session
+    /// has no such server.
+    pub async fn mcp_sign_out(&self, session_id: &str, server: &str) -> Result<bool, EngineError> {
+        let pool = self.shared.mcp.lock().unwrap_or_else(|e| e.into_inner()).get(session_id).map(|(p, _)| p.clone());
+        match pool {
+            Some(p) => p.sign_out(server).await,
+            None => Ok(false),
+        }
+    }
+
+    /// Begins a sign-in to one of the session's MCP servers on this host
+    /// (`mcp::Pool::sign_in_start`): the page to open, and whether this host
+    /// listens for the redirect itself (`loopback`, asked of a host on the
+    /// person's own machine).
+    pub async fn mcp_sign_in_start(&self, session_id: &str, server: &str, loopback: bool) -> Result<(String, bool), EngineError> {
+        let pool = self.shared.mcp.lock().unwrap_or_else(|e| e.into_inner()).get(session_id).map(|(p, _)| p.clone());
+        match pool {
+            Some(p) => p.sign_in_start(server, loopback).await,
+            None => Err(EngineError::new("no_such_server", format!("session {session_id} has no MCP server {server:?}"))),
+        }
+    }
+
+    /// Finishes it with the pasted landing address (`mcp::Pool::sign_in_finish`).
+    pub async fn mcp_sign_in_finish(&self, session_id: &str, server: &str, landing: &str) -> Result<(), EngineError> {
+        let pool = self.shared.mcp.lock().unwrap_or_else(|e| e.into_inner()).get(session_id).map(|(p, _)| p.clone());
+        match pool {
+            Some(p) => p.sign_in_finish(server, landing).await,
+            None => Err(EngineError::new("no_such_server", format!("session {session_id} has no MCP server {server:?}"))),
+        }
+    }
+
+    /// Keeps an idle session's backend process this long instead of
+    /// `BACKEND_IDLE`.
+    pub fn with_backend_idle(mut self, idle: std::time::Duration) -> Host {
+        Arc::get_mut(&mut self.shared).expect("a new host is not shared yet").backend_idle = idle;
+        self
+    }
+
+    /// For tests (`test-hooks`): the writer between turns takes `lag` over
+    /// each event, as on a slow disk, so what a turn waits for is still
+    /// queued.
+    #[cfg(feature = "test-hooks")]
+    pub fn with_between_lag(mut self, lag: std::time::Duration) -> Host {
+        Arc::get_mut(&mut self.shared).expect("a new host is not shared yet").between_lag = lag;
+        self
+    }
+
+    /// For tests (`test-hooks`): the clock the early switch reads, in place
+    /// of the store's, to see a binding window reset.
+    #[cfg(feature = "test-hooks")]
+    pub fn with_clock(mut self, clock: impl Fn() -> i64 + Send + Sync + 'static) -> Host {
+        Arc::get_mut(&mut self.shared).expect("a new host is not shared yet").clock = Arc::new(clock);
+        self
+    }
+
+    /// Lets every backend process go cleanly. A host dropped without this
+    /// still stops them (they are killed with their handles), just less
+    /// politely.
+    ///
+    /// Bounded: an engine that cannot be let go of in `SHUTDOWN_GRACE` — its
+    /// lock held by a turn nobody polls any more — has its process group
+    /// killed instead, so a host going away never waits on one. They are let
+    /// go together, so the wait is the slowest one's, not their sum.
+    pub async fn shutdown(&self) {
+        let pools: Vec<Arc<crate::mcp::Pool>> = self.shared.mcp.lock().unwrap_or_else(|e| e.into_inner()).drain().map(|(_, (p, _))| p).collect();
+        let closes = pools.iter().map(|p| -> BoxFuture<'_, ()> { Box::pin(async move { let _ = tokio::time::timeout(SHUTDOWN_GRACE, p.close()).await; }) });
+        crate::engine::join_all(closes.collect()).await;
+        let backends: Vec<(Arc<dyn Engine>, SessionKids)> = self.shared.backends.lock().unwrap_or_else(|e| e.into_inner()).drain().map(|(_, b)| (b.engine, b.children)).collect();
+        // Each engine ends the agents it still runs, and those ends are
+        // written before the host is gone: an agent's log is left with its
+        // turn completed, interrupted, and its watchers told.
+        let waits = backends.iter().map(|(e, kids)| -> BoxFuture<'_, bool> {
+            Box::pin(async move {
+                tokio::time::timeout(SHUTDOWN_GRACE, async {
+                    e.shutdown().await;
+                    kids.settle().await;
+                })
+                .await
+                .is_err()
+            })
+        });
+        let stuck = crate::engine::join_all(waits.collect()).await.contains(&true);
+        if stuck {
+            crate::group::kill_all();
+        }
+    }
+
+    /// The instances as they are now: a turn already running keeps the
+    /// ones it started with.
+    pub fn registry(&self) -> Arc<Registry> {
+        self.shared.registry()
+    }
+
+    /// Replaces the instances — config.json and the credentials file read
+    /// again after a connection or a sign-out — for every turn from now on.
+    /// A backend process already up on `changed`, the instance connected or
+    /// signed out, is not reused by its session's next turn, which checks
+    /// the instance again (the vendor asked, not taken on the process's
+    /// word) and starts a new one on the vendor's resume: the old one may
+    /// run on the login just signed out, or the key just replaced. Every
+    /// other instance's process is kept, and a turn running now finishes on
+    /// the one it has.
+    pub fn set_registry(&self, registry: Registry, changed: Option<&str>) {
+        let mut all = self.shared.instances.write().unwrap_or_else(|e| e.into_inner());
+        all.registry = Arc::new(registry);
+        if let Some(i) = changed {
+            *all.changed.entry(i.to_string()).or_default() += 1;
+        }
+    }
+
+    /// Replaces the instances after `from` was renamed `to`: the same
+    /// instance under another name, so a backend process up on it — agents
+    /// of its own running, a turn it began waiting — goes on as `to`'s,
+    /// never replaced. One left from an instance that had the name `to`
+    /// before is not reused.
+    pub fn set_registry_renamed(&self, registry: Registry, from: &str, to: &str) {
+        let mut all = self.shared.instances.write().unwrap_or_else(|e| e.into_inner());
+        let was = all.generation(from);
+        let now = was.max(all.generation(to)) + 1;
+        // Both names move on, never back: a process left on the old name is
+        // never taken for another instance that has that name later.
+        all.changed.insert(from.to_string(), was + 1);
+        all.changed.insert(to.to_string(), now);
+        all.registry = Arc::new(registry);
+        for b in self.shared.backends.lock().unwrap_or_else(|e| e.into_inner()).values_mut() {
+            if b.instance == from && b.generation == was {
+                b.instance = to.to_string();
+                b.generation = now;
+            }
+        }
+    }
+
+    /// Where a bare model id — or, with none, the default — runs here
+    /// (`readiness::route`), for a client choosing one before it asks for a
+    /// turn or a switch (`switchModel`). `current` is the
+    /// session's model, whose instance a bare id stays on when it can;
+    /// `cwd` the session's working directory, where a vendor is asked once
+    /// its repository is trusted.
+    pub async fn route_model(&self, asked: Option<&Asked>, current: Option<&ModelRef>, cwd: &std::path::Path) -> Result<ModelRef, EngineError> {
+        self.shared.route_model(asked, current, cwd).await
+    }
+
+    /// Executes one command. A `prompt` streams its events to `out` and
+    /// answers with its result — a turn that failed is still a result, with
+    /// `isError`. An error here means no turn ran.
+    pub async fn execute(&self, cmd: Command, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
+        let shared = &self.shared;
+        match cmd {
+            Command::PutImage { session_id, sha256, media_type, data } => {
+                let dir = shared.cfg.sessions_dir.clone();
+                tokio::task::spawn_blocking(move || images::put(&dir, session_id.as_deref(), &sha256, &media_type, &data)).await.map_err(|e| EngineError::new("log_failed", e.to_string()))??;
+                Ok(None)
+            }
+            Command::Prompt { session_id, text, images, model, permission_mode, toolset, effort, rollover, budget } => {
+                // Images named by hash are the ones `putImage` kept: a missing
+                // one refuses the prompt before anything is logged.
+                let (dir, id) = (shared.cfg.sessions_dir.clone(), session_id.clone());
+                let images = match images::needs_disk(&images) {
+                    true => tokio::task::spawn_blocking(move || images::resolve(&dir, id.as_deref(), images)).await.map_err(|e| EngineError::new("log_failed", e.to_string()))??,
+                    false => images,
+                };
+                let images = images::decode(&images)?;
+                shared.prompt(session_id.as_deref(), (text, images), model, permission_mode, toolset.as_deref(), effort, rollover, budget.unwrap_or_default(), out).await.map(Some)
+            }
+            // A subagent's session is a running turn like any other, so it
+            // is interrupted alone, by its own id (R-SUB-2); a backend's
+            // agent by asking its backend to stop it, which ends its child
+            // as the backend then says (R-SUB-10).
+            Command::Interrupt { session_id } => {
+                let task = {
+                    let running = shared.running.lock().unwrap_or_else(|e| e.into_inner());
+                    match running.get(&session_id) {
+                        Some(Running { backend_child: Some(t), .. }) => t.clone(),
+                        Some(r) => {
+                            let _ = r.cancel.send(true);
+                            return Ok(None);
+                        }
+                        None => return Err(EngineError::new("no_running_turn", format!("session {session_id} has no turn running, so there is nothing to interrupt"))),
+                    }
+                };
+                let engine = shared.backends.lock().unwrap_or_else(|e| e.into_inner()).get(&task.parent).map(|b| b.engine.clone());
+                let Some(engine) = engine else {
+                    return Err(EngineError::new("not_stoppable", format!("session {session_id} is an agent of a backend that is no longer running — interrupt the session that started it")));
+                };
+                engine.stop_task(&task.task_id).await.map(|()| None)
+            }
+            // Queued for the engine's next step; it comes back in the log as
+            // a `userText` item where the turn took it.
+            Command::Steer { session_id, text, images } => {
+                if text.trim().is_empty() {
+                    return Err(EngineError::new("empty_prompt", "the steering text is empty"));
+                }
+                let (dir, id) = (shared.cfg.sessions_dir.clone(), session_id.clone());
+                let images = match images::needs_disk(&images) {
+                    true => tokio::task::spawn_blocking(move || images::resolve(&dir, Some(&id), images)).await.map_err(|e| EngineError::new("log_failed", e.to_string()))??,
+                    false => images,
+                };
+                let decoded = images::decode(&images)?;
+                let steers = shared.running.lock().unwrap_or_else(|e| e.into_inner()).get(&session_id).map(|r| (r.backend_child.is_some(), r.steers.clone()));
+                if let Some((true, _)) = steers {
+                    return Err(EngineError::new("not_steerable", format!("session {session_id} is an agent its session's backend runs, and takes nothing from krowk while it runs — steer the session that started it")));
+                }
+                let steers = steers.map(|(_, s)| s);
+                let Some(steers) = steers else {
+                    return Err(EngineError::new("no_running_turn", format!("session {session_id} has no turn running to steer — send it as a prompt instead")));
+                };
+                // Kept before it is queued, so the turn that reads it finds
+                // its files; off the runtime's thread, as the log is.
+                let dir = shared.cfg.sessions_dir.join(&session_id);
+                let images = match decoded.is_empty() {
+                    true => Vec::new(),
+                    false => tokio::task::spawn_blocking(move || images::save(&dir, &decoded)).await.map_err(|e| EngineError::new("log_failed", e.to_string()))??,
+                };
+                match Some(&steers) {
+                    Some(r) if r.push(Steer { text, images }).is_ok() => Ok(None),
+                    // The turn has taken its last input and is ending.
+                    Some(_) => Err(EngineError::new("turn_ending", format!("the turn in session {session_id} is finishing and reads no more input — send it as the next prompt"))),
+                    _ => unreachable!("the turn's queue was found"),
+                }
+            }
+            // Whichever client answers first decides; the turn that asked
+            // tells every client it was answered (`approval.resolved`). A
+            // subagent's request is answered under the subagent's session.
+            Command::Approve { session_id, request_id, decision, answers } => {
+                shared.approvals.answer(&session_id, &request_id, decision, answers).map_err(|e| EngineError::new("no_approval_request", e))?;
+                Ok(None)
+            }
+            Command::SwitchModel { session_id, model } => shared.switch_model(session_id.as_deref(), model, out).await.map(|()| None),
+            Command::Continue { session_id, budget } => shared.unprompted(&session_id, budget.unwrap_or_default(), &out, true).await.map(Some),
+            Command::Fork { .. } => Err(EngineError::new("not_implemented", "this command is part of the protocol but not served by this build yet")),
+        }
+    }
+}
+
+/// One turn, settled: the log it appends to, what the branch so far says,
+/// and everything it runs with.
+struct TurnPlan {
+    log: SessionLog,
+    past: Past,
+    text: String,
+    /// The images the prompt carries, checked, kept once its log is open.
+    images: Vec<images::Decoded>,
+    model: ModelRef,
+    /// The instance's provider: what the turn's calls are priced under.
+    provider: String,
+    engine: Arc<dyn Engine>,
+    preset: &'static toolset::Preset,
+    wire: WireApi,
+    info: Option<ModelInfo>,
+    permission_mode: PermissionMode,
+    effort: Option<Effort>,
+    cwd: PathBuf,
+    /// What the turn's commands get in their environment beyond krowk's
+    /// own: a worktree's `KROWK_PORT_BASE`.
+    env: Vec<(String, String)>,
+    backend_session: Option<String>,
+    budget: Budget,
+    evidence: Option<Evidence>,
+    /// The rules the turn is judged by, its MCP servers, skills and hooks,
+    /// and the session's grants.
+    policy: permissions::Policy,
+    compat: compat::Compat,
+    grants: permissions::SessionGrants,
+    /// Whether the result goes to the client as a `result` frame, and a
+    /// failure is followed up with a switch: not for a turn the backend
+    /// began by itself ahead of a prompt (`unprompted`).
+    announce: bool,
+    started: Instant,
+    /// How a backend's thread is brought up to date (`crate::handoff`).
+    handoff: Option<handoff::Handoff>,
+    /// The session held in this host from before its log was opened: the
+    /// turn's cancel switch, its steering, a switch for after it.
+    here: Registration,
+    /// A rollover this turn is the move of: logged once it has passed its
+    /// checks, as it starts (R-INST-8).
+    rolling: Option<Rolling>,
+    /// The instances this prompt has tried already.
+    tried: Vec<String>,
+    /// The turn a backend began by itself (`continue`).
+    unprompted: bool,
+    /// The session's own `rollover`, logged with the turn.
+    session_rollover: Option<Rollover>,
+    /// What a limit does to this session: its own value, else the repository's
+    /// when trusted, else the global config's (R-ROLL-5).
+    rollover: Rollover,
+}
+
+impl Shared {
+    pub(crate) fn registry(&self) -> Arc<Registry> {
+        self.instances.read().unwrap_or_else(|e| e.into_inner()).registry.clone()
+    }
+
+    /// The instances, and `instance`'s generation, read at one moment.
+    fn registry_at(&self, instance: &str) -> (Arc<Registry>, u64) {
+        let all = self.instances.read().unwrap_or_else(|e| e.into_inner());
+        (all.registry.clone(), all.generation(instance))
+    }
+
+    /// Lets go of every backend process idle for longer than the host keeps
+    /// one, except a session's with a turn running, or with work of the
+    /// backend's own under way — agents it runs, a turn it began. Swept
+    /// when a prompt arrives, so an idle host costs nothing to keep tidy.
+    async fn evict_idle(&self) {
+        let running: Vec<String> = self.running.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect();
+        let idle: Vec<Arc<dyn Engine>> = {
+            let mut backends = self.backends.lock().unwrap_or_else(|e| e.into_inner());
+            let stale: Vec<String> = backends.iter().filter(|(id, b)| b.used.elapsed() >= self.backend_idle && !running.contains(id) && !b.engine.busy()).map(|(id, _)| id.clone()).collect();
+            stale.iter().filter_map(|id| backends.remove(id)).map(|b| b.engine).collect()
+        };
+        for e in idle {
+            e.shutdown().await;
+        }
+        let pools: Vec<Arc<crate::mcp::Pool>> = {
+            let mut mcp = self.mcp.lock().unwrap_or_else(|e| e.into_inner());
+            let stale: Vec<String> = mcp.iter().filter(|(id, (_, used))| used.elapsed() >= self.backend_idle && !running.contains(id)).map(|(id, _)| id.clone()).collect();
+            stale.iter().filter_map(|id| mcp.remove(id)).map(|(p, _)| p).collect()
+        };
+        let closes = pools.iter().map(|p| -> BoxFuture<'_, ()> { Box::pin(p.close()) });
+        crate::engine::join_all(closes.collect()).await;
+    }
+
+    /// Puts the session's kept MCP connections under the configuration the
+    /// turn just read; a session that has never had a server keeps no pool.
+    /// A backend's turn uses it too: its `mcp_call` runs on these connections
+    /// (and their stored sign-ins), the idle reaper closes them.
+    async fn adopt_mcp(&self, session_id: &str, compat: &mut compat::Compat) {
+        if compat.mcp.is_empty() && !self.mcp.lock().unwrap_or_else(|e| e.into_inner()).contains_key(session_id) {
+            return;
+        }
+        compat.mcp = Arc::new(self.mcp_pool(session_id).adopt(compat.mcp.servers().to_vec()).await);
+    }
+
+    /// Marks the session's backend and MCP connections used: a turn ended.
+    fn touch(&self, session_id: &str) {
+        if let Some(b) = self.backends.lock().unwrap_or_else(|e| e.into_inner()).get_mut(session_id) {
+            b.used = Instant::now();
+        }
+        if let Some((_, used)) = self.mcp.lock().unwrap_or_else(|e| e.into_inner()).get_mut(session_id) {
+            *used = Instant::now();
+        }
+    }
+
+    /// The session's MCP pool, made on first need and marked used.
+    fn mcp_pool(&self, session_id: &str) -> Arc<crate::mcp::Pool> {
+        let mut mcp = self.mcp.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = mcp.entry(session_id.to_string()).or_insert_with(|| (Arc::new(crate::mcp::Pool::default().with_credentials(self.cfg.credentials.clone())), Instant::now()));
+        entry.1 = Instant::now();
+        entry.0.clone()
+    }
+
+    /// The session's backend engine on `instance`: the one already running
+    /// it, else a new one (and a process started by its first turn).
+    /// `generation` is the instance's when `instance` was read.
+    fn backend_for(&self, session_id: &str, instance: &Resolved, generation: u64) -> Result<Arc<dyn Engine>, EngineError> {
+        let mut backends = self.backends.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(b) = backends.get(session_id)
+            && b.instance == instance.name
+            && b.generation == generation
+        {
+            return Ok(b.engine.clone());
+        }
+        // A session moved to another instance, or its instances changed: the
+        // old engine's process is stopped with it when the last handle goes
+        // (its drop kills it).
+        #[cfg(feature = "test-hooks")]
+        let lag = self.between_lag;
+        #[cfg(not(feature = "test-hooks"))]
+        let lag = ();
+        let children = SessionKids::new(session_id, self.watch.clone(), lag);
+        // A stored key's command, run once (`key_off_thread` ran it before
+        // the turn): the process is handed the key it gave.
+        let instance = &*crate::keys::materialise(instance)?;
+        let e: Arc<dyn Engine> = match instance.wire_api {
+            WireApi::CodexAppServer => Arc::new(CodexEngine::new(instance.clone(), &self.cfg.krowk_version)?),
+            _ => Arc::new(ClaudeEngine::new(instance.clone(), &self.cfg.krowk_version)?.watched(self.teller(session_id, children.clone()))),
+        };
+        let old = backends.insert(session_id.to_string(), Backend { instance: instance.name.clone(), engine: e.clone(), used: Instant::now(), generation, children });
+        // Let go of outside the lock: its children's holds take `running`.
+        drop(backends);
+        drop(old);
+        Ok(e)
+    }
+
+    /// Where a session's backend says what happens between turns: to the
+    /// host's watchers, as frames of that session, through the session's
+    /// writer (`SessionKids`): an agent of its run in the background has
+    /// its items written to its child log as they come, and its end ends
+    /// the child — its turn completed, its last frame, its hold let go —
+    /// whether it finished or its process was let go of (R-SUB-7).
+    fn teller(&self, session_id: &str, children: SessionKids) -> Idle {
+        let (watch, session_id) = (self.watch.clone(), session_id.to_string());
+        Arc::new(move |ev| {
+            if let Some(jobs) = &children.jobs {
+                let _ = jobs.send(Told::Event(Box::new(ev)));
+                return;
+            }
+            let live = match ev {
+                EngineEvent::BackendAgents { agents } => LiveEvent::BackendAgents { session_id: session_id.clone(), agents },
+                EngineEvent::Unprompted { reason } => LiveEvent::TurnUnprompted { session_id: session_id.clone(), reason },
+                EngineEvent::Notice { text } => LiveEvent::Notice { session_id: session_id.clone(), turn_id: String::new(), text },
+                _ => return,
+            };
+            let _ = watch.send(StreamLine::Live(live));
+        })
+    }
+
+    /// `continue`: the turn a session's backend began by itself, run as a
+    /// turn of the session — its prompt item the host's note of why — on
+    /// the model and effort of the session's last turn on that instance, in
+    /// the mode its process is in (`Pending::mode`), else that turn's. Ahead of
+    /// a prompt it is not announced: the prompt's `result` is the one its
+    /// client waits for.
+    async fn unprompted(self: &Arc<Self>, session_id: &str, limits: BudgetLimits, out: &mpsc::Sender<StreamLine>, announce: bool) -> Result<RunResult, EngineError> {
+        let waiting = self.backends.lock().unwrap_or_else(|e| e.into_inner()).get(session_id).and_then(|b| b.engine.pending().map(|r| (b.instance.clone(), r)));
+        let Some((instance, pending)) = waiting else {
+            return Err(EngineError::new("nothing_pending", format!("session {session_id} has no turn its backend began by itself waiting — send a prompt instead")));
+        };
+        let mut plan = self.settle(Some(session_id), (crate::claude::unprompted(&pending.reason), Vec::new()), None, PermissionMode::Default, None, None, None, limits, out, &[], None, Some((&instance, pending.mode))).await?;
+        plan.announce = announce;
+        self.turn(plan, out.clone()).await.map(|(r, _)| r)
+    }
+
+    /// A `prompt`: one turn — and, with `rollover` at `auto`, another on the
+    /// next instance each time one ends on its instance's limit (R-INST-8),
+    /// every instance tried once. The move is logged only once the next
+    /// turn has passed every check and starts: a candidate that fails one
+    /// is skipped for the next, and with none left the limited turn's
+    /// result stands, the session where it was. The result is the last
+    /// turn's.
+    #[allow(clippy::too_many_arguments)]
+    async fn prompt(
+        self: &Arc<Self>,
+        session_id: Option<&str>,
+        (text, images): (String, Vec<images::Decoded>),
+        model: Option<ModelRef>,
+        permission_mode: PermissionMode,
+        toolset: Option<&str>,
+        effort: Option<Effort>,
+        rollover: Option<Rollover>,
+        limits: BudgetLimits,
+        out: mpsc::Sender<StreamLine>,
+    ) -> Result<RunResult, EngineError> {
+        // A turn the session's backend began by itself, and nobody has run,
+        // goes first as a turn of its own: the prompt must not end at its
+        // answer. Whatever became of it, the prompt runs.
+        if let Some(id) = session_id {
+            let _ = self.unprompted(id, limits, &out, false).await;
+        }
+        let mut session = session_id.map(String::from);
+        let mut model = model;
+        let mut tried: Vec<String> = Vec::new();
+        let mut rolling: Option<Rolling> = None;
+        let mut limited: Option<RunResult> = None;
+        loop {
+            let r = match self.settle(session.as_deref(), (text.clone(), images.clone()), model.clone(), permission_mode, toolset, effort, rollover, limits, &out, &tried, rolling.clone(), None).await {
+                Ok(plan) => self.turn(plan, out.clone()).await,
+                Err(e) => Err(e),
+            };
+            match (r, rolling.take()) {
+                (Ok((result, Some(next))), _) => {
+                    tried.push(result.model.instance.clone());
+                    session = Some(result.session_id.clone());
+                    model = Some(next.to.clone());
+                    limited = Some(result);
+                    rolling = Some(next);
+                }
+                (Ok((result, None)), _) => return Ok(result),
+                // The instance rolled over to could not start its turn: the
+                // move was never logged, so the session is where it was.
+                // The next candidate, or the limit's own result.
+                (Err(e), Some(r)) => {
+                    tried.push(r.to.instance.clone());
+                    match self.next_instance(&r.from, &tried, &r.cwd, Rollover::Auto, None).await {
+                        Some(pick) => {
+                            model = Some(pick.model.clone());
+                            rolling = Some(Rolling { to: pick.model, room: room_note(pick.standing), ..r });
+                        }
+                        None => {
+                            let mut result = limited.take().expect("a rollover follows a limited turn");
+                            if let Some(err) = result.error.as_mut() {
+                                err.message.push_str(&format!(" (rollover to {} could not start: {})", r.to, e.message));
+                            }
+                            return Ok(result);
+                        }
+                    }
+                }
+                (Err(e), None) => return Err(e),
+            }
+        }
+    }
+
+    /// Checks that `model` can run a turn here before a session is moved to
+    /// it (R-SWITCH-4): the instance, a Claude Code or Codex account (D4),
+    /// the readiness check — its key, login or binary, a vendor's login
+    /// asked of the vendor — and whether the repository is trusted to run
+    /// one. `stays` is the model
+    /// the session is on, named in the refusal's words.
+    async fn check_model(&self, model: &ModelRef, cwd: &std::path::Path, stays: Option<&ModelRef>) -> Result<(), EngineError> {
+        let staying = |e: EngineError| match stays.filter(|s| *s != model) {
+            Some(s) => EngineError { message: format!("{} — the session stays on {s}", e.message), ..e },
+            None => e,
+        };
+        let registry = self.registry();
+        let instance = registry.get(&model.instance).map_err(|e| staying(EngineError::new("no_instance", e)))?;
+        // D4: a session moves only to a Claude Code or Codex account, and
+        // the refusal is the one line.
+        if instance.backend.is_none() {
+            return Err(crate::connect::no_direct_models());
+        }
+        self.ready(instance, cwd, false).await.map_err(staying)
+    }
+
+    /// The readiness check before a turn runs on `instance` (`readiness`):
+    /// what needs no process first, then for a backend the repository's
+    /// trust, then the vendor's own login — so nothing at all is spawned
+    /// for a repository nobody trusted. The vendor is asked in the
+    /// session's own working directory — inside the root just trusted, and
+    /// where the turn will start it: Claude Code reads the project settings
+    /// of its working directory alone, not of its parents, so its answer
+    /// there (Bedrock, an `apiKeyHelper`, a Codex model provider) is the
+    /// one the turn will get. `known_good` skips the vendor: a session whose process
+    /// is up and serving it has shown its login.
+    async fn ready(&self, instance: &Resolved, cwd: &std::path::Path, known_good: bool) -> Result<(), EngineError> {
+        key_off_thread(instance).await?;
+        let creds = &self.cfg.credentials;
+        if let Some(r) = readiness::local(instance, creds)
+            && let Some(e) = readiness::report(instance, r, creds).refusal(instance)
+        {
+            return Err(e);
+        }
+        if instance.backend.is_none() {
+            return Ok(());
+        }
+        (self.cfg.trust)(&trust::root(cwd))?;
+        if known_good {
+            return Ok(());
+        }
+        let at = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+        readiness::check_async(instance, creds, &readiness::Probe::at(at)).await.refusal(instance).map_or(Ok(()), Err)
+    }
+
+    /// `Host::route_model`, off the runtime's thread: a vendor check blocks
+    /// on a process. Routing asks no trust question: its vendors are asked
+    /// in `cwd` when its repository is trusted already (so the turn's own
+    /// check there is the cache's), else in krowk's own directory — and the
+    /// turn's own check then asks trust, and the vendor in the repository,
+    /// before anything runs there.
+    async fn route_model(self: &Arc<Self>, asked: Option<&Asked>, current: Option<&ModelRef>, cwd: &std::path::Path) -> Result<ModelRef, EngineError> {
+        if let Some(Asked::Exact(m)) = asked {
+            return Ok(m.clone());
+        }
+        let trusted = self.cfg.permissions.trusted.as_ref().is_some_and(|t| t(&trust::root(cwd)));
+        let probe = match cwd.canonicalize() {
+            Ok(at) if trusted => readiness::Probe::at(at),
+            _ => self.neutral_probe().map_err(|e| EngineError::new("data_dir_unwritable", e))?,
+        };
+        let (me, asked, current) = (self.clone(), asked.cloned(), current.cloned());
+        tokio::task::spawn_blocking(move || {
+            let cfg = &me.cfg;
+            readiness::route(&me.registry(), asked.as_ref(), current.as_ref(), &cfg.credentials, &probe, &*cfg.agents.models)
+        })
+        .await
+        .unwrap_or_else(|_| Err(EngineError::new("none_ready", "choosing an instance for the model failed — name one as <instance>/<model>")))
+    }
+
+    /// Where a vendor is asked outside any repository: krowk's own `0700`
+    /// directory in its home, beside the sessions (`readiness::neutral_dir`).
+    fn neutral_probe(&self) -> Result<readiness::Probe, String> {
+        let home = self.cfg.sessions_dir.parent().unwrap_or(&self.cfg.sessions_dir);
+        readiness::neutral_dir(home).map(readiness::Probe::at)
+    }
+
+    /// Whether `session_id` has a backend process for `instance` up now,
+    /// made at `generation` of it.
+    fn backend_up(&self, session_id: Option<&str>, instance: &str, generation: u64) -> bool {
+        let Some(id) = session_id else { return false };
+        self.backends.lock().unwrap_or_else(|e| e.into_inner()).get(id).is_some_and(|b| b.instance == instance && b.generation == generation)
+    }
+
+    /// `switchModel`: checked, then logged — now, or when the running turn
+    /// is over — so the session's next turn runs there.
+    async fn switch_model(self: &Arc<Self>, session_id: Option<&str>, model: ModelRef, out: mpsc::Sender<StreamLine>) -> Result<(), EngineError> {
+        // A name since renamed is the instance it became.
+        let model = self.registry().current_model(&model);
+        let Some(id) = session_id else {
+            return self.check_model(&model, &self.cfg.cwd, None).await;
+        };
+        if !log::valid_id(id) {
+            return Err(EngineError::new("no_session", format!("{id:?} is not a krowk session id")));
+        }
+        let events = log::read_events_off(&self.cfg.sessions_dir.join(id).join(log::EVENTS_FILE)).await.map_err(log_failure)?;
+        let past = replay(&log::branch(&events, events.last().map(|e| e.id.as_str()).unwrap_or_default()), &self.registry());
+        // A subagent runs one turn, on the model its definition (or
+        // `subagents.model`) chose: there is no next turn to switch.
+        if let Some(parent) = &past.parent {
+            return Err(EngineError::new("subagent_session", format!("session {id} is a subagent of {parent}, and runs on the model it was started on — switch {parent}, whose next turn and subagents follow it")));
+        }
+        self.check_model(&model, past.cwd.as_deref().unwrap_or(&self.cfg.cwd), past.model.as_ref()).await?;
+        {
+            let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(r) = running.get_mut(id)
+                && !r.closing
+            {
+                r.switch = Some(model);
+                return Ok(());
+            }
+        }
+        if past.model.as_ref() == Some(&model) {
+            return Ok(());
+        }
+        // A turn of this host letting go of the log right now holds it a
+        // moment longer than its registration: asked again, briefly.
+        let mut tries = 0;
+        let (mut log, _) = loop {
+            match SessionLog::open_off(&self.cfg.sessions_dir, id).await {
+                Err(LogError::Busy(_)) if tries < 40 => {
+                    tries += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(r) = running.get_mut(id)
+                        && !r.closing
+                    {
+                        r.switch = Some(model);
+                        return Ok(());
+                    }
+                }
+                r => break r.map_err(log_failure)?,
+            }
+        };
+        let ev = log.append_off(LogBody::ModelSwitched { turn_id: None, from: past.model, to: model, reason: SwitchReason::Requested, detail: None }).await.map_err(log_failure)?;
+        log.sync_off().await.map_err(log_failure)?;
+        let _ = out.send(StreamLine::Log(ev)).await;
+        Ok(())
+    }
+
+    /// Where a session limited on `from` may continue: the first candidate
+    /// that can run here (R-INST-7, R-INST-8). A rollover (`full`) checks
+    /// each as `switchModel` does: the checks that need no process, trust,
+    /// then the vendor in the repository. An offer never asks about trust —
+    /// that is asked when the person takes it and the turn runs there — so
+    /// it asks the readiness check as `krowk status` does: the checks that
+    /// need no process, then the vendor in krowk's own directory, never the
+    /// repository nobody has trusted yet. A signed-out account is never
+    /// offered; one whose login only a project's settings provide
+    /// (Bedrock, an `apiKeyHelper`) is not offered either, and is reached
+    /// by naming it.
+    async fn next_instance(&self, from: &ModelRef, tried: &[String], cwd: &std::path::Path, rollover: Rollover, at_least: Option<f64>) -> Option<usage::Ranked> {
+        let registry = self.registry();
+        let full = rollover == Rollover::Auto;
+        let data = usage::Usage::in_home(self.cfg.sessions_dir.parent().unwrap_or(&self.cfg.sessions_dir)).read();
+        let candidates = registry.rollover_candidates(from, tried, &data);
+        for ranked in data.rank(data.login_of(&from.instance), &candidates, (self.clock)()) {
+            // The early switch wants a known candidate with that much room.
+            if at_least.is_some_and(|h| !ranked.standing.is_some_and(|s| s.headroom >= h)) {
+                continue;
+            }
+            let m = ranked.model.clone();
+            let Ok(i) = registry.get(&m.instance) else { continue };
+            let ok = match &i.backend {
+                Some(_) if !full => match self.neutral_probe() {
+                    Ok(probe) => readiness::check_async(i, &self.cfg.credentials, &probe).await.refusal(i).is_none(),
+                    Err(_) => false,
+                },
+                _ => self.check_model(&m, cwd, None).await.is_ok(),
+            };
+            if ok {
+                return Some(ranked);
+            }
+        }
+        None
+    }
+
+    /// What follows a session's own turn: after a failure, `after_failure`;
+    /// after a completed one, the early switch. A subagent's turn, nothing.
+    #[allow(clippy::type_complexity)]
+    async fn follow_up(&self, outcome: &Result<TurnEnd, EngineError>, (announce, reached, tried, cwd, rollover): (bool, Option<&ModelRef>, &Vec<String>, &PathBuf, Rollover), (w, before): (&Writer<'_>, Option<&usage::Data>), (model, session_id, calls): (&ModelRef, &str, u32), error: Option<&mut crate::protocol::ErrorInfo>) -> (Option<(ModelRef, SwitchReason, String)>, Option<SwitchOffer>, Option<Rolling>) {
+        match outcome {
+            Err(e) if announce => self.after_failure(e, (reached, tried, cwd, rollover), model, session_id, calls, error).await,
+            Ok(TurnEnd::Completed) if announce => self.early_switch(w, before, model, (tried, cwd, rollover), session_id).await,
+            _ => (None, None, None),
+        }
+    }
+
+    /// The early switch (D9, R-ROLL-11), asked as a session's turn ends:
+    /// when its login has too little left for about two more such turns,
+    /// the best ready candidate with 5 points more room. `auto` moves there,
+    /// as the move to log — its login marked as moved to (D19); `offer`
+    /// makes the offer, marked early (D10); `off` does nothing. Not when
+    /// the person asked for a switch meanwhile.
+    async fn early_switch(&self, w: &Writer<'_>, before: Option<&usage::Data>, model: &ModelRef, (tried, cwd, rollover): (&[String], &std::path::Path, Rollover), session_id: &str) -> (Option<(ModelRef, SwitchReason, String)>, Option<SwitchOffer>, Option<Rolling>) {
+        let none = (None, None, None);
+        let (Some(before), true) = (before, rollover != Rollover::Off) else { return none };
+        let auto = rollover == Rollover::Auto;
+        let now = (self.clock)();
+        let login = before.login_of(&model.instance);
+        let Some((left, resets_at_ms)) = before.runs_low(login, &w.limits.values().cloned().collect::<Vec<_>>(), now) else { return none };
+        // D14: an offer this session declined for this login waits for its window to reset.
+        if !auto && self.early_declined(session_id, login, now) {
+            return none;
+        }
+        let mut tried = tried.to_vec();
+        tried.push(model.instance.clone());
+        let Some(pick) = self.next_instance(model, &tried, cwd, rollover, Some(left + 5.0)).await else { return none };
+        if self.requested(session_id) {
+            return none;
+        }
+        let room = room_note(pick.standing);
+        if !auto {
+            return (None, Some(SwitchOffer { from: model.clone(), to: pick.model, resets_at_ms, room: Some(room).filter(|r| !r.is_empty()), early: true }), None);
+        }
+        w.mark_moved(&pick.model.instance).await;
+        let detail = format!("{model} is {}% used; rollover is auto, continuing on {} ({room})", (100.0 - left).round(), pick.model);
+        w.live(LiveEvent::Notice { session_id: session_id.into(), turn_id: w.turn_id.clone(), text: format!("{detail} (rollover = \"auto\")") }).await;
+        (Some((pick.model, SwitchReason::RateLimited, detail)), None, None)
+    }
+
+    /// Whether a switch the person asked for is waiting for `session_id`'s turn to end.
+    fn requested(&self, session_id: &str) -> bool {
+        self.running.lock().unwrap_or_else(|e| e.into_inner()).get(session_id).is_some_and(|r| r.switch.is_some())
+    }
+
+    /// Remembers an early offer made to `session_id`, for its next prompt to answer.
+    fn early_offered(&self, session_id: &str, offer: EarlyOffer) {
+        self.early.lock().unwrap_or_else(|e| e.into_inner()).entry(session_id.into()).or_default().offered = Some(offer);
+    }
+
+    /// The next prompt on the instance an early offer was made from is the
+    /// decline, since the host never hears a no (D14): its login is declined
+    /// in the session until its binding window resets. A prompt elsewhere
+    /// just leaves the offer behind.
+    fn early_answered(&self, session_id: &str, instance: &str) {
+        let mut early = self.early.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(entry) = early.get_mut(session_id) else { return };
+        if let Some(offer) = entry.offered.take().filter(|o| o.instance == instance) {
+            entry.declined.insert(offer.login, offer.resets_at_ms);
+        }
+    }
+
+    /// Whether an early offer was declined for `login` in `session_id` and
+    /// its binding window has not reset yet at `now`.
+    fn early_declined(&self, session_id: &str, login: &str, now: i64) -> bool {
+        let early = self.early.lock().unwrap_or_else(|e| e.into_inner());
+        early.get(session_id).and_then(|e| e.declined.get(login)).is_some_and(|reset| reset.is_none_or(|r| now < r))
+    }
+
+    /// One turn of a `prompt`, settled: everything that can refuse it
+    /// checked before a new session is created, so a refusal leaves no
+    /// empty session behind — and, for a turn that names another model,
+    /// says the session stays where it was (R-SWITCH-4).
+    #[allow(clippy::too_many_arguments)]
+    async fn settle(
+        self: &Arc<Self>,
+        session_id: Option<&str>,
+        (mut text, images): (String, Vec<images::Decoded>),
+        model: Option<ModelRef>,
+        permission_mode: PermissionMode,
+        toolset: Option<&str>,
+        effort: Option<Effort>,
+        rollover: Option<Rollover>,
+        limits: BudgetLimits,
+        out: &mpsc::Sender<StreamLine>,
+        tried: &[String],
+        rolling: Option<Rolling>,
+        unprompted: Option<(&str, Option<PermissionMode>)>,
+    ) -> Result<TurnPlan, EngineError> {
+        let started = Instant::now();
+        self.evict_idle().await;
+        if text.trim().is_empty() {
+            return Err(EngineError::new("empty_prompt", "the prompt is empty — pass it as an argument, or on stdin"));
+        }
+        // The turn is this host's from before its log is opened until it
+        // lets go, so a `switchModel` in between is kept for it rather than
+        // meeting the log's lock.
+        let mut here = Registration::new(self.clone());
+        if let Some(id) = session_id {
+            here.register(id)?;
+        }
+        let opened = match session_id {
+            Some(id) => Some(SessionLog::open_off(&self.cfg.sessions_dir, id).await.map_err(log_failure)?),
+            None => None,
+        };
+        let past = opened.as_ref().map(|(log, events)| replay(&log::branch(events, log.head().unwrap_or_default()), &self.registry())).unwrap_or_default();
+        let cwd = past.cwd.clone().unwrap_or_else(|| self.cfg.cwd.clone());
+        // A turn a backend began runs where the session's last turn on that
+        // instance ran, on its model and effort, whatever came since; in the
+        // mode its process is in, else that turn's.
+        let (model, permission_mode, effort) = match unprompted {
+            Some((instance, mode)) => {
+                // Replayed on the names instances have now: so is this one.
+                let instance = self.registry().current(instance);
+                let Some((m, asked, effort)) = past.last_on.iter().find(|(m, ..)| m.instance == instance).cloned() else {
+                    return Err(EngineError::new("nothing_pending", format!("session {} never ran on {instance}", session_id.unwrap_or_default())));
+                };
+                (Some(m), mode.unwrap_or(asked), effort)
+            }
+            // A name since renamed, from any client, is the instance it became.
+            None => (model.map(|m| self.registry().current_model(&m)), permission_mode, effort),
+        };
+        let model = match model {
+            Some(m) => m,
+            None => match past.model.clone() {
+                Some(m) => m,
+                None => self.route_model(None, None, &cwd).await?,
+            },
+        };
+        let staying = |e: EngineError| match past.model.as_ref().filter(|p| **p != model) {
+            Some(p) => EngineError { message: format!("{} — the session stays on {p}", e.message), ..e },
+            None => e,
+        };
+        // Read with its generation at one moment: a connection finishing
+        // while this turn waits on the vendor must not stamp a backend made
+        // from this reading as up to date.
+        let (registry, generation) = self.registry_at(&model.instance);
+        let instance = registry.get(&model.instance).map_err(|e| staying(EngineError::new("no_instance", e)))?.clone();
+        let info = (self.cfg.catalog)(&instance.provider, &model.model);
+        // Refused while there is no session yet; a model the catalog does
+        // not know is sent them, and its provider has the last word.
+        if !images.is_empty() && info.as_ref().and_then(|i| i.images) == Some(false) {
+            return Err(staying(EngineError::new("model_reads_no_images", format!("{model} does not read images — switch to one that does, or remove them"))));
+        }
+        let family = info.as_ref().and_then(|i| i.family.clone());
+        let (preset, _) = toolset::choose(toolset, registry.toolset.as_deref(), family.as_deref(), &model.model).map_err(|e| EngineError::new("bad_toolset", e))?;
+        let wire = instance.wire_for(info.as_ref().and_then(|i| i.wire_api));
+        // D4: krowk runs a turn only in Claude Code or Codex.
+        let Some(backend) = &instance.backend else { return Err(crate::connect::no_direct_models()) };
+        // A backend runs the repository's own hooks and MCP servers, so it
+        // is not started in one nobody trusted; and a binary that is not
+        // there, or a login that is not, is named before a session exists
+        // for it.
+        self.ready(&instance, &cwd, self.backend_up(session_id, &instance.name, generation)).await.map_err(staying)?;
+        let effort = effort.or(instance.effort);
+        // The rules, instructions, skills and hooks for where the session
+        // runs. A settings file that does not parse refuses the prompt: a
+        // deny rule it held would otherwise silently stop holding.
+        let mut policy = permissions::Policy::load(&self.cfg.permissions, &cwd).map_err(|e| EngineError::new("bad_settings", format!("{e} — fix the file, then send the prompt again")))?;
+        // R-PERM-3, fail closed: a sandbox this machine cannot enforce, or
+        // a backend that runs its own tools outside it, refuses the turn
+        // rather than running it unsandboxed.
+        if let Some(crate::sandbox::Sandbox { profile, .. }) = policy.sandbox {
+            return Err(staying(EngineError::new("sandbox_unsupported", format!("{} runs {} as a backend, which runs its own tools outside krowk's {} sandbox — run without --sandbox", instance.name, instance.vendor, profile.name()))));
+        }
+        // R-ROLL-5: the session's value (asked now, else the last one logged),
+        // else a trusted repository's, else the global config's.
+        let session_rollover = rollover.or(past.rollover);
+        let rollover = session_rollover.or(policy.loaded.rollover).unwrap_or(registry.rollover);
+        let mut compat = compat::Compat::load(&self.cfg.permissions, &cwd);
+        policy.read_dirs = compat.skills.iter().map(|k| k.dir.clone()).collect();
+        let (log, events) = match opened {
+            Some(opened) => opened,
+            None => {
+                // WT6: the session a worktree was made for takes the id the
+                // worktree is locked in, once, and its first prompt opens
+                // with what readying the worktree had to say.
+                let id = match &self.cfg.session.id {
+                    Some(id) if !self.cfg.sessions_dir.join(id).exists() => {
+                        text = crate::worktree::first_prompt(&self.cfg.session.notes, &text);
+                        id.clone()
+                    }
+                    _ => gruntas_store::new_id(),
+                };
+                #[cfg(feature = "test-hooks")]
+                held(HoldAt::Open).await;
+                let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &id, &self.cfg.cwd, &self.cfg.krowk_version, None, None).await.map_err(log_failure)?;
+                // WT9: what kept worktrees left behind, cleared at most
+                // once a day, on a thread of its own the session never
+                // waits for.
+                if let Some(root) = &self.cfg.agents.worktrees {
+                    crate::worktree::manage::prune_daily(root.clone());
+                }
+                here.register(&log.session_id)?;
+                let _ = out.send(StreamLine::Log(root.clone())).await;
+                (log, vec![root])
+            }
+        };
+        let session_id = log.session_id.clone();
+        let engine = self.backend_for(&session_id, &instance, generation)?;
+        // A backend keeps its own thread and reads nothing of the log: the
+        // thread it resumes — its own, or another account's of the same
+        // vendor copied over — and what to tell it of the turns it did not
+        // run (`handoff`).
+        let (backend_session, handoff) = match unprompted {
+            Some(_) => (None, None),
+            None => self.carry_over(&past, &instance, backend, &text),
+        };
+        // Everything the session and its agents have spent, from their
+        // logs; this turn's calls are added as they are metered.
+        let budget = Budget::new(limits, &session_id, &self.cfg.sessions_dir, self.cfg.pricer.clone(), &instance.provider, &model.model, &events);
+        drop(events);
+        let evidence = self.cfg.publisher.clone().map(|p| Evidence::new(p, &session_id, past.run.clone(), crate::evidence::Producer::new(&instance, &model.model)));
+        // The session's MCP connections, kept from its earlier turns, under
+        // the configuration just read: closed, restarted or kept before the
+        // turn's first model call (D5). A backend turn has them too, through the bridge.
+        self.adopt_mcp(&session_id, &mut compat).await;
+        let grants = self.grants.lock().unwrap_or_else(|e| e.into_inner()).entry(session_id.clone()).or_default().clone();
+        let plan = TurnPlan {
+            log,
+            past,
+            text,
+            images,
+            model,
+            provider: instance.provider.clone(),
+            engine,
+            preset,
+            wire,
+            info,
+            permission_mode,
+            effort,
+            cwd,
+            env: self.cfg.session.env.clone(),
+            backend_session,
+            budget,
+            evidence,
+            policy,
+            compat,
+            grants,
+            announce: true,
+            started,
+            handoff,
+            here,
+            rolling,
+            tried: tried.to_vec(),
+            unprompted: unprompted.is_some(),
+            session_rollover,
+            rollover,
+        };
+        Ok(plan)
+    }
+
+    /// Where the agents a session's backend runs are written, as children
+    /// of its turn's session: none on krowk's own loop. An agent that ended
+    /// between turns is ended first, so the turn Claude Code begins to
+    /// answer it finds it so (R-SUB-7); then the turn holds the session's
+    /// writer (`SessionKids`) until it is done.
+    async fn kids(self: &Arc<Self>, session_id: &str, plan: &TurnPlan) -> Option<Kids> {
+        let ran_by = match plan.wire {
+            WireApi::ClaudeCode => RanBy::Claude,
+            WireApi::CodexAppServer => RanBy::Codex,
+            _ => return None,
+        };
+        let state = self.backends.lock().unwrap_or_else(|e| e.into_inner()).get(session_id).map(|b| b.children.clone())?;
+        state.settle().await;
+        // Only Claude Code says `Woke` (its idle loop is the one writing
+        // between turns): a turn on another backend waits for none, or its
+        // first agent event would wait for ever. Codex says nothing between
+        // turns — krowk reads it only while one runs, and its children end
+        // with the turn that ran them (`codex::children`) — so nothing is
+        // queued ahead of its turn's writer. A Codex engine that ever
+        // reports between turns through `Idle` must say `Woke` as a turn
+        // takes over, and be given a `woke_from` here.
+        let woke_from = (ran_by == RanBy::Claude).then(|| *state.woke.borrow());
+        let _pen = state.pen.clone().lock_owned().await;
+        Some(Kids { shared: self.clone(), state, _pen, woke_from, sessions_dir: self.cfg.sessions_dir.clone(), cwd: plan.cwd.clone(), krowk_version: self.cfg.krowk_version.clone(), ran_by, permission_mode: plan.permission_mode, effort: plan.effort })
+    }
+
+    /// Runs one settled turn to its end and logs it whole, with what
+    /// follows from how it ended for a session's own turn: a switch that
+    /// could not run going back (R-SWITCH-4), a limit's offer, or where
+    /// `rollover = "auto"` goes next (R-INST-7, R-INST-8), and a
+    /// `switchModel` that came while it ran.
+    async fn turn(self: &Arc<Self>, mut plan: TurnPlan, out: mpsc::Sender<StreamLine>) -> Result<(RunResult, Option<Rolling>), EngineError> {
+        let session_id = plan.log.session_id.clone();
+        if plan.here.id.is_none() {
+            plan.here.register(&session_id)?;
+        }
+        let turn_id = gruntas_store::new_id();
+        let engine = plan.engine.clone();
+        let model = plan.model.clone();
+        let session_dir = plan.log.dir.clone();
+        // The next prompt on the offer's instance is the decline (D14); a
+        // turn the backend began by itself is not a prompt.
+        if plan.announce && !plan.unprompted {
+            self.early_answered(&session_id, &model.instance);
+        }
+        let kids = self.kids(&session_id, &plan).await;
+        let mut w = Writer {
+            log: &mut plan.log,
+            out: &out,
+            turn_id: turn_id.clone(),
+            preset: plan.preset,
+            wire: plan.wire,
+            provider: plan.provider.clone(),
+            backend: plan.past.backend.clone(),
+            handoff: None,
+            kids,
+            usage: crate::usage::Usage::in_home(self.cfg.sessions_dir.parent().unwrap_or(&self.cfg.sessions_dir)),
+            limits: Default::default(),
+        };
+        // What the login's usage read before the turn, for the early switch.
+        let read_before = w.snapshot(plan.announce && plan.rollover != Rollover::Off);
+        w.begin(plan.rolling.as_ref(), &session_id, &model, LogBody::TurnStarted { turn_id: turn_id.clone(), model: model.clone(), provider: engine.provider().into(), wire_api: engine.wire_api(), permission_mode: plan.permission_mode, effort: plan.effort, rollover: plan.session_rollover }).await?;
+        let mut history = std::mem::take(&mut plan.past.items);
+        w.prompt((std::mem::take(&mut plan.text), std::mem::take(&mut plan.images)), &mut history, &plan.compat.skills).await?;
+
+        let gate = permissions::Gate::new(
+            plan.policy.clone(),
+            plan.permission_mode,
+            plan.grants.clone(),
+            self.cfg.permissions.approvals.then(|| self.approvals.clone()),
+            self.cfg.permissions.grants_file(),
+            &session_id,
+            &turn_id,
+        );
+        let compat = Arc::new(std::mem::take(&mut plan.compat));
+        let (cancel_tx, cancel, steers) = (plan.here.cancel.clone(), plan.here.cancel_rx.clone(), plan.here.steers.clone());
+        let budget = plan.budget.clone();
+        let ctx = TurnContext {
+            session_id: session_id.clone(),
+            turn_id: turn_id.clone(),
+            model: model.clone(),
+            history,
+            cwd: plan.cwd.clone(),
+            env: plan.env.clone(),
+            session_dir,
+            permission_mode: plan.permission_mode,
+            effort: plan.effort,
+            model_info: plan.info.clone(),
+            cancel,
+            steers: steers.clone(),
+            backend_session: plan.backend_session.clone(),
+            budget: budget.clone(),
+            evidence: plan.evidence.clone(),
+            gate,
+            compat,
+            handoff: plan.handoff.take(),
+            unprompted: plan.unprompted,
+        };
+        let mut tally = Tally::default();
+        // A backend's calls are the vendor's to make: its turn is not begun
+        // when the session is already at its budget, and is interrupted when
+        // a metered call takes it past (`Writer::handle`).
+        let watch = (budget.clone(), cancel_tx.clone());
+        let outcome = match budget.admit_turn().await {
+            Ok(()) => w.drive(engine.as_ref(), ctx, &mut tally, &model, &budget, Some(&watch)).await,
+            Err(e) => Err(e),
+        };
+        // A backend turn the budget interrupted failed on it, whatever the
+        // vendor made of the interrupt.
+        let outcome = match tally.tripped.take() {
+            Some(e) => Err(e),
+            None => outcome,
+        };
+        // Refused from here on, not queued for a turn that is over; what an
+        // interrupted or failed turn never took goes back on its result.
+        let unread_steers = steers.close().into_iter().map(|s| s.text).collect();
+        self.approvals.forget_session(&session_id);
+        self.touch(&session_id);
+
+        let (status, mut error) = match &outcome {
+            Ok(TurnEnd::Completed) => (TurnStatus::Completed, None),
+            Ok(TurnEnd::Interrupted) => (TurnStatus::Interrupted, None),
+            Err(e) => (TurnStatus::Failed, Some(e.info())),
+        };
+        let (after, offer, next) = self.follow_up(&outcome, (plan.announce, plan.past.reached.as_ref(), &plan.tried, &plan.cwd, plan.rollover), (&w, read_before.as_ref()), (&model, &session_id, tally.calls), error.as_mut()).await;
+        let duration_ms = plan.started.elapsed().as_millis() as u64;
+        let completed = LogBody::TurnCompleted { turn_id: turn_id.clone(), status, usage: tally.usage, duration_ms, error: error.clone(), reported_cost_usd: tally.reported, reported_tokens: None };
+        let next = w.finish(completed, &model, after.as_ref(), &mut plan.here, next).await?;
+        // An early offer is remembered once its turn is logged, so a log
+        // that failed leaves no decline behind for an offer never made.
+        if let (Some(o), Some(before)) = (offer.as_ref().filter(|o| o.early), read_before.as_ref()) {
+            self.early_offered(&session_id, EarlyOffer { instance: model.instance.clone(), login: before.login_of(&model.instance).into(), resets_at_ms: o.resets_at_ms });
+        }
+        // Off the daemon's thread, and not waited for: the result goes out
+        // as soon as the turn has ended, and the daemon waits for the sync
+        // on its way out (`log::synced`).
+        plan.log.sync_behind();
+        let result = RunResult {
+            session_id,
+            turn_id,
+            status,
+            is_error: status == TurnStatus::Failed,
+            result: tally.last_text,
+            model,
+            usage: tally.usage,
+            cost_usd: if tally.unpriced { None } else { Some(tally.cost) },
+            duration_ms,
+            num_model_calls: tally.calls,
+            error,
+            unread_steers,
+            switch_offer: offer,
+            worktree: None,
+        };
+        if plan.announce {
+            let _ = out.send(StreamLine::Live(LiveEvent::Result(result.clone()))).await;
+        }
+        Ok((result, next))
+    }
+
+    /// What follows a session's own turn that failed: a switch that could
+    /// not run goes back to the model of the last turn that reached its
+    /// model, however the switch was made (R-SWITCH-4); a limit offers the
+    /// next instance, or with `rollover = "auto"` names where to go next —
+    /// logged when that turn starts (R-INST-7, R-INST-8). `error` gets the
+    /// words that say so.
+    #[allow(clippy::type_complexity)]
+    async fn after_failure(&self, e: &EngineError, (reached, tried, cwd, rollover): (Option<&ModelRef>, &[String], &PathBuf, Rollover), model: &ModelRef, session_id: &str, calls: u32, error: Option<&mut crate::protocol::ErrorInfo>) -> (Option<(ModelRef, SwitchReason, String)>, Option<SwitchOffer>, Option<Rolling>) {
+        let previous = reached.filter(|p| *p != model).cloned();
+        if e.limited() {
+            // R-ROLL-6: a limit fails the turn as it is, with nowhere to go
+            // named, and no offer.
+            if rollover == Rollover::Off {
+                if let Some(err) = error {
+                    err.message = err.message.replace(crate::claude::CONTINUE_HINT, "");
+                }
+                return (None, None, None);
+            }
+            let until = e.resets_at_ms.map(|ms| format!(" until {}", clock(ms))).unwrap_or_default();
+            let mut tried = tried.to_vec();
+            tried.push(model.instance.clone());
+            let auto = rollover == Rollover::Auto;
+            return match self.next_instance(model, &tried, cwd, rollover, None).await {
+                Some(pick) if auto => (None, None, Some(Rolling { from: model.clone(), to: pick.model, until, room: room_note(pick.standing), cwd: cwd.clone() })),
+                Some(pick) => {
+                    let (to, room) = (pick.model, room_note(pick.standing));
+                    if let Some(err) = error {
+                        let room = if room.is_empty() { String::new() } else { format!(" ({room})") };
+                        err.message.push_str(&format!(" — continue on {to}{room} with `krowk -p --resume {session_id} --model {to}`, or say yes when krowk offers it"));
+                    }
+                    (None, Some(SwitchOffer { from: model.clone(), to, resets_at_ms: e.resets_at_ms, room: Some(room).filter(|r| !r.is_empty()), early: false }), None)
+                }
+                None => (None, None, None),
+            };
+        }
+        match previous {
+            Some(prev) if cannot_run_here(&e.code, calls) => {
+                if let Some(err) = error {
+                    err.message.push_str(&format!(" — the session continues on {prev}"));
+                }
+                (Some((prev, SwitchReason::SwitchFailed, format!("{model} could not run the turn: {}", e.code))), None, None)
+            }
+            _ => (None, None, None),
+        }
+    }
+
+    /// The vendor thread a backend turn on `instance` resumes, and how it
+    /// is brought up to date (R-SWITCH-2, R-INST-4). The thread that has
+    /// run the most of the session among this vendor's instances is the
+    /// one to continue: this instance's own, resumed; another account's,
+    /// its transcript copied into this one's config directory first; none,
+    /// and a new thread is seeded with krowk's handoff.
+    fn carry_over(&self, past: &Past, instance: &Resolved, b: &crate::instances::Backend, prompt: &str) -> (Option<String>, Option<handoff::Handoff>) {
+        let vendor = match instance.wire_api {
+            WireApi::CodexAppServer => crate::codex::BACKEND,
+            _ => crate::claude::BACKEND,
+        };
+        let own = past.vendors.iter().find(|v| v.instance == instance.name);
+        let best = past.vendors.iter().filter(|v| v.backend == vendor).max_by_key(|v| v.seen);
+        let mut not_carried = None;
+        let mut carried: Option<(&Vendor, PathBuf)> = None;
+        if let Some(best) = best.filter(|v| v.instance != instance.name && own.is_none_or(|o| v.seen > o.seen)) {
+            let from_home = self.registry().get(&best.instance).ok().and_then(|i| i.backend.as_ref()).and_then(|fb| fb.home.clone());
+            let r = match (&best.transcript, from_home, &b.home) {
+                (Some(t), Some(from), Some(to)) => handoff::carry(std::path::Path::new(t), &from, to, if vendor == crate::codex::BACKEND { handoff::Vendor::Codex } else { handoff::Vendor::ClaudeCode }, &best.session_id),
+                (None, _, _) => Err(format!("{} did not say where it keeps the transcript", best.instance)),
+                (_, None, _) => Err(format!("{}'s config directory is not known", best.instance)),
+                (_, _, None) => Err(format!("{}'s config directory is not known", instance.name)),
+            };
+            match r {
+                Ok(path) => carried = Some((best, path)),
+                Err(e) => not_carried = Some(format!("the transcript on {} could not be carried over: {e}", best.instance)),
+            }
+        }
+        let (resume, seen, from, path) = match (carried, own) {
+            (Some((v, path)), _) => (Some(v.session_id.clone()), Some(v.seen), Some(v.instance.clone()), Some(path)),
+            (None, Some(o)) => (Some(o.session_id.clone()), Some(o.seen), None, None),
+            (None, None) => (None, None, None, None),
+        };
+        let plan = handoff::plan(&past.items, &past.turns, seen, prompt, from, not_carried).map(|h| handoff::Handoff { carried_to: path, ..h });
+        (resume, plan)
+    }
+
+}
+
+/// A move `rollover = "auto"` makes: from the limited model to the next
+/// candidate, and why, in words that name both whole (R-INST-8).
+#[derive(Debug, Clone)]
+struct Rolling {
+    from: ModelRef,
+    to: ModelRef,
+    /// ` until 14:00`, when the limit said.
+    until: String,
+    /// What the target has left (`room_note`), or nothing known.
+    room: String,
+    cwd: PathBuf,
+}
+
+/// What a target has left, as a notice or offer says it (D12): `41% left
+/// as of 12:10, resets 13:20`, the parts not known left out.
+fn room_note(standing: Option<usage::Standing>) -> String {
+    let Some(s) = standing else { return String::new() };
+    let mut note = format!("{}% left as of {}", s.headroom.round(), clock(s.seen_at_ms));
+    if let Some(r) = s.reset_ms {
+        note.push_str(&format!(", resets {}", clock(r)));
+    }
+    note
+}
+
+impl Rolling {
+    fn detail(&self) -> String {
+        let mut d = format!("{} is limited{}; rollover is auto, continuing on {}", self.from, self.until, self.to);
+        if !self.room.is_empty() {
+            d.push_str(&format!(" ({})", self.room));
+        }
+        d
+    }
+}
+
+/// For tests (`test-hooks`): where a turn waits while a `Held` for it
+/// lives, still holding its session.
+#[cfg(feature = "test-hooks")]
+#[derive(Clone, Copy)]
+pub enum HoldAt {
+    /// Before its `turn.started`, as a backend slow to set up would hold it.
+    Start,
+    /// After its `turn.completed` is logged, before its result goes out.
+    Result,
+    /// Before a new session's log is made: no line of it sent yet.
+    Open,
+}
+
+#[cfg(feature = "test-hooks")]
+static HOLDS: [std::sync::LazyLock<watch::Sender<bool>>; 3] = [const { std::sync::LazyLock::new(|| watch::channel(false).0) }; 3];
+
+/// For tests (`test-hooks`): holds every turn that reaches `at` from here
+/// on, until the guard goes. Process-wide, as `log::simulate_slow_disk`.
+#[cfg(feature = "test-hooks")]
+#[must_use = "turns are held only while the guard lives"]
+pub fn hold_turns(at: HoldAt) -> Held {
+    HOLDS[at as usize].send_replace(true);
+    Held(at)
+}
+
+/// Turns are held at a place while this lives (`hold_turns`).
+#[cfg(feature = "test-hooks")]
+pub struct Held(HoldAt);
+
+#[cfg(feature = "test-hooks")]
+impl Held {
+    /// How many turns wait at the hold now.
+    pub fn waiting(&self) -> usize {
+        HOLDS[self.0 as usize].receiver_count()
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+impl Drop for Held {
+    fn drop(&mut self) {
+        HOLDS[self.0 as usize].send_replace(false);
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+async fn held(at: HoldAt) {
+    let hold = &HOLDS[at as usize];
+    if *hold.borrow() {
+        let mut rx = hold.subscribe();
+        let _ = rx.wait_for(|held| !held).await;
+    }
+}
+
+/// A turn's hold on its session in this host: its cancel switch, its
+/// steering, and a `switchModel` for after it — from before the log is
+/// opened until the turn lets go. Let go of on drop, however it ends.
+struct Registration {
+    shared: Arc<Shared>,
+    id: Option<String>,
+    cancel: Arc<watch::Sender<bool>>,
+    cancel_rx: watch::Receiver<bool>,
+    steers: Steers,
+    /// `finish` has closed the turn.
+    closed: bool,
+}
+
+impl Registration {
+    fn new(shared: Arc<Shared>) -> Registration {
+        let (tx, rx) = watch::channel(false);
+        Registration { shared, id: None, cancel: Arc::new(tx), cancel_rx: rx, steers: Steers::default(), closed: false }
+    }
+
+    fn register(&mut self, id: &str) -> Result<(), EngineError> {
+        let mut running = self.shared.running.lock().unwrap_or_else(|e| e.into_inner());
+        if running.contains_key(id) {
+            return Err(EngineError::new("session_busy", format!("session {id} has a turn running here already — wait for it, or steer it")));
+        }
+        running.insert(id.to_string(), Running { cancel: self.cancel.clone(), steers: self.steers.clone(), switch: None, backend_child: None, closing: false });
+        self.id = Some(id.to_string());
+        Ok(())
+    }
+
+    /// Closes the turn, and returns the switch that arrived for after it.
+    /// The session stays held, as its log does, until the registration
+    /// goes: a prompt meanwhile is refused as busy, and says so in
+    /// `status` (`Host::holds`).
+    fn finish(&mut self) -> Option<ModelRef> {
+        let id = self.id.as_deref()?;
+        if self.closed {
+            return None;
+        }
+        self.closed = true;
+        self.steers.close();
+        let mut running = self.shared.running.lock().unwrap_or_else(|e| e.into_inner());
+        running.get_mut(id).and_then(|r| {
+            r.closing = true;
+            r.switch.take()
+        })
+    }
+}
+
+impl Drop for Registration {
+    /// Lets go, after the log it held: a `TurnPlan` drops its log first.
+    fn drop(&mut self) {
+        let _ = self.finish();
+        if let Some(id) = self.id.take() {
+            self.shared.running.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        }
+    }
+}
+
+/// Whether a turn's failure, on a model the session had just switched to,
+/// says that model cannot run turns here at all — as against a failure any
+/// turn can have. No login, no key, no access, no such model, a backend in
+/// the wrong mode: never, however far it got (a vendor answers a missing
+/// login with a message of its own). A backend that would not start or
+/// answer, a history the provider refused: only when nothing reached the
+/// model — after that, the switch worked and the turn failed.
+fn cannot_run_here(code: &str, calls: u32) -> bool {
+    match code {
+        "not_authenticated" | "provider_auth" | "provider_forbidden" | "model_not_found" | "backend_not_found" | "backend_permission_mode" => true,
+        "provider_invalid_request" | "backend_unresponsive" | "backend_exited" | "backend_failed" => calls == 0,
+        _ => false,
+    }
+}
+
+/// A moment as the person's clock shows it: `14:00` today, else with its
+/// date — for when a limit lifts.
+pub fn clock(ms: i64) -> String {
+    #[cfg(unix)]
+    {
+        let at = (ms / 1000) as libc::time_t;
+        let now = gruntas_store::now_ms() / 1000;
+        // SAFETY: localtime_r writes only into the struct it is handed.
+        let tm = |t: libc::time_t| unsafe {
+            let mut tm: libc::tm = std::mem::zeroed();
+            libc::localtime_r(&t, &mut tm);
+            tm
+        };
+        let (a, n) = (tm(at), tm(now as libc::time_t));
+        if (a.tm_year, a.tm_yday) == (n.tm_year, n.tm_yday) {
+            return format!("{:02}:{:02}", a.tm_hour, a.tm_min);
+        }
+        format!("{:04}-{:02}-{:02} {:02}:{:02}", a.tm_year + 1900, a.tm_mon + 1, a.tm_mday, a.tm_hour, a.tm_min)
+    }
+    #[cfg(not(unix))]
+    {
+        let s = ms / 1000;
+        format!("{:02}:{:02} UTC", (s / 3600) % 24, (s / 60) % 60)
+    }
+}
+
+/// A stored key's command, run off the runtime's thread when this process
+/// has no key from it yet: it may take its whole timeout, and a client's
+/// drawing and keys run on that one thread. After it, the engine finds
+/// the key kept (`keys::run`) and runs nothing; a failure is the turn's.
+async fn key_off_thread(instance: &Resolved) -> Result<(), EngineError> {
+    let crate::keys::Stored::Command { command, .. } = &instance.stored else { return Ok(()) };
+    if !instance.api_key.is_empty() || crate::keys::ran(command).is_some() {
+        return Ok(());
+    }
+    let inst = instance.clone();
+    tokio::task::spawn_blocking(move || crate::keys::materialise(&inst).map(drop)).await.unwrap_or_else(|_| Err(EngineError::new("not_authenticated", "the stored key's command did not finish")))
+}
+
+/// What the branch so far says: its items, grouped the way they were on the
+/// wire, its turns, the model it is on, where it runs, and the vendor
+/// threads behind it.
+#[derive(Default)]
+struct Past {
+    items: Vec<HistoryItem>,
+    turns: Vec<TurnSpan>,
+    /// The last turn's model, or the one a later `model.switched` moved to.
+    model: Option<ModelRef>,
+    /// The model of the last turn that reached its model: where a switch
+    /// that could not run goes back to.
+    reached: Option<ModelRef>,
+    cwd: Option<PathBuf>,
+    /// The session's own `rollover`, as its last turn that had one logged it.
+    rollover: Option<Rollover>,
+    /// The last `backend.session` logged, whichever instance it was on.
+    backend: Option<BackendRecord>,
+    /// Each backend instance's thread, and how much of the session it holds.
+    vendors: Vec<Vendor>,
+    /// The krowk run its evidence goes under, once `publish` opened one.
+    run: Option<String>,
+    /// For a subagent: the session that started it.
+    parent: Option<String>,
+    /// Each instance's last turn: its model, mode and effort, which a turn
+    /// a backend on it began runs with.
+    last_on: Vec<(ModelRef, PermissionMode, Option<Effort>)>,
+}
+
+/// The last `backend.session` of a branch, and the instance it ran on.
+#[derive(Debug, Clone, PartialEq)]
+struct BackendRecord {
+    instance: String,
+    session_id: String,
+    transcript: Option<String>,
+    billing: Option<Billing>,
+}
+
+/// A backend instance's thread of this session: the vendor session it
+/// resumes, where the vendor keeps it, and how many of the branch's turns it
+/// holds — every turn up to the last one it ran, since each turn it ran
+/// began by bringing it up to date.
+#[derive(Debug, Clone, PartialEq)]
+struct Vendor {
+    instance: String,
+    backend: String,
+    session_id: String,
+    transcript: Option<String>,
+    seen: usize,
+}
+
+/// Every instance as it is named now (`Registry::current`): a turn logged
+/// on a name since renamed is the renamed instance's.
+fn replay(branch: &[&LogEvent], registry: &Registry) -> Past {
+    let mut past = Past::default();
+    let mut at: HashMap<&str, usize> = HashMap::new();
+    let mut responses = 0usize;
+    // Whether the running turn reached its backend: a thread that never
+    // got the prompt has not seen it.
+    let mut reached = false;
+    let mut answered = false;
+    for ev in branch {
+        match &ev.body {
+            LogBody::SessionStarted { cwd, parent_session_id, .. } => {
+                past.cwd = Some(PathBuf::from(cwd));
+                past.parent = parent_session_id.clone();
+            }
+            LogBody::TurnStarted { model, permission_mode, effort, rollover, .. } => {
+                past.rollover = rollover.or(past.rollover);
+                let model = &registry.current_model(model);
+                past.model = Some(model.clone());
+                past.last_on.retain(|(m, ..)| m.instance != model.instance);
+                past.last_on.push((model.clone(), *permission_mode, *effort));
+                past.turns.push(TurnSpan { model: model.clone(), items: past.items.len()..past.items.len() });
+                reached = false;
+                answered = false;
+            }
+            LogBody::BackendSession { backend, vendor_session_id, transcript_path, billing, .. } => {
+                let instance = past.turns.last().map(|t| t.model.instance.clone()).unwrap_or_default();
+                past.backend = Some(BackendRecord { instance: instance.clone(), session_id: vendor_session_id.clone(), transcript: transcript_path.clone(), billing: *billing });
+                past.vendors.retain(|v| v.instance != instance);
+                past.vendors.push(Vendor { instance, backend: backend.clone(), session_id: vendor_session_id.clone(), transcript: transcript_path.clone(), seen: past.turns.len().saturating_sub(1) });
+                reached = true;
+            }
+            LogBody::ItemCompleted { item_id, item, .. } => {
+                at.insert(item_id, past.items.len());
+                past.items.push(HistoryItem { item: item.clone(), response: None });
+                if let Some(t) = past.turns.last_mut() {
+                    t.items.end = past.items.len();
+                }
+            }
+            LogBody::ResponseCompleted { item_ids, .. } => {
+                for id in item_ids {
+                    if let Some(&i) = at.get(id.as_str()) {
+                        past.items[i].response = Some(responses);
+                    }
+                }
+                responses += 1;
+                reached = true;
+                answered = true;
+            }
+            LogBody::TurnCompleted { status, error, .. } => {
+                // It reached its model when a model answered, and did not
+                // then fail on one of the ways a model cannot run here.
+                let ran = match status {
+                    TurnStatus::Failed => answered && !error.as_ref().is_some_and(|e| cannot_run_here(&e.code, 1)),
+                    _ => true,
+                };
+                if ran {
+                    past.reached = past.turns.last().map(|t| t.model.clone());
+                }
+                let instance = past.turns.last().map(|t| t.model.instance.as_str()).unwrap_or_default();
+                if reached && let Some(v) = past.vendors.iter_mut().find(|v| v.instance == instance) {
+                    v.seen = past.turns.len();
+                }
+            }
+            LogBody::ModelSwitched { to, .. } => past.model = Some(registry.current_model(to)),
+            LogBody::RunOpened { run, .. } => past.run = Some(run.clone()),
+            // On another host now: its turns run in the worktree there.
+            LogBody::SessionMoved { cwd, .. } => past.cwd = Some(PathBuf::from(cwd)),
+            // The subagents' own logs hold their conversations; the todo
+            // list is read back from the calls that set it; a task's result
+            // is its supervisor's to read.
+            LogBody::SubagentResponse { .. } | LogBody::BackendHandoff { .. } | LogBody::SubagentStarted { .. } | LogBody::TodosUpdated { .. } | LogBody::TaskResult { .. } => {}
+        }
+    }
+    past
+}
+
+/// A turn's running totals.
+#[derive(Default)]
+struct Tally {
+    usage: Usage,
+    cost: f64,
+    unpriced: bool,
+    calls: u32,
+    last_text: String,
+    /// Why the host interrupted a backend's turn: the budget it went past.
+    tripped: Option<EngineError>,
+    /// What the backend said the turn cost.
+    reported: Option<f64>,
+}
+
+/// Appends and forwards, in that order.
+struct Writer<'a> {
+    log: &'a mut SessionLog,
+    out: &'a mpsc::Sender<StreamLine>,
+    turn_id: String,
+    preset: &'static toolset::Preset,
+    wire: WireApi,
+    /// The provider the turn's calls go to, for its context record.
+    provider: String,
+    /// The backend session last logged: one that did not change is not
+    /// logged again.
+    backend: Option<BackendRecord>,
+    /// What a backend was sent to bring it up to date, for the turn's
+    /// context record.
+    handoff: Option<String>,
+    /// Where the backend's own agents are written, as children of the
+    /// session (R-SUB-7): none for krowk's own loop.
+    kids: Option<Kids>,
+    /// Each login's last known usage, in krowk's home (R-ROLL-2).
+    usage: crate::usage::Usage,
+    /// The turn's last limits report per window, for the early switch.
+    limits: std::collections::BTreeMap<String, LimitStatus>,
+}
+
+/// What a backend's agent is written with, as a child session of the
+/// turn's: its process's children, and what its log's records say of it —
+/// the session's directory and mode, what ran it.
+struct Kids {
+    shared: Arc<Shared>,
+    state: SessionKids,
+    /// The turn's hold on the session's writer (`SessionKids::pen`), and
+    /// the `Woke` count it was taken at, until what was said before this
+    /// turn took the process is known written.
+    _pen: tokio::sync::OwnedMutexGuard<()>,
+    woke_from: Option<u64>,
+    sessions_dir: PathBuf,
+    cwd: PathBuf,
+    krowk_version: String,
+    ran_by: RanBy,
+    permission_mode: PermissionMode,
+    effort: Option<Effort>,
+}
+
+/// What is said of a backend's agent whose log could not be written.
+fn lost_words(which: &str, e: &LogError) -> String {
+    format!("a backend agent's log ({which}) could not be written, and the rest of what it does is not kept: {}", e.message())
+}
+
+/// One event of a backend's running agent, in a turn or between turns:
+/// an item streamed under its session id, a finished one or a response
+/// into its log, and its `subagent.status` when its state changed — the
+/// lines to send, written first. An agent whose log could not be written
+/// is taken out, with why, and the rest of it not followed.
+async fn child_line(state: &tokio::sync::Mutex<BackendChildren>, task_id: &str, ev: EngineEvent) -> (Vec<StreamLine>, Option<(OpenChild, LogError)>) {
+    let mut st = state.lock().await;
+    let Some(c) = st.open.get_mut(task_id) else { return (Vec::new(), None) };
+    let changed = c.watch.note(&ev, gruntas_store::now_ms());
+    let (child, turn_id) = (c.log.session_id.clone(), c.turn_id.clone());
+    let line = match ev {
+        EngineEvent::ItemStarted { item_id, kind } => Ok(Some(StreamLine::Live(LiveEvent::ItemStarted { session_id: child, turn_id, item_id, item: kind }))),
+        EngineEvent::ItemDelta { item_id, delta } => Ok(Some(StreamLine::Live(LiveEvent::ItemDelta { session_id: child, turn_id, item_id, delta }))),
+        EngineEvent::ItemCompleted { item_id, item } => c.log.append_off(LogBody::ItemCompleted { turn_id, item_id, item }).await.map(|e| Some(StreamLine::Log(e))),
+        EngineEvent::ResponseCompleted { response_id, model, usage, stop_reason, item_ids } => c.log.append_off(LogBody::ResponseCompleted { turn_id, response_id, model, usage, stop_reason, item_ids }).await.map(|e| Some(StreamLine::Log(e))),
+        // A call it asks about is its own: the card says which agent asks.
+        EngineEvent::Approval(req) => Ok(Some(StreamLine::Live(LiveEvent::ApprovalRequested(crate::protocol::ApprovalRequest { session_id: child, turn_id, ..req })))),
+        EngineEvent::ApprovalResolved { request_id, decision } => Ok(Some(StreamLine::Live(LiveEvent::ApprovalResolved { session_id: child, turn_id, request_id, decision }))),
+        _ => Ok(None),
+    };
+    match line {
+        Ok(line) => (line.into_iter().chain(changed.then(|| StreamLine::Live(c.watch.frame(ChildState::Running)))).collect(), None),
+        Err(e) => (Vec::new(), st.open.remove(task_id).map(|c| (c, e))),
+    }
+}
+
+/// Ends a backend's agent as it ended, in a turn or between turns: its
+/// one turn completed in its log — with no usage, its spend being the
+/// parent's, and the tokens its frames said, so a replay draws its row as
+/// it was drawn live — then what to send, written first: that line and
+/// its last frame, or, its log failing, a failed frame and what to say.
+/// Its hold goes with it.
+async fn end_child(mut c: OpenChild, status: ChildState, error: Option<String>) -> (Vec<StreamLine>, Option<String>) {
+    let ended = match status {
+        ChildState::Done => TurnStatus::Completed,
+        ChildState::Interrupted => TurnStatus::Interrupted,
+        ChildState::Running | ChildState::Failed => TurnStatus::Failed,
+    };
+    let error = error.map(|message| crate::protocol::ErrorInfo { code: "agent_ended".into(), message, http_status: None, resets_at_ms: None });
+    let completed = LogBody::TurnCompleted { turn_id: c.turn_id.clone(), status: ended, usage: Usage::default(), duration_ms: c.started.elapsed().as_millis() as u64, error, reported_cost_usd: None, reported_tokens: Some(c.watch.tokens()).filter(|t| *t > 0) };
+    let out = match c.log.append_off(completed).await {
+        Ok(ev) => (vec![StreamLine::Log(ev), StreamLine::Live(c.watch.frame(status))], None),
+        Err(e) => (vec![StreamLine::Live(c.watch.frame(ChildState::Failed))], Some(lost_words(&c.log.session_id, &e))),
+    };
+    c.log.sync_behind();
+    out
+}
+
+impl Writer<'_> {
+    async fn log(&mut self, body: LogBody) -> Result<LogEvent, EngineError> {
+        // Written, then sent: in the host daemon the write is awaited on
+        // the blocking pool (`log::off_thread`), so a disk that stalls
+        // stalls this turn's stream alone, never the thread every session
+        // and heartbeat shares (R-LAG-9), and no client sees an event the
+        // log does not have.
+        let ev = self.log.append_off(body).await.map_err(log_failure)?;
+        let _ = self.out.send(StreamLine::Log(ev.clone())).await;
+        Ok(ev)
+    }
+
+    async fn live(&self, ev: LiveEvent) {
+        let _ = self.out.send(StreamLine::Live(ev)).await;
+    }
+
+    /// Where a metered call left the turn and the session: the result's
+    /// cost, and R-BUDGET-2's frame for the status bar.
+    async fn spent(&self, session_id: &str, turn_id: String, tally: &mut Tally, spent: &crate::budget::Snapshot) {
+        tally.cost = spent.turn.known_usd;
+        tally.unpriced = !spent.turn.unpriced.is_empty();
+        self.live(LiveEvent::Cost {
+            session_id: session_id.into(),
+            turn_id,
+            cost_usd: spent.total.cost(),
+            turn_cost_usd: spent.turn.cost(),
+            generated_tokens: spent.total.generated(),
+        })
+        .await;
+    }
+
+    /// A turn's opening records: a rollover that brought it to `model`,
+    /// then `started`.
+    async fn begin(&mut self, rolling: Option<&Rolling>, session_id: &str, model: &ModelRef, started: LogBody) -> Result<(), EngineError> {
+        #[cfg(feature = "test-hooks")]
+        held(HoldAt::Start).await;
+        // A rollover is on the record only now that its turn has passed
+        // every check, and every client is told: never silent (R-INST-8).
+        if let Some(r) = rolling {
+            self.mark_moved(&model.instance).await;
+            let detail = r.detail();
+            self.log(LogBody::ModelSwitched { turn_id: None, from: Some(r.from.clone()), to: model.clone(), reason: SwitchReason::RateLimited, detail: Some(detail.clone()) }).await?;
+            self.live(LiveEvent::Notice { session_id: session_id.into(), turn_id: self.turn_id.clone(), text: format!("{detail} (rollover = \"auto\")") }).await;
+        }
+        self.log(started).await?;
+        Ok(())
+    }
+
+    /// Logs the prompt, its images kept first, and puts it on `history`,
+    /// with a skill it names from `skills`.
+    async fn prompt(&mut self, (text, decoded): (String, Vec<images::Decoded>), history: &mut Vec<HistoryItem>, skills: &[compat::skills::Skill]) -> Result<(), EngineError> {
+        let dir = self.log.dir.clone();
+        let images = match decoded.is_empty() {
+            true => Vec::new(),
+            false => tokio::task::spawn_blocking(move || images::save(&dir, &decoded)).await.map_err(|e| EngineError::new("log_failed", e.to_string()))??,
+        };
+        let prompt_item = Item::UserText { text, images };
+        self.log(LogBody::ItemCompleted { turn_id: self.turn_id.clone(), item_id: gruntas_store::new_id(), item: prompt_item.clone() }).await?;
+        // `/name` for a skill, in a session's own turn on any engine: its
+        // instructions come right after the prompt. A vendor's agent cannot
+        // be left to expand its own — it may not have the skill (Claude Code
+        // reads no `.agents/skills`, Codex no `.claude/skills` nor
+        // `~/.agents/skills`) and then refuses the name. A backend is sent only the last item, so it gets
+        // one text, the skill first: a leading `/` is the vendor's command.
+        let asked = match &prompt_item {
+            Item::UserText { text, .. } => compat::skills::invoked(skills, text).map(|skill| (skill, text.clone())),
+            _ => None,
+        };
+        history.push(HistoryItem { item: prompt_item, response: None });
+        if let Some((skill, prompt)) = asked {
+            let item = Item::user(skill.clone());
+            self.log(LogBody::ItemCompleted { turn_id: self.turn_id.clone(), item_id: gruntas_store::new_id(), item: item.clone() }).await?;
+            if let Some(HistoryItem { item: Item::UserText { text, .. }, .. }) = history.last_mut() {
+                *text = format!("{skill}\n\n{prompt}");
+            }
+        }
+        Ok(())
+    }
+
+    /// `close`.
+    async fn finish(&mut self, completed: LogBody, model: &ModelRef, after: Option<&(ModelRef, SwitchReason, String)>, here: &mut Registration, next: Option<Rolling>) -> Result<Option<Rolling>, EngineError> {
+        let closed = self.close(completed, model, after, here, next).await;
+        #[cfg(feature = "test-hooks")]
+        held(HoldAt::Result).await;
+        closed
+    }
+
+    /// A turn's closing records: `completed`, the switch `after` its
+    /// failure, and one asked for while it ran, which wins over `next`.
+    async fn close(&mut self, completed: LogBody, model: &ModelRef, after: Option<&(ModelRef, SwitchReason, String)>, here: &mut Registration, mut next: Option<Rolling>) -> Result<Option<Rolling>, EngineError> {
+        self.log(completed).await?;
+        if let Some((to, reason, detail)) = after {
+            self.log(LogBody::ModelSwitched { turn_id: Some(self.turn_id.clone()), from: Some(model.clone()), to: to.clone(), reason: *reason, detail: Some(detail.clone()) }).await?;
+        }
+        // Asked for while the turn ran: the person's word is the last. Taken
+        // as the turn lets go of the session, so none comes too late for it.
+        if let Some(to) = here.finish() {
+            let from = after.map(|(m, ..)| m.clone()).unwrap_or_else(|| model.clone());
+            if from != to {
+                self.log(LogBody::ModelSwitched { turn_id: Some(self.turn_id.clone()), from: Some(from), to, reason: SwitchReason::Requested, detail: None }).await?;
+                next = None;
+            }
+        }
+        Ok(next)
+    }
+
+    /// Runs the engine and handles its events as they come. A log that
+    /// cannot be written stops the turn: the log is the session.
+    async fn drive(&mut self, engine: &dyn Engine, ctx: TurnContext, tally: &mut Tally, model: &ModelRef, budget: &Budget, watch: Option<&(Budget, Arc<watch::Sender<bool>>)>) -> Result<TurnEnd, EngineError> {
+        let (tx, mut rx) = mpsc::channel(256);
+        let session_id = ctx.session_id.clone();
+        let run = engine.run_turn(ctx, tx);
+        tokio::pin!(run);
+        let mut outcome: Option<Result<TurnEnd, EngineError>> = None;
+        let mut texts: HashMap<String, String> = HashMap::new();
+        loop {
+            tokio::select! {
+                biased;
+                Some(ev) = rx.recv() => {
+                    self.handle(ev, &session_id, tally, &mut texts, model, budget).await?;
+                    // A backend past its budget is stopped the way a person
+                    // stops it, keeping what it made.
+                    if let Some((b, cancel)) = watch
+                        && tally.tripped.is_none()
+                        && let Some(e) = b.over()
+                    {
+                        tally.tripped = Some(e);
+                        let _ = cancel.send(true);
+                    }
+                }
+                r = &mut run, if outcome.is_none() => outcome = Some(r),
+                else => break,
+            }
+        }
+        outcome.expect("the loop ends only after the engine does")
+    }
+
+    /// The turn's exact system prompt and tools, recorded beside the log.
+    async fn record_context(&mut self, turn_id: String, system: String, tools: Vec<crate::protocol::ToolDefinition>, model: &ModelRef) -> Result<(), EngineError> {
+        let rec = ContextRecord {
+            turn_id,
+            time_ms: gruntas_store::now_ms(),
+            model: model.clone(),
+            provider: self.provider.clone(),
+            wire_api: self.wire,
+            // A backend brings its own tools; the preset is krowk's.
+            toolset: match self.wire {
+                WireApi::ClaudeCode => crate::claude::BACKEND.into(),
+                WireApi::CodexAppServer => crate::codex::BACKEND.into(),
+                _ => self.preset.name.into(),
+            },
+            system_tokens: crate::engine::estimate_tokens(&system),
+            tools_tokens: crate::engine::tools_tokens(&tools),
+            system,
+            tools,
+            handoff: self.handoff.take(),
+        };
+        // Off the thread like the event appends (see `Writer::log`).
+        self.log.record_context_off(&rec).await.map_err(log_failure)?;
+        Ok(())
+    }
+
+    /// An event of one of the backend's agents, into its child session.
+    async fn backend_child(&mut self, ev: EngineEvent, session_id: &str, model: &ModelRef) -> Result<(), EngineError> {
+        // What the idle loop said before this turn took the process is
+        // written first: an agent's lines stay in the order it said them.
+        if let Some(k) = self.kids.as_mut()
+            && let Some(from) = k.woke_from.take()
+        {
+            k.state.woken(from).await;
+        }
+        match ev {
+            EngineEvent::BackendChildStarted { task_id, call_id, description, agent, .. } => self.child_started(session_id, task_id, call_id, description, agent, model).await?,
+            EngineEvent::BackendChild { task_id, event } => self.child_event(session_id, &task_id, *event).await,
+            EngineEvent::BackendChildEnded { task_id, status, error } => self.child_ended(session_id, &task_id, status, error).await,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// A backend's agent started (R-SUB-7): its child session made — its
+    /// root naming the session, its one turn begun, held as a session
+    /// running here — and only then named by the
+    /// session's `subagent.started`, with what ran it and the backend's id
+    /// for it, and sent: no client sees the child before the session names
+    /// it, nor a session naming a child with no turn. Its prompt is its
+    /// first item, the next event (R-SUB-8). A child log that cannot be
+    /// made is said, and the parent's turn goes on without it.
+    async fn child_started(&mut self, session_id: &str, task_id: String, call_id: String, description: String, agent: Option<String>, model: &ModelRef) -> Result<(), EngineError> {
+        let Some(k) = &self.kids else { return Ok(()) };
+        let child = gruntas_store::new_id();
+        let (mut log, root) = match SessionLog::create_child_off(&k.sessions_dir, &child, &k.cwd, &k.krowk_version, Some(session_id), agent.as_deref()).await {
+            Ok(made) => made,
+            Err(e) => {
+                self.child_lost(session_id, &description, e, None).await;
+                return Ok(());
+            }
+        };
+        let here = ChildHeld::new(&k.shared, &child, BackendTask { parent: session_id.to_string(), task_id: task_id.clone() });
+        let (state, ran_by) = (k.state.state.clone(), k.ran_by);
+        let turn_id = gruntas_store::new_id();
+        let begun = LogBody::TurnStarted { turn_id: turn_id.clone(), model: model.clone(), provider: self.provider.clone(), wire_api: self.wire, permission_mode: k.permission_mode, effort: k.effort, rollover: None };
+        let begun = match log.append_off(begun).await {
+            Ok(ev) => ev,
+            Err(e) => {
+                self.child_lost(session_id, &description, e, None).await;
+                return Ok(());
+            }
+        };
+        self.log(LogBody::SubagentStarted { turn_id: self.turn_id.clone(), call_id, subagent_session_id: child.clone(), description, agent, model: model.clone(), ran_by, backend_id: Some(task_id.clone()) }).await?;
+        let _ = self.out.send(StreamLine::Log(root)).await;
+        let _ = self.out.send(StreamLine::Log(begun)).await;
+        let watch = ChildWatch::backend(&child);
+        self.live(watch.frame(ChildState::Running)).await;
+        let mut st = state.lock().await;
+        st.sessions.insert(task_id.clone(), child);
+        st.open.insert(task_id, OpenChild { log, turn_id, watch, started: Instant::now(), _here: here });
+        Ok(())
+    }
+
+    /// One event of a backend's running agent, as its own turn's
+    /// (`child_line`). What is sent goes once the children are let go of:
+    /// a stop or an approval takes them too.
+    ///
+    /// An approval it asks for is answered under its session: the request
+    /// waiting is handed to it before any client sees it. One of an agent
+    /// krowk does not follow is the session's own, never lost.
+    async fn child_event(&self, session_id: &str, task_id: &str, ev: EngineEvent) {
+        let unfollowed = match &ev {
+            EngineEvent::Approval(req) => Some(LiveEvent::ApprovalRequested(req.clone())),
+            EngineEvent::ApprovalResolved { request_id, decision } => Some(LiveEvent::ApprovalResolved { session_id: session_id.into(), turn_id: self.turn_id.clone(), request_id: request_id.clone(), decision: *decision }),
+            _ => None,
+        };
+        let (lines, lost) = match &self.kids {
+            Some(k) => child_line(&k.state.state, task_id, ev).await,
+            None => (Vec::new(), None),
+        };
+        if lines.is_empty()
+            && let Some(ev) = unfollowed
+        {
+            return self.live(ev).await;
+        }
+        let Some(k) = &self.kids else { return };
+        for l in &lines {
+            if let StreamLine::Live(LiveEvent::ApprovalRequested(r)) = l {
+                k.shared.approvals.hand_to(&r.request_id, &r.session_id);
+            }
+        }
+        for l in lines {
+            let _ = self.out.send(l).await;
+        }
+        if let Some((c, e)) = lost {
+            self.child_lost(session_id, &c.log.session_id, e, Some(&c.watch)).await;
+        }
+    }
+
+    /// A backend's agent ended: its turn completed as it ended — with no
+    /// usage, its spend being the parent's — and its last frame.
+    async fn child_ended(&self, session_id: &str, task_id: &str, status: ChildState, error: Option<String>) {
+        let Some(k) = &self.kids else { return };
+        let Some(c) = k.state.state.lock().await.open.remove(task_id) else { return };
+        let (lines, lost) = end_child(c, status, error).await;
+        if let Some(text) = lost {
+            self.live(LiveEvent::Notice { session_id: session_id.into(), turn_id: self.turn_id.clone(), text }).await;
+        }
+        for l in lines {
+            let _ = self.out.send(l).await;
+        }
+    }
+
+    /// A backend's agent whose log could not be written: said, ended as
+    /// failed on its `subagent.status` when a client knows of it, and the
+    /// rest of it not followed.
+    async fn child_lost(&self, session_id: &str, which: &str, e: LogError, watch: Option<&ChildWatch>) {
+        let text = lost_words(which, &e);
+        self.live(LiveEvent::Notice { session_id: session_id.into(), turn_id: self.turn_id.clone(), text }).await;
+        if let Some(w) = watch {
+            self.live(w.frame(ChildState::Failed)).await;
+        }
+    }
+
+    async fn handle(&mut self, ev: EngineEvent, session_id: &str, tally: &mut Tally, texts: &mut HashMap<String, String>, model: &ModelRef, budget: &Budget) -> Result<(), EngineError> {
+        self.handle_event(ev, session_id, tally, texts, model, budget).await
+    }
+
+    /// What a backend said of the account the turn runs on: saved (R-ROLL-2),
+    /// and a limits report told to the clients too.
+    async fn usage_event(&mut self, ev: EngineEvent, session_id: &str, instance: &str) {
+        match ev {
+            EngineEvent::Limits(limit) => {
+                self.save_limit(instance, &limit).await;
+                self.limits.insert(limit.window.clone().unwrap_or_default(), limit.clone());
+                self.live(LiveEvent::Limits { session_id: session_id.into(), turn_id: self.turn_id.clone(), instance: instance.into(), limit }).await;
+            }
+            EngineEvent::Account { login, models } => self.save_account(instance, login, models).await,
+            _ => {}
+        }
+    }
+
+    /// Saves a limits report under the login of `instance` (R-ROLL-2): a
+    /// failed write is not a failed turn.
+    async fn save_limit(&self, instance: &str, limit: &LimitStatus) {
+        let (usage, instance, limit) = (self.usage.clone(), instance.to_string(), limit.clone());
+        let _ = tokio::task::spawn_blocking(move || {
+            let login = usage.read().login_of(&instance).to_string();
+            usage.record_limit(&login, &limit, gruntas_store::now_ms())
+        })
+        .await;
+    }
+
+    /// What every login's usage is now, when `wanted`.
+    fn snapshot(&self, wanted: bool) -> Option<usage::Data> {
+        wanted.then(|| self.usage.read())
+    }
+
+    /// Marks the login of `instance` as moved to (D19): a failed write is
+    /// not a failed turn.
+    async fn mark_moved(&self, instance: &str) {
+        let (usage, instance) = (self.usage.clone(), instance.to_string());
+        let _ = tokio::task::spawn_blocking(move || {
+            let login = usage.read().login_of(&instance).to_string();
+            usage.mark_moved(&login, gruntas_store::now_ms())
+        })
+        .await;
+    }
+
+    /// Saves who `instance` is signed in as, and its models. Without a login
+    /// the instance keeps the one it had, or is its own.
+    async fn save_account(&self, instance: &str, login: Option<String>, models: Vec<String>) {
+        let (usage, instance) = (self.usage.clone(), instance.to_string());
+        let _ = tokio::task::spawn_blocking(move || {
+            let login = login.unwrap_or_else(|| usage.read().login_of(&instance).to_string());
+            usage.record_instance(&instance, &login, &models, gruntas_store::now_ms())
+        })
+        .await;
+    }
+
+    async fn handle_event(&mut self, ev: EngineEvent, session_id: &str, tally: &mut Tally, texts: &mut HashMap<String, String>, model: &ModelRef, budget: &Budget) -> Result<(), EngineError> {
+        let turn_id = self.turn_id.clone();
+        match ev {
+            EngineEvent::Context { system, tools } => self.record_context(turn_id, system, tools, model).await?,
+            EngineEvent::ItemStarted { item_id, kind } => {
+                self.live(LiveEvent::ItemStarted { session_id: session_id.into(), turn_id, item_id, item: kind }).await;
+            }
+            EngineEvent::ItemDelta { item_id, delta } => {
+                self.live(LiveEvent::ItemDelta { session_id: session_id.into(), turn_id, item_id, delta }).await;
+            }
+            EngineEvent::ItemCompleted { item_id, item } => {
+                if let Item::AssistantText { text } = &item {
+                    texts.insert(item_id.clone(), text.clone());
+                }
+                self.log(LogBody::ItemCompleted { turn_id, item_id, item }).await?;
+            }
+            EngineEvent::ResponseCompleted { response_id, model: answered, usage, stop_reason, item_ids } => {
+                tally.calls += 1;
+                tally.usage += usage;
+                // Priced by the id the request named; the answering model's
+                // id is the fallback, since a provider may name a snapshot.
+                let spent = budget.record(&answered, &usage);
+                let said: Vec<&str> = item_ids.iter().filter_map(|id| texts.get(id).map(String::as_str)).collect();
+                if !said.is_empty() {
+                    tally.last_text = said.join("\n\n");
+                }
+                self.log(LogBody::ResponseCompleted { turn_id: turn_id.clone(), response_id, model: answered, usage, stop_reason, item_ids }).await?;
+                self.spent(session_id, turn_id, tally, &spent).await;
+            }
+            EngineEvent::BackendSession { backend, session_id: vendor, transcript, billing } => {
+                let rec = BackendRecord { instance: model.instance.clone(), session_id: vendor.clone(), transcript: transcript.clone(), billing };
+                if self.backend.as_ref() != Some(&rec) {
+                    self.log(LogBody::BackendSession { turn_id, backend, vendor_session_id: vendor, transcript_path: transcript, billing }).await?;
+                    self.backend = Some(rec);
+                }
+            }
+            EngineEvent::RunOpened { run } => {
+                self.log(LogBody::RunOpened { turn_id, run }).await?;
+            }
+            // Metered, logged apart from the conversation, and counted.
+            EngineEvent::SubagentResponse { response_id, model: answered, usage } => {
+                tally.usage += usage;
+                let spent = budget.record_subagent(&answered, &usage);
+                self.log(LogBody::SubagentResponse { turn_id: turn_id.clone(), response_id, model: answered, usage }).await?;
+                self.spent(session_id, turn_id, tally, &spent).await;
+            }
+            EngineEvent::ReportedCost { usd } => {
+                tally.reported = Some(usd);
+                let spent = budget.reported(usd);
+                self.spent(session_id, turn_id, tally, &spent).await;
+            }
+            EngineEvent::Notice { text } => {
+                self.live(LiveEvent::Notice { session_id: session_id.into(), turn_id, text }).await;
+            }
+            EngineEvent::Approval(req) => self.live(LiveEvent::ApprovalRequested(req)).await,
+            EngineEvent::ApprovalResolved { request_id, decision } => {
+                self.live(LiveEvent::ApprovalResolved { session_id: session_id.into(), turn_id, request_id, decision }).await;
+            }
+            EngineEvent::SubagentStarted { call_id, session_id: child, description, agent, model, ran_by, backend_id } => {
+                self.log(LogBody::SubagentStarted { turn_id, call_id, subagent_session_id: child, description, agent, model, ran_by, backend_id }).await?;
+            }
+            ev @ (EngineEvent::Limits(_) | EngineEvent::Account { .. }) => self.usage_event(ev, session_id, &model.instance).await,
+            EngineEvent::BackendAgents { agents } => {
+                self.live(LiveEvent::BackendAgents { session_id: session_id.into(), agents }).await;
+            }
+            // Said between turns only, through the backend's `Idle`; an
+            // agent's progress, only as that agent's.
+            EngineEvent::Unprompted { .. } | EngineEvent::Woke | EngineEvent::Progress { .. } | EngineEvent::AskedFor { .. } => {}
+            // A backend's agent's own conversation, into its child session;
+            // its calls are metered as `SubagentResponse` above, once.
+            ev @ (EngineEvent::BackendChildStarted { .. } | EngineEvent::BackendChild { .. } | EngineEvent::BackendChildEnded { .. }) => self.backend_child(ev, session_id, model).await?,
+            EngineEvent::Handoff { how, from_instance, summarized_turns, recent_turns, fell_back, text } => {
+                self.log(LogBody::BackendHandoff { turn_id, how, from_instance, summarized_turns, recent_turns, fell_back }).await?;
+                self.handoff = Some(text).filter(|t| !t.is_empty()).or(self.handoff.take());
+            }
+        }
+        Ok(())
+    }
+}

@@ -12,7 +12,7 @@ Source:    https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt
 License:   MIT (BIP-0039: "This BIP falls under the MIT License.")
 Copyright: Marek Palatinus, Pavol Rusnak, Aaron Voisine, Sean Bowe
 
-crates/krowk-client/src/english.txt is BIP-0039's English list of 2048 words,
+crates/gruntas-client/src/english.txt is BIP-0039's English list of 2048 words,
 unchanged. krowk's recovery phrase writes the account key as 24 of these words
-with BIP-0039's checksum; the encoding in crates/krowk-client/src/phrase.rs is
+with BIP-0039's checksum; the encoding in crates/gruntas-client/src/phrase.rs is
 krowk's own.

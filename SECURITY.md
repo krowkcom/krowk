@@ -38,7 +38,7 @@ and the services it talks to: the registry at `api.krowk.com`, the relay,
 and the permalinks it serves. The sharpest edges, and the ones we most want
 reports about:
 
-- **End-to-end encryption** (`crates/krowk-client`): anything that lets the
+- **End-to-end encryption** (`crates/gruntas-client`): anything that lets the
   registry, the relay or storage read, change, reorder or replay session
   content, or learn more than the threat model says it can.
 - **The relay and the registry's sync endpoints**: joining a session, or
@@ -122,7 +122,7 @@ repository, run by a push, and signed those bytes; and Rekor's signed entry
 timestamp, inclusion proof and checkpoint (for rekor.sigstore.dev's own
 origin) verify against Rekor's key. The roots are Sigstore's
 `trusted_root.json`, embedded in the binary
-(`crates/krowk/src/cli/upgrade/trusted_root.json`) and replaced when Sigstore
+(`crates/gruntas/src/cli/upgrade/trusted_root.json`) and replaced when Sigstore
 rotates them; a krowk built before a rotation refuses a release signed after
 it rather than installing it unchecked. Unlike cosign it does not check the
 certificate's CT-log SCT or the RFC 3161 timestamp. The release is signed

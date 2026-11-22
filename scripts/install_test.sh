@@ -217,10 +217,10 @@ else
   # the way scripts/dist.sh archives them, into this run's own directory: the
   # repository's dist/ is neither read nor written. The lean build first, and
   # copied out before the full build overwrites target/release/krowk.
-  cargo build --release --locked -p krowk --bin krowk --bin krowk-mcp >"$WORK/cargo.log" 2>&1 \
+  cargo build --release --locked -p gruntas --bin krowk --bin krowk-mcp >"$WORK/cargo.log" 2>&1 \
     || { cat "$WORK/cargo.log"; fail "cargo could not build the lean build"; }
   cp target/release/krowk target/release/krowk-mcp "$WORK/lean/"
-  cargo build --release --locked -p krowk --bin krowk --features harness >"$WORK/cargo.log" 2>&1 \
+  cargo build --release --locked -p gruntas --bin krowk --features harness >"$WORK/cargo.log" 2>&1 \
     || { cat "$WORK/cargo.log"; fail "cargo could not build the full build"; }
   cp target/release/krowk "$WORK/full/"
   cp "$WORK/lean/krowk-mcp" "$WORK/full/"

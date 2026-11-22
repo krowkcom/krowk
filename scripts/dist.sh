@@ -100,13 +100,13 @@ build() {
   # The lean build first, both binaries: krowk-mcp never touches the session
   # store, so it is the lean build in both archives. Its krowk is copied out
   # before the full build overwrites target/…/krowk.
-  KROWK_VERSION="$version" cargo "$tool" --release --locked --target "$triple" -p krowk --bin krowk --bin krowk-mcp
+  KROWK_VERSION="$version" cargo "$tool" --release --locked --target "$triple" -p gruntas --bin krowk --bin krowk-mcp
   local lean="dist/$triple-lean"
   rm -rf "$lean" && mkdir -p "$lean"
   for bin in krowk krowk-mcp; do
     cp "target/$triple/release/$bin$ext" "$lean/"
   done
-  KROWK_VERSION="$version" cargo "$tool" --release --locked --target "$triple" -p krowk --bin krowk --features harness
+  KROWK_VERSION="$version" cargo "$tool" --release --locked --target "$triple" -p gruntas --bin krowk --features harness
 
   out="dist/$triple"
   rm -rf "$out" && mkdir -p "$out"
