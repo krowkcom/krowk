@@ -1529,7 +1529,12 @@ impl Hosting {
             Ok(ViewerFrame::Command(r)) if matches!(r.command, Command::Approve { decision: ApprovalDecision::AllowProject, .. }) => {
                 let _ = self.answers_tx.send((from, Answer::Ack { id: r.id, error: Some("a viewer allows a call once or for the session; a rule for the project is made on the host".into()) }));
             }
-            Ok(ViewerFrame::Command(r)) => self.execute(from, r),
+            // The session key let it through; the `steer` setting says
+            // whether this origin may steer the target (D4, R-SEC-4).
+            Ok(ViewerFrame::Command(r)) => match crate::steer::check(&r.command, &self.o.sessions) {
+                Ok(()) => self.execute(from, r),
+                Err(why) => { let _ = self.answers_tx.send((from, Answer::Ack { id: r.id, error: Some(why) })); }
+            },
             Err(e) => { let _ = self.answers_tx.send((from, Answer::Ack { id: String::new(), error: Some(format!("not a frame this host reads: {e}")) })); }
         }
     }
@@ -2066,7 +2071,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&sessions);
         let (parent, kid, unrelated, orphan, absent) = ("01a0ec7b-0000-7000-8000-0000000000a1", "01a0ec7b-0000-7000-8000-0000000000a2", "01a0ec7b-0000-7000-8000-0000000000a3", "01a0ec7b-0000-7000-8000-0000000000a4", "01a0ec7b-0000-7000-8000-0000000000a5");
         let root = |id: &str, of: Option<&str>| {
-            let e = crate::protocol::LogEvent { id: id.into(), parent_id: None, session_id: id.into(), time_ms: 1, body: LogBody::SessionStarted { cwd: "/r".into(), gruntas_version: "t".into(), protocol_version: 1, parent_session_id: of.map(String::from), agent: None, attendance: None } };
+            let e = crate::protocol::LogEvent { id: id.into(), parent_id: None, session_id: id.into(), time_ms: 1, body: LogBody::SessionStarted { cwd: "/r".into(), gruntas_version: "t".into(), protocol_version: 1, parent_session_id: of.map(String::from), agent: None, attendance: None, started_by_session_id: None } };
             std::fs::create_dir_all(sessions.join(id)).unwrap();
             std::fs::write(sessions.join(id).join(crate::log::EVENTS_FILE), format!("{}\n", serde_json::to_string(&e).unwrap())).unwrap();
         };

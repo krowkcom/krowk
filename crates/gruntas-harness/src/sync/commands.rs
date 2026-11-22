@@ -327,7 +327,14 @@ fn run(me: &Arc<Commands>, c: &Config, host: &str, command: HostCommand, tell: &
     }
     let (model, prompt, sending_session) = match command {
         HostCommand::Start { model, prompt, sending_session, .. } => (model, prompt, sending_session),
-        HostCommand::Take { session_id, .. } if crate::log::valid_id(&session_id) => return take(me, c, o, host, &session_id, &cwd, tell),
+        HostCommand::Take { session_id, origin, .. } if crate::log::valid_id(&session_id) => {
+            // The signature said whose command it is; the `steer` setting
+            // says whether its origin may move this session (D4, R-SEC-4).
+            if let Err(why) = crate::steer::allow(crate::steer::read(&c.sessions), origin.as_ref(), &session_id, &c.sessions) {
+                return tell(HostAnswer::refused("steer_refused", why));
+            }
+            return take(me, c, o, host, &session_id, &cwd, tell);
+        }
         HostCommand::Take { session_id, .. } => return tell(HostAnswer::refused("bad_command", format!("{:?} is not a session id", session_id.escape_debug().to_string()))),
         HostCommand::Run(_) => unreachable!("run is answered above"),
     };
@@ -766,13 +773,12 @@ async fn follow(c: &Config, a: &Announcer, task: &RunTask, child: &Child, ran: &
 }
 
 /// The origin a host command's prompt carries when an agent sent the
-/// command: its session, which the started session records as its parent.
-/// An id that is no session id is dropped, as a command from another device
-/// is not trusted to name what the log then records. Note that a session
-/// with a parent is read as a subagent elsewhere (it is not bridged for
-/// sync, and takes no model switch).
+/// command: its session, which the started session records as the session
+/// that started it (its steering parent, D4; not a subagent's parent). An id
+/// that is no session id is dropped, as a command from another device is
+/// not trusted to name what the log then records.
 fn sent_by(session: Option<&str>) -> Option<Box<crate::protocol::Origin>> {
-    session.filter(|s| crate::log::valid_id(s)).map(|s| Box::new(crate::protocol::Origin { kind: crate::protocol::OriginKind::Agent, session_id: Some(s.to_string()), device: None }))
+    session.filter(|s| crate::log::valid_id(s)).map(|s| Box::new(crate::protocol::Origin { kind: crate::protocol::OriginKind::Agent, session_id: Some(s.to_string()), device: None, attendance: None }))
 }
 
 async fn start(c: &Config, cwd: &str, model: crate::protocol::ModelRef, prompt: String, sending_session: Option<String>, mode: PermissionMode, tell: &dyn Fn(HostAnswer)) {

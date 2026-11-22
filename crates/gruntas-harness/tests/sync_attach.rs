@@ -3391,7 +3391,7 @@ async fn r_sync_3_a_child_session_and_an_opted_out_directory_are_never_built() {
         parent_id: None,
         session_id: kid.into(),
         time_ms: 1,
-        body: gruntas_harness::protocol::LogBody::SessionStarted { cwd: w.repo().display().to_string(), gruntas_version: "test".into(), protocol_version: 1, parent_session_id: Some(parent.into()), agent: None, attendance: None },
+        body: gruntas_harness::protocol::LogBody::SessionStarted { cwd: w.repo().display().to_string(), gruntas_version: "test".into(), protocol_version: 1, parent_session_id: Some(parent.into()), agent: None, attendance: None, started_by_session_id: None },
     };
     std::fs::write(dir.join(log::EVENTS_FILE), format!("{}\n", serde_json::to_string(&started).unwrap())).unwrap();
     auto.turns.send(server::TurnEvent { session: kid.into(), running: true }).unwrap();

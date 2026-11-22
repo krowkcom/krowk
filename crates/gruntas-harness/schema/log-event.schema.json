@@ -72,6 +72,14 @@
             }
           ]
         },
+        "startedBySessionId": {
+          "description": "The session that started this one — a host command's sending\nsession, an agent's prompt — which is its steering parent (D4):\nthe `steer` setting lets it steer this session. Not a subagent\nrelation: a session that has only this is synced, switchable and\nbudgeted on its own.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
         "type": {
           "type": "string",
           "const": "session.started"

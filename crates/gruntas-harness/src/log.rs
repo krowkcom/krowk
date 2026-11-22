@@ -87,14 +87,14 @@ impl SessionLog {
     /// finds what a session's subagents spent. `agent` is the definition the
     /// subagent runs, when it runs one.
     pub fn create_child(sessions: &Path, cwd: &Path, gruntas_version: &str, parent: Option<&str>, agent: Option<&str>) -> Result<(SessionLog, LogEvent), LogError> {
-        SessionLog::create_as(sessions, gruntas_store::new_id(), cwd, gruntas_version, parent, agent, None)
+        SessionLog::create_as(sessions, gruntas_store::new_id(), cwd, gruntas_version, parent, agent, None, None)
     }
 
     /// `create_child` under an id the caller chose (`gruntas_store::new_id`):
     /// a subagent's worktree is locked in its session's name before the
     /// session is made.
     #[allow(clippy::too_many_arguments)]
-    pub fn create_as(sessions: &Path, session_id: String, cwd: &Path, gruntas_version: &str, parent: Option<&str>, agent: Option<&str>, attendance: Option<Attendance>) -> Result<(SessionLog, LogEvent), LogError> {
+    pub fn create_as(sessions: &Path, session_id: String, cwd: &Path, gruntas_version: &str, parent: Option<&str>, agent: Option<&str>, attendance: Option<Attendance>, started_by: Option<&str>) -> Result<(SessionLog, LogEvent), LogError> {
         let dir = sessions.join(&session_id);
         private_dir(&dir).map_err(|e| io(format_args!("create {}", dir.display()), e))?;
         let mut log = SessionLog::open_files(session_id.clone(), dir)?;
@@ -110,6 +110,7 @@ impl SessionLog {
                 parent_session_id: parent.map(String::from),
                 agent: agent.map(String::from),
                 attendance,
+                started_by_session_id: started_by.map(String::from),
             },
         };
         log.write(&root)?;
@@ -186,9 +187,9 @@ impl SessionLog {
 
     /// `create_as`, off the thread.
     #[allow(clippy::too_many_arguments)]
-    pub async fn create_child_off(sessions: &Path, session_id: &str, cwd: &Path, gruntas_version: &str, parent: Option<&str>, agent: Option<&str>, attendance: Option<Attendance>) -> Result<(SessionLog, LogEvent), LogError> {
-        let (sessions, id, cwd, v, parent, agent) = (sessions.to_path_buf(), session_id.to_string(), cwd.to_path_buf(), gruntas_version.to_string(), parent.map(String::from), agent.map(String::from));
-        off(move || SessionLog::create_as(&sessions, id, &cwd, &v, parent.as_deref(), agent.as_deref(), attendance)).await
+    pub async fn create_child_off(sessions: &Path, session_id: &str, cwd: &Path, gruntas_version: &str, parent: Option<&str>, agent: Option<&str>, attendance: Option<Attendance>, started_by: Option<&str>) -> Result<(SessionLog, LogEvent), LogError> {
+        let (sessions, id, cwd, v, parent, agent, started_by) = (sessions.to_path_buf(), session_id.to_string(), cwd.to_path_buf(), gruntas_version.to_string(), parent.map(String::from), agent.map(String::from), started_by.map(String::from));
+        off(move || SessionLog::create_as(&sessions, id, &cwd, &v, parent.as_deref(), agent.as_deref(), attendance, started_by.as_deref())).await
     }
 
     /// `open`, off the thread.

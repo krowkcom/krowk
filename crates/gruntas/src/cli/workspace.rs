@@ -6,6 +6,8 @@ use crate::config;
 use crate::output::workspace::{self as render, ConfigView, Workspaces};
 use gruntas_api::creds::{self, WorkspaceKey};
 use gruntas_api::{fail, Error};
+#[cfg(feature = "harness")]
+use std::io::Write as _;
 
 /// Which workspace this command was pointed at, and by whom. Empty means
 /// nothing asked — "use the stored default", which only the credential store
@@ -90,12 +92,15 @@ pub(crate) fn config_set(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     ctx.emit(&rendered)
 }
 
-/// `config set defaultMode|rollover`: always the global config, as the
+/// `config set defaultMode|rollover|steer`: always the global config, as the
 /// terminal UI's settings wrote it.
 #[cfg(feature = "harness")]
 fn config_set_global(ctx: &mut Ctx, key: &str, value: Option<&str>) -> Result<(), Error> {
     use crate::settings;
     use gruntas_harness::protocol::Rollover;
+    if key == "steer" {
+        return config_set_steer(ctx, value);
+    }
     let valid = if key == "rollover" { Rollover::NAMES.join("|") } else { settings::DEFAULT_MODES.map(|m| m.name()).join("|") };
     let Some(value) = value else {
         return Err(fail("missing_argument", format!("pass the value: `gruntas config set {key} <{valid}>`")));
@@ -112,6 +117,41 @@ fn config_set_global(ctx: &mut Ctx, key: &str, value: Option<&str>) -> Result<()
         m.name()
     };
     let rendered = render::config_wrote(key, value, &path.display().to_string(), ctx.format, ctx.f.quiet, ctx.colour);
+    ctx.emit(&rendered)
+}
+
+/// `config set steer`: how far an agent's steering of other sessions reaches
+/// (D4, D6). Only a person writes it — a yes typed at a terminal — so no
+/// agent can widen its own reach through gruntas: an agent's shell has no
+/// terminal to answer on, and refuses here.
+#[cfg(feature = "harness")]
+fn config_set_steer(ctx: &mut Ctx, value: Option<&str>) -> Result<(), Error> {
+    use gruntas_harness::steer::Setting;
+    let valid = Setting::NAMES.join("|");
+    let Some(value) = value else {
+        return Err(fail("missing_argument", format!("pass the value: `gruntas config set steer <{valid}>`")));
+    };
+    let setting = Setting::parse(value).map_err(|e| fail("bad_config_value", e))?;
+    super::chain::need_person(ctx, "`gruntas config set steer` sets how far an agent may steer your other sessions", false)?;
+    let _ = writeln!(
+        ctx.io.stderr,
+        "steer {} lets {}.",
+        setting.name(),
+        match setting {
+            Setting::Children => "an agent steer only the sessions it started",
+            Setting::Attended => "an attended session steer any session, and an unattended one only the sessions it started",
+            Setting::Any => "every agent steer every session on this machine",
+        }
+    );
+    if !matches!(super::chain::ask_key(ctx, &format!("Set steer to {}? [y/N]", setting.name()), &[]).as_str(), "y" | "yes") {
+        return Err(fail("selection_cancelled", "not confirmed, so nothing was changed"));
+    }
+    let path = config::global_path()?;
+    config::edit(&path, |raw| {
+        raw.insert("steer".into(), serde_json::Value::String(setting.name().into()));
+    })
+    .map_err(|e| fail("config_unwritable", format!("could not write {}: {e}", path.display())))?;
+    let rendered = render::config_wrote("steer", setting.name(), &path.display().to_string(), ctx.format, ctx.f.quiet, ctx.colour);
     ctx.emit(&rendered)
 }
 
@@ -136,7 +176,7 @@ pub(crate) fn config_get(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     ctx.emit(&rendered)
 }
 
-/// The effective `defaultMode` or `rollover` for the working directory.
+/// The effective `defaultMode`, `rollover` or `steer` for the working directory.
 #[cfg(feature = "harness")]
 fn effective_global(ctx: &Ctx, key: &str) -> Result<(String, String), Error> {
     use crate::settings;
@@ -144,6 +184,16 @@ fn effective_global(ctx: &Ctx, key: &str) -> Result<(String, String), Error> {
     use std::sync::Arc;
     let config = super::prompt::config_json()?;
     let raw = config.as_object().cloned().unwrap_or_default();
+    if key == "steer" {
+        // Global only: no repository or environment layer names it.
+        return Ok(match raw.get("steer").filter(|v| !v.is_null()) {
+            None => (gruntas_harness::steer::Setting::default().name().into(), "default".into()),
+            Some(v) => {
+                let s = v.as_str().map(gruntas_harness::steer::Setting::parse).transpose().map_err(|e| fail("bad_config", format!("{}: {e}", config::global_text())))?;
+                (s.ok_or_else(|| fail("bad_config", format!("{}: steer is not a string", config::global_text())))?.name().into(), "global".into())
+            }
+        });
+    }
     let cwd = std::env::current_dir().unwrap_or_default();
     let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(std::path::PathBuf::from);
     let store = trust::Store::new(Some(super::providers::gruntas_dir()?.join(trust::FILE)), home);

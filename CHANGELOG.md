@@ -155,6 +155,24 @@ the versions are the `v*` tags a release is cut from. Entries land under
   reading is open to every agent, and steering another session is limited by
   the `steer` setting. It also lists the risks that remain and the hard
   boundary to use if gruntas ever runs other people's work.
+- **A new `steer` setting limits how far an agent can steer your other
+  sessions, and the host enforces it.** Steering is any command that acts on
+  a session other than the caller's own: a prompt to an existing session, a
+  steer, an interrupt, an approval, a model switch, and moving a session to
+  another machine. `children` lets an agent steer only sessions it started;
+  `attended` (the default, so a god agent works with no setup) lets an
+  attended session steer any session and an unattended one only its own
+  children; `any` lets every agent steer every session. Your own commands
+  always pass. A host that refuses names the setting and says how to change
+  it. `gruntas config set steer <children|attended|any>` asks for a yes on a
+  terminal and refuses without one, so no agent can widen its own reach
+  through gruntas; `gruntas config get steer` prints the value and whether it
+  is the default or global. `gruntas sync attach` now counts as you only when
+  its input is a terminal: a script or an agent's shell piping lines into it
+  is an agent with no session, which only `any` lets steer. A session a
+  delegated task or a host command starts now records the session that sent
+  it as its steering parent without becoming a subagent: it still syncs, can
+  switch models, and is budgeted on its own.
 
 ## [0.18.0] - 2026-11-20
 
