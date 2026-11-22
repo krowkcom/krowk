@@ -82,7 +82,7 @@ stdout:
     {
       "action": "pin this repository",
       "cmd": "krowk config set workspace <workspace>",
-      "description": "writes .krowk/config.json at the repository root, so every command run inside it uses that workspace's key whoever runs it — <workspace> is a name from this list"
+      "description": "writes .gruntas/config.json at the repository root, so every command run inside it uses that workspace's key whoever runs it — <workspace> is a name from this list"
     }
   ]
 }

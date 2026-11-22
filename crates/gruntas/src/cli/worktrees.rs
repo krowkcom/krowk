@@ -24,20 +24,20 @@
 //!   holds it (`worktree_live`), and while it has uncommitted changes or
 //!   commits ahead of its base unless forced (`worktree_has_changes`).
 //!   Forced, its uncommitted changes are saved as
-//!   `refs/krowk/snapshots/<hex>` first, and a HEAD off its branch as
-//!   `refs/krowk/snapshots/<hex>-head`. Its branch is always kept, and the
+//!   `refs/gruntas/snapshots/<hex>` first, and a HEAD off its branch as
+//!   `refs/gruntas/snapshots/<hex>-head`. Its branch is always kept, and the
 //!   answer says how to bring it back. Ignored files (build output,
 //!   `.worktreeinclude` copies) are not changes, and are deleted with it.
 //! - `apply <hex|path> [--to <dir>]` (WT13): its commits and uncommitted
 //!   changes applied to the working tree of `--to`, the repository's main
 //!   checkout by default, as uncommitted changes, never its index or HEAD;
 //!   then it and its branch are removed, its final state kept as
-//!   `refs/krowk/snapshots/<hex>`. Refused (exit 4) while a live session
+//!   `refs/gruntas/snapshots/<hex>`. Refused (exit 4) while a live session
 //!   holds it (`worktree_live`), when a file does not apply cleanly
 //!   (`worktree_conflicts`, nothing changed, the files named), and when it
 //!   changed submodules (`worktree_submodules`); `--to` a checkout of
 //!   another repository is refused (exit 1, `worktree_other_repository`).
-//!   Changes inside `.git`, `.claude`, `.codex` and `.krowk` directories,
+//!   Changes inside `.git`, `.claude`, `.codex` and `.gruntas` directories,
 //!   which a subagent's apply-back leaves to a person, are applied: this is
 //!   the person's own command. How a person brings a
 //!   `--worktree` session's work home.
@@ -312,7 +312,7 @@ fn refused(r: Refusal, now: i64, details: bool) -> Error {
             // A squash merge leaves no patch on origin to match its commits.
             let squash = if l.ahead.is_some_and(|n| n > 0) { " (a squash-merged branch still reads as ahead)" } else { "" };
             let fix = format!(
-                "{} has {}{squash} — nothing was removed. `--force` removes it anyway, saving uncommitted changes as refs/krowk/snapshots/{} first; its branch {} is kept either way",
+                "{} has {}{squash} — nothing was removed. `--force` removes it anyway, saving uncommitted changes as refs/gruntas/snapshots/{} first; its branch {} is kept either way",
                 l.path.display(),
                 what.join(" and "),
                 l.hex,

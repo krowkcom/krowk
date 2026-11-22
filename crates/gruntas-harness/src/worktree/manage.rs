@@ -20,7 +20,7 @@
 //!   expected to be (`super::disk`, WT12).
 //! - `<hex>.live`: locked (`File::try_lock`) by the process whose session
 //!   works in it for as long as it does (`Held`). git's own lock,
-//!   `krowk:<session>`, says whose it is but not whether they are alive; the
+//!   `gruntas:<session>`, says whose it is but not whether they are alive; the
 //!   OS lets go of this one when that process dies, so a crashed session's
 //!   worktree is not taken for a live one.
 //!
@@ -36,10 +36,10 @@
 //!   A forced removal of one with uncommitted changes saves them first:
 //!   every change, untracked files included, staged into an index of
 //!   krowk's (never the worktree's own), `git stash create`d, and kept as
-//!   `refs/krowk/snapshots/<hex>`. Its branch is always kept, so its
+//!   `refs/gruntas/snapshots/<hex>`. Its branch is always kept, so its
 //!   commits are too, and a HEAD its branch does not hold (an agent that
 //!   detached it, or switched branch, and committed) is kept as
-//!   `refs/krowk/snapshots/<hex>-head`. Ignored files — build output, the
+//!   `refs/gruntas/snapshots/<hex>-head`. Ignored files — build output, the
 //!   copies `.worktreeinclude` made — are not changes, and go with it.
 //! - **`apply`** (WT13): its changes applied to a checkout's working tree
 //!   (`super::apply`), refused while a live session holds it; removed with
@@ -55,7 +55,7 @@
 //!   deleted, when no live session holds it and its files are its
 //!   branch's (`unchanged`) — never through a symlink, and never anything
 //!   else in the repository's directory (the seeding probe and log, the
-//!   WT10 template, its index and its commit). Then the `refs/krowk/snapshots/*` whose commit is
+//!   WT10 template, its index and its commit). Then the `refs/gruntas/snapshots/*` whose commit is
 //!   over `SNAPSHOT_DAYS` old. `prune_daily` runs it in the background at
 //!   most once a day, when a session starts.
 //!
@@ -75,7 +75,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub const COMMON_FILE: &str = "common";
 /// Where a removed worktree's uncommitted changes are kept, `<hex>` after
 /// it; WT13 keeps a finished child's final state there too.
-pub const SNAPSHOTS: &str = "refs/krowk/snapshots/";
+pub const SNAPSHOTS: &str = "refs/gruntas/snapshots/";
 /// How old a snapshot's commit is before `prune` deletes it.
 pub const SNAPSHOT_DAYS: u64 = 30;
 /// The file in the root `prune_daily` keeps the last prune's time in.
@@ -247,7 +247,7 @@ impl Listed {
         Some(Worktree { path: self.path.clone(), hex: self.hex.clone(), base: self.base.clone()?, common: self.common.clone(), main: self.main.clone(), repo_id: self.repo_id.clone() })
     }
 
-    /// `krowk/<hex>`, the branch it was made on, whatever is checked out now.
+    /// `gruntas/<hex>`, the branch it was made on, whatever is checked out now.
     pub fn own_branch(&self) -> String {
         format!("{BRANCH_PREFIX}{}", self.hex)
     }
@@ -455,7 +455,7 @@ impl From<Error> for Refusal {
 }
 
 /// The worktree `key` names under `root`: its 8 hex digits, its branch
-/// `krowk/<hex>`, or its directory. Not judged (`Listed::ahead`, `dirty`).
+/// `gruntas/<hex>`, or its directory. Not judged (`Listed::ahead`, `dirty`).
 pub fn find(root: &Path, key: &str) -> Result<Listed, Refusal> {
     let key = key.trim();
     let all = listed(root, false);
@@ -580,8 +580,8 @@ pub fn apply(root: &Path, key: &str, to: Option<&Path>) -> Result<(Listed, super
     Ok((found, applied))
 }
 
-/// Keeps `head`, a krowk worktree's HEAD, as `refs/krowk/snapshots/<hex>-head`
-/// when its branch `krowk/<hex>` does not hold it — an agent that detached
+/// Keeps `head`, a krowk worktree's HEAD, as `refs/gruntas/snapshots/<hex>-head`
+/// when its branch `gruntas/<hex>` does not hold it — an agent that detached
 /// HEAD, or switched branch, and committed — and names that ref: what is
 /// kept is a commit of krowk's made now, whose parent is `head` and whose
 /// tree is `head`'s, so it expires 30 days from now like any snapshot
@@ -636,7 +636,7 @@ fn same_path(a: &Path, b: &Path) -> bool {
     real(a).is_some_and(|r| Some(r) == real(b))
 }
 
-/// Saves the uncommitted changes of `l` as `refs/krowk/snapshots/<hex>`
+/// Saves the uncommitted changes of `l` as `refs/gruntas/snapshots/<hex>`
 /// and names that ref: every change `git add --all` finds, untracked files
 /// included, staged into a scratch index in `dir` (a copy of the
 /// worktree's own, which is not touched), then `git stash create`d with it.
@@ -706,7 +706,7 @@ fn prune_repo(repo: &Repo, now: SystemTime, done: &mut Pruned) -> Result<(), Err
     };
     let _locked = lock(common)?;
     // krowk's own records whose directory is gone, and which no live
-    // session holds: on its `krowk/<hex>` branch, or locked by krowk.
+    // session holds: on its `gruntas/<hex>` branch, or locked by krowk.
     for (hex, e) in ours(repo, &entries(common)?) {
         let gone = repo.dir.join(&hex).symlink_metadata().is_err();
         let krowks = e.branch.as_deref() == Some(&format!("{BRANCH_PREFIX}{hex}")) || e.locked.as_deref().is_some_and(|r| r.starts_with(LOCK_REASON));
@@ -762,7 +762,7 @@ fn prune_repo(repo: &Repo, now: SystemTime, done: &mut Pruned) -> Result<(), Err
 }
 
 /// Whether the worktree directory `path`, which git no longer knows, holds
-/// exactly what its branch `krowk/<hex>` (else its recorded base) does:
+/// exactly what its branch `gruntas/<hex>` (else its recorded base) does:
 /// read through a scratch index of krowk's with the repository's git
 /// directory, so no modified or untracked file is deleted with it. Ignored
 /// files (build output, `.worktreeinclude` copies) are not judged.
@@ -810,7 +810,7 @@ fn expire(common: &Path, now: SystemTime, done: &mut Pruned) -> Result<(), Error
 /// ago or more (`prune_if_due`): what starting a session calls, which it
 /// never waits for.
 pub fn prune_daily(root: PathBuf) {
-    let _ = std::thread::Builder::new().name("krowk-worktrees-prune".into()).spawn(move || prune_if_due(&root, SystemTime::now()));
+    let _ = std::thread::Builder::new().name("gruntas-worktrees-prune".into()).spawn(move || prune_if_due(&root, SystemTime::now()));
 }
 
 /// `prune`, when the time in `<root>/.pruned` is a day or more before
@@ -923,7 +923,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(w.path.join("a.txt")).unwrap(), "changed\n");
 
         let removed = remove(&root, w.path.to_str().unwrap(), true).unwrap();
-        assert_eq!(removed.snapshot.as_deref(), Some(format!("refs/krowk/snapshots/{}", w.hex).as_str()));
+        assert_eq!(removed.snapshot.as_deref(), Some(format!("refs/gruntas/snapshots/{}", w.hex).as_str()));
         assert!(!w.path.exists());
         assert!(!git_ok(&main, &["worktree", "list"]).contains(&w.hex));
         assert_eq!(git_ok(&main, &["branch", "--list", "--format=%(refname:short)", &w.branch()]), w.branch(), "the branch is kept");

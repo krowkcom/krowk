@@ -36,7 +36,7 @@ impl Sandbox {
 
     /// Where krowk keeps worktrees for this sandbox's `XDG_DATA_HOME`.
     fn worktrees(&self) -> PathBuf {
-        self.root.join("data/krowk/worktrees")
+        self.root.join("data/gruntas/worktrees")
     }
 
     fn create(&self, owner: &str) -> gruntas_harness::worktree::Worktree {
@@ -154,7 +154,7 @@ fn wt9_remove_refuses_a_dirty_worktree_and_force_keeps_a_snapshot() {
     assert_eq!(state(), before, "nothing changed");
 
     let removed = b.json(&["worktrees", "remove", &w.hex, "--force", "--json"]);
-    let snapshot = format!("refs/krowk/snapshots/{}", w.hex);
+    let snapshot = format!("refs/gruntas/snapshots/{}", w.hex);
     assert_eq!(removed["data"]["snapshot"].as_str(), Some(snapshot.as_str()));
     assert_eq!(removed["data"]["branch"].as_str(), Some(w.branch().as_str()));
     assert!(!w.path.exists());
@@ -207,13 +207,13 @@ fn wt13_apply_brings_a_kept_worktree_into_a_checkout_and_refuses_while_live() {
     let applied = b.json(&["worktrees", "apply", &w.hex, "--to", target.to_str().unwrap(), "--json"]);
     assert_eq!(applied["data"]["files"], serde_json::json!(["a.txt", "new.txt"]), "{applied}");
     assert_eq!(applied["data"]["to"].as_str(), target.to_str());
-    assert_eq!(applied["data"]["snapshot"].as_str(), Some(format!("refs/krowk/snapshots/{}", w.hex).as_str()));
+    assert_eq!(applied["data"]["snapshot"].as_str(), Some(format!("refs/gruntas/snapshots/{}", w.hex).as_str()));
     assert_eq!(std::fs::read_to_string(target.join("a.txt")).unwrap(), "committed\n");
     assert_eq!(std::fs::read_to_string(target.join("new.txt")).unwrap(), "uncommitted\n");
     assert_eq!((git(&target, &["rev-parse", "HEAD"]), git(&target, &["diff", "--cached"])), (head, String::new()));
     assert_eq!(std::fs::read_to_string(b.repo().join("a.txt")).unwrap(), "a\n", "the main checkout untouched");
     assert!(!w.path.exists());
-    assert_eq!(git(&b.repo(), &["branch", "--list", "krowk/*"]), "");
+    assert_eq!(git(&b.repo(), &["branch", "--list", "gruntas/*"]), "");
 
     // Held by a live session: refused, nothing changed.
     let (live, held) = gruntas_harness::worktree::create_held(&b.repo(), &b.worktrees(), "s2").unwrap();
@@ -273,7 +273,7 @@ fn add_makes_a_worktree_an_agent_works_in_from_the_working_state_or_a_ref() {
     let made: Value = serde_json::from_slice(&o.stdout).unwrap();
     let data = &made["data"];
     let (hex, path) = (data["hex"].as_str().unwrap(), PathBuf::from(data["path"].as_str().unwrap()));
-    assert_eq!(data["branch"].as_str(), Some(format!("krowk/{hex}").as_str()));
+    assert_eq!(data["branch"].as_str(), Some(format!("gruntas/{hex}").as_str()));
     assert_eq!(data["session"], "the-session");
     assert_eq!(std::fs::read_to_string(path.join("wip.txt")).unwrap(), "uncommitted\n");
 

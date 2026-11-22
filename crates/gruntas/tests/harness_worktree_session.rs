@@ -47,7 +47,7 @@ impl Sandbox {
 
     /// Where krowk keeps worktrees for this sandbox's `XDG_DATA_HOME`.
     fn worktrees(&self) -> PathBuf {
-        self.root.join("data/krowk/worktrees")
+        self.root.join("data/gruntas/worktrees")
     }
 
     fn krowk_in(&self, dir: &Path, args: &[&str]) -> Output {
@@ -147,7 +147,7 @@ fn wt6_a_worktree_session_makes_its_file_in_the_worktree_which_is_kept_and_named
     let wt = &result["worktree"];
     let path = PathBuf::from(wt["path"].as_str().unwrap_or_else(|| panic!("the kept worktree is named: {result}")));
     let hex = path.file_name().unwrap().to_string_lossy().into_owned();
-    assert_eq!((wt["branch"].as_str(), &wt["commits"], &wt["uncommittedChanges"]), (Some(format!("krowk/{hex}").as_str()), &json!(0), &json!(true)));
+    assert_eq!((wt["branch"].as_str(), &wt["commits"], &wt["uncommittedChanges"]), (Some(format!("gruntas/{hex}").as_str()), &json!(0), &json!(true)));
     assert!(path.starts_with(b.worktrees()), "under krowk's worktrees: {}", path.display());
     assert!(path.join("NEW.md").is_file(), "made in the worktree");
     assert!(!b.repo().join("NEW.md").exists(), "not in the checkout");
@@ -155,7 +155,7 @@ fn wt6_a_worktree_session_makes_its_file_in_the_worktree_which_is_kept_and_named
     // The session ran there, by the id the worktree was made for.
     let session = result["sessionId"].as_str().unwrap();
     assert_eq!(b.session_cwd(session), path.display().to_string());
-    assert_eq!(git(&b.repo(), &["branch", "--list", "--format=%(refname:short)", "krowk/*"]), format!("krowk/{hex}"));
+    assert_eq!(git(&b.repo(), &["branch", "--list", "--format=%(refname:short)", "gruntas/*"]), format!("gruntas/{hex}"));
     let listed = b.krowk_in(&b.repo(), &["worktrees", "--json"]);
     let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
     let row = listed["data"]["worktrees"].as_array().unwrap().iter().find(|r| r["hex"] == hex.as_str()).unwrap_or_else(|| panic!("{listed}"));
@@ -164,7 +164,7 @@ fn wt6_a_worktree_session_makes_its_file_in_the_worktree_which_is_kept_and_named
     // Resumed, it runs in its worktree again, and is named again on the
     // way out: on stderr, the answer being text.
     let (_, err) = b.prompt(&["--resume", session, "anything else?"]);
-    assert!(err.contains(&format!("Worktree kept: {} (branch krowk/{hex}) — `krowk worktrees apply {hex}` brings its changes into your checkout", path.display())), "{err}");
+    assert!(err.contains(&format!("Worktree kept: {} (branch gruntas/{hex}) — `krowk worktrees apply {hex}` brings its changes into your checkout", path.display())), "{err}");
     assert!(path.join("NEW.md").is_file());
 
     // A new session and a resumed one are not the same thing.
@@ -195,7 +195,7 @@ fn wt6_a_worktree_session_that_changes_nothing_leaves_nothing() {
             assert!(last.get("worktree").is_none(), "{last}");
         }
         assert_eq!(b.worktree_dirs(), Vec::<PathBuf>::new(), "no worktree left");
-        assert_eq!(git(&b.repo(), &["branch", "--list", "krowk/*"]), "");
+        assert_eq!(git(&b.repo(), &["branch", "--list", "gruntas/*"]), "");
         assert_eq!(git(&b.repo(), &["worktree", "list", "--porcelain"]).lines().filter(|l| l.starts_with("worktree ")).count(), 1);
     }
     // stream-json names a kept one in its last line, the result.
@@ -241,8 +241,8 @@ fn worktrees_default_starts_a_new_session_in_its_own_worktree_without_the_flag()
     // A repository's own says no before the person's yes. (It is read only
     // once the repository is trusted; Claude Code runs in no other, so an
     // untrusted one's is never reached by a session.)
-    std::fs::create_dir_all(b.repo().join(".krowk")).unwrap();
-    std::fs::write(b.repo().join(".krowk/config.json"), r#"{"worktrees": {"default": false}}"#).unwrap();
+    std::fs::create_dir_all(b.repo().join(".gruntas")).unwrap();
+    std::fs::write(b.repo().join(".gruntas/config.json"), r#"{"worktrees": {"default": false}}"#).unwrap();
     // A file that can run code changed since the repository was trusted, so
     // it is trusted again, as a person who looked at the change would.
     let o = b.krowk_in(&b.repo(), &["trust"]);

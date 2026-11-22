@@ -54,15 +54,15 @@ pub fn root(cwd: &Path) -> PathBuf {
 /// when it is trusted: what Claude Code reads from a project (settings and
 /// their hooks, hook scripts kept under `.claude/hooks`, commands, agents,
 /// skills), what Codex layers from `.codex` (config, rules, hooks), and
-/// krowk's own agent definitions and `.krowk/config.json` (hooks, allow rules
+/// krowk's own agent definitions and `.gruntas/config.json` (hooks, allow rules
 /// and the worktree setup command). A directory is every file under it. The
-/// project settings, hooks, `.codex` and `.krowk/config.json` of every
+/// project settings, hooks, `.codex` and `.gruntas/config.json` of every
 /// directory below the root count too (`roots_of_prints`). Not covered: a
 /// script a hook or server names from elsewhere in the repository.
 /// `.mcp.json` is covered by its own servers digest (`Listed::mcp`).
 /// `.claude/settings.local.json` is left out: it is not in git, so a pull
 /// cannot change it, and the person edits it themselves.
-pub const FINGERPRINTED: &[&str] = &[".claude/settings.json", ".claude/hooks", ".claude/commands", ".claude/agents", ".claude/skills", ".krowk/agents", ".krowk/config.json", ".codex"];
+pub const FINGERPRINTED: &[&str] = &[".claude/settings.json", ".claude/hooks", ".claude/commands", ".claude/agents", ".claude/skills", ".gruntas/agents", ".gruntas/config.json", ".codex"];
 
 /// What a backend would run of the repository's own, found in it: the
 /// reason the question is asked, shown with it.
@@ -76,7 +76,7 @@ pub fn what_runs(root: &Path) -> Vec<String> {
         (".claude/commands", "its commands"),
         (".claude/agents", "its agents"),
         (".claude/skills", "its skills"),
-        (".krowk/agents", "krowk agent definitions"),
+        (".gruntas/agents", "krowk agent definitions"),
         (".codex", "Codex's project config, rules and hooks"),
     ] {
         if root.join(file).symlink_metadata().is_ok() {
@@ -189,7 +189,7 @@ fn roots_of_prints(root: &Path) -> (Vec<String>, bool) {
         let mut names: Vec<String> = entries.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         names.sort();
         for name in names {
-            if matches!(name.as_str(), ".git" | ".claude" | ".codex" | ".krowk") {
+            if matches!(name.as_str(), ".git" | ".claude" | ".codex" | ".gruntas") {
                 continue;
             }
             let sub = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
@@ -210,7 +210,7 @@ fn roots_of_prints(root: &Path) -> (Vec<String>, bool) {
                 cut = true;
                 continue;
             }
-            for f in [".claude/settings.json", ".claude/hooks", ".codex", ".krowk/config.json"] {
+            for f in [".claude/settings.json", ".claude/hooks", ".codex", ".gruntas/config.json"] {
                 paths.push(format!("{sub}/{f}"));
             }
             queue.push_back((sub, depth + 1));
@@ -606,14 +606,14 @@ mod tests {
             ".claude/commands/deploy.md",
             ".claude/agents/reviewer.md",
             ".claude/skills/x/SKILL.md",
-            ".krowk/agents/a.md",
+            ".gruntas/agents/a.md",
             ".codex/config.toml",
             ".codex/hooks.json",
             ".codex/rules/default.rules",
-            ".krowk/config.json",
+            ".gruntas/config.json",
             "packages/app/.claude/settings.json",
             "packages/app/.codex/config.toml",
-            "packages/app/.krowk/config.json",
+            "packages/app/.gruntas/config.json",
         ];
         for file in files {
             let (base, repo, store) = repo("each");

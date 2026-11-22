@@ -262,7 +262,7 @@ pub fn topic(name: &str, c: &Catalog, files: &Files, colour: bool) -> Option<Str
                 row(&mut out, "  ", 23, e.name, &why);
             }
             out += &format!(
-                "\nWhich registry: --dev, then GRUNTAS_API_URL, then GRUNTAS_DEV, then the default.\n\n{}\n  Credentials live in {} (0600).\n  Everything else krowk keeps is beside them: ~/.krowk, or GRUNTAS_HOME.\n  Config lives in {}, and per repository in\n  <git-root>/.krowk/config.json.\n",
+                "\nWhich registry: --dev, then GRUNTAS_API_URL, then GRUNTAS_DEV, then the default.\n\n{}\n  Credentials live in {} (0600).\n  Everything else krowk keeps is beside them: ~/.krowk, or GRUNTAS_HOME.\n  Config lives in {}, and per repository in\n  <git-root>/.gruntas/config.json.\n",
                 bold(colour, "Files"),
                 files.credentials,
                 files.config,

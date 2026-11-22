@@ -46,7 +46,7 @@ fn connect_io() -> Option<tokio::runtime::Handle> {
     IO.get_or_init(|| {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().ok()?;
         let handle = rt.handle().clone();
-        std::thread::Builder::new().name("krowk-connect-io".into()).spawn(move || rt.block_on(std::future::pending::<()>())).ok()?;
+        std::thread::Builder::new().name("gruntas-connect-io".into()).spawn(move || rt.block_on(std::future::pending::<()>())).ok()?;
         Some(handle)
     })
     .clone()

@@ -262,7 +262,7 @@ fn probe(dir: &Path, source: &Path) -> bool {
     if !same_cow_volume(dir, source) {
         return false;
     }
-    let name = format!("krowk-cow-probe-{}", random_hex());
+    let name = format!("gruntas-cow-probe-{}", random_hex());
     let (from, to) = (source.join(&name), dir.join(&name));
     if std::fs::write(&from, b"k").is_err() {
         return false;

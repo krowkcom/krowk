@@ -4,7 +4,7 @@ stdout:
   "ok": true,
   "data": {
     "global_path": "<scratch>/home/.krowk/config.json",
-    "repo_path": "<scratch>/work/.krowk/config.json"
+    "repo_path": "<scratch>/work/.gruntas/config.json"
   },
   "summary": "no configuration set — uploads use the stored default key",
   "breadcrumbs": [
@@ -24,9 +24,9 @@ stdout:
   "data": {
     "key": "workspace",
     "value": "ws_local",
-    "path": "<scratch>/work/.krowk/config.json"
+    "path": "<scratch>/work/.gruntas/config.json"
   },
-  "summary": "workspace = ws_local in <scratch>/work/.krowk/config.json",
+  "summary": "workspace = ws_local in <scratch>/work/.gruntas/config.json",
   "breadcrumbs": [
     {
       "action": "check the effective configuration",
@@ -47,7 +47,7 @@ stdout:
       "workspace": "repo config"
     },
     "global_path": "<scratch>/home/.krowk/config.json",
-    "repo_path": "<scratch>/work/.krowk/config.json"
+    "repo_path": "<scratch>/work/.gruntas/config.json"
   },
   "summary": "workspace ws_local — repo config",
   "breadcrumbs": [
@@ -62,10 +62,10 @@ exit: 0
 
 @ls {work}
 .git/
-.krowk/
-.krowk/config.json 644
+.gruntas/
+.gruntas/config.json 644
 
-@cat {work}/.krowk/config.json
+@cat {work}/.gruntas/config.json
 {
   "workspace": "ws_local"
 }
@@ -100,7 +100,7 @@ stdout:
       "workspace": "repo config"
     },
     "global_path": "<scratch>/home/.krowk/config.json",
-    "repo_path": "<scratch>/work/.krowk/config.json"
+    "repo_path": "<scratch>/work/.gruntas/config.json"
   },
   "summary": "workspace ws_local — repo config",
   "breadcrumbs": [
@@ -124,9 +124,9 @@ stdout:
   "ok": true,
   "data": {
     "key": "workspace",
-    "path": "<scratch>/work/.krowk/config.json"
+    "path": "<scratch>/work/.gruntas/config.json"
   },
-  "summary": "workspace removed from <scratch>/work/.krowk/config.json",
+  "summary": "workspace removed from <scratch>/work/.gruntas/config.json",
   "breadcrumbs": [
     {
       "action": "check the effective configuration",
@@ -147,7 +147,7 @@ stdout:
       "workspace": "global config"
     },
     "global_path": "<scratch>/home/.krowk/config.json",
-    "repo_path": "<scratch>/work/.krowk/config.json"
+    "repo_path": "<scratch>/work/.gruntas/config.json"
   },
   "summary": "workspace ws_global — global config",
   "breadcrumbs": [
@@ -183,7 +183,7 @@ $ krowk config show --format human
 stdout:
 Nothing set — uploads use the stored default key.
   Global    <scratch>/home/.krowk/config.json
-  Repo      <scratch>/work/.krowk/config.json
+  Repo      <scratch>/work/.gruntas/config.json
 exit: 0
 
 $ krowk config set bogus_key 1
@@ -208,7 +208,7 @@ stdout:
       "workspace": "GRUNTAS_WORKSPACE"
     },
     "global_path": "<scratch>/home/.krowk/config.json",
-    "repo_path": "<scratch>/work/.krowk/config.json"
+    "repo_path": "<scratch>/work/.gruntas/config.json"
   },
   "summary": "workspace ws_env — GRUNTAS_WORKSPACE",
   "breadcrumbs": [

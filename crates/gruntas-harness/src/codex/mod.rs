@@ -1738,7 +1738,7 @@ mod tests {
         assert!(change(PermissionMode::Plan, Some(&f("a.txt")), None).unwrap_err().contains("plan mode"));
         assert!(change(ae, Some(&f("a.txt")), None).is_ok());
         assert!(change(ae, Some(&["/etc/passwd".to_string()]), None).unwrap_err().contains("outside the working directory"));
-        for p in [".codex/config.toml", ".git/hooks/pre-commit", "sub/.CODEX/rules/x.rules", ".claude/settings.json", ".krowk/config.json"] {
+        for p in [".codex/config.toml", ".git/hooks/pre-commit", "sub/.CODEX/rules/x.rules", ".claude/settings.json", ".gruntas/config.json"] {
             assert!(change(ae, Some(&f(p)), None).is_err(), "{p}");
         }
         assert!(change(ae, Some(&f("a.txt")), Some("/")).unwrap_err().contains("rest of the session"));

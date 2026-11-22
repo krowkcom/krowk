@@ -56,7 +56,7 @@ stdout:
   "workspace": "unknown — not recorded at login; `krowk whoami` asks the registry",
   "runs_available": true,
   "credentials": "<scratch>/home/.krowk/credentials.json",
-  "config": "global <scratch>/home/.krowk/config.json (absent), repo <scratch>/work/.krowk/config.json (absent)",
+  "config": "global <scratch>/home/.krowk/config.json (absent), repo <scratch>/work/.gruntas/config.json (absent)",
   "store": {
     "name": "store",
     "status": "pass",

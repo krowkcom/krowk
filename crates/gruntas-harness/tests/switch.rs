@@ -532,8 +532,8 @@ fn r_roll_5_rollover_is_resolved_per_session_repo_and_global_and_off_offers_noth
     // The global config's off, and a repository's own: believed only when trusted.
     w.rollover = Some(Rollover::Off);
     assert!(ask(&w, None).1.switch_offer.is_none(), "global");
-    std::fs::create_dir_all(w.root.join("repo/.krowk")).unwrap();
-    std::fs::write(w.root.join("repo/.krowk/config.json"), r#"{"rollover": "offer"}"#).unwrap();
+    std::fs::create_dir_all(w.root.join("repo/.gruntas")).unwrap();
+    std::fs::write(w.root.join("repo/.gruntas/config.json"), r#"{"rollover": "offer"}"#).unwrap();
     assert!(ask(&w, None).1.switch_offer.is_none(), "an untrusted repository's value is ignored");
     w.trusted = true;
     assert!(ask(&w, None).1.switch_offer.is_some(), "a trusted repository overrides the global one");

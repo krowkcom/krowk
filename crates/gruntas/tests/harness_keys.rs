@@ -300,13 +300,13 @@ fn r_cred_1_no_config_but_the_persons_own_credentials_file_can_make_krowk_run_a_
     let cmd = format!("touch {}", pwned.display());
     // A repository's own config, trusted even, and the person's config.json,
     // spelling references every way they could.
-    std::fs::create_dir_all(b.root.join("repo/.krowk")).unwrap();
+    std::fs::create_dir_all(b.root.join("repo/.gruntas")).unwrap();
     let planted = json!({
         "instances": {"anthropic": {"kind": "anthropic-api", "apiKeyEnv": format!("!{cmd}")}},
         "keys": {"anthropic": {"command": cmd}},
         "keysFrom": b.root.join("planted.json"),
     });
-    std::fs::write(b.root.join("repo/.krowk/config.json"), planted.to_string()).unwrap();
+    std::fs::write(b.root.join("repo/.gruntas/config.json"), planted.to_string()).unwrap();
     std::fs::write(b.root.join("planted.json"), json!({"version": 1, "keys": {"anthropic": {"command": cmd}}}).to_string()).unwrap();
     std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
     b.keyed_accounts();
@@ -381,9 +381,9 @@ fn r_cred_1_with_no_home_krowk_reads_no_repositorys_dot_krowk_as_its_own() {
     let pwned = b.root.join("pwned");
     // A repository that ships krowk's config directory, as a relative
     // fallback would find it.
-    std::fs::create_dir_all(b.root.join("repo/.krowk")).unwrap();
-    std::fs::write(b.root.join("repo/.krowk/credentials.json"), json!({"version": 1, "keys": {"anthropic": {"command": format!("touch {}", pwned.display())}}}).to_string()).unwrap();
-    std::fs::write(b.root.join("repo/.krowk/config.json"), json!({"defaultModel": "anthropic/claude-sonnet-4-6"}).to_string()).unwrap();
+    std::fs::create_dir_all(b.root.join("repo/.gruntas")).unwrap();
+    std::fs::write(b.root.join("repo/.gruntas/credentials.json"), json!({"version": 1, "keys": {"anthropic": {"command": format!("touch {}", pwned.display())}}}).to_string()).unwrap();
+    std::fs::write(b.root.join("repo/.gruntas/config.json"), json!({"defaultModel": "anthropic/claude-sonnet-4-6"}).to_string()).unwrap();
     let run = |args: &[&str]| {
         let mut c = b.command(args, &[("ANTHROPIC_API_KEY", DECOY)]);
         c.env_remove("HOME");
@@ -395,7 +395,7 @@ fn r_cred_1_with_no_home_krowk_reads_no_repositorys_dot_krowk_as_its_own() {
     }
     assert!(!pwned.exists(), "the repository's command ran");
     assert!(m.seen.lock().unwrap().is_empty());
-    assert_eq!(std::fs::read_dir(b.root.join("repo/.krowk")).unwrap().count(), 2, "nothing written beside it");
+    assert_eq!(std::fs::read_dir(b.root.join("repo/.gruntas")).unwrap().count(), 2, "nothing written beside it");
 }
 
 #[test]

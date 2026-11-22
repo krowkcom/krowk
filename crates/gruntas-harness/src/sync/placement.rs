@@ -695,7 +695,7 @@ impl Placer {
         let handle = Handle { id, cwd: spec.cwd.clone() };
         let me = self.clone();
         let t = task.clone();
-        let spawned = std::thread::Builder::new().name("krowk-placing".into()).spawn(move || {
+        let spawned = std::thread::Builder::new().name("gruntas-placing".into()).spawn(move || {
             let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| me.drive(&t, spec, here)));
             match ran {
                 Ok(Ok(Some(outcome))) => t.set(State::Done(Ok(outcome))),

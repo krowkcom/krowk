@@ -30,7 +30,7 @@
 //!
 //! **Only the person's own file is read.** The references are honoured
 //! from the credentials file alone: config.json holds a variable's *name*
-//! (read, never run), a repository's `.krowk/config.json` defines no
+//! (read, never run), a repository's `.gruntas/config.json` defines no
 //! instances, and the file's path is set by whoever loads the person's own
 //! config (`InstancesConfig::keys_from`, which no JSON can set). The file
 //! sits in krowk's home, which the file tools neither read, search nor

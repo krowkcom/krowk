@@ -1156,7 +1156,7 @@ pub struct RunResult {
 #[serde(rename_all = "camelCase")]
 pub struct KeptWorktree {
     pub path: String,
-    /// `krowk/<8 hex>`.
+    /// `gruntas/<8 hex>`.
     pub branch: String,
     /// Commits on the branch past the commit it was made at.
     pub commits: usize,

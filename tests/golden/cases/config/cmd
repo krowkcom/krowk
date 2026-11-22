@@ -5,7 +5,7 @@ krowk config show
 krowk config set workspace ws_local
 krowk config show
 @ls {work}
-@cat {work}/.krowk/config.json
+@cat {work}/.gruntas/config.json
 krowk config set workspace ws_global --global
 krowk config show
 @ls {home}

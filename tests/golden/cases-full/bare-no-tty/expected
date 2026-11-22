@@ -1787,7 +1787,7 @@ stdout:
           "args": [
             {
               "name": "worktree",
-              "summary": "Its 8 hex digits, its branch krowk/<hex>, or its directory",
+              "summary": "Its 8 hex digits, its branch gruntas/<hex>, or its directory",
               "required": true
             }
           ],
@@ -1796,7 +1796,7 @@ stdout:
               "name": "force",
               "type": "bool",
               "default": "false",
-              "usage": "Remove it though it has changes; uncommitted ones are saved as refs/krowk/snapshots/<hex>"
+              "usage": "Remove it though it has changes; uncommitted ones are saved as refs/gruntas/snapshots/<hex>"
             }
           ],
           "hidden": false
@@ -1808,7 +1808,7 @@ stdout:
           "args": [
             {
               "name": "worktree",
-              "summary": "Its 8 hex digits, its branch krowk/<hex>, or its directory",
+              "summary": "Its 8 hex digits, its branch gruntas/<hex>, or its directory",
               "required": true
             }
           ],
@@ -1918,7 +1918,7 @@ stdout:
       "name": "worktree",
       "type": "bool",
       "default": "false",
-      "usage": "With -p: start the session in a new git worktree of this repository, on a branch krowk/<hex> — removed at the end if nothing changed, kept and named if something did"
+      "usage": "With -p: start the session in a new git worktree of this repository, on a branch gruntas/<hex> — removed at the end if nothing changed, kept and named if something did"
     },
     {
       "name": "permission-mode",
@@ -1948,7 +1948,7 @@ stdout:
       "name": "rollover",
       "type": "string",
       "default": "",
-      "usage": "With -p: what happens when the session's instance hits its rate or usage limit — auto (continue on the next instance), offer (ask, the default) or off (fail with no offer). Replaces the value the session recorded; the repository's .krowk/config.json (when trusted) and the global config set the default"
+      "usage": "With -p: what happens when the session's instance hits its rate or usage limit — auto (continue on the next instance), offer (ask, the default) or off (fail with no offer). Replaces the value the session recorded; the repository's .gruntas/config.json (when trusted) and the global config set the default"
     },
     {
       "name": "image",
@@ -3874,7 +3874,7 @@ tty:
           "args": [
             {
               "name": "worktree",
-              "summary": "Its 8 hex digits, its branch krowk/<hex>, or its directory",
+              "summary": "Its 8 hex digits, its branch gruntas/<hex>, or its directory",
               "required": true
             }
           ],
@@ -3883,7 +3883,7 @@ tty:
               "name": "force",
               "type": "bool",
               "default": "false",
-              "usage": "Remove it though it has changes; uncommitted ones are saved as refs/krowk/snapshots/<hex>"
+              "usage": "Remove it though it has changes; uncommitted ones are saved as refs/gruntas/snapshots/<hex>"
             }
           ],
           "hidden": false
@@ -3895,7 +3895,7 @@ tty:
           "args": [
             {
               "name": "worktree",
-              "summary": "Its 8 hex digits, its branch krowk/<hex>, or its directory",
+              "summary": "Its 8 hex digits, its branch gruntas/<hex>, or its directory",
               "required": true
             }
           ],
@@ -4005,7 +4005,7 @@ tty:
       "name": "worktree",
       "type": "bool",
       "default": "false",
-      "usage": "With -p: start the session in a new git worktree of this repository, on a branch krowk/<hex> — removed at the end if nothing changed, kept and named if something did"
+      "usage": "With -p: start the session in a new git worktree of this repository, on a branch gruntas/<hex> — removed at the end if nothing changed, kept and named if something did"
     },
     {
       "name": "permission-mode",
@@ -4035,7 +4035,7 @@ tty:
       "name": "rollover",
       "type": "string",
       "default": "",
-      "usage": "With -p: what happens when the session's instance hits its rate or usage limit — auto (continue on the next instance), offer (ask, the default) or off (fail with no offer). Replaces the value the session recorded; the repository's .krowk/config.json (when trusted) and the global config set the default"
+      "usage": "With -p: what happens when the session's instance hits its rate or usage limit — auto (continue on the next instance), offer (ask, the default) or off (fail with no offer). Replaces the value the session recorded; the repository's .gruntas/config.json (when trusted) and the global config set the default"
     },
     {
       "name": "image",

@@ -324,7 +324,7 @@ impl Publisher {
         let (me2, c, commands) = (me.clone(), c.clone(), run.commands.clone());
         run.stopping = Arc::default();
         let stopping = run.stopping.clone();
-        let spawned = std::thread::Builder::new().name("krowk-presence".into()).spawn(move || {
+        let spawned = std::thread::Builder::new().name("gruntas-presence".into()).spawn(move || {
             let _done = done_tx;
             let revoked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| publish(&c, &stop_rx, stopping, &commands))).unwrap_or_else(|_| {
                 eprintln!("krowk: this machine stopped announcing itself to your other devices: its publisher panicked");

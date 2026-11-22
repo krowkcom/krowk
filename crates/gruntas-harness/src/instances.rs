@@ -159,7 +159,7 @@ pub struct WorktreesConfig {
     /// install dependencies, generate code — inside the sandbox's
     /// workspace profile with only the worktree writable
     /// (`crate::worktree::setup`). A repository's own, in its
-    /// `.krowk/config.json`, runs only once the repository is trusted.
+    /// `.gruntas/config.json`, runs only once the repository is trusted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<String>,
     /// Seconds `setup` may take before it is stopped; 600 when absent.
@@ -168,7 +168,7 @@ pub struct WorktreesConfig {
     /// Every session started in a repository starts in a worktree of its
     /// own, as with `--worktree`, whatever model or agent runs it;
     /// `--worktree=false` runs one in place. A repository's own, in its
-    /// `.krowk/config.json`, comes before the person's.
+    /// `.gruntas/config.json`, comes before the person's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<bool>,
 }

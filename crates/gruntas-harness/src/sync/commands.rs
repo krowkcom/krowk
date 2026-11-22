@@ -221,7 +221,7 @@ impl Commands {
                 Ok((from, Ok(command))) => {
                     me.lock().working.insert(id.clone());
                     let (me2, c2, id2, host) = (me.clone(), c.clone(), id.clone(), host.to_string());
-                    let spawned = std::thread::Builder::new().name("krowk-host-command".into()).spawn(move || {
+                    let spawned = std::thread::Builder::new().name("gruntas-host-command".into()).spawn(move || {
                         let told = std::cell::Cell::new(false);
                         let tell = |answer: HostAnswer| {
                             told.set(true);
@@ -270,7 +270,7 @@ fn finish(me: &Arc<Commands>, c: &Config, id: &str, from: DeviceId, answer: Host
 fn send(me: &Arc<Commands>, id: &str, sealed: Vec<u8>, api: Arc<gruntas_api::Client>) {
     me.lock().working.insert(id.to_string());
     let (me2, id2) = (me.clone(), id.to_string());
-    let spawned = std::thread::Builder::new().name("krowk-host-answer".into()).spawn(move || {
+    let spawned = std::thread::Builder::new().name("gruntas-host-answer".into()).spawn(move || {
         let _ = api.answer_host_command(&id2, &sealed);
         me2.lock().working.remove(&id2);
     });
@@ -659,7 +659,7 @@ impl Drop for Watch {
 /// refused over the machine limit, or `LEASE_WAIT` has passed, and says
 /// which.
 fn watch_lease(api: Arc<gruntas_api::Client>, session: String, me: String, stop: Arc<std::sync::atomic::AtomicBool>, tx: std::sync::mpsc::Sender<Result<(), HostAnswer>>) {
-    let _ = std::thread::Builder::new().name("krowk-task-lease".into()).spawn(move || {
+    let _ = std::thread::Builder::new().name("gruntas-task-lease".into()).spawn(move || {
         let until = Instant::now() + LEASE_WAIT;
         let said = loop {
             if stop.load(std::sync::atomic::Ordering::SeqCst) {
@@ -891,7 +891,7 @@ fn take(me: &Arc<Commands>, c: &Config, o: &Options, host: &str, session: &str, 
         // reaped once it ends. One still taking it stays the take under way
         // — another is `busy` — until it moves the session or ends.
         let still = Taking(if unfinished { taking.0.take() } else { None });
-        let _ = std::thread::Builder::new().name("krowk-take".into()).spawn(move || {
+        let _ = std::thread::Builder::new().name("gruntas-take".into()).spawn(move || {
             while still.0.is_some() && !has_moved(&read()) && matches!(child.try_wait(), Ok(None)) {
                 std::thread::sleep(TAKE_EVERY);
             }
@@ -1024,7 +1024,7 @@ mod tests {
     /// clone; a repository beside it is.
     #[test]
     fn a_krowk_worktree_is_not_offered_as_a_clone() {
-        let root = Path::new("/home/ann/.local/share/krowk/worktrees");
+        let root = Path::new("/home/ann/.local/share/gruntas/worktrees");
         assert!(!not_krowks_own(&root.join("4fb7/e117ff1a"), Some(root)));
         assert!(not_krowks_own(Path::new("/home/ann/app"), Some(root)));
         assert!(not_krowks_own(Path::new("/home/ann/app"), None));

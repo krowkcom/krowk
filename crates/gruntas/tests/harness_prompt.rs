@@ -410,7 +410,7 @@ fn r_roll_11_krowk_p_shows_an_early_offer_in_json_and_hints_on_stderr() {
 }
 
 /// R-ROLL-4..7: `rollover` is read from the global config, a trusted
-/// repository's `.krowk/config.json` and `--rollover`, most specific first;
+/// repository's `.gruntas/config.json` and `--rollover`, most specific first;
 /// `off` fails a limit with no offer; a resumed session keeps its value; any
 /// other value is refused naming the three.
 #[cfg(unix)]
@@ -420,8 +420,8 @@ fn r_roll_5_krowk_p_resolves_rollover_per_session_repo_and_global() {
     std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
     let global = |rollover: Option<&str>| two_claude_accounts(&b, "limited.jsonl", rollover);
     let repo = |rollover: &str| {
-        std::fs::create_dir_all(b.root.join("repo/.krowk")).unwrap();
-        std::fs::write(b.root.join("repo/.krowk/config.json"), serde_json::json!({"rollover": rollover}).to_string()).unwrap();
+        std::fs::create_dir_all(b.root.join("repo/.gruntas")).unwrap();
+        std::fs::write(b.root.join("repo/.gruntas/config.json"), serde_json::json!({"rollover": rollover}).to_string()).unwrap();
     };
     // Whether the limited turn was offered a way on, and its session. The
     // repository is trusted only when `--trust` is given.
@@ -442,7 +442,7 @@ fn r_roll_5_krowk_p_resolves_rollover_per_session_repo_and_global() {
     repo("offer");
     assert!(offered(&["--trust"]).0, "a trusted repository overrides the global value");
     assert!(!offered(&["--trust", "--rollover", "off"]).0, "--rollover overrides both");
-    std::fs::remove_dir_all(b.root.join("repo/.krowk")).unwrap();
+    std::fs::remove_dir_all(b.root.join("repo/.gruntas")).unwrap();
     assert!(offered(&["--trust", "--rollover", "offer"]).0, "--rollover overrides the global value");
 
     // Resumed: the recorded value stands until a new one replaces it.

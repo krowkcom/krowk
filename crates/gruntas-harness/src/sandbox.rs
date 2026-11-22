@@ -22,7 +22,7 @@
 //! In every profile every `.git` in the workspace — nested repositories
 //! and gitdir files included, found by searching it when a call runs — and
 //! every hooks directory a repository's `core.hooksPath` names inside it
-//! stay read-only, as do `.claude`, `.codex` and `.krowk` at its top and
+//! stay read-only, as do `.claude`, `.codex` and `.gruntas` at its top and
 //! the settings directories inside it; a `.git` a command creates is
 //! removed after the call. A command that could write `.git/hooks` or
 //! `.claude/settings.json` could run anything the next time git or an
@@ -45,7 +45,7 @@
 //! renaming `refs/heads` and making a new one (a mount point cannot be
 //! renamed, but its parent directory can), and a `refs/replace/<commit>`
 //! changes what `main` shows and checks out in the main checkout without
-//! moving it. Only the `krowk/` reflogs are writable, not all of
+//! moving it. Only the `gruntas/` reflogs are writable, not all of
 //! `logs`, and the writable git directories are swept of anything that
 //! is not a regular file or a directory before and after every call
 //! (`sweep`; `objects` only at its top and in `pack` and `info`, where a
@@ -53,7 +53,7 @@
 //! sandbox appends to a reflog in place, so a reflog a command replaced
 //! with a symlink to `~/.bashrc` would have the person's next commit write
 //! a line the agent chose there. So a command can make no tag, and no branch outside
-//! `krowk/`. `packed-refs` stays read-only for the second reason: a line
+//! `gruntas/`. `packed-refs` stays read-only for the second reason: a line
 //! appended to it is a ref, and git never rewrites it in place anyway (it
 //! writes `packed-refs.lock` beside it, in the read-only common directory).
 //! The fences above are listed in `read_only` with `<common>/config`,
@@ -65,9 +65,9 @@
 //! not enough, since the environment names that directory: the worktree's
 //! `.git` must lead to `<common>/worktrees/<name>` in a real common
 //! directory outside the root, that admin directory must lead back to it,
-//! and its branch must be `krowk/<8 hex>`. Anything else — a person's own
+//! and its branch must be `gruntas/<8 hex>`. Anything else — a person's own
 //! linked worktree included — keeps the fences above, and so does a
-//! worktree whose `HEAD` a command moves off its `krowk/` branch, from the
+//! worktree whose `HEAD` a command moves off its `gruntas/` branch, from the
 //! next call on. The person's git identity is in their hidden home, so
 //! `user.name` and `user.email` as git resolves them in the worktree are
 //! read outside the sandbox and handed in as `GIT_AUTHOR_*` and
@@ -170,7 +170,7 @@ const CREDENTIALS: [&str; 8] = [".ssh", ".gnupg", ".aws", ".azure", ".kube", ".d
 
 /// The directories inside a writable one that stay read-only: what git,
 /// Claude Code, Codex and krowk run what they name from.
-const FENCED: [&str; 4] = [".git", ".claude", ".codex", ".krowk"];
+const FENCED: [&str; 4] = [".git", ".claude", ".codex", ".gruntas"];
 
 /// One sandbox, laid out: what a call may write, what it may only read,
 /// what it may not see, and whether it reaches the network.
@@ -827,7 +827,7 @@ fn worktrees_root(env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Option<Pa
 pub struct ManagedWorktree {
     pub common: PathBuf,
     pub admin: PathBuf,
-    /// The `<hex>` of its `krowk/<hex>` branch.
+    /// The `<hex>` of its `gruntas/<hex>` branch.
     pub hex: String,
 }
 
@@ -838,7 +838,7 @@ pub struct ManagedWorktree {
 /// that admin directory's `commondir` and `gitdir` must lead back to
 /// `<common>` and to `top/.git`, `<common>` must be a git directory (its
 /// `objects`, `refs` and `HEAD`) outside the root, and the worktree must
-/// have a `krowk/<8 hex>` branch checked out. Read as text, as everything
+/// have a `gruntas/<8 hex>` branch checked out. Read as text, as everything
 /// else here is: git is not run in a directory a model may have written.
 pub fn managed_worktree(top: &Path, root: &Path) -> Option<ManagedWorktree> {
     let (top, root) = (top.canonicalize().ok()?, root.canonicalize().ok()?);
@@ -861,7 +861,7 @@ pub fn managed_worktree(top: &Path, root: &Path) -> Option<ManagedWorktree> {
         return None;
     }
     let branch = branch_of(&admin)?;
-    let hex = branch.strip_prefix("refs/heads/krowk/")?;
+    let hex = branch.strip_prefix("refs/heads/gruntas/")?;
     (hex.len() == 8 && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))).then(|| ManagedWorktree { common, admin, hex: hex.to_string() })
 }
 
@@ -877,7 +877,7 @@ fn branch_of(gitdir: &Path) -> Option<String> {
 impl ManagedWorktree {
     /// What the sandbox binds of the common directory, in order: all of it
     /// read-only (it may be in the hidden home), then writable what a
-    /// commit on `krowk/<hex>` writes — objects, the `krowk/` branches and
+    /// commit on `gruntas/<hex>` writes — objects, the `gruntas/` branches and
     /// their reflogs, and the worktree's own index, `HEAD` and logs in its
     /// admin directory. Not the rest of `logs`: git appends to a reflog
     /// outside the sandbox too, so one a command made a symlink would have
@@ -887,7 +887,7 @@ impl ManagedWorktree {
     fn binds(&self) -> Vec<(PathBuf, bool)> {
         let c = &self.common;
         let mut out = vec![(c.clone(), false), (c.join("objects"), true)];
-        out.extend(["refs/heads/krowk", "logs/refs/heads/krowk"].into_iter().filter_map(|d| own_dir(c, d)).map(|d| (d, true)));
+        out.extend(["refs/heads/gruntas", "logs/refs/heads/gruntas"].into_iter().filter_map(|d| own_dir(c, d)).map(|d| (d, true)));
         out.push((self.admin.clone(), true));
         out
     }
@@ -898,14 +898,14 @@ impl ManagedWorktree {
     /// directories git writes new objects into — `pack` and `info`.
     fn swept(&self) -> Vec<(PathBuf, bool)> {
         let c = &self.common;
-        let mut out: Vec<(PathBuf, bool)> = ["refs/heads/krowk", "logs/refs/heads/krowk"].iter().map(|d| (c.join(d), true)).collect();
+        let mut out: Vec<(PathBuf, bool)> = ["refs/heads/gruntas", "logs/refs/heads/gruntas"].iter().map(|d| (c.join(d), true)).collect();
         out.push((self.admin.clone(), true));
         out.extend(["objects", "objects/pack", "objects/info"].iter().map(|d| (c.join(d), false)));
         out
     }
 
     /// What stays read-only on top of `binds`, the worktree at `top`: in
-    /// the writable directories, every other `krowk/` branch and what
+    /// the writable directories, every other `gruntas/` branch and what
     /// leads this worktree to its repository or runs in it (`commondir`,
     /// `gitdir`, `config.worktree`, a submodule's git directory); and,
     /// read-only already but fenced from the file tools too, what git runs
@@ -918,7 +918,7 @@ impl ManagedWorktree {
         out.extend(["config.worktree", "commondir", "gitdir", "modules"].iter().map(|f| self.admin.join(f)));
         out.push(top.join(".git"));
         let own = std::ffi::OsString::from(&self.hex);
-        out.extend(std::fs::read_dir(c.join("refs/heads/krowk")).into_iter().flatten().flatten().filter(|e| e.file_name() != own && e.file_type().is_ok_and(|t| t.is_file() || t.is_dir())).map(|e| e.path()));
+        out.extend(std::fs::read_dir(c.join("refs/heads/gruntas")).into_iter().flatten().flatten().filter(|e| e.file_name() != own && e.file_type().is_ok_and(|t| t.is_file() || t.is_dir())).map(|e| e.path()));
         out.extend(std::fs::read_dir(c.join("worktrees")).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.file_name() != self.admin.file_name()));
         out
     }
@@ -1223,7 +1223,7 @@ mod tests {
             assert!(p.fences(&base.join(fenced).join("x")), "{fenced}: {:?}", p.read_only);
         }
         assert_eq!(p.writable, [base.join("ws")]);
-        for d in [".git", ".claude", ".codex", ".krowk"] {
+        for d in [".git", ".claude", ".codex", ".gruntas"] {
             assert!(p.read_only.contains(&base.join("ws").join(d)), "{d}");
         }
         assert!(p.hides(&base.join("home/.claude/settings.json")) && !p.fences(&base.join("home/.claude")), "outside the workspace a settings directory is hidden with the home, not bound back");

@@ -126,14 +126,14 @@ pub struct Policy {
 pub enum OptOut {
     /// Under this `sync.exclude` entry (as written in config.json).
     Excluded(PathBuf),
-    /// This `.krowk/no-sync`, in the directory or one of its ancestors.
+    /// This `.gruntas/no-sync`, in the directory or one of its ancestors.
     Marker(PathBuf),
 }
 
 /// The policy from `GRUNTAS_SYNC_AUTO` and `GRUNTAS_SYNC_IDLE`, else the
 /// `sync` object of `config` — which must be the person's own
 /// `~/.krowk/config.json`, never a repository's: a repository can only
-/// turn sync off (with `.krowk/no-sync`), never on. No config reads as `{}`:
+/// turn sync off (with `.gruntas/no-sync`), never on. No config reads as `{}`:
 /// on, nothing excluded, the default idle window.
 ///
 /// A bad value is an `Err` naming the key and how to fix it. **An `Err`
@@ -209,8 +209,8 @@ pub fn policy(env: &dyn Fn(&str) -> String, config: Option<&Value>) -> Result<Po
 impl Policy {
     /// Whether sessions in `cwd` are kept off sync, and by what: under a
     /// `sync.exclude` entry, matched by whole components (`/work/a` does
-    /// not take `/work/ab`), or below a `.krowk/no-sync` — a file or a
-    /// directory — in `cwd` or any ancestor. The `.krowk` that is krowk's
+    /// not take `/work/ab`), or below a `.gruntas/no-sync` — a file or a
+    /// directory — in `cwd` or any ancestor. The `.gruntas` that is krowk's
     /// own home (`krowk_home`) is not a repository's: a `no-sync` there
     /// opts out nothing (the device's switch is `sync.auto: false`).
     ///
@@ -218,7 +218,7 @@ impl Policy {
     /// back to itself when it cannot be), so a symlink on either side
     /// never lets a directory slip out of an opt-out. A marker that cannot
     /// be looked up for any reason but its absence (`EACCES` on a
-    /// `.krowk`, say) counts as there. `cwd` is absolute, as `session_dir`
+    /// `.gruntas`, say) counts as there. `cwd` is absolute, as `session_dir`
     /// gives it; a relative one would be read against this process's own
     /// directory. Blocking: a few `stat`s per ancestor.
     pub fn opted_out(&self, cwd: &Path, krowk_home: Option<&Path>) -> Option<OptOut> {
@@ -232,13 +232,13 @@ impl Policy {
         let home = krowk_home.map(canonical);
         for c in &cwds {
             for dir in c.ancestors() {
-                let dot = dir.join(".krowk");
+                let dot = dir.join(".gruntas");
                 if home.as_ref().is_some_and(|h| canonical(&dot) == *h) {
                     continue;
                 }
                 let marker = dot.join("no-sync");
                 match std::fs::symlink_metadata(&marker) {
-                    // `.krowk` a file is no marker either.
+                    // `.gruntas` a file is no marker either.
                     Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => {}
                     _ => return Some(OptOut::Marker(marker)),
                 }
@@ -425,7 +425,7 @@ impl Supervisor {
         let presence = Arc::<super::announce::Publisher>::default();
         super::announce::Publisher::ensure(&presence, &c);
         let announcer = presence.clone();
-        let thread = std::thread::Builder::new().name("krowk-sync".into()).spawn(move || {
+        let thread = std::thread::Builder::new().name("gruntas-sync".into()).spawn(move || {
             match tokio::runtime::Builder::new_current_thread().enable_all().build() {
                 Ok(rt) => {
                     let bridged = c.bridged.clone();
@@ -665,7 +665,7 @@ impl Lists {
         let mut l = lists.lock();
         if !l.reading {
             let reader = lists.clone();
-            if std::thread::Builder::new().name("krowk-sync-list".into()).spawn(move || read_lists(&reader, host::LIST_EVERY)).is_err() {
+            if std::thread::Builder::new().name("gruntas-sync-list".into()).spawn(move || read_lists(&reader, host::LIST_EVERY)).is_err() {
                 return None;
             }
             l.reading = true;
@@ -1795,39 +1795,39 @@ mod tests {
         };
         let (secret, deep, sibling) = (mk("work/a"), mk("work/a/src/x"), mk("work/ab"));
         let (repo_sub, high_sub) = (mk("repo/crates/core"), mk("mono/team/svc/src"));
-        mk("repo/.krowk");
-        std::fs::write(root.join("repo/.krowk/no-sync"), "").unwrap();
-        mk("mono/.krowk/no-sync"); // a directory marker, two levels above the repository at svc
-        mk("mono/team/svc/.krowk");
-        // krowk's own home is `home/.krowk`; its no-sync covers nothing.
-        let (krowk_home, in_home) = (mk("home/.krowk"), mk("home/code/proj"));
-        mk("home/.krowk/no-sync");
+        mk("repo/.gruntas");
+        std::fs::write(root.join("repo/.gruntas/no-sync"), "").unwrap();
+        mk("mono/.gruntas/no-sync"); // a directory marker, two levels above the repository at svc
+        mk("mono/team/svc/.gruntas");
+        // krowk's own home is `home/.gruntas`; its no-sync covers nothing.
+        let (krowk_home, in_home) = (mk("home/.gruntas"), mk("home/code/proj"));
+        mk("home/.gruntas/no-sync");
 
         let p = Policy { on: true, off_by: None, exclude: vec![secret.clone()], idle: None, accepting: true };
         let home = Some(krowk_home.as_path());
         assert_eq!(p.opted_out(&secret, home), Some(OptOut::Excluded(secret.clone())));
         assert_eq!(p.opted_out(&deep, home), Some(OptOut::Excluded(secret.clone())), "its subdirectories too");
         assert_eq!(p.opted_out(&sibling, home), None, "whole components: /work/a does not take /work/ab");
-        assert_eq!(p.opted_out(&root.join("repo"), home), Some(OptOut::Marker(root.join("repo/.krowk/no-sync"))));
-        assert_eq!(p.opted_out(&repo_sub, home), Some(OptOut::Marker(root.join("repo/.krowk/no-sync"))), "from the repository's root");
-        assert_eq!(p.opted_out(&high_sub, home), Some(OptOut::Marker(root.join("mono/.krowk/no-sync"))), "from two levels above it, as a directory");
+        assert_eq!(p.opted_out(&root.join("repo"), home), Some(OptOut::Marker(root.join("repo/.gruntas/no-sync"))));
+        assert_eq!(p.opted_out(&repo_sub, home), Some(OptOut::Marker(root.join("repo/.gruntas/no-sync"))), "from the repository's root");
+        assert_eq!(p.opted_out(&high_sub, home), Some(OptOut::Marker(root.join("mono/.gruntas/no-sync"))), "from two levels above it, as a directory");
         assert_eq!(p.opted_out(&in_home, home), None, "krowk's home is no repository");
         assert_eq!(p.opted_out(&root.join("home"), home), None);
-        assert_eq!(p.opted_out(&in_home, None), Some(OptOut::Marker(root.join("home/.krowk/no-sync"))), "without the home given, it is just a .krowk");
+        assert_eq!(p.opted_out(&in_home, None), Some(OptOut::Marker(root.join("home/.gruntas/no-sync"))), "without the home given, it is just a .gruntas");
 
-        // A `.krowk` that is a file holds no marker; one that cannot be
+        // A `.gruntas` that is a file holds no marker; one that cannot be
         // looked into counts as one.
         let (plain, shut) = (mk("plain/src"), mk("shut/src"));
-        std::fs::write(root.join("plain/.krowk"), "").unwrap();
+        std::fs::write(root.join("plain/.gruntas"), "").unwrap();
         assert_eq!(p.opted_out(&plain, home), None);
-        mk("shut/.krowk");
+        mk("shut/.gruntas");
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(root.join("shut/.krowk"), std::fs::Permissions::from_mode(0o000)).unwrap();
-        let unreadable = std::fs::symlink_metadata(root.join("shut/.krowk/no-sync")).is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied);
+        std::fs::set_permissions(root.join("shut/.gruntas"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable = std::fs::symlink_metadata(root.join("shut/.gruntas/no-sync")).is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied);
         let got = p.opted_out(&shut, home);
-        std::fs::set_permissions(root.join("shut/.krowk"), std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(root.join("shut/.gruntas"), std::fs::Permissions::from_mode(0o700)).unwrap();
         if unreadable {
-            assert_eq!(got, Some(OptOut::Marker(root.join("shut/.krowk/no-sync"))), "fails closed");
+            assert_eq!(got, Some(OptOut::Marker(root.join("shut/.gruntas/no-sync"))), "fails closed");
         } // else root, which reads through any mode
 
         // A symlink on either side does not slip out.

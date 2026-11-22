@@ -53,7 +53,7 @@
 //! program makes itself (`cp`, `tee`, `sed -i`, and covered git
 //! subcommands that write work-tree files — `mv`, `apply`, `checkout` or
 //! `restore` from a source, `stash apply` — which can put content in
-//! `.claude/` or `.krowk/`, outside the file tools' fences) — a command's
+//! `.claude/` or `.gruntas/`, outside the file tools' fences) — a command's
 //! own writes are not judged against `Edit` deny rules, only its
 //! redirections are refused an allow. A deny rule is the policy; the sandbox is the boundary.
 

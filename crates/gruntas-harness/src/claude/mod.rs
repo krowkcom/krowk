@@ -2098,9 +2098,9 @@ mod tests {
         // R-BACK-6's other half: an edit that would make Claude Code run
         // something — its settings, hooks, agents — needs a person's say.
         let ae = PermissionMode::AcceptEdits;
-        for f in [".claude/settings.json", ".claude/settings.local.json", ".claude/agents/x.md", "sub/.claude/hooks/h.sh", ".Claude/settings.json", ".CLAUDE./agents/a.md", ".claude /settings.json", ".krowk/config.json"] {
+        for f in [".claude/settings.json", ".claude/settings.local.json", ".claude/agents/x.md", "sub/.claude/hooks/h.sh", ".Claude/settings.json", ".CLAUDE./agents/a.md", ".claude /settings.json", ".gruntas/config.json"] {
             let e = approve(ae, "Write", &json!({"file_path": f})).unwrap_err();
-            assert!(e.contains(".claude") || e.contains(".krowk"), "{f}: {e}");
+            assert!(e.contains(".claude") || e.contains(".gruntas"), "{f}: {e}");
         }
         let config = cwd.join("cc-config");
         std::fs::create_dir_all(&config).unwrap();

@@ -6,7 +6,7 @@
 //! | krowk, user | `config.json` in krowk's home: `permissions`, `hooks` | in full |
 //! | Claude Code, user | `settings.json` in Claude's config directory (`$CLAUDE_CONFIG_DIR`, else `~/.claude`) | in full |
 //! | krowk, remembered | `permissions.json` in krowk's home: what a person allowed for a project | in full, for that project |
-//! | krowk, project | `<repository>/.krowk/config.json` | trusted repository: in full; otherwise its `deny` and `ask` only (and its `worktrees.setup` command not at all) |
+//! | krowk, project | `<repository>/.gruntas/config.json` | trusted repository: in full; otherwise its `deny` and `ask` only (and its `worktrees.setup` command not at all) |
 //! | Claude Code, project | `.claude/settings.json` and `.claude/settings.local.json`, from the repository's root down to the working directory | the same |
 //!
 //! Every file has Claude Code's shape — `permissions.allow`, `.ask`,
@@ -22,7 +22,7 @@
 //! `defaultMode` is never `bypassPermissions` or `unhinged`: that is the
 //! person's to choose, on the command line or in their own settings. None
 //! of these files is one the model can write: every file tool refuses
-//! `.claude`, `.krowk` and krowk's home unless a person approves that one
+//! `.claude`, `.gruntas` and krowk's home unless a person approves that one
 //! call (or runs unhinged), and no allow rule or remembered grant opens
 //! them.
 //!
@@ -122,7 +122,7 @@ pub struct Loaded {
     /// The repository has settings that widen, which it would take trust
     /// to apply: what the trust question is for.
     pub widens: bool,
-    /// The repository's own `worktrees` (in its `.krowk/config.json`),
+    /// The repository's own `worktrees` (in its `.gruntas/config.json`),
     /// trusted or not: its `setup` is a command, which runs only when
     /// `trusted` (`crate::worktree::setup`), as a hook does.
     pub worktrees: Option<crate::instances::WorktreesConfig>,
@@ -330,7 +330,7 @@ pub fn load(cfg: &Config, cwd: &Path) -> Result<Loaded, String> {
     let mut project: Vec<File> = Vec::new();
     let mut worktrees = None;
     let mut rollover = None;
-    let own = root.join(".krowk/config.json");
+    let own = root.join(".gruntas/config.json");
     if let Some(v) = read_json(&own)? {
         let source = own.display().to_string();
         if let Some(w) = v.get("worktrees") {

@@ -18,8 +18,8 @@
 //! - `service` — `krowk machines always-on on`: the systemd user unit and the launchd
 //!   agent that keep it running on an always-on machine (R-HOST-2).
 //!
-//! Where it listens: `$XDG_RUNTIME_DIR/krowk/<home>/host.sock`, and where
-//! there is no runtime directory (macOS), `$TMPDIR/krowk-<uid>/<home>/…`.
+//! Where it listens: `$XDG_RUNTIME_DIR/gruntas/<home>/host.sock`, and where
+//! there is no runtime directory (macOS), `$TMPDIR/gruntas-<uid>/<home>/…`.
 //! `<home>` is the first twelve hex digits of the SHA-256 of krowk's home
 //! (`~/.krowk`, or `GRUNTAS_HOME`): a daemon serves one home's config, keys
 //! and sessions, so each home gets its own. The directories are `0700` and
@@ -447,24 +447,24 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let e = [("XDG_RUNTIME_DIR", root.display().to_string()), ("HOME", "/home/ada".to_string())];
         let key = home_key(Path::new("/home/ada/.krowk"));
-        assert_eq!(socket(&env(&e)).unwrap(), root.join("krowk").join(&key).join("host.sock"));
-        assert_eq!(std::fs::metadata(root.join("krowk")).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(socket(&env(&e)).unwrap(), root.join("gruntas").join(&key).join("host.sock"));
+        assert_eq!(std::fs::metadata(root.join("gruntas")).unwrap().permissions().mode() & 0o777, 0o700);
         // macOS: no runtime directory, the per-user TMPDIR instead.
         let e = [("TMPDIR", root.display().to_string()), ("HOME", "/home/ada".to_string())];
         let uid = unsafe { libc::getuid() };
-        assert_eq!(socket(&env(&e)).unwrap(), root.join(format!("krowk-{uid}")).join(&key).join("host.sock"));
+        assert_eq!(socket(&env(&e)).unwrap(), root.join(format!("gruntas-{uid}")).join(&key).join("host.sock"));
         // Another home is another daemon: its config, keys and sessions.
         let e = [("XDG_RUNTIME_DIR", root.display().to_string()), ("HOME", "/home/ada".to_string()), ("GRUNTAS_HOME", "/work/.krowk".to_string())];
         assert_ne!(socket(&env(&e)).unwrap().parent().unwrap().file_name().unwrap().to_str().unwrap(), key);
         // One made loose by someone is made private again, and a symlink —
         // which could lead anywhere — is refused.
-        std::fs::set_permissions(root.join("krowk"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(root.join("gruntas"), std::fs::Permissions::from_mode(0o755)).unwrap();
         let e = [("XDG_RUNTIME_DIR", root.display().to_string()), ("HOME", "/home/ada".to_string())];
         socket(&env(&e)).unwrap();
-        assert_eq!(std::fs::metadata(root.join("krowk")).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(std::fs::metadata(root.join("gruntas")).unwrap().permissions().mode() & 0o777, 0o700);
         let other = root.join("other");
         std::fs::create_dir(&other).unwrap();
-        std::os::unix::fs::symlink(root.join("krowk"), other.join("krowk")).unwrap();
+        std::os::unix::fs::symlink(root.join("gruntas"), other.join("gruntas")).unwrap();
         let e = [("XDG_RUNTIME_DIR", other.display().to_string()), ("HOME", "/home/ada".to_string())];
         assert!(socket(&env(&e)).unwrap_err().contains("symlink"));
         // One sun_path cannot hold is refused by name, not left to bind.

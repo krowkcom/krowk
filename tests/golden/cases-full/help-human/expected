@@ -193,7 +193,7 @@ Agent flags (krowk, krowk -p)
   --resume <string>           With -p: continue this krowk session — the
                               sessionId a result names, or its krowk.db id
   --worktree                  With -p: start the session in a new git worktree
-                              of this repository, on a branch krowk/<hex> —
+                              of this repository, on a branch gruntas/<hex> —
                               removed at the end if nothing changed, kept and
                               named if something did
   --permission-mode <string> (default default)
@@ -218,7 +218,7 @@ Agent flags (krowk, krowk -p)
                               the next instance), offer (ask, the default) or
                               off (fail with no offer). Replaces the value the
                               session recorded; the repository's
-                              .krowk/config.json (when trusted) and the global
+                              .gruntas/config.json (when trusted) and the global
                               config set the default
   --image <string>            With -p: an image file to send with the prompt,
                               which names it as [Image #N] — repeat for more, up
