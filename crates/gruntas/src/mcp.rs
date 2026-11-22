@@ -84,8 +84,9 @@ const SECRET_NAMES: &[&str] = &[
 ];
 
 /// gruntas's home, wherever `GRUNTAS_HOME` put it, the default `~/.gruntas`,
-/// krowk's `~/.krowk`, and a move's staging directory and lock beside each: their keys, logins and
-/// sessions are never published, whatever the path is called.
+/// krowk's `~/.krowk`, and a move's staging directory and lock beside
+/// each: their keys, logins and sessions are never published, whatever the
+/// path is called.
 fn in_krowk_home(real: &Path) -> bool {
     gruntas_api::home::fenced(&gruntas_api::home::process_env).iter().any(|h| gruntas_api::home::holds(h, real))
 }

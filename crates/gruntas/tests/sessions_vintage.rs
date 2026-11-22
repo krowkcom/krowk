@@ -125,13 +125,13 @@ fn r_vint_1_r_vint_2_r_vint_3_r_vint_4_an_idle_session_is_archived_listed_and_re
     let kit = root.join("kit.txt");
     let (ok, _, out) = m.krowk(&["sync", "init", "--save", kit.to_str().unwrap()]);
     assert!(ok, "{out}");
-    let ks = Keystore::new(&root.join(".krowk"));
+    let ks = Keystore::new(&root.join(".gruntas"));
     assert!(ks.account().unwrap().is_none(), "no account key: the clean break");
     let keys = ks.user_keys().unwrap().expect("a user key");
     let me = ks.device().unwrap().unwrap().id();
     let api = gruntas_api::Client::new(&m.api_url, TOKEN).signed_by(e2e::DeviceSigner::new(me, ks.signing_key().unwrap()).shared());
 
-    let sessions = root.join(".krowk").join("sessions");
+    let sessions = root.join(".gruntas").join("sessions");
     let old = session(&sessions, &root, "the idle session's secret prompt", 20);
     let pinned = session(&sessions, &root, "a pinned one", 30);
     let fresh = session(&sessions, &root, "a recent one", 3);
@@ -197,7 +197,7 @@ fn synced_machine_on(root: &Path, token: &'static str) -> (gruntas_devregistry::
     let m = Machine { home: root.to_path_buf(), api_url: format!("{}/v1", registry.url()), token };
     let (ok, _, out) = m.krowk(&["sync", "init", "--save", root.join("kit.txt").to_str().unwrap()]);
     assert!(ok, "{out}");
-    let ks = Keystore::new(&root.join(".krowk"));
+    let ks = Keystore::new(&root.join(".gruntas"));
     let keys = ks.user_keys().unwrap().expect("a user key");
     let api = gruntas_api::Client::new(&m.api_url, token).signed_by(e2e::DeviceSigner::new(ks.device().unwrap().unwrap().id(), ks.signing_key().unwrap()).shared());
     (registry, m, api, keys)
@@ -212,7 +212,7 @@ fn synced_machine_on(root: &Path, token: &'static str) -> (gruntas_devregistry::
 fn r_vint_4_a_restore_finds_the_session_in_the_vintage_it_went_into_when_a_replacement_lost_it() {
     let root = std::env::temp_dir().join(format!("krowk-vintage-replaced-{}", std::process::id()));
     let (_registry, m, api, keys) = synced_machine(&root);
-    let sessions = root.join(".krowk").join("sessions");
+    let sessions = root.join(".gruntas").join("sessions");
     let a = session(&sessions, &root, "the first of the week", 20);
     let b = session(&sessions, &root, "the second of the week", 20);
     let (ok, _, out) = m.krowk(&["sessions", "import", "--from", "all"]);
@@ -223,7 +223,7 @@ fn r_vint_4_a_restore_finds_the_session_in_the_vintage_it_went_into_when_a_repla
     let (week, kept) = (stub.week.clone(), stub.vintage.clone());
 
     // Another machine's bad merge: a replacement holding neither session.
-    let generation = Keystore::new(&root.join(".krowk")).device_list().unwrap().unwrap().generation();
+    let generation = Keystore::new(&root.join(".gruntas")).device_list().unwrap().unwrap().generation();
     let empty = e2e::seal_vintage(&keys, generation, &week, &gruntas_harness::vintage::pack(&Default::default())).unwrap();
     let lost = api.put_vintage(&week, &empty, Some(&kept)).unwrap().slug;
     // A stub from before stubs recorded their vintage.
@@ -270,14 +270,14 @@ fn r_vint_4_a_restore_finds_the_session_in_the_vintage_it_went_into_when_a_repla
 fn r_vint_3_an_archived_session_opened_without_sync_shows_its_stub_and_says_why() {
     let root = std::env::temp_dir().join(format!("krowk-vintage-stub-only-{}", std::process::id()));
     let (_registry, m, _, _) = synced_machine(&root);
-    let sessions = root.join(".krowk").join("sessions");
+    let sessions = root.join(".gruntas").join("sessions");
     let id = session(&sessions, &root, "asked on the synced machine", 20);
     let (ok, _, out) = m.krowk(&["sessions", "archive"]);
     assert!(ok, "{out}");
 
     // Its stub, on a machine that never set sync up.
     let bare = Machine { home: root.join("bare"), api_url: m.api_url.clone(), token: TOKEN };
-    let dir = bare.home.join(".krowk").join("sessions").join(&id);
+    let dir = bare.home.join(".gruntas").join("sessions").join(&id);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::copy(sessions.join(&id).join(gruntas_harness::vintage::STUB_FILE), dir.join(gruntas_harness::vintage::STUB_FILE)).unwrap();
     let (ok, _, out) = bare.krowk(&["sessions", "import", "--from", "all"]);
@@ -299,7 +299,7 @@ fn r_vint_3_an_archived_session_opened_without_sync_shows_its_stub_and_says_why(
 fn on_free_archiving_keeps_the_local_copy_hides_the_session_and_restore_brings_it_back() {
     let root = std::env::temp_dir().join(format!("krowk-vintage-free-{}", std::process::id()));
     let (_registry, m, api, _) = synced_machine_on(&root, FREE_TOKEN);
-    let sessions = root.join(".krowk").join("sessions");
+    let sessions = root.join(".gruntas").join("sessions");
     let a = session(&sessions, &root, "a free idle session", 20);
     let b = session(&sessions, &root, "another free idle session", 20);
     std::fs::write(sessions.join(&a).join(log::CONTEXT_FILE), "{\"system\":\"kept\",\"tools\":[]}\n").unwrap();
@@ -354,7 +354,7 @@ fn on_free_archiving_keeps_the_local_copy_hides_the_session_and_restore_brings_i
 fn r_vint_4_a_copy_older_than_the_stub_is_refused_unless_named() {
     let root = std::env::temp_dir().join(format!("krowk-vintage-stale-{}", std::process::id()));
     let (_registry, m, _, _) = synced_machine(&root);
-    let sessions = root.join(".krowk").join("sessions");
+    let sessions = root.join(".gruntas").join("sessions");
     let id = session(&sessions, &root, "continued after it was restored", 20);
     let (ok, _, out) = m.krowk(&["sessions", "import", "--from", "all"]);
     assert!(ok, "{out}");
@@ -389,7 +389,7 @@ fn r_vint_4_a_copy_older_than_the_stub_is_refused_unless_named() {
 fn r_vint_4_a_session_left_unprojected_by_a_cut_short_restore_is_projected_when_opened() {
     let root = std::env::temp_dir().join(format!("krowk-vintage-unprojected-{}", std::process::id()));
     let (_registry, m, _, _) = synced_machine(&root);
-    let sessions = root.join(".krowk").join("sessions");
+    let sessions = root.join(".gruntas").join("sessions");
     let id = session_of(&sessions, &root, "a turn of its own", 20, true);
     let log_before = std::fs::read(sessions.join(&id).join(log::EVENTS_FILE)).unwrap();
     let (ok, _, out) = m.krowk(&["sessions", "import", "--from", "all"]);

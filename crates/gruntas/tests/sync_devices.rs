@@ -49,7 +49,7 @@ fn attended(home: &Path, api: &str, token: &str, args: &[&str]) -> Command {
 /// the device alone on the person's device list in the registry, `token`
 /// bound to it — as `krowk sync init` leaves a machine.
 fn set_up(home: &Path, api: &str, token: &str) -> gruntas_api::Client {
-    let keys = Keystore::new(&home.join(".krowk"));
+    let keys = Keystore::new(&home.join(".gruntas"));
     keys.recover(AccountKey::generate()).unwrap();
     device_list::start(api, token, &keys, "laptop")
 }
@@ -129,7 +129,7 @@ fn r_e2e_3_add_and_join_refuse_without_a_person_at_a_terminal() {
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(!out.status.success() && err.contains("confirmation_required") && err.contains("a person at a terminal"), "{err}");
     }
-    assert!(!desktop.join(".krowk/device.json").exists(), "join asked for nothing");
+    assert!(!desktop.join(".gruntas/device.json").exists(), "join asked for nothing");
     let _ = std::fs::remove_dir_all(&r);
 }
 
@@ -261,7 +261,7 @@ struct Machine {
 /// `krowk sync init` or `sync join` leaves one. Its client is signed by the
 /// device's own key (crypto.md → Signed registry requests).
 fn machine(api: &str, people: &mut People, root: &Path, name: &str) -> Machine {
-    let keys = Keystore::new(&root.join(name).join(".krowk"));
+    let keys = Keystore::new(&root.join(name).join(".gruntas"));
     let (device, signing) = (keys.device_key().unwrap(), keys.signing_key().unwrap());
     people.enlist(&keys, name);
     people.publish(api, TOKEN);
@@ -312,7 +312,7 @@ fn r_relay_1_a_signing_key_is_the_lists_and_cannot_be_swapped() {
     let r = root("signing");
     let laptop = r.join("laptop");
     let client = set_up(&laptop, &api, TOKEN);
-    let ks = Keystore::new(&laptop.join(".krowk"));
+    let ks = Keystore::new(&laptop.join(".gruntas"));
     let device = ks.device().unwrap().unwrap();
     let held = ks.signing_key().unwrap().public().0;
     let account = ks.account_id().unwrap().unwrap().to_string();

@@ -75,7 +75,7 @@ impl Sandbox {
     }
 
     fn write_config(&self, v: Value) {
-        let dir = self.home().join(".krowk");
+        let dir = self.home().join(".gruntas");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("config.json"), v.to_string()).unwrap();
     }
@@ -83,7 +83,7 @@ impl Sandbox {
     /// krowk's provider credentials file, with logins as `providers add
     /// supergrok` would have left them.
     fn write_logins(&self, logins: Value) {
-        let dir = self.home().join(".krowk");
+        let dir = self.home().join(".gruntas");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("credentials.json"), json!({"version": 1, "instances": logins}).to_string()).unwrap();
     }
@@ -223,8 +223,8 @@ fn doctor_checks_everything_names_the_fix_and_exits_non_zero_exactly_when_a_chec
     assert!(!human.status.success());
 
     // Using krowk locally: the account step is skipped, nothing needs fixing.
-    std::fs::create_dir_all(b.home().join(".krowk")).unwrap();
-    std::fs::write(b.home().join(".krowk/first-run.json"), "{\"local\": true}\n").unwrap();
+    std::fs::create_dir_all(b.home().join(".gruntas")).unwrap();
+    std::fs::write(b.home().join(".gruntas/first-run.json"), "{\"local\": true}\n").unwrap();
     let out = b.krowk(&["doctor", "--json"], &[]);
     let d = stdout_json(&out);
     assert!(d["checks"].as_array().unwrap().iter().all(|c| c["status"] != "fail"), "{d}");
@@ -240,7 +240,7 @@ fn doctor_checks_everything_names_the_fix_and_exits_non_zero_exactly_when_a_chec
 
     // Signed in with a key, on a machine never registered: that fails with
     // its fix, and the service has no machine to keep on.
-    std::fs::write(b.home().join(".krowk/credentials.json"), json!({"version": 1, "default": "ws_t", "workspaces": {"ws_t": {"token": "krowk_sk_doctor#a", "key_id": "key_t", "workspace": "ws_t"}}}).to_string()).unwrap();
+    std::fs::write(b.home().join(".gruntas/credentials.json"), json!({"version": 1, "default": "ws_t", "workspaces": {"ws_t": {"token": "krowk_sk_doctor#a", "key_id": "key_t", "workspace": "ws_t"}}}).to_string()).unwrap();
     let out = b.krowk(&["doctor", "--json"], &[("GRUNTAS_API_URL", "http://127.0.0.1:9")]);
     let d = stdout_json(&out);
     assert_eq!(check(&d, "account")["status"], "pass", "{d}");
@@ -321,7 +321,7 @@ fn status_asks_vendors_in_krowks_own_directory_so_planted_settings_change_nothin
     let err: Value = serde_json::from_str(String::from_utf8_lossy(&out.stderr).trim()).unwrap();
     let rows = instances(&err["error"]["details"]);
     assert_eq!(row(&rows, "claude")["state"], "not_signed_in", "{rows:?}");
-    let own = b.home().join(".krowk/readiness");
+    let own = b.home().join(".gruntas/readiness");
     use std::os::unix::fs::PermissionsExt;
     assert_eq!(std::fs::metadata(&own).unwrap().permissions().mode() & 0o777, 0o700, "krowk's own directory, closed to others");
 }

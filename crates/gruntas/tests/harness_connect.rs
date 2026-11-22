@@ -76,7 +76,7 @@ impl Sandbox {
     }
 
     fn config_path(&self) -> PathBuf {
-        self.root.join("home/.krowk/config.json")
+        self.root.join("home/.gruntas/config.json")
     }
 
     fn config(&self) -> Value {
@@ -84,7 +84,7 @@ impl Sandbox {
     }
 
     fn data(&self) -> PathBuf {
-        self.root.join("home/.krowk")
+        self.root.join("home/.gruntas")
     }
 
     fn logins(&self, what: &str) -> usize {
@@ -327,7 +327,7 @@ fn disconnect_signs_each_kind_out_its_own_way_and_keeps_the_definition_unless_re
     b.json(&["connect", "anthropic", "--method", "subscription", "--name", "work", "--json"], &[]);
     b.json(&["connect", "openai", "--method", "subscription", "--name", "team", "--json"], &[]);
     b.json(&["connect", "anthropic", "--method", "api-key", "--name", "work", "--json"], &[]);
-    let creds = b.root.join("home/.krowk");
+    let creds = b.root.join("home/.gruntas");
     std::fs::create_dir_all(&creds).unwrap();
     let token = json!({"issuer": "https://auth.x.ai", "clientId": "krowk-test", "tokenEndpoint": "https://auth.x.ai/oauth2/token", "accessToken": "xai-at-sentinel", "obtainedAtMs": 0});
     std::fs::write(creds.join("credentials.json"), json!({"version": 1, "instances": {"supergrok": token}}).to_string()).unwrap();
@@ -451,7 +451,7 @@ fn with_no_home_to_name_it_the_built_in_claude_is_still_the_persons_own_login() 
     let mut c = b.command(&["disconnect", "claude"], &[]);
     // No HOME (krowk has GRUNTAS_HOME) and no CLAUDE_CONFIG_DIR: Claude Code finds its directory
     // through the password database anyway, so it is still asked about.
-    c.env_remove("HOME").env("GRUNTAS_HOME", b.root.join("home/.krowk"));
+    c.env_remove("HOME").env("GRUNTAS_HOME", b.root.join("home/.gruntas"));
     let out = c.output().unwrap();
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(stderr(&out).contains("signs you out of Claude Code itself, in ~/.claude"), "{}", stderr(&out));

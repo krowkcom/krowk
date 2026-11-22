@@ -16,7 +16,7 @@ stdout:
   "store": {
     "name": "store",
     "status": "fail",
-    "message": "krowk.db has nowhere to live",
+    "message": "gruntas.db has nowhere to live",
     "hint": "there is no home directory to keep krowk's files in — set HOME, or GRUNTAS_HOME to an absolute path"
   },
   "pricing": {
@@ -71,7 +71,7 @@ stdout:
     {
       "name": "store",
       "status": "fail",
-      "message": "krowk.db has nowhere to live",
+      "message": "gruntas.db has nowhere to live",
       "hint": "there is no home directory to keep krowk's files in — set HOME, or GRUNTAS_HOME to an absolute path",
       "fix": "there is no home directory to keep krowk's files in — set HOME, or GRUNTAS_HOME to an absolute path"
     },

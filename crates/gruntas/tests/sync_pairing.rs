@@ -63,7 +63,7 @@ fn krowk(home: &Path, api: &str, token: &str, args: &[&str]) -> Command {
 }
 
 fn keys(home: &Path) -> Keystore {
-    Keystore::new(&home.join(".krowk"))
+    Keystore::new(&home.join(".gruntas"))
 }
 
 /// The laptop set up as `sync init` sets a device up: its keys, the chain's
@@ -548,7 +548,7 @@ fn r_ease_5_a_removed_machine_is_offered_a_start_over_and_its_old_keys_move_asid
     let said = format!("{}{}", String::from_utf8_lossy(&nobody.stdout), String::from_utf8_lossy(&nobody.stderr));
     assert!(!nobody.status.success() && said.contains("This machine was removed from your devices. Start it over as a new machine? [Y/n] y"), "{said}");
     assert!(said.contains("None of your machines is online to show a code. Run krowk machines add on one of them."), "{said}");
-    let aside: Vec<_> = std::fs::read_dir(desktop.join(".krowk")).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.contains(".removed-")).collect();
+    let aside: Vec<_> = std::fs::read_dir(desktop.join(".gruntas")).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.contains(".removed-")).collect();
     assert_eq!(aside.len(), 2, "the device and signing keys, renamed: {aside:?}");
     let fresh = keys(&desktop).device().unwrap().unwrap().id();
     assert_ne!(fresh, old, "a new device key");

@@ -95,12 +95,12 @@ impl Home {
             krowk_version: "test".into(),
             pricer: Arc::new(|_, _, _| None),
             catalog: Arc::new(|_, _| None),
-            credentials: self.root.join("home/.krowk/credentials.json"),
+            credentials: self.root.join("home/.gruntas/credentials.json"),
             trust: gruntas_harness::trust::allow_all(),
             publisher: None,
             permissions: Config {
                 home: Some(self.root.join("home")),
-                krowk_dir: Some(self.root.join("home/.krowk")),
+                krowk_dir: Some(self.root.join("home/.gruntas")),
                 user: Some(user),
                 trusted: Some(trusted),
                 ..Config::default()

@@ -1124,7 +1124,7 @@ stdout:
           "name": "config-dir",
           "type": "string",
           "default": "",
-          "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named account"
+          "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one in ~/.gruntas/accounts/ for a named account"
         }
       ],
       "hidden": false
@@ -1206,7 +1206,7 @@ stdout:
               "name": "config-dir",
               "type": "string",
               "default": "",
-              "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named instance"
+              "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one in ~/.gruntas/accounts/ for a named instance"
             }
           ],
           "hidden": false
@@ -2011,7 +2011,7 @@ stdout:
     {
       "name": "GRUNTAS_HOME",
       "usage": "Where krowk keeps its files, an absolute path",
-      "default": "~/.krowk"
+      "default": "~/.gruntas"
     },
     {
       "name": "NO_COLOR",
@@ -3211,7 +3211,7 @@ tty:
           "name": "config-dir",
           "type": "string",
           "default": "",
-          "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named account"
+          "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one in ~/.gruntas/accounts/ for a named account"
         }
       ],
       "hidden": false
@@ -3293,7 +3293,7 @@ tty:
               "name": "config-dir",
               "type": "string",
               "default": "",
-              "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named instance"
+              "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one in ~/.gruntas/accounts/ for a named instance"
             }
           ],
           "hidden": false
@@ -4098,7 +4098,7 @@ tty:
     {
       "name": "GRUNTAS_HOME",
       "usage": "Where krowk keeps its files, an absolute path",
-      "default": "~/.krowk"
+      "default": "~/.gruntas"
     },
     {
       "name": "NO_COLOR",

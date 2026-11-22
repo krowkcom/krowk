@@ -132,7 +132,7 @@ pub enum OptOut {
 
 /// The policy from `GRUNTAS_SYNC_AUTO` and `GRUNTAS_SYNC_IDLE`, else the
 /// `sync` object of `config` — which must be the person's own
-/// `~/.krowk/config.json`, never a repository's: a repository can only
+/// `~/.gruntas/config.json`, never a repository's: a repository can only
 /// turn sync off (with `.gruntas/no-sync`), never on. No config reads as `{}`:
 /// on, nothing excluded, the default idle window.
 ///
@@ -319,7 +319,7 @@ pub struct Config {
     pub sessions: PathBuf,
     /// Said in each bridge's hello: the daemon's own version.
     pub version: String,
-    /// krowk's own home (`~/.krowk`), whose `no-sync` is no repository's.
+    /// gruntas's own home (`~/.gruntas`), whose `no-sync` is no repository's.
     pub krowk_home: Option<PathBuf>,
     pub build: Build,
     /// The policy, read again each time a bridge would start, at each turn

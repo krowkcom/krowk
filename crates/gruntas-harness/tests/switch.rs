@@ -158,7 +158,7 @@ impl World {
             krowk_version: "test".into(),
             pricer: Arc::new(|_, _, _| None),
             catalog: Arc::new(|_, _| None),
-            credentials: self.root.join("home/.krowk/credentials.json"),
+            credentials: self.root.join("home/.gruntas/credentials.json"),
             trust: self.trust.clone().unwrap_or_else(gruntas_harness::trust::allow_all),
             publisher: None,
             permissions: gruntas_harness::permissions::Config { trusted: self.trusted.then(|| Arc::new(|_: &Path| true) as gruntas_harness::permissions::settings::Trusted), ..Default::default() },
@@ -556,7 +556,7 @@ fn r_roll_2_every_limits_report_is_saved_under_the_login_of_the_instance_that_ra
     assert_eq!(r.error.map(|e| e.code), Some("rate_limited".into()));
     // Read as of a moment before the recorded reset (1790431200).
     let before_reset = 1_790_431_000_000;
-    let reading = |login: &str| gruntas_harness::usage::Usage::in_home(&w.root.join("home/.krowk")).read().readings(login, before_reset).into_iter().map(|r| (r.window, r.status, r.used_percent)).collect::<Vec<_>>();
+    let reading = |login: &str| gruntas_harness::usage::Usage::in_home(&w.root.join("home/.gruntas")).read().readings(login, before_reset).into_iter().map(|r| (r.window, r.status, r.used_percent)).collect::<Vec<_>>();
     // The limit the turn hit is under the login of the fake account.
     assert_eq!(reading("a@example.com"), [("five_hour".to_string(), LimitState::Limited, Some(100.0))]);
     assert!(reading("b@example.com").is_empty());
@@ -564,7 +564,7 @@ fn r_roll_2_every_limits_report_is_saved_under_the_login_of_the_instance_that_ra
     // winning; a third on another login has a record of its own.
     rt.block_on(run(&host, prompt(None, "go", on("claude:same"))));
     rt.block_on(run(&host, prompt(None, "go", on("claude:other"))));
-    let data = gruntas_harness::usage::Usage::in_home(&w.root.join("home/.krowk")).read();
+    let data = gruntas_harness::usage::Usage::in_home(&w.root.join("home/.gruntas")).read();
     assert_eq!((data.login_of("claude:work"), data.login_of("claude:same"), data.login_of("claude:other")), ("a@example.com", "a@example.com", "b@example.com"));
     assert_eq!(reading("a@example.com"), [("five_hour".to_string(), LimitState::Warning, Some(82.0))]);
     assert_eq!(reading("b@example.com"), [("five_hour".to_string(), LimitState::Warning, Some(82.0))]);
@@ -599,7 +599,7 @@ fn r_inst_8_rollover_auto_moves_on_tells_every_client_and_logs_why() {
     assert_eq!((from.map(|m| m.instance), to.instance.as_str(), reason), (Some("claude:work".into()), "claude:personal", SwitchReason::RateLimited));
     assert!(detail.unwrap().contains("rollover is auto"));
     let now = gruntas_store::now_ms();
-    assert!(gruntas_harness::usage::Usage::in_home(&w.root.join("home/.krowk")).read().moved_recently("claude:personal", now), "a hard-limit auto move marks its target too");
+    assert!(gruntas_harness::usage::Usage::in_home(&w.root.join("home/.gruntas")).read().moved_recently("claude:personal", now), "a hard-limit auto move marks its target too");
     // The limited turn's thread came along whole, in the same mode.
     assert!(w.fake_log("claude-personal").contains("resume-lines 1") && w.fake_log("claude-personal").contains("permission-mode plan"));
     // And the session stays on the instance it moved to.
@@ -694,7 +694,7 @@ fn r_roll_8_auto_without_an_order_moves_to_the_most_saved_headroom_on_the_same_m
     }
     w.rollover = Some(Rollover::Auto);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
-    let usage = gruntas_harness::usage::Usage::in_home(&w.root.join("home/.krowk"));
+    let usage = gruntas_harness::usage::Usage::in_home(&w.root.join("home/.gruntas"));
     let models = vec!["haiku".to_string()];
     let seed = |instance: &str, login: &str, used: f64, models: &[String]| {
         usage.record_instance(instance, login, models, now).unwrap();
@@ -730,7 +730,7 @@ fn r_roll_11_a_turn_that_leaves_too_little_moves_an_auto_session_between_turns()
     }
     w.rollover = Some(Rollover::Auto);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
-    let usage = gruntas_harness::usage::Usage::in_home(&w.root.join("home/.krowk"));
+    let usage = gruntas_harness::usage::Usage::in_home(&w.root.join("home/.gruntas"));
     let models = vec!["haiku".to_string()];
     // Seen now, each time: the report seen latest wins, and a turn's own is later than an earlier seed.
     let seed = |instance: &str, used: f64| {
@@ -788,7 +788,7 @@ fn r_roll_11_a_turn_that_leaves_too_little_moves_an_auto_session_between_turns()
 /// Saves `instance`'s usage as seen at `at`: five hours at `used`, its
 /// binding window resetting an hour on.
 fn seen_at(w: &World, instance: &str, used: f64, at: i64) {
-    let usage = gruntas_harness::usage::Usage::in_home(&w.root.join("home/.krowk"));
+    let usage = gruntas_harness::usage::Usage::in_home(&w.root.join("home/.gruntas"));
     usage.record_instance(instance, instance, &["haiku".to_string()], at).unwrap();
     let limit = gruntas_harness::protocol::LimitStatus { status: LimitState::Allowed, window: Some("five_hour".into()), used_percent: Some(used), resets_at_ms: Some(at + 3_600_000) };
     usage.record_limit(instance, &limit, at).unwrap();

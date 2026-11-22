@@ -36,8 +36,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
   Worktree setup commands get `GRUNTAS_PORT_BASE`, `GRUNTAS_PROJECT_ROOT`
   and `GRUNTAS_WORKTREE_PATH`, so update setup scripts that use the old
   names. JSON output that names a variable (`token_source`, the API URL's
-  source) names the new one. With always-on set, run
-  `krowk machines always-on on` again so the service file sets the new names.
+  source) names the new one.
+- **gruntas keeps its files in `~/.gruntas`.** The first `gruntas` run copies
+  your `~/.krowk` into `~/.gruntas` once, and says so, so your login, sync
+  identity, sessions and accounts carry over without signing in again
+  (`krowk.db` becomes `gruntas.db`, and accounts point at their copies).
+  After that gruntas never reads `~/.krowk`, and it is left as it was for
+  the old krowk. No copy is made when `GRUNTAS_HOME` is set. The always-on
+  service is now `gruntas-host.service` (macOS: `com.gruntas.host`): with
+  always-on set, run `gruntas machines always-on on` to install it, and turn
+  the old `krowk-host` one off with krowk, so the two don't run as the same
+  machine.
 - **Releases, npm packages and the installer are gruntas.** Release archives
   are `gruntas_<version>_<os>_<arch>` and `gruntas-lean_…`, holding `gruntas`
   and `gruntas-mcp`; npm packages are `@gruntas/cli` and `@gruntas/mcp`

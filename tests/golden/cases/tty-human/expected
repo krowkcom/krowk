@@ -119,8 +119,8 @@ Key from        none
 Key             none — uploads will be anonymous
 Workspace       none — uploads will be anonymous
 Runs            no
-Credentials     <scratch>/home/.krowk/credentials.json
-Config          global <scratch>/home/.krowk/config.json (absent)
+Credentials     <scratch>/home/.gruntas/credentials.json
+Config          global <scratch>/home/.gruntas/config.json (absent)
 
 \e[31m✗\e[0m Not signed in to krowk — krowk login
 \e[2m-\e[0m This machine is not registered for sync: there is no account
@@ -129,7 +129,7 @@ Config          global <scratch>/home/.krowk/config.json (absent)
 \e[2m-\e[0m This directory is not in a repository
 \e[2m-\e[0m No device list here to hold a recovery kit
 \e[2m-\e[0m The plan is not known: the key was not checked
-\e[32m✓\e[0m Store         Healthy (<scratch>/home/.krowk/sessions/krowk.db, schema v1, wal)
+\e[32m✓\e[0m Store         Healthy (<scratch>/home/.gruntas/sessions/gruntas.db, schema v1, wal)
 \e[33m!\e[0m Pricing       No price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build
 \e[2m                Run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day.\e[0m
 \e[31m✗\e[0m \e[1m1 check failed.\e[0m
@@ -140,6 +140,6 @@ exit: 1
 $ @tty krowk config show
 tty:
 \e[2mNothing set — uploads use the stored default key.\e[0m
-  Global    <scratch>/home/.krowk/config.json
+  Global    <scratch>/home/.gruntas/config.json
 exit: 0
 

@@ -75,11 +75,11 @@ impl Sandbox {
     }
 
     fn state(&self) -> serde_json::Value {
-        serde_json::from_str(&std::fs::read_to_string(self.root.join("home/.krowk/first-run.json")).unwrap_or_else(|_| "{}".into())).unwrap()
+        serde_json::from_str(&std::fs::read_to_string(self.root.join("home/.gruntas/first-run.json")).unwrap_or_else(|_| "{}".into())).unwrap()
     }
 
     fn keystore(&self) -> gruntas_client::keystore::Keystore {
-        gruntas_client::keystore::Keystore::new(&self.root.join("home/.krowk"))
+        gruntas_client::keystore::Keystore::new(&self.root.join("home/.gruntas"))
     }
 }
 
@@ -308,7 +308,7 @@ fn signed_in_owing(name: &str, api: &str) -> Sandbox {
     let b = Sandbox::new(name);
     let login = b.command(api, &["login", "--token", "krowk_sk_first#second"]).output().unwrap();
     assert!(login.status.success(), "{}", String::from_utf8_lossy(&login.stderr));
-    std::fs::write(b.root.join("home/.krowk/first-run.json"), "{\"pending\": true}\n").unwrap();
+    std::fs::write(b.root.join("home/.gruntas/first-run.json"), "{\"pending\": true}\n").unwrap();
     b
 }
 
@@ -432,7 +432,7 @@ fn a_registration_left_owed_is_finished_by_the_next_krowk_and_any_other_answer_i
     // A key stored, the registration owed, and a model ready.
     let login = b.command(&api, &["login", "--token", "krowk_sk_owed#a"]).output().unwrap();
     assert!(login.status.success(), "{}", String::from_utf8_lossy(&login.stderr));
-    std::fs::write(b.root.join("home/.krowk/first-run.json"), "{\"pending\": true, \"always_on_asked\": true, \"kit_offered\": true}\n").unwrap();
+    std::fs::write(b.root.join("home/.gruntas/first-run.json"), "{\"pending\": true, \"always_on_asked\": true, \"kit_offered\": true}\n").unwrap();
     assert!(b.keystore().device_list().unwrap().is_none());
     b.claude_signed_in();
     let mut t = wide(b.command(&api, &[]));
@@ -483,8 +483,8 @@ fn the_overview_shows_the_top_problem_and_nothing_when_nothing_is_wrong() {
 
     // Using krowk locally, with a model: nothing is wrong, so nothing is said.
     let b = Sandbox::new("no-problem");
-    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
-    std::fs::write(b.root.join("home/.krowk/first-run.json"), "{\"local\": true, \"always_on_asked\": true}\n").unwrap();
+    std::fs::create_dir_all(b.root.join("home/.gruntas")).unwrap();
+    std::fs::write(b.root.join("home/.gruntas/first-run.json"), "{\"local\": true, \"always_on_asked\": true}\n").unwrap();
     b.claude_signed_in();
     let out = b.command(&api, &[]).output().unwrap();
     let said = String::from_utf8_lossy(&out.stdout);

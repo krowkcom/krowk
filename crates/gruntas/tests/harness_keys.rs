@@ -87,7 +87,7 @@ impl Sandbox {
     }
 
     fn credentials(&self) -> PathBuf {
-        self.root.join("home/.krowk/credentials.json")
+        self.root.join("home/.gruntas/credentials.json")
     }
 
     fn stored(&self) -> Value {
@@ -95,7 +95,7 @@ impl Sandbox {
     }
 
     fn config(&self) -> Value {
-        std::fs::read_to_string(self.root.join("home/.krowk/config.json")).map(|s| serde_json::from_str(&s).unwrap()).unwrap_or(json!({}))
+        std::fs::read_to_string(self.root.join("home/.gruntas/config.json")).map(|s| serde_json::from_str(&s).unwrap()).unwrap_or(json!({}))
     }
 
     /// Keyed Claude Code and Codex accounts, as `krowk connect` makes them
@@ -103,7 +103,7 @@ impl Sandbox {
     /// stored key belongs to now (D3), krowk running no model itself (D4).
     fn keyed_accounts(&self) {
         let dir = |n: &str| {
-            let d = self.root.join("home/.krowk/accounts").join(n);
+            let d = self.root.join("home/.gruntas/accounts").join(n);
             std::fs::create_dir_all(&d).unwrap();
             d.display().to_string()
         };
@@ -114,7 +114,7 @@ impl Sandbox {
             "xai": codex("xai", "XAI_API_KEY"),
             "openrouter": codex("openrouter", "OPENROUTER_API_KEY"),
         }});
-        std::fs::write(self.root.join("home/.krowk/config.json"), cfg.to_string()).unwrap();
+        std::fs::write(self.root.join("home/.gruntas/config.json"), cfg.to_string()).unwrap();
     }
 
     fn row(&self, instance: &str, env: &[(&str, &str)]) -> Value {
@@ -308,13 +308,13 @@ fn r_cred_1_no_config_but_the_persons_own_credentials_file_can_make_krowk_run_a_
     });
     std::fs::write(b.root.join("repo/.gruntas/config.json"), planted.to_string()).unwrap();
     std::fs::write(b.root.join("planted.json"), json!({"version": 1, "keys": {"anthropic": {"command": cmd}}}).to_string()).unwrap();
-    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
+    std::fs::create_dir_all(b.root.join("home/.gruntas")).unwrap();
     b.keyed_accounts();
-    let mut own: Value = serde_json::from_str(&std::fs::read_to_string(b.root.join("home/.krowk/config.json")).unwrap()).unwrap();
+    let mut own: Value = serde_json::from_str(&std::fs::read_to_string(b.root.join("home/.gruntas/config.json")).unwrap()).unwrap();
     own["instances"]["openai:x"] = json!({"kind": "openai-api", "apiKeyEnv": format!("!{cmd}")});
     own["instances"]["xai:y"] = json!({"kind": "xai-api", "apiKeyEnv": "$(touch pwned)"});
     own["keysFrom"] = json!(b.root.join("planted.json"));
-    std::fs::write(b.root.join("home/.krowk/config.json"), own.to_string()).unwrap();
+    std::fs::write(b.root.join("home/.gruntas/config.json"), own.to_string()).unwrap();
 
     let env = [("ANTHROPIC_API_KEY", DECOY)];
     let row = b.row("anthropic", &env);
@@ -401,7 +401,7 @@ fn r_cred_1_with_no_home_krowk_reads_no_repositorys_dot_krowk_as_its_own() {
 #[test]
 fn r_cred_1_a_command_runs_once_per_process_with_no_terminal_and_bounded_output() {
     let b = Sandbox::new("once", "http://127.0.0.1:9");
-    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
+    std::fs::create_dir_all(b.root.join("home/.gruntas")).unwrap();
     b.keyed_accounts();
     // One that asks on the terminal; one that never stops printing.
     b.install("tty-pass", &format!("#!/bin/sh\nread x </dev/tty || exit 1\necho \"{SENTINEL}\"\n"));

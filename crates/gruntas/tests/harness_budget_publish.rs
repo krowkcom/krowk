@@ -29,7 +29,7 @@ impl Sandbox {
     fn new(name: &str, scenario: &str) -> Sandbox {
         let root = std::env::temp_dir().join(format!("krowk-budget-publish-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        for d in ["home/.claude", "home/.krowk", "repo/.git", "bin"] {
+        for d in ["home/.claude", "home/.gruntas", "repo/.git", "bin"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
         std::fs::write(root.join("repo/README.md"), "# krowk\n\nPermalinks for agent output.\n").unwrap();
@@ -37,7 +37,7 @@ impl Sandbox {
         std::os::unix::fs::symlink(fixture("fake-claude"), root.join("bin/claude")).unwrap();
         std::fs::write(root.join("scenario.jsonl"), scenario).unwrap();
         let root = root.canonicalize().unwrap();
-        std::fs::write(root.join("home/.krowk/trusted.json"), json!({"directories": [root.join("repo")]}).to_string()).unwrap();
+        std::fs::write(root.join("home/.gruntas/trusted.json"), json!({"directories": [root.join("repo")]}).to_string()).unwrap();
         Sandbox { root, api: "http://127.0.0.1:9/v1".into(), token: String::new() }
     }
 
@@ -60,7 +60,7 @@ impl Sandbox {
     }
 
     fn sessions(&self) -> PathBuf {
-        self.root.join("home/.krowk/sessions")
+        self.root.join("home/.gruntas/sessions")
     }
 
     fn log(&self, session: &str) -> Vec<Value> {

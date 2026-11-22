@@ -94,7 +94,7 @@ impl Home {
     /// a thread of its own.
     fn serve(&self, heartbeat: Duration, caps: Caps) -> std::thread::JoinHandle<Result<(), String>> {
         let (env, socket) = (self.env(), self.socket());
-        let credentials = self.root.join("home/.krowk/credentials.json");
+        let credentials = self.root.join("home/.gruntas/credentials.json");
         let late = self.late.clone();
         let (reads, begun, instances) = (self.reads.clone(), self.begun.clone(), self.instances.clone());
         let t = std::thread::spawn(move || {

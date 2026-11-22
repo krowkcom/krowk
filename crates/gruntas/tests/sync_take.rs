@@ -31,7 +31,7 @@ fn r_inst_5_take_refuses_with_a_fix_when_the_sessions_instance_is_missing_and_th
     let home = |name: &str| {
         let dir = root.join(name);
         std::fs::create_dir_all(&dir).unwrap();
-        let ks = Keystore::new(&dir.join(".krowk"));
+        let ks = Keystore::new(&dir.join(".gruntas"));
         ks.recover(AccountKey::from_bytes(*account.as_bytes())).unwrap();
         (dir, ks)
     };

@@ -32,8 +32,8 @@ impl Sandbox {
         std::os::unix::fs::symlink(Path::new(env!("CARGO_MANIFEST_DIR")).join("../gruntas-harness/tests/fixtures/claude/fake-claude"), root.join("bin/claude")).unwrap();
         std::fs::write(root.join("scenario.jsonl"), SCENARIO).unwrap();
         let b = Sandbox { root: root.canonicalize().unwrap() };
-        std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
-        std::fs::write(b.root.join("home/.krowk/trusted.json"), json!({"directories": [b.repo(), b.root.join("elsewhere")]}).to_string()).unwrap();
+        std::fs::create_dir_all(b.root.join("home/.gruntas")).unwrap();
+        std::fs::write(b.root.join("home/.gruntas/trusted.json"), json!({"directories": [b.repo(), b.root.join("elsewhere")]}).to_string()).unwrap();
         git(&b.repo(), &["init", "-q", "-b", "main"]);
         std::fs::write(b.repo().join("README.md"), "# krowk\n").unwrap();
         git(&b.repo(), &["add", "README.md"]);
@@ -225,8 +225,8 @@ fn worktrees_default_starts_a_new_session_in_its_own_worktree_without_the_flag()
         return;
     }
     let b = Sandbox::new("default");
-    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
-    std::fs::write(b.root.join("home/.krowk/config.json"), r#"{"worktrees": {"default": true}}"#).unwrap();
+    std::fs::create_dir_all(b.root.join("home/.gruntas")).unwrap();
+    std::fs::write(b.root.join("home/.gruntas/config.json"), r#"{"worktrees": {"default": true}}"#).unwrap();
     let (out, _) = b.prompt(&["--output-format", "json", "make a file"]);
     let result: Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}"));
     let path = PathBuf::from(result["worktree"]["path"].as_str().unwrap_or_else(|| panic!("the kept worktree is named: {result}")));

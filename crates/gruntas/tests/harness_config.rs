@@ -50,7 +50,7 @@ impl Sandbox {
     }
 
     fn global(&self) -> PathBuf {
-        self.root.join("home/.krowk/config.json")
+        self.root.join("home/.gruntas/config.json")
     }
 
     fn read_global(&self) -> Value {
@@ -63,8 +63,8 @@ impl Sandbox {
     }
 
     fn trust_repo(&self) {
-        std::fs::create_dir_all(self.root.join("home/.krowk")).unwrap();
-        std::fs::write(self.root.join("home/.krowk/trusted.json"), json!({"directories": [self.root.join("repo")]}).to_string()).unwrap();
+        std::fs::create_dir_all(self.root.join("home/.gruntas")).unwrap();
+        std::fs::write(self.root.join("home/.gruntas/trusted.json"), json!({"directories": [self.root.join("repo")]}).to_string()).unwrap();
     }
 }
 

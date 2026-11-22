@@ -11,12 +11,12 @@ stdout:
   "key": "none — uploads will be anonymous",
   "workspace": "none — uploads will be anonymous",
   "runs_available": false,
-  "credentials": "<scratch>/home/.krowk/credentials.json",
-  "config": "global <scratch>/home/.krowk/config.json (absent)",
+  "credentials": "<scratch>/home/.gruntas/credentials.json",
+  "config": "global <scratch>/home/.gruntas/config.json (absent)",
   "store": {
     "name": "store",
     "status": "pass",
-    "message": "healthy (<scratch>/home/.krowk/sessions/krowk.db, schema v1, wal)"
+    "message": "healthy (<scratch>/home/.gruntas/sessions/gruntas.db, schema v1, wal)"
   },
   "pricing": {
     "name": "pricing",
@@ -70,7 +70,7 @@ stdout:
     {
       "name": "store",
       "status": "pass",
-      "message": "healthy (<scratch>/home/.krowk/sessions/krowk.db, schema v1, wal)"
+      "message": "healthy (<scratch>/home/.gruntas/sessions/gruntas.db, schema v1, wal)"
     },
     {
       "name": "pricing",
@@ -105,12 +105,12 @@ stdout:
   "key": "none — uploads will be anonymous",
   "workspace": "none — uploads will be anonymous",
   "runs_available": false,
-  "credentials": "<scratch>/home/.krowk/credentials.json",
-  "config": "global <scratch>/home/.krowk/config.json (absent)",
+  "credentials": "<scratch>/home/.gruntas/credentials.json",
+  "config": "global <scratch>/home/.gruntas/config.json (absent)",
   "store": {
     "name": "store",
     "status": "pass",
-    "message": "healthy (<scratch>/home/.krowk/sessions/krowk.db, schema v1, wal)"
+    "message": "healthy (<scratch>/home/.gruntas/sessions/gruntas.db, schema v1, wal)"
   },
   "pricing": {
     "name": "pricing",
@@ -164,7 +164,7 @@ stdout:
     {
       "name": "store",
       "status": "pass",
-      "message": "healthy (<scratch>/home/.krowk/sessions/krowk.db, schema v1, wal)"
+      "message": "healthy (<scratch>/home/.gruntas/sessions/gruntas.db, schema v1, wal)"
     },
     {
       "name": "pricing",

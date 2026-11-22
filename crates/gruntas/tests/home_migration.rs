@@ -1,4 +1,4 @@
-//! The one move from an older krowk's XDG layout into `~/.krowk`, the built
+//! The one move from an older krowk's XDG layout into `~/.gruntas`, the built
 //! binary against a home laid out the way the last release (and a dev
 //! build) left it: config.json, the registry key, the provider file with a
 //! SuperGrok login and a stored key, a named Claude account (the fake
@@ -8,6 +8,9 @@
 //! cut short after its rename is finished; a home that exists takes
 //! nothing; a GRUNTAS_HOME never takes the person's own files; and a
 //! malformed old key file stops the move with its line and column only.
+//! And the one copy of krowk's `~/.krowk` into `~/.gruntas`: once, with the
+//! login, sync identity, sessions and accounts working from the copy, and
+//! `~/.krowk` left as it was.
 
 #![cfg(all(feature = "harness", unix))]
 
@@ -45,8 +48,8 @@ impl Sandbox {
         self.root.join("home")
     }
 
-    fn krowk_home(&self) -> PathBuf {
-        self.home().join(".krowk")
+    fn gruntas_home(&self) -> PathBuf {
+        self.home().join(".gruntas")
     }
 
     fn old_config(&self) -> PathBuf {
@@ -120,15 +123,15 @@ impl Sandbox {
         // release kept it.
         let seed = self.root.join("seed");
         assert!(self.krowk(&["sessions", "--json"], &[("GRUNTAS_HOME", seed.to_str().unwrap())]).status.success());
-        std::fs::rename(seed.join("sessions/krowk.db"), data.join("krowk.db")).unwrap();
+        std::fs::rename(seed.join("sessions/gruntas.db"), data.join("krowk.db")).unwrap();
     }
 
     fn credentials(&self) -> Value {
-        serde_json::from_str(&std::fs::read_to_string(self.krowk_home().join("credentials.json")).unwrap()).unwrap()
+        serde_json::from_str(&std::fs::read_to_string(self.gruntas_home().join("credentials.json")).unwrap()).unwrap()
     }
 
     fn config(&self) -> Value {
-        serde_json::from_str(&std::fs::read_to_string(self.krowk_home().join("config.json")).unwrap()).unwrap()
+        serde_json::from_str(&std::fs::read_to_string(self.gruntas_home().join("config.json")).unwrap()).unwrap()
     }
 
     fn row(&self, instance: &str) -> Value {
@@ -178,7 +181,7 @@ fn an_older_layout_moves_its_config_and_keys_deletes_the_old_secrets_and_names_t
 
     let first = b.krowk(&["doctor", "--json"], &[]);
     let said = String::from_utf8_lossy(&first.stderr).into_owned();
-    let h = b.krowk_home();
+    let h = b.gruntas_home();
     assert_eq!(said.matches("moved krowk's config and keys to").count(), 1, "one line says so: {said}");
     let account = b.old_data().join("claude/claude-work");
     assert_names_what_is_left(&b, &said, &h, &account);
@@ -249,7 +252,7 @@ fn assert_names_what_is_left(b: &Sandbox, said: &str, h: &Path, account: &Path) 
 /// The keys are gone from the old directory, what krowk never moves is still
 /// there, and the new home is private.
 fn assert_moved_and_old_keys_gone(b: &Sandbox, h: &Path, account: &Path) {
-    for gone in [b.old_config().join("credentials.json"), b.old_config().join("providers"), b.old_config().join("config.json"), b.old_cache(), b.home().join(".krowk.migrating")] {
+    for gone in [b.old_config().join("credentials.json"), b.old_config().join("providers"), b.old_config().join("config.json"), b.old_cache(), b.home().join(".gruntas.migrating")] {
         assert!(!gone.exists(), "{} is left behind", gone.display());
     }
     for kept in [account.to_path_buf(), b.old_data().join("krowk.db"), b.old_data().join("sessions"), b.old_config().join("trusted.json")] {
@@ -274,8 +277,8 @@ fn a_move_a_crash_cut_short_after_its_rename_is_finished_by_the_next_start() {
         "instances": {"supergrok": {"issuer": "x"}},
         "keys": {"anthropic": {"literal": STORED_KEY}},
     });
-    b.write(&b.krowk_home().join("credentials.json"), &merged.to_string(), 0o600);
-    std::fs::set_permissions(b.krowk_home(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    b.write(&b.gruntas_home().join("credentials.json"), &merged.to_string(), 0o600);
+    std::fs::set_permissions(b.gruntas_home(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let out = b.krowk(&["doctor", "--json"], &[]);
     assert!(reported(&out), "{}", printed(&out));
     assert!(!b.old_config().join("credentials.json").exists() && !b.old_config().join("providers").exists(), "the old keys are deleted: {}", printed(&out));
@@ -286,11 +289,11 @@ fn a_move_a_crash_cut_short_after_its_rename_is_finished_by_the_next_start() {
 fn a_home_that_exists_takes_nothing_from_an_old_layout_and_names_it_once() {
     let b = Sandbox::new("exists");
     b.old_layout();
-    std::fs::create_dir_all(b.krowk_home()).unwrap();
+    std::fs::create_dir_all(b.gruntas_home()).unwrap();
     let first = b.krowk(&["doctor", "--json"], &[]);
     let said = String::from_utf8_lossy(&first.stderr).into_owned();
     assert!(said.contains("old krowk files krowk no longer reads") && said.contains(&b.old_config().join("config.json").display().to_string()), "{said}");
-    assert!(b.old_config().join("credentials.json").exists() && !b.krowk_home().join("credentials.json").exists(), "nothing merged in");
+    assert!(b.old_config().join("credentials.json").exists() && !b.gruntas_home().join("credentials.json").exists(), "nothing merged in");
     let again = b.krowk(&["doctor", "--json"], &[]);
     assert!(!String::from_utf8_lossy(&again.stderr).contains("no longer reads"), "said once: {}", printed(&again));
     for out in [&first, &again] {
@@ -307,7 +310,7 @@ fn reported(out: &std::process::Output) -> bool {
 }
 
 #[test]
-fn a_krowk_home_is_a_sandbox_and_never_takes_the_persons_own_files() {
+fn a_gruntas_home_is_a_sandbox_and_never_takes_the_persons_own_files() {
     let b = Sandbox::new("sandboxed");
     b.old_layout();
     let own = b.root.join("sandbox-home");
@@ -315,7 +318,7 @@ fn a_krowk_home_is_a_sandbox_and_never_takes_the_persons_own_files() {
     assert!(reported(&out), "{}", printed(&out));
     assert!(!printed(&out).contains("moved"), "{}", printed(&out));
     assert!(b.old_config().join("credentials.json").exists() && b.old_data().join("krowk.db").exists(), "nothing moved");
-    assert!(!b.krowk_home().exists());
+    assert!(!b.gruntas_home().exists());
     let doctor: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(doctor["token_source"], "none", "the old key is not read either: {doctor}");
     assert_eq!(mode(&own), 0o700);
@@ -335,11 +338,102 @@ fn a_malformed_old_key_file_stops_the_move_naming_only_where_and_a_fixed_one_let
             assert!(!printed(&out).contains(secret), "{secret} printed: {}", printed(&out));
         }
     }
-    assert!(!b.krowk_home().exists(), "nothing is used half-moved");
+    assert!(!b.gruntas_home().exists(), "nothing is used half-moved");
     assert!(b.old_data().join("krowk.db").exists());
     b.write(&providers, &json!({"version": 1, "keys": {"anthropic": {"literal": STORED_KEY}}}).to_string(), 0o600);
     let out = b.krowk(&["doctor", "--json"], &[]);
     assert!(reported(&out), "{}", printed(&out));
     assert_eq!(b.credentials()["keys"]["anthropic"], json!({"literal": STORED_KEY}));
     assert_eq!(b.credentials()["workspaces"]["ws_mig"]["token"], REGISTRY_KEY);
+}
+
+/// A krowk home as krowk left it: a registry key, an account signed in
+/// in its own directory, a session it ran, and sync set up against the
+/// stand-in registry (`api`). Made by this binary with `GRUNTAS_HOME`
+/// pointed at `~/.krowk`, which is the layout krowk keeps.
+fn krowk_home(b: &Sandbox, api: &str) -> PathBuf {
+    let old = b.home().join(".krowk");
+    let at = [("GRUNTAS_HOME", old.to_str().unwrap()), ("GRUNTAS_API_URL", api), ("GRUNTAS_DEVICE_NAME", "this machine"), ("GRUNTAS_TEST_UNATTENDED_DEVICE_APPROVAL", "1")];
+    b.write(&old.join("credentials.json"), &json!({"default": "ws_mig", "workspaces": {"ws_mig": {"token": REGISTRY_KEY, "key_id": "key_mig", "workspace": "ws_mig"}}}).to_string(), 0o600);
+    b.write(&old.join("config.json"), &json!({"workspace": "ws_mig"}).to_string(), 0o644);
+    for args in [&["connect", "anthropic", "--method", "subscription", "--name", "work"][..], &["-p", "hello", "--model", "claude:work/sonnet", "--trust", "--output-format", "json"], &["sync", "init", "--save", b.root.join("kit.txt").to_str().unwrap(), "--json"]] {
+        let out = b.krowk(args, &at);
+        assert!(out.status.success(), "{args:?}: {}", printed(&out));
+    }
+    // Under the name krowk gives it.
+    for end in ["", "-wal", "-shm"] {
+        let _ = std::fs::rename(old.join(format!("sessions/gruntas.db{end}")), old.join(format!("sessions/krowk.db{end}")));
+    }
+    assert!(old.join("sessions/krowk.db").exists());
+    old
+}
+
+#[test]
+fn krowks_home_is_copied_into_gruntas_once_and_everything_works_from_the_copy() {
+    let b = Sandbox::new("copy");
+    let registry = gruntas_devregistry::start(std::net::TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let old = krowk_home(&b, &api);
+    let before = b.tree(&old);
+    let old_config = std::fs::read(old.join("config.json")).unwrap();
+    let krowk_keys = gruntas_client::keystore::Keystore::new(&old);
+    let device = krowk_keys.device().unwrap().expect("krowk's device").id();
+    assert!(krowk_keys.user_keys().unwrap().is_some(), "sync set up in krowk's home");
+
+    // The first run copies it, and says so once.
+    let first = b.krowk(&["doctor", "--json"], &[("GRUNTAS_API_URL", &api)]);
+    let said = String::from_utf8_lossy(&first.stderr).into_owned();
+    assert_eq!(said.matches("gruntas: copying").count(), 1, "one line says so: {said}");
+    let h = b.gruntas_home();
+    assert!(h.join("sessions/gruntas.db").exists() && !h.join("sessions/krowk.db").exists(), "the index is renamed");
+    assert_eq!(mode(&h), 0o700);
+    assert_eq!(mode(&h.join("credentials.json")), 0o600);
+
+    // The login: the registry key is read from the copy.
+    let doctor: Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!((doctor["token_source"].as_str(), doctor["workspace"].as_str()), (Some("credentials file"), Some("ws_mig (global config)")), "{doctor}");
+    // The account: signed in, from the copy's own directory.
+    let account = h.join("accounts/claude-work");
+    assert_eq!(b.config()["instances"]["claude:work"]["configDir"], account.display().to_string());
+    let row = b.row("claude:work");
+    assert_eq!(row["state"], "ready", "{row}");
+    assert!(row["source"].as_str().unwrap().contains(&account.display().to_string()), "{row}");
+    // The session krowk ran is listed, and runs again.
+    let sessions: Value = serde_json::from_slice(&b.krowk(&["sessions", "--json"], &[]).stdout).unwrap();
+    let listed = sessions["data"]["sessions"].as_array().unwrap();
+    assert_eq!(listed.len(), 1, "{sessions}");
+    let id = listed[0]["id"].as_str().or(listed[0]["sessionId"].as_str()).unwrap_or_else(|| panic!("{sessions}")).to_string();
+    let resumed = b.krowk(&["-p", "go on", "--resume", &id, "--trust", "--output-format", "json"], &[]);
+    assert!(resumed.status.success(), "{}", printed(&resumed));
+    // The sync identity: the same device, with its user key.
+    let ks = gruntas_client::keystore::Keystore::new(&h);
+    assert_eq!(ks.device().unwrap().expect("the device, copied").id(), device);
+    assert!(ks.user_keys().unwrap().is_some());
+
+    // ~/.krowk is as krowk left it.
+    assert_eq!(b.tree(&old), before);
+    assert_eq!(std::fs::read(old.join("config.json")).unwrap(), old_config);
+
+    // A second run copies nothing and says nothing, even with ~/.krowk changed.
+    std::fs::write(old.join("later.json"), "{}").unwrap();
+    let again = b.krowk(&["doctor", "--json"], &[("GRUNTAS_API_URL", &api)]);
+    assert!(!String::from_utf8_lossy(&again.stderr).contains("copying"), "{}", printed(&again));
+    assert!(!h.join("later.json").exists());
+    for out in [&first, &again, &resumed] {
+        assert!(!printed(out).contains(REGISTRY_KEY), "{}", printed(out));
+    }
+}
+
+#[test]
+fn a_gruntas_home_set_takes_nothing_from_krowks() {
+    let b = Sandbox::new("copy-skipped");
+    let old = b.home().join(".krowk");
+    b.write(&old.join("credentials.json"), &json!({"default": "ws_mig", "workspaces": {"ws_mig": {"token": REGISTRY_KEY}}}).to_string(), 0o600);
+    let own = b.root.join("sandbox-home");
+    let out = b.krowk(&["doctor", "--json"], &[("GRUNTAS_HOME", own.to_str().unwrap())]);
+    assert!(reported(&out), "{}", printed(&out));
+    assert!(!printed(&out).contains("copying"), "{}", printed(&out));
+    assert!(!b.gruntas_home().exists() && !own.join("credentials.json").exists());
+    let doctor: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doctor["token_source"], "none", "{doctor}");
 }
