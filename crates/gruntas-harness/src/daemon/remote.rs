@@ -73,8 +73,8 @@ impl Remote {
         self.current().pid
     }
 
-    pub fn krowk_version(&self) -> String {
-        self.current().krowk_version.clone()
+    pub fn gruntas_version(&self) -> String {
+        self.current().gruntas_version.clone()
     }
 
     /// The protocol version the daemon announced.
@@ -164,7 +164,7 @@ impl Remote {
     /// open does not replace it in turn. Answers whether it was replaced.
     pub async fn renew(&self) -> bool {
         let old = self.current();
-        if old.closed() || !super::older(&old.krowk_version, &self.version) {
+        if old.closed() || !super::older(&old.gruntas_version, &self.version) {
             return false;
         }
         match old.status().await {
@@ -188,9 +188,9 @@ impl Remote {
         forward(&next, &self.watch);
         // An older gruntas's command can start one of its own between the old
         // daemon's going and this one's start: that is not a replacement.
-        let renewed = !super::older(&next.krowk_version, &self.version);
+        let renewed = !super::older(&next.gruntas_version, &self.version);
         if renewed {
-            *self.note.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("the host daemon ran gruntas {}; it was replaced with {} (pid {})", old.krowk_version, next.krowk_version, next.pid));
+            *self.note.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("the host daemon ran gruntas {}; it was replaced with {} (pid {})", old.gruntas_version, next.gruntas_version, next.pid));
         }
         *self.client.lock().unwrap_or_else(|e| e.into_inner()) = next;
         renewed

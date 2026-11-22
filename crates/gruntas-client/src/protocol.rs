@@ -763,7 +763,8 @@ pub enum LogBody {
     #[serde(rename = "session.started")]
     SessionStarted {
         cwd: String,
-        krowk_version: String,
+        #[serde(rename = "krowkVersion")]
+        gruntas_version: String,
         protocol_version: u32,
         /// The session that spawned this one, for a subagent: its spend is
         /// part of what that session spent, and a budget counts it there.
@@ -1258,8 +1259,8 @@ pub enum ClientFrame {
         protocol_version: u32,
         cwd: String,
         /// The client's own version, for the daemon's log.
-        #[serde(default, skip_serializing_if = "String::is_empty")]
-        krowk_version: String,
+        #[serde(rename = "krowkVersion", default, skip_serializing_if = "String::is_empty")]
+        gruntas_version: String,
         /// Whether the client answers `approval.requested` (an interactive client). A turn
         /// it runs asks it, and a request left with no such client
         /// following the session is denied. One that does not (`gruntas -p`)
@@ -1391,7 +1392,8 @@ pub enum ServerFrame {
     /// The answer to a `hello` the daemon can serve.
     Welcome {
         protocol_version: u32,
-        krowk_version: String,
+        #[serde(rename = "krowkVersion")]
+        gruntas_version: String,
         pid: u32,
         /// This daemon's run, as the time it started (ms since the epoch):
         /// what a `line.seq` is numbered within, and what an `attach`
@@ -1529,7 +1531,8 @@ pub enum OfferStage {
 #[serde(rename_all = "camelCase")]
 pub struct HostStatus {
     pub pid: u32,
-    pub krowk_version: String,
+    #[serde(rename = "krowkVersion")]
+    pub gruntas_version: String,
     pub protocol_version: u32,
     pub socket: String,
     pub uptime_ms: u64,

@@ -214,7 +214,7 @@ fn viewer_ticket(f: &Value, session: &str, device: &str) -> String {
 #[tokio::test]
 async fn r_relay_1_a_restart_with_state_keeps_the_fence() {
     let f: Value = serde_json::from_str(FIXTURE).unwrap();
-    let dir = std::env::temp_dir().join(format!("krowk-relay-state-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("gruntas-relay-state-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let fence = f["sessions"].as_array().unwrap().iter().find(|s| s["name"] == "idle").unwrap()["fence"].as_u64().unwrap();
@@ -258,7 +258,7 @@ fn refused_to_start(dir: &std::path::Path) -> Option<String> {
 /// A state directory holding one good record, the fence a displaced holder
 /// must meet, and `damage` done to it.
 fn damaged(name: &str, damage: impl FnOnce(&std::path::Path)) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("krowk-relay-damaged-{name}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("gruntas-relay-damaged-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let good = format!("{}\n", json!({"env": "production", "session": "00".repeat(16), "workspace": "ws_a", "fence": 241, "fenceExp": relay_ticket::now() + 300, "fenceDevice": "11".repeat(16)}));

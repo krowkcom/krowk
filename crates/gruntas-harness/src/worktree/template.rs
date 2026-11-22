@@ -848,7 +848,7 @@ mod tests {
         }
         let exe = std::env::current_exe().unwrap();
         let beside = exe.parent().and_then(Path::parent).map_or_else(std::env::temp_dir, |d| d.join("tmp"));
-        let base = beside.join(format!("krowk-worktree-wt11-this-{}", std::process::id()));
+        let base = beside.join(format!("gruntas-worktree-wt11-this-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         let _gone = Gone(base.clone());

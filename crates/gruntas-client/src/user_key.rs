@@ -44,8 +44,11 @@ pub const WRAPPED_USER_KEY: usize = HEAD + 32 + KEY + TAG;
 /// Generation g wrapped under generation g+1.
 pub const WRAPPED_PREVIOUS: usize = HEAD + NONCE + KEY + TAG;
 
-const WRAP_INFO: &[u8] = b"krowk/user-key/v1";
-const CHAIN_AAD: &[u8] = b"krowk/user-key-chain/v1";
+// Historical labels, kept byte for byte (the gruntas crate's
+// `historical_names` test pins them).
+pub const WRAP_INFO: &[u8] = b"krowk/user-key/v1";
+pub const CHAIN_AAD: &[u8] = b"krowk/user-key-chain/v1";
+pub const ID_LABEL: &[u8] = b"krowk/user-key-id/v1";
 
 /// A user key's id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -306,7 +309,7 @@ impl std::fmt::Debug for UserKeys {
 }
 
 fn id(generation: u32, key: &[u8; KEY]) -> UserKeyId {
-    UserKeyId(e2e::id(b"krowk/user-key-id/v1", &[&generation.to_be_bytes()[..], key].concat()))
+    UserKeyId(e2e::id(ID_LABEL, &[&generation.to_be_bytes()[..], key].concat()))
 }
 
 fn head(suite: u8, generation: u32, key: UserKeyId) -> [u8; HEAD] {

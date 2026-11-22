@@ -77,6 +77,16 @@ fn proxy_from(get: &dyn Fn(&str) -> Option<String>, base_url: &str) -> Option<ur
     b.build().ok()
 }
 
+// Historical: the labels and header names of a signed registry call keep the
+// old name byte for byte; the registry checks them (the gruntas crate's
+// `historical_names` test pins each).
+pub const REGISTRY_V1_LABEL: &str = "krowk/registry/v1";
+pub const REGISTRY_V2_LABEL: &str = "krowk/registry/v2";
+pub const DEVICE_HEADER: &str = "X-Krowk-Device";
+pub const TIMESTAMP_HEADER: &str = "X-Krowk-Timestamp";
+pub const SIGNATURE_HEADER: &str = "X-Krowk-Signature";
+pub const SIGNATURE_VERSION_HEADER: &str = "X-Krowk-Signature-Version";
+
 /// A device's key, signing the registry calls that act as the device
 /// (canon, engineering/crypto.md → Signed registry requests). The API key
 /// says only that the caller is the workspace's; the signature says which
@@ -98,7 +108,7 @@ pub trait RequestSigner: Send + Sync {
 /// as and the registry it is sent to. None of them can hold a newline, so
 /// the lines read one way only.
 pub fn signing_input(method: &str, target: &str, timestamp: &str, body: &[u8], device: &str, origin: &str) -> Vec<u8> {
-    format!("krowk/registry/v2\n{method}\n{target}\n{timestamp}\n{}\n{device}\n{origin}", sha256_hex(body)).into_bytes()
+    format!("{REGISTRY_V2_LABEL}\n{method}\n{target}\n{timestamp}\n{}\n{device}\n{origin}", sha256_hex(body)).into_bytes()
 }
 
 /// The origin of an API base, as the registry spells its own: scheme, host
@@ -519,14 +529,14 @@ impl Client {
                 // see a registry refuse a gruntas from before v2 (ticket 168).
                 let v1 = cfg!(debug_assertions) && std::env::var("GRUNTAS_TEST_SIGN_V1").is_ok_and(|v| v == "1");
                 let lines = if v1 {
-                    format!("krowk/registry/v1\n{method}\n{target}\n{at}\n{}", sha256_hex(body)).into_bytes()
+                    format!("{REGISTRY_V1_LABEL}\n{method}\n{target}\n{at}\n{}", sha256_hex(body)).into_bytes()
                 } else {
                     signing_input(method, target, &at, body, &device, &origin)
                 };
                 let signature = signer.sign(&lines);
-                req = req.header("X-Krowk-Device", device).header("X-Krowk-Timestamp", at).header("X-Krowk-Signature", hex(&signature));
+                req = req.header(DEVICE_HEADER, device).header(TIMESTAMP_HEADER, at).header(SIGNATURE_HEADER, hex(&signature));
                 if !v1 {
-                    req = req.header("X-Krowk-Signature-Version", "2");
+                    req = req.header(SIGNATURE_VERSION_HEADER, "2");
                 }
             }
             let req = req.body(payload.map(<[u8]>::to_vec).unwrap_or_default()).map_err(|e| fail("bad_request", e.to_string()))?;
@@ -1354,7 +1364,7 @@ fn agent(base_url: &str, limits: Limits) -> ureq::Agent {
         .timeout_connect(Some(limits.connect))
         .proxy(proxy)
         .tls_config(ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build())
-        .user_agent(format!("krowk-cli/{}", option_env!("GRUNTAS_VERSION").unwrap_or("dev")))
+        .user_agent(format!("gruntas-cli/{}", option_env!("GRUNTAS_VERSION").unwrap_or("dev")))
         .build();
     let resolver = GuardResolver { guard: Arc::new(guard), inner: ureq::unversioned::resolver::DefaultResolver::default() };
     let connector = QuietConnector { inner: net::DefaultConnector::default(), quiet: limits.quiet };
@@ -1747,7 +1757,7 @@ mod boundary {
     }
 
     fn spec() -> Spec {
-        let path = std::env::temp_dir().join(format!("krowk-boundary-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("gruntas-boundary-{}", std::process::id()));
         std::fs::write(&path, "hello").unwrap();
         Spec { path: path.display().to_string(), byte_size: 5, ..Spec::default() }
     }

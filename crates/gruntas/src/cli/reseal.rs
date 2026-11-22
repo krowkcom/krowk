@@ -203,7 +203,7 @@ mod tests {
     /// never-go-back store would refuse over the old keys.
     #[test]
     fn d6_a_start_over_sets_the_old_keys_aside_where_they_still_open() {
-        let home = std::env::temp_dir().join(format!("krowk-reseal-{}", std::process::id()));
+        let home = std::env::temp_dir().join(format!("gruntas-reseal-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         let ks = Keystore::new(&home);
         let (old_chain, old) = listed(&ks, "laptop");

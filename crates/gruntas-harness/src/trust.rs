@@ -509,7 +509,7 @@ mod tests {
 
     #[test]
     fn r_back_6_trust_is_per_repository_covers_what_is_under_it_and_is_remembered() {
-        let base = std::env::temp_dir().join(format!("krowk-trust-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("gruntas-trust-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("repo/.git")).unwrap();
         std::fs::create_dir_all(base.join("repo/src/deep")).unwrap();
@@ -580,7 +580,7 @@ mod tests {
     }
 
     fn repo(name: &str) -> (PathBuf, PathBuf, Store) {
-        let base = std::env::temp_dir().join(format!("krowk-trust-{name}-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("gruntas-trust-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("repo/.git")).unwrap();
         std::fs::create_dir_all(base.join("home")).unwrap();
@@ -816,7 +816,7 @@ mod tests {
     /// the file by hand, nor one whose `.mcp.json` changed since.
     #[test]
     fn r_host_3_directories_are_the_trusted_repositories_never_home_or_root() {
-        let base = std::env::temp_dir().join(format!("krowk-trust-dirs-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("gruntas-trust-dirs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         for d in ["a/.git", "b/.git", "home"] {
             std::fs::create_dir_all(base.join(d)).unwrap();

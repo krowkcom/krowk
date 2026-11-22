@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 const ORIGIN: &str = "github.com/acme/app";
 
 fn scratch(name: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("krowk-alloc-e2e-{name}-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("gruntas-alloc-e2e-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     root.canonicalize().unwrap()

@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn r_perf_2_switches_and_rss_are_read_from_status() {
-        let status = "Name:\tkrowk\nVmRSS:\t    7148 kB\nvoluntary_ctxt_switches:\t5\nnonvoluntary_ctxt_switches:\t2\n";
+        let status = "Name:\tgruntas\nVmRSS:\t    7148 kB\nvoluntary_ctxt_switches:\t5\nnonvoluntary_ctxt_switches:\t2\n";
         assert_eq!(status_field(status, "VmRSS:"), Some(7148));
         assert_eq!(status_field(status, "voluntary_ctxt_switches:"), Some(5));
         assert_eq!(status_field(status, "nonvoluntary_ctxt_switches:"), Some(2));

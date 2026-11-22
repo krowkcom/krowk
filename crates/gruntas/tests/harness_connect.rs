@@ -27,7 +27,7 @@ struct Sandbox {
 
 impl Sandbox {
     fn new(name: &str) -> Sandbox {
-        let root = std::env::temp_dir().join(format!("krowk-connect-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-connect-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
@@ -329,7 +329,7 @@ fn disconnect_signs_each_kind_out_its_own_way_and_keeps_the_definition_unless_re
     b.json(&["connect", "anthropic", "--method", "api-key", "--name", "work", "--json"], &[]);
     let creds = b.root.join("home/.gruntas");
     std::fs::create_dir_all(&creds).unwrap();
-    let token = json!({"issuer": "https://auth.x.ai", "clientId": "krowk-test", "tokenEndpoint": "https://auth.x.ai/oauth2/token", "accessToken": "xai-at-sentinel", "obtainedAtMs": 0});
+    let token = json!({"issuer": "https://auth.x.ai", "clientId": "gruntas-test", "tokenEndpoint": "https://auth.x.ai/oauth2/token", "accessToken": "xai-at-sentinel", "obtainedAtMs": 0});
     std::fs::write(creds.join("credentials.json"), json!({"version": 1, "instances": {"supergrok": token}}).to_string()).unwrap();
     assert_eq!((b.state("claude:work"), b.state("codex:team")), ("ready".into(), "ready".into()));
     // SuperGrok runs nothing any more (D4), so status does not offer it.
@@ -474,7 +474,7 @@ fn a_failed_sign_in_removes_every_parent_it_made_and_stops_at_the_first_it_did_n
 }
 
 #[test]
-fn a_hand_written_relative_or_dotdot_config_dir_is_never_made_by_krowk() {
+fn a_hand_written_relative_or_dotdot_config_dir_is_never_made_by_gruntas() {
     let b = Sandbox::new("handwritten");
     let dots = format!("{}/x/../y", b.root.display());
     std::fs::create_dir_all(b.config_path().parent().unwrap()).unwrap();

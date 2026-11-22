@@ -309,6 +309,11 @@ pub struct JobApplied {
     pub snapshot: String,
 }
 
+/// Where a job's commits are held while it is placed. Historical: the
+/// hand-off between machines keeps the old name (the gruntas crate's
+/// `historical_names` test pins it).
+pub const JOB_REFS: &str = "refs/krowk/jobs/";
+
 /// The target's half of a job: as `apply`, a fresh worktree of `repo` at
 /// the job's base with its changes, and the state recorded as a snapshot
 /// commit. Refused (`bad_job` to the supervisor) for a `base` that is not
@@ -361,7 +366,7 @@ pub fn apply_job(b: &Bundle, repo: &Path, worktrees: &Path) -> Result<JobApplied
     // ref of gruntas's own (never a branch or tag the person has). They stand
     // on commits a remote has, which the clone may lack: then origin is
     // fetched and the bundle read again.
-    let job_ref = format!("refs/krowk/jobs/{}", b.base);
+    let job_ref = format!("{JOB_REFS}{}", b.base);
     let unbundle = || {
         if !b.commits.is_empty() && git_run(repo, &["-c", "transfer.fsckObjects=true", "bundle", "unbundle", "-"], Some(&b.commits)).is_ok() && has() {
             let _ = git_run(repo, &["update-ref", &job_ref, &b.base], None);
@@ -867,7 +872,7 @@ mod tests {
 
     /// A scratch directory of its own for `name`, empty.
     fn scratch(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("krowk-alloc-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-alloc-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         root
@@ -1190,7 +1195,7 @@ mod tests {
     /// so `claude --resume <id>` there finds it.
     #[test]
     fn r_hand_5_the_claude_transcript_moves_to_where_resume_finds_it() {
-        let root = std::env::temp_dir().join(format!("krowk-handoff-r5-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-handoff-r5-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (repo, src_home, dst_home) = (root.join("repo"), root.join("a-claude"), root.join("b-claude"));
         std::fs::create_dir_all(&repo).unwrap();

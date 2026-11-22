@@ -160,7 +160,7 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let config = prompt::config_json()?;
     let registry = Registry::resolve(&prompt::instances_from(&config)?, ctx.io.env);
     let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(PathBuf::from);
-    let store = trust::Store::new(Some(super::providers::krowk_dir()?.join(trust::FILE)), home);
+    let store = trust::Store::new(Some(super::providers::gruntas_dir()?.join(trust::FILE)), home);
     let permissions = prompt::permissions_config(ctx, &config, Arc::new(move |repo: &std::path::Path| store.trusts(repo)), false);
     // The session asking, when one is: `gruntas worktrees` names it.
     let owner = ["GRUNTAS_SESSION", "CLAUDE_CODE_SESSION_ID"].iter().map(|k| ctx.env(k)).find(|s| !s.trim().is_empty()).unwrap_or_else(gruntas_store::new_id);

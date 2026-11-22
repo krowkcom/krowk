@@ -602,7 +602,7 @@ mod tests {
             &mut t,
             r##"
 {"type":"assistant","message":{"id":"msg_1","model":"m","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"README.md"}}],"usage":{"input_tokens":4,"output_tokens":2}},"parent_tool_use_id":null}
-{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"# krowk","is_error":false}]},"parent_tool_use_id":null}
+{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"# gruntas","is_error":false}]},"parent_tool_use_id":null}
 {"type":"assistant","message":{"id":"msg_2","model":"m","content":[{"type":"text","text":"done"}]},"parent_tool_use_id":null}
 {"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"cc-2"}
 "##,

@@ -18,7 +18,7 @@
 //! (`gruntas_api::home::own`). Slots are the user's, machine-wide: unlike the
 //! daemon's directory they are not keyed by gruntas's home, since two homes
 //! still build on one machine. A pool is per runtime directory, though:
-//! krowks that name different ones — one started over ssh with no login
+//! gruntas processes that name different ones — one started over ssh with no login
 //! session, so no `XDG_RUNTIME_DIR`, beside one on the desktop — do not
 //! share a pool, and each queues only its own kind.
 
@@ -167,7 +167,7 @@ mod tests {
     use super::*;
 
     fn dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("krowk-slots-{name}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("gruntas-slots-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
     }

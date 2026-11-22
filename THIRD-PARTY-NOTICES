@@ -1,6 +1,6 @@
 THIRD-PARTY NOTICES
 
-krowk is MIT-licensed (see LICENSE). This file names the work of others krowk's
+gruntas is MIT-licensed (see LICENSE). This file names the work of others gruntas's
 source draws on beyond its declared Cargo dependencies, whose own licenses ship
 with them.
 
@@ -13,6 +13,6 @@ License:   MIT (BIP-0039: "This BIP falls under the MIT License.")
 Copyright: Marek Palatinus, Pavol Rusnak, Aaron Voisine, Sean Bowe
 
 crates/gruntas-client/src/english.txt is BIP-0039's English list of 2048 words,
-unchanged. krowk's recovery phrase writes the account key as 24 of these words
+unchanged. gruntas's recovery phrase writes the account key as 24 of these words
 with BIP-0039's checksum; the encoding in crates/gruntas-client/src/phrase.rs is
-krowk's own.
+gruntas's own.

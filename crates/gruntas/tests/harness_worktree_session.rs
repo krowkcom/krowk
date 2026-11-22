@@ -23,7 +23,7 @@ impl Sandbox {
     /// other is only answered. The repository and the directory outside it
     /// are trusted for good, as Claude Code runs in no other.
     fn new(name: &str) -> Sandbox {
-        let root = std::env::temp_dir().join(format!("krowk-worktree-session-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-worktree-session-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for d in ["home/.claude", "data", "run", "repo", "elsewhere", "bin"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
@@ -50,7 +50,7 @@ impl Sandbox {
         self.root.join("data/gruntas/worktrees")
     }
 
-    fn krowk_in(&self, dir: &Path, args: &[&str]) -> Output {
+    fn gruntas_in(&self, dir: &Path, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_gruntas"))
             .args(args)
             .env_clear()
@@ -75,7 +75,7 @@ impl Sandbox {
     /// needed: what it printed, stdout and stderr, having succeeded.
     fn prompt(&self, args: &[&str]) -> (String, String) {
         let args: Vec<&str> = ["-p", "--model", "claude/sonnet", "--permission-mode", "acceptEdits"].into_iter().chain(args.iter().copied()).collect();
-        let o = self.krowk_in(&self.repo(), &args);
+        let o = self.gruntas_in(&self.repo(), &args);
         let (out, err) = (String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned());
         assert!(o.status.success(), "gruntas {args:?}: {out}{err}");
         (out, err)
@@ -156,7 +156,7 @@ fn wt6_a_worktree_session_makes_its_file_in_the_worktree_which_is_kept_and_named
     let session = result["sessionId"].as_str().unwrap();
     assert_eq!(b.session_cwd(session), path.display().to_string());
     assert_eq!(git(&b.repo(), &["branch", "--list", "--format=%(refname:short)", "gruntas/*"]), format!("gruntas/{hex}"));
-    let listed = b.krowk_in(&b.repo(), &["worktrees", "--json"]);
+    let listed = b.gruntas_in(&b.repo(), &["worktrees", "--json"]);
     let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
     let row = listed["data"]["worktrees"].as_array().unwrap().iter().find(|r| r["hex"] == hex.as_str()).unwrap_or_else(|| panic!("{listed}"));
     assert_eq!((row["session"].as_str(), &row["live"]), (Some(session), &json!(false)));
@@ -168,13 +168,13 @@ fn wt6_a_worktree_session_makes_its_file_in_the_worktree_which_is_kept_and_named
     assert!(path.join("NEW.md").is_file());
 
     // A new session and a resumed one are not the same thing.
-    let o = b.krowk_in(&b.repo(), &["-p", "--worktree", "--resume", session, "hi"]);
+    let o = b.gruntas_in(&b.repo(), &["-p", "--worktree", "--resume", session, "hi"]);
     assert_eq!(o.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&o.stderr).contains("--worktree starts a new session"), "{}", String::from_utf8_lossy(&o.stderr));
 
     // Gone, it is refused, naming what lists the ones that remain.
     std::fs::remove_dir_all(&path).unwrap();
-    let o = b.krowk_in(&b.repo(), &["-p", "--model", "claude/sonnet", "--resume", session, "hi"]);
+    let o = b.gruntas_in(&b.repo(), &["-p", "--model", "claude/sonnet", "--resume", session, "hi"]);
     let said = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(2), "{said}");
     assert!(said.contains("worktree_missing") && said.contains("gruntas worktrees"), "{said}");
@@ -211,7 +211,7 @@ fn wt6_worktree_outside_a_repository_is_refused() {
         return;
     }
     let b = Sandbox::new("no-repo");
-    let o = b.krowk_in(&b.root.join("elsewhere"), &["-p", "--model", "claude/sonnet", "--worktree", "make a file"]);
+    let o = b.gruntas_in(&b.root.join("elsewhere"), &["-p", "--model", "claude/sonnet", "--worktree", "make a file"]);
     let said = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{said}");
     assert!(said.contains("not_a_repository") && said.contains("this directory is in none"), "{said}");
@@ -245,7 +245,7 @@ fn worktrees_default_starts_a_new_session_in_its_own_worktree_without_the_flag()
     std::fs::write(b.repo().join(".gruntas/config.json"), r#"{"worktrees": {"default": false}}"#).unwrap();
     // A file that can run code changed since the repository was trusted, so
     // it is trusted again, as a person who looked at the change would.
-    let o = b.krowk_in(&b.repo(), &["trust"]);
+    let o = b.gruntas_in(&b.repo(), &["trust"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let (out, _) = b.prompt(&["--output-format", "json", "make a file"]);
     assert!(!out.contains("\"worktree\""), "the trusted repository's no is read: {out}");
@@ -253,7 +253,7 @@ fn worktrees_default_starts_a_new_session_in_its_own_worktree_without_the_flag()
 
     // Outside a repository there is nothing to make one of: the session
     // runs where it is, where `--worktree` would be refused.
-    let o = b.krowk_in(&b.root.join("elsewhere"), &["-p", "--model", "claude/sonnet", "--permission-mode", "acceptEdits", "make a file"]);
+    let o = b.gruntas_in(&b.root.join("elsewhere"), &["-p", "--model", "claude/sonnet", "--permission-mode", "acceptEdits", "make a file"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(b.root.join("elsewhere/NEW.md").is_file());
 }
@@ -261,19 +261,19 @@ fn worktrees_default_starts_a_new_session_in_its_own_worktree_without_the_flag()
 #[test]
 fn wt6_help_lists_the_flag_and_sessions_keeps_its_own() {
     let b = Sandbox::new("help");
-    let o = b.krowk_in(&b.repo(), &["--help"]);
+    let o = b.gruntas_in(&b.repo(), &["--help"]);
     let help = String::from_utf8_lossy(&o.stdout);
     let lines: Vec<&str> = help.lines().filter(|l| l.contains("--worktree")).collect();
     assert_eq!(lines.len(), 1, "{help}");
     assert!(lines[0].contains("start one in a worktree"), "{}", lines[0]);
     // `gruntas help flags` has it among the agent's flags, whole.
-    let o = b.krowk_in(&b.repo(), &["help", "flags"]);
+    let o = b.gruntas_in(&b.repo(), &["help", "flags"]);
     let flags = String::from_utf8_lossy(&o.stdout).split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(flags.contains("--worktree With -p: start the session in a new git worktree of this repository"), "{flags}");
     // `gruntas sessions --worktree <path>` still filters the listing.
-    let o = b.krowk_in(&b.repo(), &["sessions", "--worktree", "/nowhere", "--json"]);
+    let o = b.gruntas_in(&b.repo(), &["sessions", "--worktree", "/nowhere", "--json"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     // Anywhere else, it is named as the flag of what takes it.
-    let o = b.krowk_in(&b.repo(), &["worktrees", "list", "--worktree"]);
+    let o = b.gruntas_in(&b.repo(), &["worktrees", "list", "--worktree"]);
     assert!(String::from_utf8_lossy(&o.stderr).contains("`gruntas -p`"), "{}", String::from_utf8_lossy(&o.stderr));
 }

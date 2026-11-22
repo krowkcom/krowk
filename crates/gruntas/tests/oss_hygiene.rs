@@ -176,7 +176,7 @@ fn jobs(workflow: &str) -> Vec<(String, String)> {
 }
 
 #[test]
-fn r_oss_3_releases_are_logged_where_krowk_upgrade_can_check_them_and_checked_before_publishing() {
+fn r_oss_3_releases_are_logged_where_gruntas_upgrade_can_check_them_and_checked_before_publishing() {
     let release = read(".github/workflows/release.yml");
     assert!(
         release.contains("cosign sign-blob --yes --signing-config .github/sigstore/signing-config.json"),

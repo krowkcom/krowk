@@ -418,7 +418,7 @@ pub fn environment(b: &Backend) -> (Vec<&'static str>, Vec<(String, String)>) {
 /// it between turns, so the process it starts serves the whole session.
 pub struct ClaudeEngine {
     instance: Resolved,
-    krowk_version: String,
+    gruntas_version: String,
     /// The process: a turn's while one runs, the idle loop's between turns.
     proc: Arc<tokio::sync::Mutex<Option<Proc>>>,
     /// The idle loop reading the process between turns, and its stop.
@@ -516,11 +516,11 @@ impl Status {
 }
 
 impl ClaudeEngine {
-    pub fn new(instance: Resolved, krowk_version: &str) -> Result<ClaudeEngine, EngineError> {
+    pub fn new(instance: Resolved, gruntas_version: &str) -> Result<ClaudeEngine, EngineError> {
         if instance.backend.is_none() {
             return Err(EngineError::new("bad_config", format!("{} is not a Claude Code instance", instance.name)));
         }
-        Ok(ClaudeEngine { instance, krowk_version: krowk_version.into(), proc: Arc::new(tokio::sync::Mutex::new(None)), idle: Mutex::new(None), status: Arc::default(), tell: None })
+        Ok(ClaudeEngine { instance, gruntas_version: gruntas_version.into(), proc: Arc::new(tokio::sync::Mutex::new(None)), idle: Mutex::new(None), status: Arc::default(), tell: None })
     }
 
     /// Reports what happens between turns to `tell`.
@@ -602,7 +602,7 @@ impl Engine for ClaudeEngine {
                 model: ctx.model.clone(),
                 cwd: ctx.cwd.clone(),
                 mode: ctx.permission_mode,
-                krowk_version: self.krowk_version.clone(),
+                gruntas_version: self.gruntas_version.clone(),
                 gate: ctx.gate.protecting(self.backend().home.iter().cloned()),
                 evidence: ctx.evidence.clone(),
                 mcp: ctx.compat.mcp.clone(),
@@ -838,7 +838,7 @@ async fn idle(proc: Arc<tokio::sync::Mutex<Option<Proc>>>, mut stop: oneshot::Re
 }
 
 /// The paste guard's callback id (`crate::paste_guard`).
-const PASTE_GUARD: &str = "krowk_paste_guard";
+const PASTE_GUARD: &str = "gruntas_paste_guard";
 
 /// The hooks `initialize` registers: the paste guard and the tooling guard
 /// (`crate::tooling_guard`), before every Bash, `EnterWorktree` and `Agent`
@@ -855,7 +855,7 @@ struct Answers {
     model: ModelRef,
     cwd: PathBuf,
     mode: PermissionMode,
-    krowk_version: String,
+    gruntas_version: String,
     /// The turn's permissions, with the instance's config directory kept
     /// from edits too.
     gate: Gate,
@@ -951,7 +951,7 @@ impl Answers {
                     model: &self.model,
                     cwd: &self.cwd,
                     backend: BACKEND,
-                    krowk_version: &self.krowk_version,
+                    gruntas_version: &self.gruntas_version,
                     gate: &self.gate,
                     cancel: asking.map(|(_, c)| c),
                     evidence: self.evidence.as_ref().zip(asking.map(|(e, _)| e)),
@@ -1240,7 +1240,7 @@ impl Proc {
 
     fn request_id(&mut self) -> String {
         self.next += 1;
-        format!("krowk_{}", self.next)
+        format!("gruntas_{}", self.next)
     }
 
     /// Sends a control request and waits for its answer, answering Claude
@@ -2010,7 +2010,7 @@ mod tests {
         use crate::protocol::{ApprovalDecision, QuestionAnswer};
         let approvals = permissions::Approvals::default();
         let gate = Gate::new(permissions::Policy::modes_only(Path::new("/repo")), PermissionMode::Plan, Default::default(), Some(approvals.clone()), None, "s", "t");
-        let ask = Answers { session_id: "s".into(), turn_id: "t".into(), model: ModelRef { instance: "claude:me".into(), model: "claude-opus-5-5".into() }, cwd: PathBuf::from("/repo"), mode: PermissionMode::Plan, krowk_version: "test".into(), gate, evidence: None, mcp: Arc::default(), approved: Arc::default(), session_dir: PathBuf::new(), images: Arc::default() };
+        let ask = Answers { session_id: "s".into(), turn_id: "t".into(), model: ModelRef { instance: "claude:me".into(), model: "claude-opus-5-5".into() }, cwd: PathBuf::from("/repo"), mode: PermissionMode::Plan, gruntas_version: "test".into(), gate, evidence: None, mcp: Arc::default(), approved: Arc::default(), session_dir: PathBuf::new(), images: Arc::default() };
         let input = json!({"questions": [
             {"question": "Which database?", "header": "DB", "multiSelect": false, "options": [{"label": "Postgres", "description": "x"}, {"label": "SQLite", "description": "y"}]},
             {"question": "Which tests?", "header": "Tests", "multiSelect": true, "options": [{"label": "unit", "description": ""}, {"label": "e2e", "description": ""}]},
@@ -2044,7 +2044,7 @@ mod tests {
     }
 
     #[test]
-    fn r_back_1_the_process_is_launched_with_the_stream_json_protocol_and_krowks_mcp_server() {
+    fn r_back_1_the_process_is_launched_with_the_stream_json_protocol_and_gruntas_mcp_server() {
         let l = Launch { model: "haiku".into(), resume: Some("cc-1".into()), effort: Some("high"), plan: false, disallowed: Vec::new(), mcp: Vec::new() };
         let a = args(&l, &["--add-dir".into(), "/x".into()]);
         let s = a.join(" ");
@@ -2071,8 +2071,8 @@ mod tests {
     }
 
     #[test]
-    fn r_back_1_approvals_follow_krowks_modes_and_its_own_tools_always_run() {
-        let cwd = std::env::temp_dir().join(format!("krowk-approve-{}", std::process::id()));
+    fn r_back_1_approvals_follow_gruntas_modes_and_its_own_tools_always_run() {
+        let cwd = std::env::temp_dir().join(format!("gruntas-approve-{}", std::process::id()));
         std::fs::create_dir_all(&cwd).unwrap();
         let cwd = cwd.canonicalize().unwrap();
         let judge = |m, t: &str, i: &Value, protected: &[PathBuf]| crate::permissions::judge(m, Ok(call_of(t, i, &cwd)), &cwd, protected);
@@ -2172,7 +2172,7 @@ mod tests {
 
     #[test]
     fn r_back_5_the_transcript_is_found_where_claude_code_keeps_it() {
-        let home = std::env::temp_dir().join(format!("krowk-transcript-{}", std::process::id()));
+        let home = std::env::temp_dir().join(format!("gruntas-transcript-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         assert_eq!(transcript_path(&home, "/tmp/a.b/c", "s1"), home.join("projects/-tmp-a-b-c/s1.jsonl"), "where it will be");
         std::fs::create_dir_all(home.join("projects/-shortened-123")).unwrap();

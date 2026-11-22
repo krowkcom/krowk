@@ -114,7 +114,7 @@ fn archived_and_listed(m: &Machine, sessions: &Path, old: &str, pinned: &str, fr
 /// bytes on the server are ciphertext.
 #[test]
 fn r_vint_1_r_vint_2_r_vint_3_r_vint_4_an_idle_session_is_archived_listed_and_restored_on_open() {
-    let root = std::env::temp_dir().join(format!("krowk-vintage-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("gruntas-vintage-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     let registry = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
@@ -210,7 +210,7 @@ fn synced_machine_on(root: &Path, token: &'static str) -> (gruntas_devregistry::
 /// both, and `--from` restores from the one named.
 #[test]
 fn r_vint_4_a_restore_finds_the_session_in_the_vintage_it_went_into_when_a_replacement_lost_it() {
-    let root = std::env::temp_dir().join(format!("krowk-vintage-replaced-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("gruntas-vintage-replaced-{}", std::process::id()));
     let (_registry, m, api, keys) = synced_machine(&root);
     let sessions = root.join(".gruntas").join("sessions");
     let a = session(&sessions, &root, "the first of the week", 20);
@@ -268,7 +268,7 @@ fn r_vint_4_a_restore_finds_the_session_in_the_vintage_it_went_into_when_a_repla
 /// what its stub keeps, and says the rest needs sync, rather than failing.
 #[test]
 fn r_vint_3_an_archived_session_opened_without_sync_shows_its_stub_and_says_why() {
-    let root = std::env::temp_dir().join(format!("krowk-vintage-stub-only-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("gruntas-vintage-stub-only-{}", std::process::id()));
     let (_registry, m, _, _) = synced_machine(&root);
     let sessions = root.join(".gruntas").join("sessions");
     let id = session(&sessions, &root, "asked on the synced machine", 20);
@@ -297,7 +297,7 @@ fn r_vint_3_an_archived_session_opened_without_sync_shows_its_stub_and_says_why(
 /// copy, with no registry to read the vintage from.
 #[test]
 fn on_free_archiving_keeps_the_local_copy_hides_the_session_and_restore_brings_it_back() {
-    let root = std::env::temp_dir().join(format!("krowk-vintage-free-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("gruntas-vintage-free-{}", std::process::id()));
     let (_registry, m, api, _) = synced_machine_on(&root, FREE_TOKEN);
     let sessions = root.join(".gruntas").join("sessions");
     let a = session(&sessions, &root, "a free idle session", 20);
@@ -352,7 +352,7 @@ fn on_free_archiving_keeps_the_local_copy_hides_the_session_and_restore_brings_i
 /// it. Named with `--from`, it is restored, and said to be older.
 #[test]
 fn r_vint_4_a_copy_older_than_the_stub_is_refused_unless_named() {
-    let root = std::env::temp_dir().join(format!("krowk-vintage-stale-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("gruntas-vintage-stale-{}", std::process::id()));
     let (_registry, m, _, _) = synced_machine(&root);
     let sessions = root.join(".gruntas").join("sessions");
     let id = session(&sessions, &root, "continued after it was restored", 20);
@@ -387,7 +387,7 @@ fn r_vint_4_a_copy_older_than_the_stub_is_refused_unless_named() {
 /// stub's stand-ins. Opening the session projects its log in their place.
 #[test]
 fn r_vint_4_a_session_left_unprojected_by_a_cut_short_restore_is_projected_when_opened() {
-    let root = std::env::temp_dir().join(format!("krowk-vintage-unprojected-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("gruntas-vintage-unprojected-{}", std::process::id()));
     let (_registry, m, _, _) = synced_machine(&root);
     let sessions = root.join(".gruntas").join("sessions");
     let id = session_of(&sessions, &root, "a turn of its own", 20, true);
@@ -419,7 +419,7 @@ fn r_vint_4_a_session_left_unprojected_by_a_cut_short_restore_is_projected_when_
 /// `gruntas`, and the next import renames its binding rather than storing
 /// the session twice.
 #[test]
-fn harness_gruntas_lists_a_session_stored_as_krowk_and_a_new_one() {
+fn harness_gruntas_lists_a_session_stored_as_gruntas_and_a_new_one() {
     let home = std::env::temp_dir().join(format!("gruntas-vintage-renamed-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     let sessions = home.join(".gruntas/sessions");

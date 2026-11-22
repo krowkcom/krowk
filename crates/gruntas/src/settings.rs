@@ -86,7 +86,7 @@ mod tests {
 
     #[test]
     fn writes_keep_every_other_key() {
-        let dir = std::env::temp_dir().join(format!("krowk-settings-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gruntas-settings-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let config = dir.join("config.json");
         std::fs::write(&config, r#"{"tui":{"statusBar":false},"permissions":{"allow":["Bash(ls)"]},"rolloverOrder":["a"]}"#).unwrap();

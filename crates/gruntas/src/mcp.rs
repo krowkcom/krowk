@@ -84,10 +84,10 @@ const SECRET_NAMES: &[&str] = &[
 ];
 
 /// gruntas's home, wherever `GRUNTAS_HOME` put it, the default `~/.gruntas`,
-/// gruntas's `~/.krowk`, and a move's staging directory and lock beside
+/// the old `~/.krowk` it was copied from, and a move's staging directory and lock beside
 /// each: their keys, logins and sessions are never published, whatever the
 /// path is called.
-fn in_krowk_home(real: &Path) -> bool {
+fn in_gruntas_home(real: &Path) -> bool {
     gruntas_api::home::fenced(&gruntas_api::home::process_env).iter().any(|h| gruntas_api::home::holds(h, real))
 }
 
@@ -120,7 +120,7 @@ impl Server<'_> {
                 "the upload root is the home directory, which holds ~/.ssh and ~/.aws — start the server in a project directory, or pass --root",
             ));
         }
-        if in_krowk_home(&abs) {
+        if in_gruntas_home(&abs) {
             return Err(fail("root_too_broad", "the upload root is inside gruntas's home, which holds its keys and logins — start the server in a project directory, or pass --root"));
         }
         if let Some(name) = secret_component(&abs) {
@@ -150,7 +150,7 @@ fn permit(root: &Path, base: &Path, path: &str) -> Result<String, Error> {
     if let Some(name) = secret_component(rel) {
         return Err(fail("secret_path", format!("`{path}` is a credential file (`{name}`) — refusing to publish it at a public URL")));
     }
-    if in_krowk_home(&real) {
+    if in_gruntas_home(&real) {
         return Err(fail("secret_path", format!("`{path}` is inside gruntas's home, which holds its keys and logins — refusing to publish it at a public URL")));
     }
     #[cfg(unix)]
@@ -321,7 +321,7 @@ impl Server<'_> {
             // ever reading the session: a synced session is sealed, and the
             // card shows what the artifact carries and nothing else.
             let p = &req.producer;
-            for (key, value) in [("krowk.engine", &p.engine), ("gen_ai.request.model", &p.model), ("gen_ai.system", &p.provider)] {
+            for (key, value) in [(runctx::ENGINE_KEY, &p.engine), ("gen_ai.request.model", &p.model), ("gen_ai.system", &p.provider)] {
                 if !value.is_empty() {
                     metadata.insert(key, value.clone());
                 }
@@ -329,7 +329,7 @@ impl Server<'_> {
             // Pushed by gruntas's engine, through its MCP server's code.
             metadata.insert("krowk.client", format!("gruntas/{}", self.version));
             if let Some(c) = &req.caption {
-                metadata.insert("krowk.caption", c.clone());
+                metadata.insert(runctx::CAPTION_KEY, c.clone());
             }
         }
         // The harness is gruntas, as on the run: left to detection it names
@@ -481,7 +481,7 @@ impl Server<'_> {
                 references: a.references.clone(),
                 session: a.session.clone(),
                 title: a.title.clone(),
-                client: format!("krowk-mcp/{}", self.version),
+                client: format!("gruntas-mcp/{}", self.version),
             },
             (!base.as_os_str().is_empty()).then_some(base),
         );
@@ -637,7 +637,7 @@ impl Server<'_> {
     }
 
     fn get_run(&self) -> Outcome {
-        let m = runctx::resolve(self.env, Overrides { client: format!("krowk-mcp/{}", self.version), ..Overrides::default() });
+        let m = runctx::resolve(self.env, Overrides { client: format!("gruntas-mcp/{}", self.version), ..Overrides::default() });
         let mut lines = vec!["Run context detected for this working directory:".to_string()];
         for (label, value) in [("repo", &m.repo_name), ("commit", &m.commit), ("branch", &m.branch), ("agent", &m.harness), ("pull request", &m.change_url)] {
             if !value.is_empty() {
@@ -965,7 +965,7 @@ mod tests {
     /// the root (a symlink out of it too), and a file with a second name.
     #[test]
     fn r_evid_1_publish_refuses_credentials_paths_outside_the_root_and_hard_links() {
-        let base = std::env::temp_dir().join(format!("krowk-permit-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("gruntas-permit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let (root, outside) = (base.join("repo"), base.join("elsewhere"));
         std::fs::create_dir_all(root.join(".ssh")).unwrap();

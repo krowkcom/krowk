@@ -1887,7 +1887,7 @@ mod tests {
     /// stored, and a path that is none of gruntas's is left alone.
     #[test]
     fn alloc_06_a_stored_tasks_worktree_is_removed() {
-        let root = std::env::temp_dir().join(format!("krowk-alloc-06-discard-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-alloc-06-discard-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let repo = root.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
@@ -2061,11 +2061,11 @@ mod tests {
     /// that is no session id, is refused.
     #[test]
     fn r_sub_12_a_child_is_one_whose_own_log_here_names_the_session_its_parent() {
-        let sessions = std::env::temp_dir().join(format!("krowk-sub12-{}", std::process::id()));
+        let sessions = std::env::temp_dir().join(format!("gruntas-sub12-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&sessions);
         let (parent, kid, unrelated, orphan, absent) = ("01a0ec7b-0000-7000-8000-0000000000a1", "01a0ec7b-0000-7000-8000-0000000000a2", "01a0ec7b-0000-7000-8000-0000000000a3", "01a0ec7b-0000-7000-8000-0000000000a4", "01a0ec7b-0000-7000-8000-0000000000a5");
         let root = |id: &str, of: Option<&str>| {
-            let e = crate::protocol::LogEvent { id: id.into(), parent_id: None, session_id: id.into(), time_ms: 1, body: LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: of.map(String::from), agent: None } };
+            let e = crate::protocol::LogEvent { id: id.into(), parent_id: None, session_id: id.into(), time_ms: 1, body: LogBody::SessionStarted { cwd: "/r".into(), gruntas_version: "t".into(), protocol_version: 1, parent_session_id: of.map(String::from), agent: None } };
             std::fs::create_dir_all(sessions.join(id)).unwrap();
             std::fs::write(sessions.join(id).join(crate::log::EVENTS_FILE), format!("{}\n", serde_json::to_string(&e).unwrap())).unwrap();
         };

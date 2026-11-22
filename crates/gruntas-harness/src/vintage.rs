@@ -818,7 +818,7 @@ mod tests {
     /// does not know, and a line of a later format is refused, never
     /// merged down.
     #[test]
-    fn r_vint_1_a_merge_keeps_a_newer_krowks_fields_and_refuses_a_newer_format() {
+    fn r_vint_1_a_merge_keeps_a_newer_gruntas_fields_and_refuses_a_newer_format() {
         let theirs = "0192f1e2-3a4b-7c5d-8e6f-0123456789ab";
         let ours = "0192f1e2-3a4b-7c5d-8e6f-0123456789ac";
         let mut week = unpack(&packed(&format!("{{\"v\":1,\"id\":\"{theirs}\",\"events\":\"e\\n\",\"context\":\"\",\"forks\":[{{\"head\":\"x\"}}]}}\n"))).unwrap();
@@ -848,7 +848,7 @@ mod tests {
     }
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("krowk-vintage-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gruntas-vintage-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

@@ -9,7 +9,7 @@ answered allow) is left out, and so are the `init` line's skills, plugins
 and memory path; the session id is `{{SESSION}}` and the working directory
 `{{CWD}}`, as in the scenarios.
 
-The command, krowk's flags plus `--replay-user-messages`:
+The command, gruntas's flags plus `--replay-user-messages`:
 
 ```text
 claude -p --input-format stream-json --output-format stream-json --verbose

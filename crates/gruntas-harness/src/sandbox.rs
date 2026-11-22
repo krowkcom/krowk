@@ -33,12 +33,12 @@
 //! worktree writes objects and refs into the repository's common git
 //! directory, outside the workspace, so when the workspace is one
 //! (`managed_worktree`) the plan binds the common directory read-only (it
-//! may be in the hidden home), then `<common>/objects`, `refs/heads/krowk`
-//! and `logs/refs/heads/krowk` (each made first if missing) and the
+//! may be in the hidden home), then `<common>/objects`, `refs/heads/gruntas`
+//! and `logs/refs/heads/gruntas` (each made first if missing) and the
 //! worktree's own admin directory writable, and then, read-only on top,
 //! what in them decides
 //! what runs or what another checkout is on: every other entry in
-//! `refs/heads/krowk` (another agent's branch), and this worktree's
+//! `refs/heads/gruntas` (another agent's branch), and this worktree's
 //! `config.worktree`, `commondir`, `gitdir` and `modules`. The rest of
 //! `refs` stays read-only, not just the branches checked out somewhere: a
 //! fence on `refs/heads/main` inside a writable `refs` is undone by
@@ -1195,7 +1195,7 @@ mod tests {
 
     fn plan(profile: Profile, base: &Path) -> Plan {
         let home = base.join("home");
-        Plan::new(Sandbox { profile, by: By::Bubblewrap }, &base.join("ws"), &[], &[], &[home.join(".claude")], &[home.join(".krowk")], Some(&home))
+        Plan::new(Sandbox { profile, by: By::Bubblewrap }, &base.join("ws"), &[], &[], &[home.join(".claude")], &[home.join(".gruntas")], Some(&home))
     }
 
     /// R-PERM-3: `.git` and its kind, the settings directories and the
@@ -1227,7 +1227,7 @@ mod tests {
             assert!(p.read_only.contains(&base.join("ws").join(d)), "{d}");
         }
         assert!(p.hides(&base.join("home/.claude/settings.json")) && !p.fences(&base.join("home/.claude")), "outside the workspace a settings directory is hidden with the home, not bound back");
-        assert!(p.hidden.contains(&base.join("home/.ssh")) && p.hidden.contains(&base.join("home/.krowk")));
+        assert!(p.hidden.contains(&base.join("home/.ssh")) && p.hidden.contains(&base.join("home/.gruntas")));
         let args = p.bwrap_args();
         let at = |x: &str, v: &Path| args.windows(3).position(|w| w[0] == x && w[1] == v.to_string_lossy()).unwrap_or_else(|| panic!("{x} {}", v.display()));
         assert!(at("--bind", &base.join("ws")) < at("--ro-bind-try", &base.join("ws/.git")));

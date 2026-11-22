@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn inspect_measures_digests_and_refuses_empty_and_missing() {
-        let dir = std::env::temp_dir().join(format!("krowk-spec-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gruntas-spec-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("a.txt");
         std::fs::write(&file, "hello").unwrap();

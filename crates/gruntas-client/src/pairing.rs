@@ -59,21 +59,24 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::e2e::{DeviceId, DevicePublic, Error, SigningPublic, random};
 
+// Historical labels, kept byte for byte (the gruntas crate's
+// `historical_names` test pins them).
+
 /// The protocol's label, the first thing in both SPAKE2 identities and the
 /// transcript.
 pub const LABEL: &[u8] = b"krowk/pair/v1";
 /// HKDF-SHA256's info for the key all three MACs are made under.
-const CONFIRM_KEY: &[u8] = b"krowk/pair-confirm/v1";
+pub const CONFIRM_KEY: &[u8] = b"krowk/pair-confirm/v1";
 /// HKDF-SHA256's info for the key the reply is sealed under: a key apart
 /// from the MACs', so no MAC is ever made under a cipher's key.
-const SEAL_KEY: &[u8] = b"krowk/pair-seal/v1";
+pub const SEAL_KEY: &[u8] = b"krowk/pair-seal/v1";
 /// Each MAC names what it is, so an ack can never stand in for a
 /// confirmation, or A's reply MAC for either.
-const MAC_B_CONFIRM: &[u8] = b"krowk/pair/v1 b-confirm";
-const MAC_A_REPLY: &[u8] = b"krowk/pair/v1 a-reply";
-const MAC_B_ACK: &[u8] = b"krowk/pair/v1 b-ack";
+pub const MAC_B_CONFIRM: &[u8] = b"krowk/pair/v1 b-confirm";
+pub const MAC_A_REPLY: &[u8] = b"krowk/pair/v1 a-reply";
+pub const MAC_B_ACK: &[u8] = b"krowk/pair/v1 b-ack";
 /// The reply's associated data starts with this.
-const REPLY_AD: &[u8] = b"krowk/pair/v1 reply";
+pub const REPLY_AD: &[u8] = b"krowk/pair/v1 reply";
 
 /// Every message's first byte, then its type.
 const V1: u8 = 1;

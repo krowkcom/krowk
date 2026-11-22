@@ -97,6 +97,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   themselves as gruntas, and no `krowk` binary is built any more.
   Hosts stay on krowk.com for now.
 
+- **Requests and run metadata say gruntas.** The user agent is
+  `gruntas-cli/<version>`, and the client recorded on runs and artifacts
+  is `gruntas-cli/<version>` or `gruntas-mcp/<version>`. What stored data
+  and signatures depend on keeps its name: the `krowk.*` metadata fields,
+  the `X-Krowk-*` signing headers, the `krowk_sk_` and `krowk_claim_`
+  prefixes and the crypto labels. `gruntas mcp remove` of a server another
+  file defines now fails as `not_gruntas` (was `not_krowks`).
+
 - **API keys and gateways now run in Claude Code or Codex.** `krowk connect`
   turns an Anthropic API key into a Claude Code account, and an
   Anthropic-compatible gateway (`--base-url`) into one that sends to it; an

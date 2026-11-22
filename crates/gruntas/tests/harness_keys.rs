@@ -30,7 +30,7 @@ struct Sandbox {
 
 impl Sandbox {
     fn new(name: &str, url: &str) -> Sandbox {
-        let root = std::env::temp_dir().join(format!("krowk-keys-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-keys-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for d in ["home", "repo/.git", "bin"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
@@ -293,7 +293,7 @@ fn assert_a_command_reference(b: &Sandbox, env: &[(&str, &str)]) {
 }
 
 #[test]
-fn r_cred_1_no_config_but_the_persons_own_credentials_file_can_make_krowk_run_a_command() {
+fn r_cred_1_no_config_but_the_persons_own_credentials_file_can_make_gruntas_run_a_command() {
     let m = answer();
     let b = Sandbox::new("repo", &m.url);
     let pwned = b.root.join("pwned");
@@ -350,7 +350,7 @@ fn r_cred_1_at_a_terminal_a_key_is_pasted_without_echo_and_without_one_the_flags
 }
 
 #[test]
-fn r_cred_1_a_credentials_file_krowk_cannot_read_is_named_without_quoting_it() {
+fn r_cred_1_a_credentials_file_gruntas_cannot_read_is_named_without_quoting_it() {
     let m = answer();
     let b = Sandbox::new("unreadable", &m.url);
     std::fs::create_dir_all(b.credentials().parent().unwrap()).unwrap();
@@ -375,7 +375,7 @@ fn r_cred_1_a_credentials_file_krowk_cannot_read_is_named_without_quoting_it() {
 }
 
 #[test]
-fn r_cred_1_with_no_home_krowk_reads_no_repositorys_dot_krowk_as_its_own() {
+fn r_cred_1_with_no_home_gruntas_reads_no_repositorys_dot_gruntas_as_its_own() {
     let m = answer();
     let b = Sandbox::new("nohome", &m.url);
     let pwned = b.root.join("pwned");

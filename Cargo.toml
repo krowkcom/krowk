@@ -1,9 +1,9 @@
-# krowk: the CLI, its MCP server, the session store and importers, and the
+# gruntas: the CLI, its MCP server, the session store and importers, and the
 # stand-in registry the tests run against. tests/golden holds the binaries to
 # their recorded transcripts.
 #
 # Crates split where a dependency has to stop, not by layer: the default
-# `krowk` build is the agent-container one and never links sqlite, so it stays
+# `gruntas` build is the agent-container one and never links sqlite, so it stays
 # small and has nothing to fail on; `--features sessions` adds the store.
 [workspace]
 resolver = "3"
@@ -36,7 +36,7 @@ inherits = "release"
 lto = false
 codegen-units = 16
 
-# `make dev`, the build a person runs while working on krowk: release code
+# `make dev`, the build a person runs while working on gruntas: release code
 # without the LTO pass and the single codegen unit that make a release
 # rebuild take about a minute. An edit rebuilds in seconds. Nothing ships
 # with it; sizes and timings are the release profile's (`make bench`).
@@ -49,7 +49,7 @@ incremental = true
 strip = false
 
 # `make golden` under `make signoff`: the quick build in a directory of its
-# own, so a golden run neither replaces the `krowk` that `make dev` links nor
+# own, so a golden run neither replaces the `gruntas` that `make dev` links nor
 # relinks target/release. The cases compare output, and the quick build
 # writes the same output, two release links faster. full.yml holds the
 # release build to the cases after the merge (GOLDEN_PROFILE=release).

@@ -27,7 +27,7 @@ struct Sandbox {
 
 impl Sandbox {
     fn new(name: &str) -> Sandbox {
-        let root = std::env::temp_dir().join(format!("krowk-firstrun-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-firstrun-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
@@ -254,7 +254,7 @@ fn later_at_the_kit_is_not_asked_again_and_the_reminder_follows_while_there_is_o
 /// `gruntas login` afterwards runs the account step: signed in, and
 /// registered.
 #[test]
-fn using_krowk_locally_is_not_offered_again_and_krowk_login_runs_the_account_step() {
+fn using_gruntas_locally_is_not_offered_again_and_gruntas_login_runs_the_account_step() {
     let (r, api) = registry(Default::default());
     let b = Sandbox::new("locally");
     let mut t = wide(b.command(&api, &[]));
@@ -419,7 +419,7 @@ fn a_new_machine_with_no_host_online_says_so_and_keeps_the_join_owed() {
 /// then stopped or failed — is taken up by the next `gruntas`, even on a
 /// machine that can run a model by now.
 #[test]
-fn a_registration_left_owed_is_finished_by_the_next_krowk_and_any_other_answer_is_not_now() {
+fn a_registration_left_owed_is_finished_by_the_next_gruntas_and_any_other_answer_is_not_now() {
     let (_r, api) = registry(Default::default());
     let b = Sandbox::new("owed");
     let mut t = wide(b.command(&api, &[]));

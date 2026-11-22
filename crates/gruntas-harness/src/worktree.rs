@@ -1095,7 +1095,7 @@ mod tests {
 
     /// `repo`, in `dir`.
     pub(super) fn repo_in(dir: &Path, name: &str) -> (PathBuf, PathBuf, PathBuf) {
-        let base = dir.join(format!("krowk-worktree-{name}-{}", std::process::id()));
+        let base = dir.join(format!("gruntas-worktree-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let main = base.join("main");
         std::fs::create_dir_all(&main).unwrap();
@@ -1318,7 +1318,7 @@ mod tests {
             eprintln!("git is not installed: skipping");
             return;
         }
-        let base = std::env::temp_dir().join(format!("krowk-worktree-none-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("gruntas-worktree-none-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("plain")).unwrap();
         // GIT_CEILING_DIRECTORIES is not ours to set: a temp dir inside a

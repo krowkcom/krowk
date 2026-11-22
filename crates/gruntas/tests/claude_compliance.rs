@@ -123,7 +123,7 @@ fn r_back_2_no_source_file_names_claudes_credentials_its_oauth_or_its_headers() 
     assert!(found.is_empty(), "R-BACK-2: gruntas never reads Claude's credentials, runs its OAuth or spoofs Claude Code:\n{}", found.join("\n"));
 
     // The check itself: a file that reads the path is caught.
-    let canary = std::env::temp_dir().join(format!("krowk-compliance-canary-{}", std::process::id()));
+    let canary = std::env::temp_dir().join(format!("gruntas-compliance-canary-{}", std::process::id()));
     std::fs::create_dir_all(&canary).unwrap();
     std::fs::write(canary.join("broken.rs"), ["let _ = std::fs::read(home.join(\"", ".claude/", ".credentials", ".json\"));"].concat()).unwrap();
     let caught = scan(std::slice::from_ref(&canary));
@@ -178,17 +178,17 @@ fn keychain_deps(lock: &str) -> Vec<String> {
 }
 
 #[test]
-fn r_back_2_no_crate_krowk_links_is_a_keychain_client() {
+fn r_back_2_no_crate_gruntas_links_is_a_keychain_client() {
     let lock = std::fs::read_to_string(workspace().join("Cargo.lock")).unwrap();
     let found = keychain_deps(&lock);
     assert!(found.is_empty(), "R-BACK-2: gruntas links a keychain or secret-store client: {found:?}");
     // The check itself: a keychain crate, or the Security binding used by
     // anything but the trust-store readers, is caught.
     let kr = ["key", "ring"].concat();
-    let broken = format!("[[package]]\nname = \"krowk\"\ndependencies = [\n \"{kr}\",\n]\n\n[[package]]\nname = \"{kr}\"\n");
+    let broken = format!("[[package]]\nname = \"gruntas\"\ndependencies = [\n \"{kr}\",\n]\n\n[[package]]\nname = \"{kr}\"\n");
     assert_eq!(keychain_deps(&broken).len(), 1);
     let sf = ["security", "-framework"].concat();
-    let misused = format!("[[package]]\nname = \"krowk\"\ndependencies = [\n \"{sf} 3.5.1\",\n]\n\n[[package]]\nname = \"{sf}\"\n");
+    let misused = format!("[[package]]\nname = \"gruntas\"\ndependencies = [\n \"{sf} 3.5.1\",\n]\n\n[[package]]\nname = \"{sf}\"\n");
     assert_eq!(keychain_deps(&misused).len(), 1, "the Security binding used directly");
     let fine = format!("[[package]]\nname = \"rustls-platform-verifier\"\ndependencies = [\n \"{sf}\",\n]\n\n[[package]]\nname = \"{sf}\"\n");
     assert!(keychain_deps(&fine).is_empty());
@@ -252,7 +252,7 @@ impl Drop for Tripwire {
 
 #[test]
 fn r_back_2_a_whole_claude_workflow_never_opens_claudes_credentials_or_a_keychain() {
-    let root = std::env::temp_dir().join(format!("krowk-compliance-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("gruntas-compliance-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     for d in ["home", "repo/.git", "bin", "cfg-work"] {
         std::fs::create_dir_all(root.join(d)).unwrap();

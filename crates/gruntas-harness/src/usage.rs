@@ -376,7 +376,7 @@ mod tests {
     }
 
     fn store(name: &str) -> (Usage, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("krowk-usage-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gruntas-usage-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         (Usage::in_home(&dir), dir)
     }

@@ -1,36 +1,36 @@
 $ gruntas push a.txt --jq '.data.artifacts[0].metadata'
 stdout:
-{"krowk.client":"krowk-cli/0.0.0-golden","krowk.vcs.dirty":false,"vcs.ref.head.name":"feature/golden","vcs.ref.head.revision":"16417386662110097498ce23a16d532b93b44963","vcs.repository.name":"krowkcom/golden","vcs.repository.url.full":"https://github.com/krowkcom/golden"}
+{"krowk.client":"gruntas-cli/0.0.0-golden","krowk.vcs.dirty":false,"vcs.ref.head.name":"feature/golden","vcs.ref.head.revision":"16417386662110097498ce23a16d532b93b44963","vcs.repository.name":"gruntas/golden","vcs.repository.url.full":"https://github.com/gruntas/golden"}
 exit: 0
 
 $ gruntas push a.txt --jq '.data.run.metadata'
 stdout:
-{"krowk.client":"krowk-cli/0.0.0-golden","krowk.vcs.dirty":false,"vcs.ref.head.name":"feature/golden","vcs.ref.head.revision":"16417386662110097498ce23a16d532b93b44963","vcs.repository.name":"krowkcom/golden","vcs.repository.url.full":"https://github.com/krowkcom/golden"}
+{"krowk.client":"gruntas-cli/0.0.0-golden","krowk.vcs.dirty":false,"vcs.ref.head.name":"feature/golden","vcs.ref.head.revision":"16417386662110097498ce23a16d532b93b44963","vcs.repository.name":"gruntas/golden","vcs.repository.url.full":"https://github.com/gruntas/golden"}
 exit: 0
 
 $ gruntas push a.txt --jq '.data.artifacts[0].metadata'
 stdout:
-{"krowk.client":"krowk-cli/0.0.0-golden","krowk.vcs.dirty":true,"vcs.ref.head.name":"feature/golden","vcs.ref.head.revision":"16417386662110097498ce23a16d532b93b44963","vcs.repository.name":"krowkcom/golden","vcs.repository.url.full":"https://github.com/krowkcom/golden"}
+{"krowk.client":"gruntas-cli/0.0.0-golden","krowk.vcs.dirty":true,"vcs.ref.head.name":"feature/golden","vcs.ref.head.revision":"16417386662110097498ce23a16d532b93b44963","vcs.repository.name":"gruntas/golden","vcs.repository.url.full":"https://github.com/gruntas/golden"}
 exit: 0
 
 $ gruntas push a.txt --jq '.data.artifacts[0].metadata'
 stdout:
-{"krowk.client":"krowk-cli/0.0.0-golden","krowk.vcs.dirty":true,"vcs.ref.head.name":"feature/golden","vcs.ref.head.revision":"16417386662110097498ce23a16d532b93b44963","vcs.repository.name":"sub/proj","vcs.repository.url.full":"https://gitlab.example.com/group/sub/proj"}
+{"krowk.client":"gruntas-cli/0.0.0-golden","krowk.vcs.dirty":true,"vcs.ref.head.name":"feature/golden","vcs.ref.head.revision":"16417386662110097498ce23a16d532b93b44963","vcs.repository.name":"sub/proj","vcs.repository.url.full":"https://gitlab.example.com/group/sub/proj"}
 exit: 0
 
 $ gruntas push a.txt --jq '.data.artifacts[0].metadata'
 stdout:
-{"krowk.client":"krowk-cli/0.0.0-golden","krowk.vcs.dirty":true,"vcs.ref.head.name":"feature/golden","vcs.ref.head.revision":"16417386662110097498ce23a16d532b93b44963","vcs.repository.name":"krowkcom/golden","vcs.repository.url.full":"https://github.com/krowkcom/golden"}
+{"krowk.client":"gruntas-cli/0.0.0-golden","krowk.vcs.dirty":true,"vcs.ref.head.name":"feature/golden","vcs.ref.head.revision":"16417386662110097498ce23a16d532b93b44963","vcs.repository.name":"gruntas/golden","vcs.repository.url.full":"https://github.com/gruntas/golden"}
 exit: 0
 
 $ gruntas push a.txt --jq '.data.artifacts[0].metadata'
 stdout:
-{"krowk.client":"krowk-cli/0.0.0-golden","krowk.vcs.dirty":true,"vcs.ref.head.revision":"16417386662110097498ce23a16d532b93b44963","vcs.repository.name":"krowkcom/golden","vcs.repository.url.full":"https://github.com/krowkcom/golden"}
+{"krowk.client":"gruntas-cli/0.0.0-golden","krowk.vcs.dirty":true,"vcs.ref.head.revision":"16417386662110097498ce23a16d532b93b44963","vcs.repository.name":"gruntas/golden","vcs.repository.url.full":"https://github.com/gruntas/golden"}
 exit: 0
 
 $ gruntas push a.txt --repo o/override --commit abc --agent codex --jq '.data.artifacts[0].metadata'
 stdout:
-{"krowk.client":"krowk-cli/0.0.0-golden","krowk.harness":"codex","krowk.vcs.dirty":true,"vcs.ref.head.revision":"abc","vcs.repository.name":"o/override"}
+{"krowk.client":"gruntas-cli/0.0.0-golden","krowk.harness":"codex","krowk.vcs.dirty":true,"vcs.ref.head.revision":"abc","vcs.repository.name":"o/override"}
 exit: 0
 
 $ @tty gruntas push a.txt
@@ -74,8 +74,8 @@ stdout:
     "message": "this build runs no model"
   },
   "context": {
-    "vcs.repository.name": "krowkcom/golden",
-    "vcs.repository.url.full": "https://github.com/krowkcom/golden",
+    "vcs.repository.name": "gruntas/golden",
+    "vcs.repository.url.full": "https://github.com/gruntas/golden",
     "vcs.ref.head.revision": "16417386662110097498ce23a16d532b93b44963",
     "krowk.vcs.dirty": true
   },

@@ -15,7 +15,7 @@ stdout:
         "run": {
           "slug": "<run_1>",
           "metadata": {
-            "krowk.client": "krowk-cli/0.0.0-golden"
+            "krowk.client": "gruntas-cli/0.0.0-golden"
           },
           "created_at": "<time>"
         },
@@ -39,7 +39,7 @@ stdout:
         },
         "created_at": "<time>",
         "metadata": {
-          "krowk.client": "krowk-cli/0.0.0-golden"
+          "krowk.client": "gruntas-cli/0.0.0-golden"
         }
       }
     ],
@@ -49,7 +49,7 @@ stdout:
       "started_at": "<time>",
       "finished_at": "<time>",
       "metadata": {
-        "krowk.client": "krowk-cli/0.0.0-golden"
+        "krowk.client": "gruntas-cli/0.0.0-golden"
       }
     }
   },
@@ -95,7 +95,7 @@ stdout:
         "run": {
           "slug": "<run_2>",
           "metadata": {
-            "krowk.client": "krowk-cli/0.0.0-golden"
+            "krowk.client": "gruntas-cli/0.0.0-golden"
           },
           "created_at": "<time>"
         },
@@ -119,7 +119,7 @@ stdout:
         },
         "created_at": "<time>",
         "metadata": {
-          "krowk.client": "krowk-cli/0.0.0-golden"
+          "krowk.client": "gruntas-cli/0.0.0-golden"
         }
       }
     ],
@@ -129,7 +129,7 @@ stdout:
       "started_at": "<time>",
       "finished_at": "<time>",
       "metadata": {
-        "krowk.client": "krowk-cli/0.0.0-golden"
+        "krowk.client": "gruntas-cli/0.0.0-golden"
       }
     }
   },
@@ -178,7 +178,7 @@ stdout:
             "vcs.repository.name": "o/r",
             "vcs.ref.head.revision": "abc123",
             "krowk.harness": "claude",
-            "krowk.client": "krowk-cli/0.0.0-golden",
+            "krowk.client": "gruntas-cli/0.0.0-golden",
             "vcs.change.id": "1",
             "vcs.change.title": "the work",
             "krowk.change.url": "https://github.com/o/r/pull/1",
@@ -212,7 +212,7 @@ stdout:
           "vcs.repository.name": "o/r",
           "vcs.ref.head.revision": "abc123",
           "krowk.harness": "claude",
-          "krowk.client": "krowk-cli/0.0.0-golden"
+          "krowk.client": "gruntas-cli/0.0.0-golden"
         }
       }
     ],
@@ -225,7 +225,7 @@ stdout:
         "vcs.repository.name": "o/r",
         "vcs.ref.head.revision": "abc123",
         "krowk.harness": "claude",
-        "krowk.client": "krowk-cli/0.0.0-golden",
+        "krowk.client": "gruntas-cli/0.0.0-golden",
         "vcs.change.id": "1",
         "vcs.change.title": "the work",
         "krowk.change.url": "https://github.com/o/r/pull/1",
@@ -303,7 +303,7 @@ stdout:
         "run": {
           "slug": "<run_4>",
           "metadata": {
-            "krowk.client": "krowk-cli/0.0.0-golden",
+            "krowk.client": "gruntas-cli/0.0.0-golden",
             "krowk.links": [
               {
                 "url": "https://example.com",
@@ -334,7 +334,7 @@ stdout:
         },
         "created_at": "<time>",
         "metadata": {
-          "krowk.client": "krowk-cli/0.0.0-golden"
+          "krowk.client": "gruntas-cli/0.0.0-golden"
         }
       }
     ],
@@ -344,7 +344,7 @@ stdout:
       "started_at": "<time>",
       "finished_at": "<time>",
       "metadata": {
-        "krowk.client": "krowk-cli/0.0.0-golden",
+        "krowk.client": "gruntas-cli/0.0.0-golden",
         "krowk.links": [
           {
             "url": "https://example.com",

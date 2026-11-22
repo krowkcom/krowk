@@ -147,7 +147,7 @@ struct Machine {
 
 impl World {
     fn new(name: &str) -> World {
-        let root = std::env::temp_dir().join(format!("krowk-sync-cli-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-sync-cli-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let registry = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
@@ -185,7 +185,7 @@ impl World {
         let repo = home.join("repo");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         std::fs::create_dir_all(home.join(".gruntas")).unwrap();
-        let run = PathBuf::from(format!("/tmp/krowk-sc-{}-{name}-{}", self.name, std::process::id()));
+        let run = PathBuf::from(format!("/tmp/gruntas-sc-{}-{name}-{}", self.name, std::process::id()));
         let _ = std::fs::remove_dir_all(&run);
         std::fs::create_dir_all(&run).unwrap();
         use std::os::unix::fs::PermissionsExt;
@@ -223,7 +223,7 @@ impl World {
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         std::fs::create_dir_all(home.join(".gruntas")).unwrap();
         std::fs::write(home.join(".gruntas/config.json"), "{}").unwrap();
-        let run = PathBuf::from(format!("/tmp/krowk-sc-{}-{name}-{}", self.name, std::process::id()));
+        let run = PathBuf::from(format!("/tmp/gruntas-sc-{}-{name}-{}", self.name, std::process::id()));
         let _ = std::fs::remove_dir_all(&run);
         std::fs::create_dir_all(&run).unwrap();
         use std::os::unix::fs::PermissionsExt;
@@ -863,7 +863,7 @@ fn r_net_1_with_tailscale_stopped_the_host_says_why_in_one_line_and_goes_by_the_
 /// keys, for a stand-in registry: keys that are not the registry's let no
 /// viewer onto the direct path, though the registry publishes its own.
 #[test]
-fn r_net_1_krowk_relay_ticket_keys_overrides_the_published_keys() {
+fn r_net_1_gruntas_relay_ticket_keys_overrides_the_published_keys() {
     let w = World::new("direct-override");
     let mut a = w.machine("a");
     let b = w.machine("b");
@@ -1088,7 +1088,7 @@ fn r_sync_3_the_daemon_syncs_nothing_the_policy_leaves_out() {
 /// online, with its instances and its trusted repository, and the text
 /// says so under A's line.
 #[test]
-fn r_host_3_krowk_hosts_shows_an_announced_host_online_with_no_tailscale() {
+fn r_host_3_gruntas_hosts_shows_an_announced_host_online_with_no_tailscale() {
     let w = World::new("announced");
     let mut a = w.machine("a");
     let b = w.machine("b");
@@ -1595,7 +1595,7 @@ fn all_build_slots(m: &Machine) -> Vec<gruntas_harness::slots::Slot> {
 /// capacity, repository and acceptance and, for the current repository,
 /// ready; `--json` carries the same; `gruntas machines` prints the same.
 #[test]
-fn alloc_03_krowk_machines_lists_each_machine_and_hosts_is_its_alias() {
+fn alloc_03_gruntas_machines_lists_each_machine_and_hosts_is_its_alias() {
     let w = World::new("machines");
     let (_a, b, _serve) = allocating(&w);
     let row = machines_row(&b, "a", |_| true);
@@ -1615,7 +1615,7 @@ fn alloc_03_krowk_machines_lists_each_machine_and_hosts_is_its_alias() {
 /// delegated, collected while it runs, and collected again once done, its
 /// file (the fake's `@touch`, empty) landed in B's working tree.
 #[test]
-fn alloc_08_krowk_mcp_delegates_collects_and_lands_the_result() {
+fn alloc_08_gruntas_mcp_delegates_collects_and_lands_the_result() {
     let w = World::new("delegate");
     let (_a, b, _serve) = allocating(&w);
     let mut mcp = Mcp::start(&b);
@@ -1649,7 +1649,7 @@ fn mid_work(m: &Machine) -> String {
 /// gruntas_machines is `gruntas machines --json`: the same machines with the
 /// same fields (their readings move, so the values are not compared).
 #[test]
-fn krowk_mcp_machines_lists_what_krowk_machines_json_does() {
+fn gruntas_mcp_machines_lists_what_gruntas_machines_json_does() {
     let w = World::new("mcp-machines");
     let (_a, b, _serve) = allocating(&w);
     let mut mcp = Mcp::start(&b);
@@ -1665,7 +1665,7 @@ fn krowk_mcp_machines_lists_what_krowk_machines_json_does() {
 /// lands its file in the working tree. (Pinned, since a loaded CI runner
 /// can be busy by the rules and so send an unpinned task away.)
 #[test]
-fn krowk_mcp_runs_a_task_pinned_here_in_a_worktree() {
+fn gruntas_mcp_runs_a_task_pinned_here_in_a_worktree() {
     let w = World::new("mcp-here");
     let (_a, b, _serve) = allocating(&w);
     std::fs::write(b.home.join(".gruntas/trusted.json"), serde_json::json!({"directories": [b.repo]}).to_string()).unwrap();
@@ -1685,7 +1685,7 @@ fn krowk_mcp_runs_a_task_pinned_here_in_a_worktree() {
 /// state, an unpushed commit and an uncommitted change included, and its
 /// file lands in B's working tree.
 #[test]
-fn alloc_10_with_this_machine_busy_krowk_mcp_runs_the_task_on_the_other() {
+fn alloc_10_with_this_machine_busy_gruntas_mcp_runs_the_task_on_the_other() {
     let w = World::new("ci-mcp");
     let (_a, b, _serve) = allocating(&w);
     mid_work(&b);

@@ -366,7 +366,7 @@ mod tests {
     /// A scratch directory outside `/tmp`, which the sandbox replaces with
     /// a private one.
     fn scratch(name: &str) -> PathBuf {
-        let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp").join(format!("krowk-setup-{name}-{}", std::process::id()));
+        let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp").join(format!("gruntas-setup-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d.canonicalize().unwrap()

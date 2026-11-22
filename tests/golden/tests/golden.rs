@@ -51,7 +51,7 @@
 //! from 2026-01-01, a minute later for each command and a millisecond later
 //! for each read within one), with GRUNTAS_API_URL on a port nothing listens on
 //! and every proxy variable pointing there too, so nothing on the machine — a
-//! key, a krowk.db, a harness transcript — leaks in, and no case reaches the
+//! key, a gruntas.db, a harness transcript — leaks in, and no case reaches the
 //! network (models.dev, GitHub) by accident.
 //!
 //! What is random or clock-bound is masked before comparing: slugs, tokens,

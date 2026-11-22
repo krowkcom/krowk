@@ -145,8 +145,8 @@ fn r_back_3_codex_config_and_the_instances_home_are_kept_like_git() {
 /// Ticket 10: a repository's agent definitions pick a subagent's model,
 /// prompt and tools, so the scope fences them below bypass.
 #[test]
-fn r_sub_5_krowk_agent_definitions_are_kept_like_git() {
-    let d = dir("krowk-guard");
+fn r_sub_5_gruntas_agent_definitions_are_kept_like_git() {
+    let d = dir("gruntas-guard");
     let scope = Scope::within(&d);
     for path in [".gruntas/agents/evil.md", ".GRUNTAS/agents/evil.md", "sub/.gruntas./agents/x.md", ".claude/agents/evil.md"] {
         let r = scope.edit_path(path);
@@ -163,19 +163,19 @@ fn r_sub_5_krowk_agent_definitions_are_kept_like_git() {
 /// reading as well as writing, and opened by no mode.
 #[cfg(unix)]
 #[test]
-fn krowks_home_is_secret_however_it_is_spelled_or_reached() {
+fn gruntas_home_is_secret_however_it_is_spelled_or_reached() {
     let d = dir("secret");
-    let home = d.join(".krowk-home");
+    let home = d.join(".gruntas-home");
     std::fs::create_dir_all(home.join("keys")).unwrap();
     std::os::unix::fs::symlink(&home, d.join("alias")).unwrap();
     let scope = Scope { secrets: vec![home.clone()], ..bypassed(&d) };
-    for p in [home.join("keys/k"), d.join(".krowk-home/../.krowk-home/keys"), d.join(".KROWK-HOME/keys"), d.join("alias/keys/k")] {
+    for p in [home.join("keys/k"), d.join(".gruntas-home/../.gruntas-home/keys"), d.join(".GRUNTAS-HOME/keys"), d.join("alias/keys/k")] {
         assert!(scope.secret(&p), "{}", p.display());
         for edit in [false, true] {
             assert!(matches!(scope.reach(&p, edit), Reach::Fenced(why) if why.contains("gruntas's home")), "{} (edit: {edit})", p.display());
         }
     }
-    assert!(!scope.secret(&d.join(".krowk-homework")) && !scope.secret(&d.join("a.txt")));
+    assert!(!scope.secret(&d.join(".gruntas-homework")) && !scope.secret(&d.join("a.txt")));
     assert!(!Scope::within(&d).secret(&home.join("keys")), "no secrets named, none kept");
     let _ = std::fs::remove_dir_all(d);
 }

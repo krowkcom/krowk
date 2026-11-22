@@ -52,7 +52,7 @@ pub struct Options {
     pub socket: PathBuf,
     /// None: never exit by itself.
     pub idle: Option<Duration>,
-    pub krowk_version: String,
+    pub gruntas_version: String,
     /// Where the WebSocket listener binds: a loopback address, or none for
     /// no listener (`ws`).
     pub websocket: Option<SocketAddr>,
@@ -97,7 +97,7 @@ pub struct TurnEvent {
 
 impl Default for Options {
     fn default() -> Options {
-        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), krowk_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP, lateness: None, kick: None, turns: None, bridged: None, introductions: None }
+        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), gruntas_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP, lateness: None, kick: None, turns: None, bridged: None, introductions: None }
     }
 }
 
@@ -315,7 +315,7 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         opts,
         wake: wake.clone(),
     }));
-    eprintln!("gruntas host {} listening on {} (pid {}, idle exit {})", state.borrow().opts.krowk_version, socket.display(), std::process::id(), idle.map_or("never".into(), |d| format!("{d:?}")));
+    eprintln!("gruntas host {} listening on {} (pid {}, idle exit {})", state.borrow().opts.gruntas_version, socket.display(), std::process::id(), idle.map_or("never".into(), |d| format!("{d:?}")));
     // The TLS configuration every engine shares, built off the thread
     // before any turn needs it, and never on it: an engine made here takes
     // what `warm` built, or fails with why there is none.
@@ -534,7 +534,7 @@ pub(super) fn welcome(state: &Shared, hello: Option<ClientFrame>, token: Option<
             let pid = std::process::id();
             return Err(refuse(
                 "protocol_mismatch",
-                format!("this gruntas speaks protocol {protocol_version}, and the host daemon (pid {pid}, gruntas {}) speaks {PROTOCOL_VERSION}", state.borrow().opts.krowk_version),
+                format!("this gruntas speaks protocol {protocol_version}, and the host daemon (pid {pid}, gruntas {}) speaks {PROTOCOL_VERSION}", state.borrow().opts.gruntas_version),
                 format!("stop the daemon with `kill {pid}` once its sessions are done — the next gruntas starts one of its own version"),
             ));
         }
@@ -544,7 +544,7 @@ pub(super) fn welcome(state: &Shared, hello: Option<ClientFrame>, token: Option<
     s.next_client += 1;
     let id = s.next_client;
     let outbox = Rc::new(Outbox::new(s.opts.caps));
-    outbox.push("", control(&ServerFrame::Welcome { protocol_version: PROTOCOL_VERSION, krowk_version: s.opts.krowk_version.clone(), pid: std::process::id(), epoch: s.epoch }));
+    outbox.push("", control(&ServerFrame::Welcome { protocol_version: PROTOCOL_VERSION, gruntas_version: s.opts.gruntas_version.clone(), pid: std::process::id(), epoch: s.epoch }));
     s.clients.insert(id, Client { outbox: outbox.clone(), cwd, answers, background, local: token.is_none() });
     s.wake.notify_one();
     Ok((id, outbox))
@@ -833,7 +833,7 @@ fn status(s: &State) -> HostStatus {
     hubs.sort_by_key(|(_, h)| std::cmp::Reverse(h.seen));
     HostStatus {
         pid: std::process::id(),
-        krowk_version: s.opts.krowk_version.clone(),
+        gruntas_version: s.opts.gruntas_version.clone(),
         protocol_version: PROTOCOL_VERSION,
         socket: s.opts.socket.display().to_string(),
         uptime_ms: s.started.elapsed().as_millis() as u64,

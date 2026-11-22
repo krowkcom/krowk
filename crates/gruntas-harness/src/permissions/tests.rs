@@ -2,7 +2,7 @@ use super::*;
 use serde_json::json;
 
 fn repo(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("krowk-perm-{name}-{}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("gruntas-perm-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(d.join(".git")).unwrap();
     std::fs::create_dir_all(d.join("src")).unwrap();
@@ -59,7 +59,7 @@ fn r_perm_1_the_rule_matrix_covers_every_mode_against_allow_ask_and_deny() {
         ("read inside", read(inside.clone()), "Read(src/**)", ["YYYY", "YYYY", "????", "NNNN"]),
         ("read outside", read(outside.clone()), "Read(//etc/**)", ["???Y", "YYYY", "????", "NNNN"]),
         ("edit inside", edit(inside.clone()), "Edit(src/**)", ["?YNY", "YYNY", "??N?", "NNNN"]),
-        ("edit outside", edit(PathBuf::from("/tmp/krowk-matrix-x")), "Edit(//tmp/**)", ["??NY", "YYNY", "??N?", "NNNN"]),
+        ("edit outside", edit(PathBuf::from("/tmp/gruntas-matrix-x")), "Edit(//tmp/**)", ["??NY", "YYNY", "??N?", "NNNN"]),
         ("bash", bash("npm test"), "Bash(npm test)", ["??NY", "YYNY", "??N?", "NNNN"]),
         ("fetch", Call { tool: "WebFetch".into(), access: Access::Fetch("https://docs.rs/x".into()), subject: None }, "WebFetch(domain:docs.rs)", ["???Y", "YYYY", "????", "NNNN"]),
         ("mcp", Call { tool: "mcp__gh__issue".into(), access: Access::Mcp { server: "gh".into(), tool: "issue".into() }, subject: None }, "Mcp(gh:issue)", ["??NY", "YYNY", "??N?", "NNNN"]),
@@ -233,8 +233,8 @@ fn r_perm_1_the_fenced_directories_are_asked_about_and_no_rule_opens_them() {
     }
     assert_eq!(letter(&gate(&p, PermissionMode::BypassPermissions).verdict(&edit(d.join(".claude/settings.json")))), 'Y');
     let mut protected = policy(&d, &[(Kind::Allow, "Edit")]);
-    protected.protected.push(PathBuf::from("/home/someone/.krowk"));
-    assert_eq!(letter(&gate(&protected, PermissionMode::AcceptEdits).verdict(&edit(PathBuf::from("/home/someone/.krowk/config.json")))), '?', "gruntas's own config directory, wherever it is");
+    protected.protected.push(PathBuf::from("/home/someone/.gruntas"));
+    assert_eq!(letter(&gate(&protected, PermissionMode::AcceptEdits).verdict(&edit(PathBuf::from("/home/someone/.gruntas/config.json")))), '?', "gruntas's own config directory, wherever it is");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -336,7 +336,7 @@ async fn questions_go_out_as_an_approval_request_and_come_back_answered_declined
 #[tokio::test(flavor = "current_thread")]
 async fn r_perm_2_an_asked_call_is_an_approval_request_any_client_answers_and_grants_are_remembered() {
     let d = repo("approve");
-    let gruntas = d.join("krowk-config");
+    let gruntas = d.join("gruntas-config");
     let approvals = Approvals::default();
     let grants = SessionGrants::default();
     let file = gruntas.join(settings::GRANTS_FILE);
@@ -391,7 +391,7 @@ async fn r_perm_2_an_asked_call_is_an_approval_request_any_client_answers_and_gr
     g2.check(&bash("cargo test"), "bash", &json!({}), &tx, &cancel).await.unwrap();
     let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
     assert_eq!(saved["projects"][d.display().to_string()]["allow"], json!(["Bash(cargo test)"]));
-    let cfg = Config { krowk_dir: Some(gruntas.clone()), ..Config::default() };
+    let cfg = Config { gruntas_dir: Some(gruntas.clone()), ..Config::default() };
     let next = Policy::load(&cfg, &d).unwrap();
     assert_eq!(letter(&gate(&next, PermissionMode::Default).verdict(&bash("cargo test"))), 'Y', "the next session has it");
     #[cfg(unix)]
@@ -454,7 +454,7 @@ fn r_perm_1_publish_is_held_to_what_an_edit_is_and_a_read_deny_keeps_a_file_from
 }
 
 #[test]
-fn r_perm_1_a_line_krowk_cannot_read_is_asked_about_where_a_bash_deny_applies_even_in_bypass() {
+fn r_perm_1_a_line_gruntas_cannot_read_is_asked_about_where_a_bash_deny_applies_even_in_bypass() {
     let d = repo("opaque");
     let p = policy(&d, &[(Kind::Deny, "Bash(rm:*)")]);
     for cmd in ["$(printf rm) -rf x", "r{m,} -rf x", "$'\\cA'; rm x", "echo 'open"] {
@@ -488,7 +488,7 @@ fn r_perm_2_a_remembered_read_is_the_file_read_and_a_directory_only_when_one_was
 #[test]
 fn r_perm_2_project_grants_made_at_once_all_survive() {
     let d = repo("grant-race");
-    let file = d.join("krowk/permissions.json");
+    let file = d.join("gruntas/permissions.json");
     let threads: Vec<_> = (0..16)
         .map(|i| {
             let (file, d) = (file.clone(), d.clone());
@@ -531,11 +531,11 @@ fn r_perm_2_a_path_with_glob_characters_is_allowed_once_never_remembered() {
     // Were one written by hand, it would not cover its sibling …
     std::fs::write(d.join("src/a1.rs"), "").unwrap();
     // … and a rule that would not load is never written at all.
-    let file = d.join("krowk/permissions.json");
+    let file = d.join("gruntas/permissions.json");
     settings::remember(&file, &d, &["Bash(ok)".into()]).unwrap();
     let bad = format!("Read(/{}/src/b{{c.rs)", d.display());
     assert!(settings::remember(&file, &d, &[bad]).unwrap_err().contains("was not remembered"));
-    let cfg = Config { krowk_dir: Some(d.join("krowk")), ..Config::default() };
+    let cfg = Config { gruntas_dir: Some(d.join("gruntas")), ..Config::default() };
     let p = Policy::load(&cfg, &d).expect("later prompts still load their settings");
     assert_eq!(letter(&gate(&p, PermissionMode::Default).verdict(&bash("ok"))), 'Y');
     let exact = rules::parse(&format!("Read(/{}/src/a[1].rs)", d.display()), "hand", &d).unwrap();
@@ -570,7 +570,7 @@ async fn r_perm_2_allowing_a_glob_named_file_for_the_session_does_not_cover_its_
 }
 
 #[test]
-fn r_sub_1_krowks_session_tools_need_no_mode_but_deny_and_ask_rules_hold_them() {
+fn r_sub_1_gruntas_session_tools_need_no_mode_but_deny_and_ask_rules_hold_them() {
     let cwd = repo("session-tools");
     let task = |agent: &str| Call { tool: "Task".into(), access: Access::Session, subject: Some(agent.into()) };
     let todo = Call { tool: "TodoWrite".into(), access: Access::Session, subject: None };
@@ -612,7 +612,7 @@ fn claude_settings(dir: &Path, deny: &str) {
 }
 
 #[test]
-fn r_perm_1_a_default_mode_krowk_does_not_run_is_read_as_default_with_a_notice() {
+fn r_perm_1_a_default_mode_gruntas_does_not_run_is_read_as_default_with_a_notice() {
     let d = repo("auto-user");
     let claude = d.join("home/.claude");
     claude_settings(&claude, "Read(.env)");
@@ -663,7 +663,7 @@ fn r_perm_1_an_unknown_default_mode_in_a_repository_counts_only_once_trusted() {
 }
 
 #[test]
-fn r_perm_1_a_mode_krowk_does_not_run_other_than_auto_narrows_to_default() {
+fn r_perm_1_a_mode_gruntas_does_not_run_other_than_auto_narrows_to_default() {
     // `dontAsk` is Claude Code's deny-by-default: stricter, so it must not
     // leave an earlier, looser mode standing.
     let d = repo("dont-ask");
@@ -718,7 +718,7 @@ fn r_perm_1_a_default_mode_that_is_not_a_string_is_read_as_default_with_a_notice
 /// for every turn: a deny rule added since holds at once.
 #[test]
 fn a_rereading_config_holds_a_deny_rule_added_after_it_was_made() {
-    let dir = std::env::temp_dir().join(format!("krowk-reread-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("gruntas-reread-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("config.json");
@@ -743,7 +743,7 @@ fn wt3_the_repositorys_rules_hold_in_a_worktree_where_they_hold_in_the_checkout(
     let d = repo("in-worktree");
     let sub = d.join("sub");
     std::fs::create_dir_all(&sub).unwrap();
-    let top = std::env::temp_dir().join(format!("krowk-perm-wt-{}", std::process::id()));
+    let top = std::env::temp_dir().join(format!("gruntas-perm-wt-{}", std::process::id()));
     let mut p = Policy::modes_only(&sub);
     assert_eq!(p.loaded.root, d);
     p.loaded.rules = ["Edit(/.github/workflows/**)", "Read(/.env)", "Edit(notes/**)"].iter().map(|t| (Kind::Deny, rules::parse(t, "project settings", &d).unwrap())).collect();

@@ -43,7 +43,7 @@ struct Home {
 impl Home {
     fn new(name: &str) -> Home {
         let guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let root = std::env::temp_dir().join(format!("krowk-claude-backend-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-claude-backend-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
@@ -116,7 +116,7 @@ impl Home {
             sessions_dir: log::sessions_dir(&self.env()).unwrap(),
             cwd: self.root.join("repo"),
             registry: Registry::resolve(&cfg, &self.env()),
-            krowk_version: "test".into(),
+            gruntas_version: "test".into(),
             pricer: Arc::new(|_, _, _| None),
             catalog: Arc::new(|_, _| None),
             credentials: self.root.join("home/.gruntas/credentials.json"),
@@ -184,7 +184,7 @@ fn processes(fake_log: &str) -> usize {
 }
 
 #[test]
-fn r_back_1_a_session_runs_on_one_claude_process_calls_krowks_tool_and_is_denied_bash() {
+fn r_back_1_a_session_runs_on_one_claude_process_calls_gruntas_tool_and_is_denied_bash() {
     let home = Home::new("session");
     let dir = home.signed_in("cfg-work");
     let host = home.host(vec![("claude:work", home.instance(&dir, Some("session_info.jsonl")))], trust::allow_all());
@@ -261,14 +261,14 @@ fn r_back_1_a_session_runs_on_one_claude_process_calls_krowks_tool_and_is_denied
 }
 
 #[test]
-fn a_gh_post_with_a_bare_card_link_is_denied_by_krowks_hook_in_every_mode() {
+fn a_gh_post_with_a_bare_card_link_is_denied_by_gruntas_hook_in_every_mode() {
     for mode in [PermissionMode::Default, PermissionMode::BypassPermissions, PermissionMode::Unhinged] {
         let home = Home::new("paste-guard");
         let dir = home.signed_in("cfg");
         let host = home.host(vec![("claude", home.instance(&dir, Some("paste_guard.jsonl")))], trust::allow_all());
         let lines = rt().block_on(async {
             let (lines, r) = run(&host, prompt(None, "post the result", "claude/sonnet", mode)).await;
-            assert_eq!(r.unwrap().unwrap().result, "Posted the krowk block.", "{mode:?}");
+            assert_eq!(r.unwrap().unwrap().result, "Posted the gruntas block.", "{mode:?}");
             host.shutdown().await;
             lines
         });
@@ -277,7 +277,7 @@ fn a_gh_post_with_a_bare_card_link_is_denied_by_krowks_hook_in_every_mode() {
         assert!(refused.contains("bare gruntas card link") && refused.contains("gruntas block"), "{mode:?}: the model reads why: {refused}");
         let fake = home.fake_log();
         let init = fake.lines().find(|l| l.starts_with("in ") && l.contains(r#""subtype":"initialize""#)).unwrap();
-        assert!(init.contains(r#""hooks":{"PreToolUse":[{"matcher":"Bash|EnterWorktree|Agent|Task","hookCallbackIds":["krowk_paste_guard"]}]}"#), "registered on every process: {init}");
+        assert!(init.contains(r#""hooks":{"PreToolUse":[{"matcher":"Bash|EnterWorktree|Agent|Task","hookCallbackIds":["gruntas_paste_guard"]}]}"#), "registered on every process: {init}");
         // R-SUB-7: an agent's own text reaches the stream, for its child session.
         assert!(init.contains(r#""forwardSubagentText":true"#), "{init}");
     }
@@ -489,7 +489,7 @@ fn grandchild(fake_log: &str) -> i32 {
 }
 
 #[test]
-fn r_back_1_claude_runs_in_krowks_mode_and_a_looser_one_is_stopped_before_it_runs_anything() {
+fn r_back_1_claude_runs_in_gruntas_mode_and_a_looser_one_is_stopped_before_it_runs_anything() {
     let home = Home::new("mode");
     let dir = home.signed_in("cfg");
     // A settings file made Claude Code come up in acceptEdits.
@@ -649,7 +649,7 @@ fn r_inst_1_a_router_instance_gets_its_key_from_the_variable_it_names() {
 /// the host's publisher for the gruntas session, in its working directory —
 /// the run it opens logged once, like a native session's.
 #[test]
-fn r_evid_1_claude_code_publishes_through_krowks_bridge() {
+fn r_evid_1_claude_code_publishes_through_gruntas_bridge() {
     let home = Home::new("publish");
     let dir = home.signed_in("cfg-work");
     let asked: Arc<std::sync::Mutex<Vec<gruntas_harness::evidence::PublishRequest>>> = Arc::default();
@@ -726,7 +726,7 @@ fn mcp_turn(name: &str, scenario: &str, mode: PermissionMode, extra: serde_json:
 /// image block; a deny rule holds, and a call nobody was asked about is
 /// refused even when Claude Code never asked.
 #[test]
-fn claude_code_reaches_krowks_mcp_servers_through_the_bridge_and_krowks_rules_hold() {
+fn claude_code_reaches_gruntas_mcp_servers_through_the_bridge_and_gruntas_rules_hold() {
     let (out, server, fake, kept) = mcp_turn("mcp-allowed", "mcp_call.jsonl", PermissionMode::Default, serde_json::json!({"permissions": {"allow": ["Mcp(fake:echo)"]}}));
     assert_eq!(out, "echo: hi\n[image #1]", "the server's answer is the tool result");
     assert_eq!(kept, 1, "the image is kept and named on the result");
@@ -1294,7 +1294,7 @@ fn r_steer_1_a_steer_during_a_tool_call_is_logged_where_claude_code_replayed_it_
 /// `result`; the gruntas turn reads on into it and completes with the steer
 /// read, logged where it was replayed.
 #[test]
-fn r_steer_1_a_steer_during_the_last_answer_is_read_in_a_second_claude_code_turn_inside_the_krowk_turn() {
+fn r_steer_1_a_steer_during_the_last_answer_is_read_in_a_second_claude_code_turn_inside_the_gruntas_turn() {
     let home = Home::new("steer-late");
     let dir = home.signed_in("cfg");
     let scenario = home.scenario_from("steer_late.txt");

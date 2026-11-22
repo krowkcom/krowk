@@ -1,5 +1,5 @@
 //! R-MCP-10, R-MCP-11, R-MCP-12: calls carry the stored bearer, an expired
-//! token or a 401 refreshes once (rotating refresh tokens, two krowks at
+//! token or a 401 refreshes once (rotating refresh tokens, two gruntas processes at
 //! once), and a server without a usable sign-in answers with the exact
 //! tool error.
 
@@ -110,7 +110,7 @@ async fn r_mcp_10_a_call_carries_the_bearer_and_an_expired_token_or_a_401_refres
 }
 
 #[tokio::test]
-async fn r_mcp_10_two_krowks_refreshing_a_rotating_token_at_once_both_end_with_a_valid_one() {
+async fn r_mcp_10_two_gruntas_refreshing_a_rotating_token_at_once_both_end_with_a_valid_one() {
     let f = fake();
     let path = sign_in(&f, "race", Some(1));
     let ((p1, a), (p2, b)) = (open(&f, &path).await, open(&f, &path).await);

@@ -559,7 +559,7 @@ mod tests {
     /// file), then the standalone app's ipnport and token file.
     #[test]
     fn macos_discovery_finds_the_daemon_then_the_app_store_app_then_the_standalone_app() {
-        let root = std::env::temp_dir().join(format!("krowk-ts-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-ts-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (containers, macsys) = (root.join("home/Library/Group Containers"), root.join("Library/Tailscale"));
         std::fs::create_dir_all(&macsys).unwrap();

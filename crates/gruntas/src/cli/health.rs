@@ -330,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn the_account_line_passes_signed_in_and_fails_signed_out_with_krowk_login() {
+    fn the_account_line_passes_signed_in_and_fails_signed_out_with_gruntas_login() {
         let ok = Lookup::Ok { email: "you@example.com".into(), workspace: "ws_1".into() };
         let pass = account(true, false, &ok);
         assert_eq!((pass.status, pass.message.as_str(), pass.fix), (Status::Pass, "Signed in as you@example.com", None));
@@ -345,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn the_machine_line_passes_when_registered_and_fails_otherwise_with_krowk_login() {
+    fn the_machine_line_passes_when_registered_and_fails_otherwise_with_gruntas_login() {
         let pass = registered(true, &registered_machine("desk", 1, false));
         assert_eq!((pass.status, pass.message.as_str()), (Status::Pass, "This machine is registered as 'desk'"));
         for m in [Machine::NotRegistered, Machine::Removed, Machine::Unreadable] {
@@ -390,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn the_plan_line_warns_over_the_limit_with_krowk_billing() {
+    fn the_plan_line_warns_over_the_limit_with_gruntas_billing() {
         let pass = plan(Some("free"), &registered_machine("a", 2, true));
         assert_eq!((pass.status, pass.message.as_str()), (Status::Pass, "Free plan: 2 of 2 machines"));
         let over = plan(Some("free"), &registered_machine("a", 3, true));

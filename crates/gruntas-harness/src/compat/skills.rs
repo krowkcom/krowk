@@ -58,7 +58,7 @@ fn read_dir_of(root: &Path, out: &mut Vec<Skill>, repo: Option<&Path>) {
 /// Every skill that applies in `cwd`.
 pub fn discover(cfg: &Config, cwd: &Path) -> Vec<Skill> {
     let mut out = Vec::new();
-    if let Some(d) = &cfg.krowk_dir {
+    if let Some(d) = &cfg.gruntas_dir {
         read_dir_of(&d.join("skills"), &mut out, None);
     }
     if let Some(h) = &cfg.home {
@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn r_compat_1_skills_are_read_from_agents_and_claude_directories_and_slash_loads_one() {
-        let base = std::env::temp_dir().join(format!("krowk-skills-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("gruntas-skills-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         // Canonical, as the repository root is found: macOS's temporary
         // directory is a symlink into /private.

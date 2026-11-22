@@ -40,7 +40,7 @@ pub struct Client {
     next: AtomicU64,
     /// The daemon's pid and version, from its welcome.
     pub pid: u32,
-    pub krowk_version: String,
+    pub gruntas_version: String,
     /// The protocol version the daemon announced in its welcome.
     pub protocol_version: u32,
     /// The daemon run its `seq`s are numbered within (`welcome.epoch`).
@@ -205,7 +205,7 @@ impl Client {
     pub async fn connect_as(path: &Path, cwd: &Path, version: &str, answers: bool, background: bool) -> Result<Client, ConnectError> {
         let stream = UnixStream::connect(path).await.map_err(|e| if absent(&e) { ConnectError::Absent } else { ConnectError::Failed(EngineError::new("host_unavailable", format!("{} cannot be reached: {e}", path.display()))) })?;
         let (r, mut w) = stream.into_split();
-        let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: cwd.display().to_string(), krowk_version: version.to_string(), answers_approvals: answers, token: None, background };
+        let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: cwd.display().to_string(), gruntas_version: version.to_string(), answers_approvals: answers, token: None, background };
         let fail = |e: std::io::Error| ConnectError::Failed(EngineError::new("host_unavailable", format!("{} did not answer: {e}", path.display())));
         w.write_all((serde_json::to_string(&hello).expect("a frame serializes") + "\n").as_bytes()).await.map_err(fail)?;
         let mut lines = BufReader::new(r).lines();
@@ -216,8 +216,8 @@ impl Client {
             Ok(Err(e)) => return Err(fail(e)),
             Err(_) => return Err(ConnectError::Failed(EngineError::new("host_unavailable", format!("the host daemon on {} did not answer in {} s", path.display(), HELLO_WAIT.as_secs())))),
         };
-        let (pid, krowk_version, epoch, protocol_version) = match serde_json::from_str::<ServerFrame>(&first) {
-            Ok(ServerFrame::Welcome { pid, krowk_version, epoch, protocol_version }) => (pid, krowk_version, epoch, protocol_version),
+        let (pid, gruntas_version, epoch, protocol_version) = match serde_json::from_str::<ServerFrame>(&first) {
+            Ok(ServerFrame::Welcome { pid, gruntas_version, epoch, protocol_version }) => (pid, gruntas_version, epoch, protocol_version),
             Ok(ServerFrame::Refused { code, message, fix }) => return Err(ConnectError::Failed(EngineError::new(&code, format!("{message} — {fix}")))),
             _ => return Err(ConnectError::Failed(EngineError::new("host_unavailable", format!("{} answered with something that is not a welcome", path.display())))),
         };
@@ -310,7 +310,7 @@ impl Client {
                 i.waiting.clear();
             });
         }
-        Ok(Client { tx, inner, next: AtomicU64::new(1), pid, krowk_version, protocol_version, epoch, lines: lines_tx })
+        Ok(Client { tx, inner, next: AtomicU64::new(1), pid, gruntas_version, protocol_version, epoch, lines: lines_tx })
     }
 
     /// Frames of a followed session that arrive while no turn of this

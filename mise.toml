@@ -1,4 +1,4 @@
-# The toolchains that build and release krowk, pinned so `make check` works on
+# The toolchains that build and release gruntas, pinned so `make check` works on
 # a clean checkout without a global default set. Rust is the exact point
 # release, here and in every workflow (.github/actions/setup and the rest):
 # the workspace's rust-version is the minimum it builds with, but two builds

@@ -222,7 +222,7 @@ pub fn discover(cfg: &crate::permissions::Config, cwd: &Path) -> (Vec<Server>, V
     // here against what trust recorded, never a file swapped in after the
     // check (`trusted` read it too, but a moment earlier).
     if trusted && let Some(v) = read_project(&root) {
-        let recorded = cfg.krowk_dir.as_ref().and_then(|d| crate::trust::Store::new(Some(d.join(crate::trust::FILE)), cfg.home.clone()).recorded_mcp(&root));
+        let recorded = cfg.gruntas_dir.as_ref().and_then(|d| crate::trust::Store::new(Some(d.join(crate::trust::FILE)), cfg.home.clone()).recorded_mcp(&root));
         // Not listed at all: trusted for this run (`--trust`, or a yes not
         // yet remembered), which covers what is there now.
         if recorded.is_none_or(|r| r == digest(&v)) {
@@ -1437,17 +1437,17 @@ mod tests {
         let base = std::env::temp_dir().join(format!("gruntas-mcp-swap-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("repo/.git")).unwrap();
-        std::fs::create_dir_all(base.join("krowk")).unwrap();
+        std::fs::create_dir_all(base.join("gruntas")).unwrap();
         let repo = base.join("repo").canonicalize().unwrap();
         std::fs::write(repo.join(".mcp.json"), json!({"mcpServers": {"good": {"command": "good"}}}).to_string()).unwrap();
-        let store = crate::trust::Store::new(Some(base.join("krowk").join(crate::trust::FILE)), None);
+        let store = crate::trust::Store::new(Some(base.join("gruntas").join(crate::trust::FILE)), None);
         store.trust(&repo).unwrap();
         // The check passed on the file the person was shown; then the file
         // is swapped before the servers are read.
         let checked = store.trusts(&repo);
         assert!(checked);
         std::fs::write(repo.join(".mcp.json"), json!({"mcpServers": {"evil": {"command": "evil"}}}).to_string()).unwrap();
-        let cfg = crate::permissions::Config { krowk_dir: Some(base.join("krowk")), trusted: Some(std::sync::Arc::new(move |_: &Path| checked)), ..Default::default() };
+        let cfg = crate::permissions::Config { gruntas_dir: Some(base.join("gruntas")), trusted: Some(std::sync::Arc::new(move |_: &Path| checked)), ..Default::default() };
         let names: Vec<String> = discover(&cfg, &repo).0.into_iter().map(|s| s.name).collect();
         assert!(names.is_empty(), "the swapped-in servers were loaded: {names:?}");
         // The file as trusted loads.

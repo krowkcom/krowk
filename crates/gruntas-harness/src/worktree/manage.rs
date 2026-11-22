@@ -709,8 +709,8 @@ fn prune_repo(repo: &Repo, now: SystemTime, done: &mut Pruned) -> Result<(), Err
     // session holds: on its `gruntas/<hex>` branch, or locked by gruntas.
     for (hex, e) in ours(repo, &entries(common)?) {
         let gone = repo.dir.join(&hex).symlink_metadata().is_err();
-        let krowks = e.branch.as_deref() == Some(&format!("{BRANCH_PREFIX}{hex}")) || e.locked.as_deref().is_some_and(|r| r.starts_with(LOCK_REASON));
-        if !gone || !krowks || live(&repo.dir, &hex) {
+        let ours = e.branch.as_deref() == Some(&format!("{BRANCH_PREFIX}{hex}")) || e.locked.as_deref().is_some_and(|r| r.starts_with(LOCK_REASON));
+        if !gone || !ours || live(&repo.dir, &hex) {
             continue;
         }
         match keep_head(common, &hex, e.head.as_deref()).and_then(|_| unregister(common, &e.path)) {
@@ -815,7 +815,7 @@ pub fn prune_daily(root: PathBuf) {
 
 /// `prune`, when the time in `<root>/.pruned` is a day or more before
 /// `now`, or there is none; that time set to `now` first, under a lock on
-/// the file, so krowks starting at once prune once. Nothing when the root does not exist: no
+/// the file, so gruntas processes starting at once prune once. Nothing when the root does not exist: no
 /// worktree was ever made.
 pub fn prune_if_due(root: &Path, now: SystemTime) -> Option<Pruned> {
     if !root.symlink_metadata().is_ok_and(|m| m.is_dir()) {

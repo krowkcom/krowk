@@ -198,11 +198,17 @@ fn harness_of(way: &MethodInfo) -> Option<&'static str> {
     (way.method == Method::ApiKey).then_some(if way.vendor == Vendor::Anthropic { "claude-code" } else { "codex-app-server" })
 }
 
+/// What the id of a Codex model provider made from a key starts with
+/// (`krowk-xai`). Historical: accounts written before the rename carry it in
+/// their args, so it keeps the old name (the gruntas crate's
+/// `historical_names` test pins it).
+pub const PROVIDER_PREFIX: &str = "krowk-";
+
 /// The vendor whose model provider a Codex account's args name
 /// (`model_provider="krowk-xai"`): one made from a key.
 fn codex_provider(args: &[String]) -> Option<Vendor> {
     // The last one: the one Codex applies.
-    args.iter().rev().find_map(|a| a.strip_prefix("model_provider="))?.trim_matches('"').strip_prefix("krowk-").and_then(Vendor::parse)
+    args.iter().rev().find_map(|a| a.strip_prefix("model_provider="))?.trim_matches('"').strip_prefix(PROVIDER_PREFIX).and_then(Vendor::parse)
 }
 
 /// The way an instance was connected: an Anthropic key's Claude Code
@@ -255,7 +261,7 @@ fn to_harness(native: &InstanceKind, r: &Resolved, dir: String, stores: bool) ->
         InstanceKind::OpenaiCompatible { effort, .. } => (Vendor::OpenaiCompatible, r.name.as_str(), effort),
         _ => return None,
     };
-    let id = format!("krowk-{}", vendor.id());
+    let id = format!("{PROVIDER_PREFIX}{}", vendor.id());
     let q = |s: &str| serde_json::to_string(s).expect("a string serializes");
     // D3 as amended: the Responses API for every vendor — Codex refuses
     // `wire_api = "chat"`.
@@ -276,7 +282,7 @@ fn to_harness(native: &InstanceKind, r: &Resolved, dir: String, stores: bool) ->
 /// other definition.
 fn on_responses(def: &InstanceKind) -> Option<InstanceKind> {
     let InstanceKind::CodexAppServer { args, .. } = def else { return None };
-    let at = format!("model_providers.krowk-{}.wire_api=", codex_provider(args)?.id());
+    let at = format!("model_providers.{PROVIDER_PREFIX}{}.wire_api=", codex_provider(args)?.id());
     let chat = |a: &String| a.strip_prefix(at.as_str()).is_some_and(|w| w.trim_matches('"') == "chat");
     if !args.iter().any(chat) {
         return None;
@@ -302,7 +308,7 @@ fn native_of(def: &InstanceKind) -> Option<InstanceKind> {
         InstanceKind::CodexAppServer { args, api_key_env, effort, .. } => {
             let v = codex_provider(args)?;
             let field = |f: &str| {
-                let at = format!("model_providers.krowk-{}.{f}=", v.id());
+                let at = format!("model_providers.{PROVIDER_PREFIX}{}.{f}=", v.id());
                 args.iter().rev().find_map(|a| a.strip_prefix(at.as_str())).and_then(|s| serde_json::from_str::<String>(s).ok())
             };
             let (api_key_env, base_url, effort) = (api_key_env.clone(), field("base_url"), *effort);
@@ -2034,7 +2040,7 @@ mod tests {
     #[test]
     fn config_json_keeps_its_mode_but_nobody_else_may_write_it() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("krowk-write-config-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gruntas-write-config-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("config.json");
         let mode = || std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;

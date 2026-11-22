@@ -24,7 +24,7 @@ struct Home {
 
 impl Home {
     fn new(name: &str) -> Home {
-        let root = std::env::temp_dir().join(format!("krowk-readiness-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-readiness-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for d in ["home", "repo/.git", "bin", "cfg"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
@@ -66,7 +66,7 @@ impl Home {
             sessions_dir: log::sessions_dir(&self.env()).unwrap(),
             cwd,
             registry,
-            krowk_version: "test".into(),
+            gruntas_version: "test".into(),
             pricer: Arc::new(|_, _, _| None),
             catalog: Arc::new(|_, _| None),
             credentials: self.root.join("home/.gruntas/credentials.json"),

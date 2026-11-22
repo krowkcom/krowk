@@ -841,7 +841,7 @@ mod tests {
         fn new() -> Fixture {
             static N: AtomicUsize = AtomicUsize::new(0);
             let root = std::env::temp_dir().join(format!(
-                "krowk-claude-{}-{}",
+                "gruntas-claude-{}-{}",
                 std::process::id(),
                 N.fetch_add(1, Ordering::SeqCst)
             ));
@@ -1445,7 +1445,7 @@ mod tests {
 
     fn open_store(name: &str) -> (PathBuf, rusqlite::Connection) {
         let home =
-            std::env::temp_dir().join(format!("krowk-claude-store-{name}-{}", std::process::id()));
+            std::env::temp_dir().join(format!("gruntas-claude-store-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).unwrap();
         let h = home.display().to_string();
@@ -1555,7 +1555,7 @@ mod tests {
 
     #[test]
     fn each_message_names_its_turn_so_a_model_switch_prices_per_turn() {
-        let dir = std::env::temp_dir().join(format!("krowk-claude-turns-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gruntas-claude-turns-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let slug = dir.join("home/.claude/projects/-work");
         std::fs::create_dir_all(&slug).unwrap();

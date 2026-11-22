@@ -206,7 +206,7 @@ mod tests {
     use super::*;
 
     fn file(body: &str) -> (std::fs::File, std::path::PathBuf) {
-        let path = std::env::temp_dir().join(format!("krowk-jsonl-{}-{}", std::process::id(), body.len()));
+        let path = std::env::temp_dir().join(format!("gruntas-jsonl-{}-{}", std::process::id(), body.len()));
         std::fs::write(&path, body).unwrap();
         (std::fs::File::open(&path).unwrap(), path)
     }

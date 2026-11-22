@@ -478,7 +478,7 @@ pub fn limit_of(snapshot: &Value) -> Option<LimitStatus> {
 /// session.
 pub struct CodexEngine {
     instance: Resolved,
-    krowk_version: String,
+    gruntas_version: String,
     proc: tokio::sync::Mutex<Option<Proc>>,
     /// Where a stop of one child thread goes while a turn runs: its
     /// children live only that long.
@@ -519,11 +519,11 @@ async fn stop_answer(stopper: &Mutex<Option<mpsc::UnboundedSender<StopAsk>>>, th
 }
 
 impl CodexEngine {
-    pub fn new(instance: Resolved, krowk_version: &str) -> Result<CodexEngine, EngineError> {
+    pub fn new(instance: Resolved, gruntas_version: &str) -> Result<CodexEngine, EngineError> {
         if instance.backend.is_none() {
             return Err(EngineError::new("bad_config", format!("{} is not a Codex instance", instance.name)));
         }
-        Ok(CodexEngine { instance, krowk_version: krowk_version.into(), proc: tokio::sync::Mutex::new(None), stopper: Mutex::new(None) })
+        Ok(CodexEngine { instance, gruntas_version: gruntas_version.into(), proc: tokio::sync::Mutex::new(None), stopper: Mutex::new(None) })
     }
 
     fn backend(&self) -> &Backend {
@@ -549,7 +549,7 @@ impl Engine for CodexEngine {
                 turn_id: ctx.turn_id.clone(),
                 model: ctx.model.clone(),
                 cwd: ctx.cwd.clone(),
-                krowk_version: self.krowk_version.clone(),
+                gruntas_version: self.gruntas_version.clone(),
                 evidence: ctx.evidence.clone(),
                 gate: ctx.gate.protecting(self.backend().home.iter().chain(&self.backend().shared_home).cloned()),
             };
@@ -649,7 +649,7 @@ struct Answers {
     turn_id: String,
     model: ModelRef,
     cwd: PathBuf,
-    krowk_version: String,
+    gruntas_version: String,
     /// The turn's permissions, with the instance's home kept from edits too.
     gate: Gate,
     /// Where a bridged `publish` sends files.
@@ -788,7 +788,7 @@ impl Answers {
             model: &self.model,
             cwd: &self.cwd,
             backend: BACKEND,
-            krowk_version: &self.krowk_version,
+            gruntas_version: &self.gruntas_version,
             gate: &self.gate,
             cancel: asking.map(|(_, c)| c),
             evidence: self.evidence.as_ref().zip(asking.map(|(e, _)| e)),
@@ -1143,7 +1143,7 @@ impl Proc {
             });
         }
         let mut p = Proc { child, stdin, out, stderr, binary: b.binary.clone(), bypass, next: 0, exited: false, pid, group_done: false, billing: None, efforts: HashMap::new(), thread: None, transcript: None, kids: children::Children::default() };
-        p.request("initialize", initialize_params(&ask.krowk_version), ask, INITIALIZE_TIMEOUT).await?;
+        p.request("initialize", initialize_params(&ask.gruntas_version), ask, INITIALIZE_TIMEOUT).await?;
         p.notify("initialized").await?;
         // Signed in, and to what, asked before a thread exists for a turn
         // that could not run.
@@ -1594,13 +1594,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn r_back_3_the_process_is_app_server_on_stdio_in_krowks_mode() {
+    fn r_back_3_the_process_is_app_server_on_stdio_in_gruntas_mode() {
         assert_eq!(args(&["-c".into(), "model_provider=openrouter".into()]).join(" "), "app-server --listen stdio:// -c model_provider=openrouter");
         // The hook's command is this gruntas's path, quoted for the shell
         // Codex runs it in, inside a TOML string.
-        let command = paste_guard_command(Path::new("/opt/my tools/krowk (deleted)"));
-        assert_eq!(command, "'/opt/my tools/krowk' __paste-guard");
-        let entry = r#"{matcher="^Bash$",hooks=[{type="command",command="'/opt/my tools/krowk' __paste-guard"}]}"#;
+        let command = paste_guard_command(Path::new("/opt/my tools/gruntas (deleted)"));
+        assert_eq!(command, "'/opt/my tools/gruntas' __paste-guard");
+        let entry = r#"{matcher="^Bash$",hooks=[{type="command",command="'/opt/my tools/gruntas' __paste-guard"}]}"#;
         assert_eq!(with_paste_guard(vec!["-c".into(), "model=x".into()], &command), ["-c", "model=x", "-c", &format!("hooks.PreToolUse=[{entry}]")]);
         // The instance's own hooks are kept, the guard added beside them.
         let own = r#"hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type="command",command="/usr/bin/user-guard"}]}]"#;
@@ -1644,7 +1644,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn r_inst_1_an_accounts_home_shares_the_configuration_and_keeps_its_login() {
-        let base = std::env::temp_dir().join(format!("krowk-codex-share-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("gruntas-codex-share-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let (own, team) = (base.join("own"), base.join("team"));
         std::fs::create_dir_all(own.join("skills/lint")).unwrap();
@@ -1726,8 +1726,8 @@ mod tests {
     }
 
     #[test]
-    fn r_back_3_approvals_follow_krowks_modes() {
-        let cwd = std::env::temp_dir().join(format!("krowk-codex-approve-{}", std::process::id()));
+    fn r_back_3_approvals_follow_gruntas_modes() {
+        let cwd = std::env::temp_dir().join(format!("gruntas-codex-approve-{}", std::process::id()));
         std::fs::create_dir_all(&cwd).unwrap();
         let cwd = cwd.canonicalize().unwrap();
         let f = |p: &str| vec![cwd.join(p).display().to_string()];
@@ -1763,7 +1763,7 @@ mod tests {
         use crate::protocol::{ApprovalDecision, QuestionAnswer};
         let approvals = permissions::Approvals::default();
         let gate = Gate::new(permissions::Policy::modes_only(Path::new("/repo")), PermissionMode::Default, Default::default(), Some(approvals.clone()), None, "s-1", "t-1");
-        let ask = Answers { session_id: "s-1".into(), turn_id: "t-1".into(), model: ModelRef { instance: "codex:team".into(), model: "gpt-5.5".into() }, cwd: PathBuf::from("/repo"), krowk_version: "test".into(), gate, evidence: None };
+        let ask = Answers { session_id: "s-1".into(), turn_id: "t-1".into(), model: ModelRef { instance: "codex:team".into(), model: "gpt-5.5".into() }, cwd: PathBuf::from("/repo"), gruntas_version: "test".into(), gate, evidence: None };
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let (_c, cancel) = tokio::sync::watch::channel(false);
         tokio::spawn(async move {
@@ -1791,13 +1791,13 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn r_back_3_codex_requests_are_answered_and_krowks_tools_run_through_the_bridge() {
+    async fn r_back_3_codex_requests_are_answered_and_gruntas_tools_run_through_the_bridge() {
         let ask = Answers {
             session_id: "s-1".into(),
             turn_id: "t-1".into(),
             model: ModelRef { instance: "codex:team".into(), model: "gpt-5.5".into() },
             cwd: PathBuf::from("/repo"),
-            krowk_version: "test".into(),
+            gruntas_version: "test".into(),
             gate: Gate::modes_only(Path::new("/repo"), PermissionMode::Default),
             evidence: None,
         };

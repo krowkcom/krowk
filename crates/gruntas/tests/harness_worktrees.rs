@@ -17,7 +17,7 @@ struct Sandbox {
 
 impl Sandbox {
     fn new(name: &str) -> Sandbox {
-        let root = std::env::temp_dir().join(format!("krowk-worktrees-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-worktrees-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for d in ["home", "data", "repo"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
@@ -309,9 +309,9 @@ fn add_runs_no_setup_for_a_ref_on_neither_the_checkout_nor_origin() {
         return;
     }
     let b = Sandbox::new("add-foreign");
-    let krowk_home = b.root.join("home/.gruntas");
-    std::fs::create_dir_all(&krowk_home).unwrap();
-    std::fs::write(krowk_home.join("config.json"), r#"{ "worktrees": { "setup": "touch ran" } }"#).unwrap();
+    let gruntas_home = b.root.join("home/.gruntas");
+    std::fs::create_dir_all(&gruntas_home).unwrap();
+    std::fs::write(gruntas_home.join("config.json"), r#"{ "worktrees": { "setup": "touch ran" } }"#).unwrap();
     let first = git(&b.repo(), &["rev-parse", "HEAD"]);
     git(&b.repo(), &["switch", "-q", "-c", "theirs"]);
     git(&b.repo(), &["commit", "-q", "--allow-empty", "-m", "theirs"]);

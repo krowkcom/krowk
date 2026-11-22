@@ -1,0 +1,79 @@
+# What may still say krowk (scripts/name_sweep.sh, R-REN-13). An entry is
+#   <regex>                  taken out of every line it matches
+#   in <glob> :: <regex>     taken out of lines in matching files only
+#   file: <glob>             the whole file
+# A line passes when nothing spelled krowk is left once the entries are out.
+# Keep entries narrow and say why; never add one for a name a person or an
+# agent sees.
+
+# --- D9: never renamed; existing data, signatures and other machines depend
+# on these byte for byte (pinned in crates/gruntas/tests/historical_names.rs).
+krowk/[a-z-]+/v[0-9]+
+krowk mdns v1
+_krowk\._tcp
+(?i:x-krowk-)[A-Za-z-]+
+krowk_(sk|claim)_
+# The registry's share-link token, minted by the registry like krowk_sk_.
+krowk_share_
+in crates/gruntas/src/output/jq.rs :: krowk_\(\?:sk\|claim\)_
+# The krowk.* metadata fields the registry stores on runs and artifacts.
+krowk\.(client|caption|links|harness|session|vcs\.dirty|change\.url|references|engine)\b
+file: crates/gruntas/tests/historical_names.rs
+
+# --- Wire and stored names outside D9, kept for the same reason.
+# `krowkVersion` in session logs, the daemon protocol and their schemas.
+krowkVersion
+# The registry's own service name, which the dev registry mirrors.
+krowk-registry
+# Hand-off refs another machine fetches (refs/krowk/jobs/<base>).
+refs/krowk/jobs/
+# Codex model providers written into a person's accounts (`krowk-xai`, ...).
+in crates/gruntas-harness/src/connect.rs :: krowk-
+in crates/gruntas/tests/harness_connect.rs :: krowk-
+# D14: sessions and Codex threads stored under the old harness name are read
+# as gruntas.
+in crates/gruntas-client/src/protocol.rs :: alias = "krowk"
+in crates/gruntas-harness/src/codex/mod.rs :: "namespace": "krowk"
+in crates/gruntas-store/src/query.rs :: `krowk`|"krowk"
+in crates/gruntas-store/src/writer.rs :: "krowk"|reads krowk as
+in crates/gruntas/tests/sessions_vintage.rs :: \bkrowk\b
+in crates/gruntas/tests/sync_cli.rs :: "krowk"
+
+# --- Hosts: krowk.com stays until the domain move.
+(?i:([a-z0-9-]+\.)*krowk\.(com|localhost))
+krowkusercontent\.com
+
+# --- The old home: the first run copies ~/.krowk once (D5), and the copy
+# shares its keys, so it stays fenced; the old XDG layout is moved in once.
+file: crates/gruntas-api/src/migrate.rs
+file: crates/gruntas/tests/home_migration.rs
+in crates/gruntas-api/src/home.rs :: krowk's (own )?home \(`~/\.krowk`\)|an older krowk|\bkrowk\b(?=[\],])|let krowk =|migrate::(copy_krowk|krowk_home)|"/h/\.krowk"
+in crates/gruntas-harness/src/permissions/mod.rs :: the old `~/\.krowk`|let krowk =|migrate::krowk_home|\bkrowk\.iter
+in crates/gruntas/src/mcp.rs :: "\.krowk"|`~/\.krowk`
+in scripts/test_home.sh :: krowk's ~/\.krowk
+in tests/golden/cases/one-home/cmd :: \.(config|local/share|cache)/krowk\b
+# D7: a repository's old .krowk/ is not read, and not fenced.
+in crates/gruntas-harness/src/permissions/** :: \.krowk\b
+
+# --- The old release identity and install: the signature fixture verifies a
+# real krowk release (D10); the installer retires the old krowk skill.
+file: crates/gruntas/tests/fixtures/release-v0.13.0/*
+in crates/gruntas/src/cli/upgrade/sigstore.rs :: (krowkcom|someone)/krowk\b
+in SECURITY.md :: krowkcom/krowk|krowk_\*
+file: scripts/install.sh
+file: scripts/install_test.sh
+
+# --- History and docs published elsewhere.
+file: CHANGELOG.md
+file: docs/security/**
+krowkcom/krowk-apps
+in README.md :: Coming from krowk\?|a krowk binary|`~/\.krowk`|`krowk@krowk`
+# Recordings of real Claude Code runs, kept as recorded.
+file: crates/gruntas-harness/tests/fixtures/claude/recorded/*.txt
+
+# --- This sweep.
+file: scripts/name_sweep.*
+
+# --- Internal identifiers, rename later.
+# The phase-1 spot-check against the pre-home XDG layout.
+file: scripts/phase1_spotcheck.py

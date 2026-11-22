@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A stand-in MCP server on stdio for krowk's tests. It lists $FAKE_TOOLS
+# A stand-in MCP server on stdio for gruntas's tests. It lists $FAKE_TOOLS
 # tools (1 by default): `echo` first, then `tool_2`, `tool_3`, … filler.
 # `echo` answers with its `text` argument. Every message it reads is
 # appended to $FAKE_LOG, so a test can see what was — and was not — sent;

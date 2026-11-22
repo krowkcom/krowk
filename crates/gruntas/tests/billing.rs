@@ -25,7 +25,7 @@ fn billing(home: &std::path::Path, api: &str, token: &str, format: &str) -> Outp
 #[test]
 fn r_bill_6_billing_opens_the_page_for_the_plan_or_names_who_to_ask() {
     let registry = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), gruntas_devregistry::Config::default()).unwrap();
-    let home = std::env::temp_dir().join(format!("krowk-billing-{}", std::process::id()));
+    let home = std::env::temp_dir().join(format!("gruntas-billing-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
     let api = format!("{}/v1", registry.url());

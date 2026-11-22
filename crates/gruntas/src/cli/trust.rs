@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 fn store(ctx: &Ctx) -> Result<trust::Store, Error> {
     let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(PathBuf::from);
-    Ok(trust::Store::new(Some(super::providers::krowk_dir()?.join(trust::FILE)), home))
+    Ok(trust::Store::new(Some(super::providers::gruntas_dir()?.join(trust::FILE)), home))
 }
 
 /// The repository `arg` (default: the working directory) belongs to,

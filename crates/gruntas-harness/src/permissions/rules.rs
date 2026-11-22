@@ -1590,7 +1590,7 @@ mod tests {
 
     #[test]
     fn r_perm_1_git_in_a_bare_repository_the_model_could_have_made_is_not_covered() {
-        let d = std::env::temp_dir().join(format!("krowk-bare-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("gruntas-bare-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         for p in [".git/objects", "sub/deep", "b/objects", "b/refs", "nested/inner"] {
             std::fs::create_dir_all(d.join(p)).unwrap();

@@ -108,7 +108,7 @@ fn r_back_3_no_source_file_names_codexs_login_file_or_its_oauth_client() {
 
     // The check itself: a file that reads the login, or names the client,
     // is caught.
-    let canary = std::env::temp_dir().join(format!("krowk-codex-compliance-canary-{}", std::process::id()));
+    let canary = std::env::temp_dir().join(format!("gruntas-codex-compliance-canary-{}", std::process::id()));
     std::fs::create_dir_all(&canary).unwrap();
     std::fs::write(canary.join("broken.rs"), format!("let _ = std::fs::read(codex_home.join(\"{}\"));", login_file())).unwrap();
     std::fs::write(canary.join("client.rs"), ["const CLIENT_ID: &str = \"app_EMoamEEZ73f0", "CkXaXp7hrann\";"].concat()).unwrap();
@@ -175,7 +175,7 @@ impl Drop for Tripwire {
 
 #[test]
 fn r_back_3_a_whole_codex_workflow_never_opens_codexs_login_file() {
-    let root = std::env::temp_dir().join(format!("krowk-codex-compliance-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("gruntas-codex-compliance-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     for d in ["home/.codex", "repo/.git", "bin", "home-work"] {
         std::fs::create_dir_all(root.join(d)).unwrap();

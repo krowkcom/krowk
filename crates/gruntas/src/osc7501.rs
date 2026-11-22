@@ -1,5 +1,5 @@
 //! OSC 7501, the Program Status Protocol (revision 0.4): one report of
-//! what krowk, or one of its subagents, is doing, for a terminal that
+//! what gruntas, or one of its subagents, is doing, for a terminal that
 //! keeps a record per program. Only ever well-formed: a terminal discards
 //! a whole report over one bad byte or one field past its limit, and a
 //! discarded report says nothing.
@@ -34,7 +34,7 @@ pub enum State {
     Clear,
 }
 
-/// One record as krowk reports it. `id` is the path's segments, empty for
+/// One record as gruntas reports it. `id` is the path's segments, empty for
 /// the root record; `title` and `msg` are plain text, cleaned here.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Report<'a> {
@@ -146,7 +146,7 @@ mod tests {
     }
 
     #[test]
-    fn r_pres_1_the_specs_examples_encode_to_its_bytes_with_krowk_as_the_app() {
+    fn r_pres_1_the_specs_examples_encode_to_its_bytes_with_gruntas_as_the_app() {
         // The spec's Terraform and brew messages, decoded and encoded again.
         let terraform = decode("QXBwbHkgMyB0byBhZGQsIDEgdG8gY2hhbmdlLCAwIHRvIGRlc3Ryb3k/");
         assert_eq!(terraform, "Apply 3 to add, 1 to change, 0 to destroy?");

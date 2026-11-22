@@ -29,6 +29,9 @@ use crate::e2e::{self, RELAY_ROLE_HOST, RELAY_ROLE_VIEWER};
 use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
 
 pub const LABEL: &[u8] = b"krowk/relay-ticket/v1";
+/// The header a relay ticket rides in on the WebSocket upgrade, never the
+/// URL. Historical, like `LABEL`: the relay reads it by this name.
+pub const HEADER: &str = "x-krowk-ticket";
 pub const VERSION: u8 = 1;
 /// How long a ticket the registry issues lasts, and the longest a relay
 /// accepts: a ticket's lifetime is the revocation lag, so it is short.

@@ -12,13 +12,13 @@
 //! usage.json         each login's last known usage and each instance's model list
 //! cache/             the models.dev listing, the update check
 //! readiness/         where a vendor is asked whether it is signed in
-//! no-hooks/          empty: where krowk's own git looks for hooks
+//! no-hooks/          empty: where gruntas's own git looks for hooks
 //! ```
 //!
 //! The home is `0700` and made on first need. One that is a symlink, or
 //! belongs to another user, is refused rather than used: whoever controls
-//! where it leads controls krowk's keys. XDG variables are not read for
-//! it; the one directory krowk keeps outside it, the worktrees it makes for
+//! where it leads controls gruntas's keys. XDG variables are not read for
+//! it; the one directory gruntas keeps outside it, the worktrees it makes for
 //! agents, is under `XDG_DATA_HOME` (`worktrees_root`).
 
 use crate::creds::Env;
@@ -52,7 +52,7 @@ fn no_home() -> Error {
 /// Where the home is, by the environment alone: `$GRUNTAS_HOME` when set,
 /// which must be absolute, else `.gruntas` in the user's home directory
 /// (`HOME`, or `USERPROFILE` on Windows). Never a relative path — that would
-/// make a repository's own files krowk's keys and settings.
+/// make a repository's own files gruntas's keys and settings.
 pub fn resolve(env: Env) -> Result<PathBuf, Error> {
     resolve_on(env, cfg!(windows))
 }
@@ -60,7 +60,7 @@ pub fn resolve(env: Env) -> Result<PathBuf, Error> {
 fn resolve_on(env: Env, windows: bool) -> Result<PathBuf, Error> {
     // `..` taken out first: `HOME=/x/gone/../h` would otherwise miss the
     // old layout and make `gone/`, and `GRUNTAS_HOME=$HOME/x/..` make the
-    // person's own home krowk's, chmod 0700 and all.
+    // person's own home gruntas's, chmod 0700 and all.
     let user = user_home(env, windows);
     let own = env("GRUNTAS_HOME");
     if !own.is_empty() {
@@ -98,12 +98,12 @@ pub fn fenced(env: Env) -> Vec<PathBuf> {
     homes.into_iter().flatten().flat_map(|h| siblings(&h)).collect()
 }
 
-/// Where krowk makes the git worktrees its agents work in (worktrees WT3):
+/// Where gruntas makes the git worktrees its agents work in (worktrees WT3):
 /// `$XDG_DATA_HOME/gruntas/worktrees` when `XDG_DATA_HOME` is absolute, else
 /// `.local/share/gruntas/worktrees` in the user's home; none without either.
-/// Outside krowk's home on purpose: the home is fenced from the file tools
+/// Outside gruntas's home on purpose: the home is fenced from the file tools
 /// and hidden in the sandbox, and an agent must edit the files in its
-/// worktree. Being under it is not what makes a directory krowk's — the
+/// worktree. Being under it is not what makes a directory gruntas's — the
 /// environment names it — so the sandbox checks the worktree itself too
 /// (`gruntas_harness::sandbox::managed_worktree`).
 pub fn worktrees_root(env: Env) -> Option<PathBuf> {
@@ -144,7 +144,7 @@ pub fn get() -> Result<PathBuf, Error> {
 }
 
 fn prepare(home: &Path, env: Env) -> Result<(), Error> {
-    // Only the default home inherits krowk's files: a GRUNTAS_HOME is a
+    // Only the default home inherits gruntas's files: a GRUNTAS_HOME is a
     // sandbox, and never takes the person's own.
     let inherits = env("GRUNTAS_HOME").is_empty();
     match std::fs::symlink_metadata(home) {
@@ -200,13 +200,13 @@ pub fn make(dir: &Path) -> Result<(), String> {
     std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
     match b.create(dir) {
         Ok(()) => Ok(()),
-        // Made by another krowk in between: held to the same rules.
+        // Made by another gruntas in between: held to the same rules.
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => make(dir),
         Err(e) => Err(format!("{} could not be made: {e}", dir.display())),
     }
 }
 
-/// A directory of krowk's own: a real directory, not a symlink, belonging
+/// A directory of gruntas's own: a real directory, not a symlink, belonging
 /// to this user, and `0700` (made so when it is looser).
 pub fn own(dir: &Path, m: &std::fs::Metadata) -> Result<(), String> {
     if m.file_type().is_symlink() {

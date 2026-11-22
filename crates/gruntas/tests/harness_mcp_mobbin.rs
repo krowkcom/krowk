@@ -32,10 +32,10 @@ fn mobbin_add_and_login_with_a_pasted_address_store_its_token() {
     let url = format!("{}/mcp", f.mcp.url);
 
     // gruntas mcp add, then gruntas mcp login --no-browser with the address pasted.
-    let out = gruntas(&root, &["mcp", "add", "mobbin", &url, "--header", "X-Client: krowk-test"]).stdin(Stdio::null()).output().unwrap();
+    let out = gruntas(&root, &["mcp", "add", "mobbin", &url, "--header", "X-Client: gruntas-test"]).stdin(Stdio::null()).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let config: Value = serde_json::from_slice(&std::fs::read(root.join("home/.gruntas/config.json")).unwrap()).unwrap();
-    assert_eq!(config["mcpServers"]["mobbin"]["headers"]["X-Client"], "krowk-test");
+    assert_eq!(config["mcpServers"]["mobbin"]["headers"]["X-Client"], "gruntas-test");
     let mut login = gruntas(&root, &["mcp", "login", "mobbin", "--no-browser"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     let mut stderr = std::io::BufReader::new(login.stderr.take().unwrap());
     let page = loop {

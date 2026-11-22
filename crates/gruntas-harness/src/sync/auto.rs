@@ -56,7 +56,7 @@
 //! `lease_held`, and tried once more a minute later.
 //!
 //! **One list reader** (ticket 98): the bridges' device list is read by one
-//! thread for all of them, `krowk-sync-list` (`Lists`), not one per bridge.
+//! thread for all of them, `gruntas-sync-list` (`Lists`), not one per bridge.
 //!
 //! It runs on a `std::thread` and a current-thread runtime of its own,
 //! never on the daemon's thread: the daemon runs every session on one
@@ -211,7 +211,7 @@ impl Policy {
     /// `sync.exclude` entry, matched by whole components (`/work/a` does
     /// not take `/work/ab`), or below a `.gruntas/no-sync` — a file or a
     /// directory — in `cwd` or any ancestor. The `.gruntas` that is gruntas's
-    /// own home (`krowk_home`) is not a repository's: a `no-sync` there
+    /// own home (`gruntas_home`) is not a repository's: a `no-sync` there
     /// opts out nothing (the device's switch is `sync.auto: false`).
     ///
     /// Paths are compared both as given and canonicalized (each falling
@@ -221,7 +221,7 @@ impl Policy {
     /// `.gruntas`, say) counts as there. `cwd` is absolute, as `session_dir`
     /// gives it; a relative one would be read against this process's own
     /// directory. Blocking: a few `stat`s per ancestor.
-    pub fn opted_out(&self, cwd: &Path, krowk_home: Option<&Path>) -> Option<OptOut> {
+    pub fn opted_out(&self, cwd: &Path, gruntas_home: Option<&Path>) -> Option<OptOut> {
         debug_assert!(cwd.is_absolute(), "a session's directory is absolute: {}", cwd.display());
         let cwds = forms(cwd);
         for entry in &self.exclude {
@@ -229,7 +229,7 @@ impl Policy {
                 return Some(OptOut::Excluded(entry.clone()));
             }
         }
-        let home = krowk_home.map(canonical);
+        let home = gruntas_home.map(canonical);
         for c in &cwds {
             for dir in c.ancestors() {
                 let dot = dir.join(".gruntas");
@@ -320,7 +320,7 @@ pub struct Config {
     /// Said in each bridge's hello: the daemon's own version.
     pub version: String,
     /// gruntas's own home (`~/.gruntas`), whose `no-sync` is no repository's.
-    pub krowk_home: Option<PathBuf>,
+    pub gruntas_home: Option<PathBuf>,
     pub build: Build,
     /// The policy, read again each time a bridge would start, at each turn
     /// event of a bridged session and at each idle check (`policy` over
@@ -413,7 +413,7 @@ pub struct Handle {
 }
 
 impl Supervisor {
-    /// Starts the supervisor on a thread of its own, `krowk-sync`, with a
+    /// Starts the supervisor on a thread of its own, `gruntas-sync`, with a
     /// runtime of its own, listening to the daemon's turn hook `turns`.
     /// Nothing runs on the daemon's thread (see the module's doc).
     pub fn spawn(c: Config, turns: mpsc::UnboundedReceiver<TurnEvent>) -> Handle {
@@ -518,7 +518,7 @@ fn check(c: &Config, session: &str) -> Result<(PathBuf, Option<Duration>), No> {
     if dir.child {
         return Err(No::Session("it is a subagent's, which rides its parent's bridge".into()));
     }
-    match p.opted_out(&dir.cwd, c.krowk_home.as_deref()) {
+    match p.opted_out(&dir.cwd, c.gruntas_home.as_deref()) {
         None => Ok((dir.cwd, p.idle)),
         Some(OptOut::Excluded(e)) => Err(No::Session(format!("{} is under {}, in sync.exclude", dir.cwd.display(), e.display()))),
         Some(OptOut::Marker(m)) => Err(No::Session(format!("{} opts {} out", m.display(), dir.cwd.display()))),
@@ -546,7 +546,7 @@ fn rescan(c: &Config, dirs: Vec<(String, PathBuf)>) -> Rescan {
     let p = (c.policy)();
     let outs = match &p {
         Ok(p) if p.on => dirs.into_iter().map(|(s, cwd)| {
-            let out = p.opted_out(&cwd, c.krowk_home.as_deref());
+            let out = p.opted_out(&cwd, c.gruntas_home.as_deref());
             (s, out)
         }).collect(),
         _ => Vec::new(),
@@ -615,7 +615,7 @@ async fn bridge(c: Arc<Config>, lists: Arc<Lists>, session: String, cwd: PathBuf
 
 /// The supervisor's one device-list reader (ticket 98). Every bridge would
 /// otherwise read the same list each `host::LIST_EVERY`, fifty bridges
-/// fifty times a minute: one thread, `krowk-sync-list`, reads it while at
+/// fifty times a minute: one thread, `gruntas-sync-list`, reads it while at
 /// least one bridge runs, with the registry client and device of any of
 /// them, and writes what ends them into each one's `Options::stale`.
 #[derive(Default)]
@@ -1782,7 +1782,7 @@ mod tests {
 
     #[test]
     fn r_sync_3_a_directory_opts_out_by_the_list_or_a_marker_at_any_ancestor() {
-        let root = std::env::temp_dir().join(format!("krowk-sync3-optout-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-sync3-optout-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let root = {
             std::fs::create_dir_all(&root).unwrap();
@@ -1800,11 +1800,11 @@ mod tests {
         mk("mono/.gruntas/no-sync"); // a directory marker, two levels above the repository at svc
         mk("mono/team/svc/.gruntas");
         // gruntas's own home is `home/.gruntas`; its no-sync covers nothing.
-        let (krowk_home, in_home) = (mk("home/.gruntas"), mk("home/code/proj"));
+        let (gruntas_home, in_home) = (mk("home/.gruntas"), mk("home/code/proj"));
         mk("home/.gruntas/no-sync");
 
         let p = Policy { on: true, off_by: None, exclude: vec![secret.clone()], idle: None, accepting: true };
-        let home = Some(krowk_home.as_path());
+        let home = Some(gruntas_home.as_path());
         assert_eq!(p.opted_out(&secret, home), Some(OptOut::Excluded(secret.clone())));
         assert_eq!(p.opted_out(&deep, home), Some(OptOut::Excluded(secret.clone())), "its subdirectories too");
         assert_eq!(p.opted_out(&sibling, home), None, "whole components: /work/a does not take /work/ab");
@@ -1844,7 +1844,7 @@ mod tests {
 
     #[test]
     fn r_sync_3_a_sessions_directory_is_its_logs_own() {
-        let sessions = std::env::temp_dir().join(format!("krowk-sync3-dir-{}", std::process::id()));
+        let sessions = std::env::temp_dir().join(format!("gruntas-sync3-dir-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&sessions);
         let (root, kid, garbage, other, foreign, relative, absent) = (
             "01a0ec7b-0000-7000-8000-0000000000b1",
@@ -1860,7 +1860,7 @@ mod tests {
             std::fs::write(sessions.join(id).join(crate::log::EVENTS_FILE), format!("{first}\n{{\"later\": true}}\n")).unwrap();
         };
         let started = |id: &str, of: &str, cwd: &str, parent: Option<&str>| {
-            let e = crate::protocol::LogEvent { id: id.into(), parent_id: None, session_id: of.into(), time_ms: 1, body: LogBody::SessionStarted { cwd: cwd.into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: parent.map(String::from), agent: None } };
+            let e = crate::protocol::LogEvent { id: id.into(), parent_id: None, session_id: of.into(), time_ms: 1, body: LogBody::SessionStarted { cwd: cwd.into(), gruntas_version: "t".into(), protocol_version: 1, parent_session_id: parent.map(String::from), agent: None } };
             serde_json::to_string(&e).unwrap()
         };
         write(root, started(root, root, "/work/repo", None));
@@ -1887,11 +1887,11 @@ mod tests {
     #[test]
     fn r_sync_3_off_unreadable_or_not_set_up_builds_nothing() {
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let sessions = std::env::temp_dir().join(format!("krowk-sync3-sup-{}", std::process::id()));
+        let sessions = std::env::temp_dir().join(format!("gruntas-sync3-sup-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&sessions);
         let id = "01a0ec7b-0000-7000-8000-0000000000c1";
         std::fs::create_dir_all(sessions.join(id)).unwrap();
-        let e = crate::protocol::LogEvent { id: id.into(), parent_id: None, session_id: id.into(), time_ms: 1, body: LogBody::SessionStarted { cwd: sessions.display().to_string(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None } };
+        let e = crate::protocol::LogEvent { id: id.into(), parent_id: None, session_id: id.into(), time_ms: 1, body: LogBody::SessionStarted { cwd: sessions.display().to_string(), gruntas_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None } };
         std::fs::write(sessions.join(id).join(crate::log::EVENTS_FILE), format!("{}\n", serde_json::to_string(&e).unwrap())).unwrap();
         let on = Policy { on: true, off_by: None, exclude: Vec::new(), idle: None, accepting: true };
         let off = Policy { on: false, off_by: Some("GRUNTAS_SYNC_AUTO"), ..on.clone() };
@@ -1909,7 +1909,7 @@ mod tests {
                 socket: sessions.join("nothing.sock"),
                 sessions: sessions.clone(),
                 version: "t".into(),
-                krowk_home: None,
+                gruntas_home: None,
                 build: Box::new(move |_, _| {
                     n.fetch_add(1, Ordering::SeqCst);
                     Err(("unbuilt".into(), "the test's build fails".into()))

@@ -9,7 +9,7 @@
 @env GIT_COMMITTER_EMAIL=golden@example.com
 @env GIT_AUTHOR_DATE=2026-01-01T00:00:00Z
 @env GIT_COMMITTER_DATE=2026-01-01T00:00:00Z
-@sh git init -q -b feature/golden && git remote add origin git@github.com:krowkcom/golden.git
+@sh git init -q -b feature/golden && git remote add origin git@github.com:gruntas/golden.git
 @file a.txt hello
 @sh git add a.txt && git commit -q -m first
 gruntas push a.txt --jq '.data.artifacts[0].metadata'
@@ -18,7 +18,7 @@ gruntas push a.txt --jq '.data.run.metadata'
 gruntas push a.txt --jq '.data.artifacts[0].metadata'
 @sh git remote set-url origin https://gitlab.example.com/group/sub/proj.git
 gruntas push a.txt --jq '.data.artifacts[0].metadata'
-@sh git remote set-url origin https://user:secret@github.com/krowkcom/golden.git
+@sh git remote set-url origin https://user:secret@github.com/gruntas/golden.git
 gruntas push a.txt --jq '.data.artifacts[0].metadata'
 @sh git checkout -q --detach
 gruntas push a.txt --jq '.data.artifacts[0].metadata'

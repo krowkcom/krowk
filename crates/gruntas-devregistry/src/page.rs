@@ -106,7 +106,7 @@ pub fn artifact_page(app: &App, req: &Req, slug: &str) -> Resp {
         return Resp::html(200, page(filename, &tags, &format!("<p>{} — upload pending.</p>", escape(filename))));
     }
 
-    let description = format!("{} · krowk", human_bytes(a.byte_size));
+    let description = format!("{} · gruntas", human_bytes(a.byte_size));
     let mut tags = vec![
         ("og:title", filename),
         ("og:type", "website"),

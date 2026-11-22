@@ -1,5 +1,5 @@
 {
-  "generator": "crates/gruntas-client/tests/device_chain_corpus.rs (krowk-cli)",
+  "generator": "crates/gruntas-client/tests/device_chain_corpus.rs (gruntas)",
   "about": "Device-chain verifier cases (engineering/devices.md in Canon). Entry bytes and the wire signature list are hex; pin is the head the verifier holds, or null to verify from seq 0; expect is Chain::verify's result. Codes and seqs are the contract; see the generator's module doc.",
   "cases": [
     {

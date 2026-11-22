@@ -5,7 +5,7 @@
 //! the person's devices (`gruntas_client::presence`), so the registry holds
 //! only bytes.
 //!
-//! **The publisher** runs on a thread of its own, `krowk-presence`, beside
+//! **The publisher** runs on a thread of its own, `gruntas-presence`, beside
 //! the supervisor's list reader and never on the supervisor's runtime, which
 //! so gains no timer (R-PERF-2). It is started with the supervisor, and again
 //! by a bridge's checks passing, and ends whenever sync is not set up here,
@@ -677,7 +677,7 @@ mod tests {
     /// repository, normalised, with no credential.
     #[test]
     fn alloc_02_the_record_carries_capacity_acceptance_and_repositories() {
-        let root = std::env::temp_dir().join(format!("krowk-fill-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-fill-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (app, plain) = (root.join("app"), root.join("plain"));
         for d in [&app, &plain] {
@@ -703,7 +703,7 @@ mod tests {
     /// totals the pools'.
     #[test]
     fn alloc_02_this_machine_reads_its_capacity() {
-        let runtime = std::env::temp_dir().join(format!("krowk-capacity-{}", std::process::id()));
+        let runtime = std::env::temp_dir().join(format!("gruntas-capacity-{}", std::process::id()));
         let builds = crate::slots::Pool::new(runtime.clone(), "build-slots", 3);
         let agents = crate::slots::Pool::new(runtime.clone(), crate::children::AGENT_SLOTS, 5);
         let held = agents.try_take().unwrap().expect("a slot");

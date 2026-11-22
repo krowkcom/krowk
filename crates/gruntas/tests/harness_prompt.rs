@@ -172,7 +172,7 @@ fn on_a_terminal(b: &Sandbox, args: &[&str]) -> (String, Vec<u8>, std::process::
 /// stdout but the answer.
 #[cfg(unix)]
 #[test]
-fn r_pres_6_krowk_p_on_a_terminal_reports_working_then_done_or_error() {
+fn r_pres_6_gruntas_p_on_a_terminal_reports_working_then_done_or_error() {
     use gruntas::osc7501::State;
     let prompt = "\nread README.md and summarise it in one line\nand nothing else";
     let b = Sandbox::new("pres6");
@@ -286,7 +286,7 @@ fn r_pres_6_ctrl_c_during_the_turn_reports_idle_before_exit() {
 /// a missing or non-image file is refused naming it, before any turn.
 #[cfg(unix)]
 #[test]
-fn krowk_p_image_sends_each_file_with_the_prompt_and_refuses_a_bad_one_first() {
+fn gruntas_p_image_sends_each_file_with_the_prompt_and_refuses_a_bad_one_first() {
     let b = Sandbox::new("images");
     b.claude(None);
     let png = |w: u32, h: u32, path: &std::path::Path| {
@@ -390,7 +390,7 @@ fn seed_usage(home: &std::path::Path, instance: &str, used: f64) {
 /// says how to continue there on stderr; the turn itself succeeded.
 #[cfg(unix)]
 #[test]
-fn r_roll_11_krowk_p_shows_an_early_offer_in_json_and_hints_on_stderr() {
+fn r_roll_11_gruntas_p_shows_an_early_offer_in_json_and_hints_on_stderr() {
     let b = Sandbox::new("early");
     std::fs::create_dir_all(b.root.join("home/.gruntas")).unwrap();
     two_claude_accounts(&b, "low.jsonl", None);
@@ -415,7 +415,7 @@ fn r_roll_11_krowk_p_shows_an_early_offer_in_json_and_hints_on_stderr() {
 /// other value is refused naming the three.
 #[cfg(unix)]
 #[test]
-fn r_roll_5_krowk_p_resolves_rollover_per_session_repo_and_global() {
+fn r_roll_5_gruntas_p_resolves_rollover_per_session_repo_and_global() {
     let b = Sandbox::new("rollover");
     std::fs::create_dir_all(b.root.join("home/.gruntas")).unwrap();
     let global = |rollover: Option<&str>| two_claude_accounts(&b, "limited.jsonl", rollover);
@@ -468,7 +468,7 @@ fn r_roll_5_krowk_p_resolves_rollover_per_session_repo_and_global() {
 /// whatever else is given; the commands that own those flags still take them.
 #[cfg(unix)]
 #[test]
-fn r_cut_8_bare_krowk_on_a_terminal_prints_the_overview_and_the_old_tui_flags_point_to_p() {
+fn r_cut_8_bare_gruntas_on_a_terminal_prints_the_overview_and_the_old_tui_flags_point_to_p() {
     let b = Sandbox::new("bare-tty");
     // A Claude Code account on an API key, ready here without a login, so
     // bare `gruntas` has no first-machine setup to ask.

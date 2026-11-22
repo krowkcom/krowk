@@ -20,7 +20,7 @@ exit: 0
 
 $ gruntas push a.txt --link https://example.com --link-rel fixes --link https://example.org --link-rel spec --jq '.data.run.metadata'
 stdout:
-{"krowk.client":"krowk-cli/0.0.0-golden","krowk.links":[{"rel":"fixes","url":"https://example.com"},{"rel":"spec","url":"https://example.org"}]}
+{"krowk.client":"gruntas-cli/0.0.0-golden","krowk.links":[{"rel":"fixes","url":"https://example.com"},{"rel":"spec","url":"https://example.org"}]}
 exit: 0
 
 $ gruntas push a.txt --link-title orphan --jq .ok
@@ -37,7 +37,7 @@ exit: 1
 
 $ gruntas push a.txt --reference JIRA-1 --reference JIRA-2 --jq '.data.run.metadata'
 stdout:
-{"krowk.client":"krowk-cli/0.0.0-golden","krowk.references":["JIRA-1","JIRA-2"]}
+{"krowk.client":"gruntas-cli/0.0.0-golden","krowk.references":["JIRA-1","JIRA-2"]}
 exit: 0
 
 $ gruntas push a.txt --metadata '{"krowk.caption":"c","n":1}' --jq '.data.artifacts[0].metadata'
@@ -59,6 +59,6 @@ exit: 1
 
 $ gruntas push a.txt --caption "a caption" --jq '.data.artifacts[0].metadata'
 stdout:
-{"krowk.caption":"a caption","krowk.client":"krowk-cli/0.0.0-golden"}
+{"krowk.caption":"a caption","krowk.client":"gruntas-cli/0.0.0-golden"}
 exit: 0
 

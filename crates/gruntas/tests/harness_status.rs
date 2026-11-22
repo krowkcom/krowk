@@ -28,7 +28,7 @@ struct Sandbox {
 
 impl Sandbox {
     fn new(name: &str) -> Sandbox {
-        let root = std::env::temp_dir().join(format!("krowk-status-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-status-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for d in ["home", "repo", "bin"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
@@ -96,7 +96,7 @@ impl Drop for Sandbox {
 }
 
 fn login(access: &str, refresh: Option<&str>, expires_at_ms: i64) -> Value {
-    let mut v = json!({"issuer": "https://auth.x.ai", "clientId": "krowk-test", "tokenEndpoint": "https://auth.x.ai/oauth2/token", "accessToken": access, "expiresAtMs": expires_at_ms, "obtainedAtMs": 0});
+    let mut v = json!({"issuer": "https://auth.x.ai", "clientId": "gruntas-test", "tokenEndpoint": "https://auth.x.ai/oauth2/token", "accessToken": access, "expiresAtMs": expires_at_ms, "obtainedAtMs": 0});
     if let Some(r) = refresh {
         v["refreshToken"] = json!(r);
     }
@@ -305,7 +305,7 @@ fn codex_status_falls_back_to_login_status_when_app_server_cannot_be_asked() {
 }
 
 #[test]
-fn status_asks_vendors_in_krowks_own_directory_so_planted_settings_change_nothing() {
+fn status_asks_vendors_in_gruntas_own_directory_so_planted_settings_change_nothing() {
     let b = Sandbox::new("planted");
     // Signed in only where its working directory's project settings say so.
     b.install("claude", "#!/bin/bash\nif [ -f \"$PWD/.claude/settings.json\" ]; then echo '{\"loggedIn\":true,\"authMethod\":\"bedrock\"}'; exit 0; fi\necho '{\"loggedIn\":false}'; exit 1\n");

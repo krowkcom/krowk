@@ -1014,7 +1014,7 @@ mod tests {
         fn new() -> Fixture {
             static N: AtomicUsize = AtomicUsize::new(0);
             let root = std::env::temp_dir()
-                .join(format!("krowk-opencode-{}-{}-a?b#c&d", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+                .join(format!("gruntas-opencode-{}-{}-a?b#c&d", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
             let _ = std::fs::remove_dir_all(&root);
             std::fs::create_dir_all(&root).unwrap();
             let root = root.canonicalize().unwrap();

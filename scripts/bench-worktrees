@@ -19,7 +19,7 @@ cd "$(dirname "$0")/.."
 count=${1:-20}
 base=${BENCH_WORKTREES_DIR:-${TMPDIR:-/tmp}}
 mkdir -p "$base"
-scratch=$(mktemp -d "$base/krowk-bench-worktrees.XXXXXX")
+scratch=$(mktemp -d "$base/gruntas-bench-worktrees.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT
 
 cargo build --quiet --locked -p gruntas-harness --example bench_worktrees

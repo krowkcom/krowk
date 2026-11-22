@@ -92,7 +92,7 @@ impl Home {
             sessions_dir: log::sessions_dir(&self.env()).unwrap(),
             cwd: self.repo(),
             registry: Registry::resolve(&self.instances, &self.env()),
-            krowk_version: "test".into(),
+            gruntas_version: "test".into(),
             pricer: Arc::new(|_, _, _| None),
             catalog: Arc::new(|_, _| None),
             credentials: self.root.join("home/.gruntas/credentials.json"),
@@ -100,7 +100,7 @@ impl Home {
             publisher: None,
             permissions: Config {
                 home: Some(self.root.join("home")),
-                krowk_dir: Some(self.root.join("home/.gruntas")),
+                gruntas_dir: Some(self.root.join("home/.gruntas")),
                 user: Some(user),
                 trusted: Some(trusted),
                 ..Config::default()

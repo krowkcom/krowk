@@ -283,7 +283,7 @@ fn send(me: &Arc<Commands>, id: &str, sealed: Vec<u8>, api: Arc<gruntas_api::Cli
 /// those the policy opts out.
 pub(crate) fn offered(c: &Config, o: &Options, policy: &super::auto::Policy) -> Vec<String> {
     let worktrees = gruntas_api::home::worktrees_root(&gruntas_api::home::process_env);
-    o.trusted.directories().into_iter().filter(|d| not_krowks_own(d, worktrees.as_deref()) && policy.opted_out(d, c.krowk_home.as_deref()).is_none()).map(|d| d.display().to_string()).collect()
+    o.trusted.directories().into_iter().filter(|d| not_gruntas_own(d, worktrees.as_deref()) && policy.opted_out(d, c.gruntas_home.as_deref()).is_none()).map(|d| d.display().to_string()).collect()
 }
 
 /// The directories as repositories: each one's `origin` remote, normalised
@@ -303,7 +303,7 @@ fn repositories(directories: &[String]) -> Vec<AnnouncedRepository> {
 /// Whether `dir` is a repository rather than a worktree gruntas made under
 /// `worktrees`, which a handoff or a task trusts for its backend but is
 /// no clone to offer.
-fn not_krowks_own(dir: &Path, worktrees: Option<&Path>) -> bool {
+fn not_gruntas_own(dir: &Path, worktrees: Option<&Path>) -> bool {
     worktrees.is_none_or(|w| !dir.starts_with(w))
 }
 
@@ -951,7 +951,7 @@ mod tests {
     /// checked in order, and an admitted run holding an agent slot.
     #[test]
     fn alloc_05_a_run_is_refused_in_each_case_and_admitted_holding_a_slot() {
-        let runtime = std::env::temp_dir().join(format!("krowk-admit-{}", std::process::id()));
+        let runtime = std::env::temp_dir().join(format!("gruntas-admit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&runtime);
         let agents = crate::slots::Pool::new(runtime.clone(), crate::children::AGENT_SLOTS, 1);
         let repositories = [AnnouncedRepository { directory: "/home/ann/app".into(), origin: "github.com/acme/app".into() }];
@@ -999,7 +999,7 @@ mod tests {
     /// session that is no task's has none.
     #[test]
     fn a_tasks_record_is_read_back_by_its_session() {
-        let dir = std::env::temp_dir().join(format!("krowk-task-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gruntas-task-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(read_task(&dir, "s1"), None);
         let mut t = TaskRun { snapshot: "abc".into(), worktree: "/w/x".into(), denied: Vec::new() };
@@ -1023,11 +1023,11 @@ mod tests {
     /// A worktree gruntas made, trusted for its backend, is not offered as a
     /// clone; a repository beside it is.
     #[test]
-    fn a_krowk_worktree_is_not_offered_as_a_clone() {
+    fn a_gruntas_worktree_is_not_offered_as_a_clone() {
         let root = Path::new("/home/ann/.local/share/gruntas/worktrees");
-        assert!(!not_krowks_own(&root.join("4fb7/e117ff1a"), Some(root)));
-        assert!(not_krowks_own(Path::new("/home/ann/app"), Some(root)));
-        assert!(not_krowks_own(Path::new("/home/ann/app"), None));
+        assert!(!not_gruntas_own(&root.join("4fb7/e117ff1a"), Some(root)));
+        assert!(not_gruntas_own(Path::new("/home/ann/app"), Some(root)));
+        assert!(not_gruntas_own(Path::new("/home/ann/app"), None));
     }
 
     /// A child's denials are short lines, and few.
