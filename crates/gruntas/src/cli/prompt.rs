@@ -393,7 +393,7 @@ pub(super) fn budget_flag(ctx: &Ctx) -> Result<Option<BudgetLimits>, Error> {
     Ok((!limits.is_empty()).then_some(limits))
 }
 
-/// R-EVID-1: what the host's `publish` runs — krowk_push, the MCP server's
+/// R-EVID-1: what the host's `publish` runs — gruntas_push, the MCP server's
 /// own code, against the registry this invocation pushes to (`--dev` is the
 /// stand-in), with the key read the way krowk-mcp reads it: GRUNTAS_TOKEN, then
 /// the workspace the config names. A workspace that names no stored key

@@ -1,8 +1,8 @@
 //! The tool bridge: krowk's own tools, offered to a vendor backend over MCP
 //! (R-BACK-1). A backend runs its own loop with its own tools; what it
 //! cannot have without krowk — `publish`, the subagent bridge later, and the
-//! trivial `session_info` that proved the path — is injected as one MCP server named `krowk`, so the backend's
-//! model calls it as `mcp__krowk__<tool>`.
+//! trivial `session_info` that proved the path — is injected as one MCP server named `gruntas`, so the backend's
+//! model calls it as `mcp__gruntas__<tool>`.
 //!
 //! The bridge is transport-free: `handle` answers one JSON-RPC message with
 //! one JSON-RPC answer, and each backend carries the messages its own way,
@@ -11,7 +11,7 @@
 //! call runs inside the krowk process that owns the session. Claude Code
 //! carries MCP inside its control protocol (an `sdk` server). `codex
 //! app-server` has its own in-band channel instead: the tools are declared
-//! as the thread's dynamic tools, in one `krowk` namespace, and each call
+//! as the thread's dynamic tools, in one `gruntas` namespace, and each call
 //! arrives as an `item/tool/call` request, which `crate::codex` answers through
 //! `handle` as a `tools/call`.
 //!
@@ -27,8 +27,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::Path;
 
-/// The MCP server's name: the backend sees each tool as `mcp__krowk__<name>`.
-pub const SERVER: &str = "krowk";
+/// The MCP server's name: the backend sees each tool as `mcp__gruntas__<name>`.
+pub const SERVER: &str = "gruntas";
 
 /// The MCP revision answered when the client names none.
 const MCP_VERSION: &str = "2025-06-18";
@@ -109,7 +109,7 @@ async fn mcp_tool(name: &str, input: &Value, env: &BridgeEnv<'_>, mcp: &crate::m
                 a.iter().position(|k| k == id).map(|i| a.remove(i)).is_some()
             });
             if !said {
-                return refuse(format!("{server}:{tool} was not run: it needs approval ({reason}), and krowk was not asked: Claude Code let the call through without asking (an allow rule or hook of its own on mcp__krowk__mcp_call). Add `Mcp({server}:{tool})` to krowk's allow rules, or drop Claude Code's rule"));
+                return refuse(format!("{server}:{tool} was not run: it needs approval ({reason}), and gruntas was not asked: Claude Code let the call through without asking (an allow rule or hook of its own on mcp__gruntas__mcp_call). Add `Mcp({server}:{tool})` to gruntas's allow rules, or drop Claude Code's rule"));
             }
         }
     }
@@ -275,7 +275,7 @@ mod tests {
         let init = handle(&json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-11-25"}}));
         assert_eq!(init["id"], 0);
         assert_eq!(init["result"]["protocolVersion"], "2025-11-25", "the client's revision is answered");
-        assert_eq!(init["result"]["serverInfo"]["name"], "krowk");
+        assert_eq!(init["result"]["serverInfo"]["name"], "gruntas");
         let list = handle(&json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}));
         assert_eq!(list["result"]["tools"][0]["name"], "session_info");
         assert_eq!(list["result"]["tools"][0]["inputSchema"]["type"], "object");
@@ -290,7 +290,7 @@ mod tests {
         let note = handle(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
         assert!(note.get("id").is_none() && note["result"] == json!({}));
         assert_eq!(handle(&json!({"jsonrpc": "2.0", "id": 5, "method": "resources/list"}))["error"]["code"], -32601);
-        assert_eq!(definitions()[0].name, "mcp__krowk__session_info");
+        assert_eq!(definitions()[0].name, "mcp__gruntas__session_info");
     }
 
     #[test]
@@ -311,7 +311,7 @@ mod tests {
         assert_eq!(call["result"]["content"][0]["text"], "shot.png from /repo for s-1");
         assert_eq!(call["result"]["isError"], false);
         assert_eq!(rx.try_recv().unwrap(), crate::engine::EngineEvent::RunOpened { run: "run_x".into() });
-        assert_eq!(definitions()[1].name, "mcp__krowk__publish");
+        assert_eq!(definitions()[1].name, "mcp__gruntas__publish");
         // Under the default mode it is refused, even when Claude Code's own
         // allow rules let the call through without asking krowk.
         let default = crate::permissions::Gate::modes_only(Path::new("/repo"), crate::protocol::PermissionMode::Default);

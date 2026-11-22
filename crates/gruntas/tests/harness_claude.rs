@@ -133,7 +133,7 @@ fn r_inst_2_two_claude_accounts_sign_in_through_claudes_own_flow_and_each_runs_a
         assert!(b.data().join("accounts").join(format!("claude-{name}")).join("projects").is_dir(), "Claude Code kept the transcript in the account's directory");
     }
     let sessions = b.json(&["sessions", "--json"], &[]);
-    assert_eq!(sessions["data"]["sessions"].as_array().unwrap().iter().filter(|s| s["harness"] == "krowk").count(), 2);
+    assert_eq!(sessions["data"]["sessions"].as_array().unwrap().iter().filter(|s| s["harness"] == "gruntas").count(), 2);
 
     // A login given up on adds nothing and leaves no directory behind.
     let out = b.krowk(&["providers", "add", "claude", "--name", "broken"], &[("FAKE_CLAUDE_LOGIN", "fail")]);
@@ -191,11 +191,11 @@ fn r_back_1_a_tool_using_claude_turn_is_in_the_log_and_in_krowk_sessions() {
     assert_eq!(b.events(session).iter().filter(|e| e["type"] == "turn.completed").count(), 1);
 
     let listed = b.json(&["sessions", "--json"], &[]);
-    let ours = listed["data"]["sessions"].as_array().unwrap().iter().find(|s| s["harness"] == "krowk").unwrap().clone();
+    let ours = listed["data"]["sessions"].as_array().unwrap().iter().find(|s| s["harness"] == "gruntas").unwrap().clone();
     assert_eq!(ours["foreign_session_id"], session);
     let shown = b.json(&["sessions", "show", session, "--json"], &[]);
     let text = shown["data"]["messages"].to_string();
-    assert!(text.contains("mcp__krowk__session_info") && text.contains("The session_info tool answered."), "{text}");
+    assert!(text.contains("mcp__gruntas__session_info") && text.contains("The session_info tool answered."), "{text}");
 }
 
 #[test]
@@ -462,7 +462,7 @@ fn listed_children(b: &Sandbox, parent: &str) -> Vec<String> {
     let home = b.root.join("home").display().to_string();
     let env = move |k: &str| if k == "HOME" { home.clone() } else { String::new() };
     let conn = gruntas_store::open(&env).unwrap();
-    let rows = gruntas_store::list_sessions(&conn, "krowk", "", 50).unwrap();
+    let rows = gruntas_store::list_sessions(&conn, "gruntas", "", 50).unwrap();
     let id = rows.iter().find(|r| r.foreign_session_id == parent).map(|r| r.id.clone()).unwrap_or_else(|| panic!("{parent} is listed"));
     let mut kids: Vec<String> = gruntas_store::descendant_session_ids(&conn, &id).unwrap().into_iter().map(|sid| rows.iter().find(|r| r.id == sid).unwrap().foreign_session_id.clone()).collect();
     kids.sort();

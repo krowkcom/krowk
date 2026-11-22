@@ -189,7 +189,7 @@ fn r_back_1_a_session_runs_on_one_claude_process_calls_krowks_tool_and_is_denied
     let dir = home.signed_in("cfg-work");
     let host = home.host(vec![("claude:work", home.instance(&dir, Some("session_info.jsonl")))], trust::allow_all());
     rt().block_on(async {
-        // Turn 1: the model calls mcp__krowk__session_info, which krowk
+        // Turn 1: the model calls mcp__gruntas__session_info, which krowk
         // answers over the control protocol.
         let (lines, r) = run(&host, prompt(None, "what session is this?", "claude:work/sonnet", PermissionMode::Default)).await;
         let first = r.unwrap().unwrap();
@@ -200,7 +200,7 @@ fn r_back_1_a_session_runs_on_one_claude_process_calls_krowks_tool_and_is_denied
         let items = completed(&lines);
         let Item::Reasoning { blob: Some(b), text } = &items[1] else { panic!("{items:?}") };
         assert_eq!((b.provider.as_str(), b.wire_api, text.as_str()), ("anthropic", WireApi::ClaudeCode, "The person wants the session id."));
-        assert!(matches!(&items[2], Item::ToolCall { name, .. } if name == "mcp__krowk__session_info"));
+        assert!(matches!(&items[2], Item::ToolCall { name, .. } if name == "mcp__gruntas__session_info"));
         let Item::ToolResult { output, is_error: false, .. } = &items[3] else { panic!("{items:?}") };
         assert!(output.contains(&format!("krowk session: {}", first.session_id)) && output.contains("instance: claude:work"), "the tool ran inside krowk, for this session: {output}");
         assert!(lines.iter().any(|l| matches!(l, StreamLine::Live(LiveEvent::ItemDelta { .. }))), "deltas stream live");
@@ -256,7 +256,7 @@ fn r_back_1_a_session_runs_on_one_claude_process_calls_krowks_tool_and_is_denied
     // announced include krowk's, with their schema.
     let ctx: Vec<ContextRecord> = std::fs::read_to_string(log::sessions_dir(&home.env()).unwrap().join(&sid).join(log::CONTEXT_FILE)).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(ctx[0].toolset, "claude-code");
-    let info = ctx[0].tools.iter().find(|t| t.name == "mcp__krowk__session_info").unwrap();
+    let info = ctx[0].tools.iter().find(|t| t.name == "mcp__gruntas__session_info").unwrap();
     assert_eq!(info.input_schema["type"], "object");
 }
 
@@ -751,7 +751,7 @@ fn claude_code_reaches_krowks_mcp_servers_through_the_bridge_and_krowks_rules_ho
     // Claude Code skipped can_use_tool (an allow rule of its own): the
     // bridge still refuses what needed asking.
     let (out, server, _, _) = mcp_turn("mcp-unasked", "mcp_unasked.jsonl", PermissionMode::Default, serde_json::json!({}));
-    assert!(out.contains("krowk was not asked"), "{out}");
+    assert!(out.contains("gruntas was not asked"), "{out}");
     assert!(!server.contains("tools/call"), "{server}");
 }
 

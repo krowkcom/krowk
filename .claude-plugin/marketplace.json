@@ -1,18 +1,18 @@
 {
-  "name": "krowk",
+  "name": "gruntas",
   "owner": {
-    "name": "Krowk",
+    "name": "Gruntas",
     "url": "https://krowk.com"
   },
   "metadata": {
-    "description": "Krowk, the coding agent harness, for Claude Code."
+    "description": "Gruntas, the coding agent harness, for Claude Code."
   },
   "plugins": [
     {
-      "name": "krowk",
-      "displayName": "Krowk",
-      "description": "Publishing from Krowk, the coding agent harness, for Claude Code: the krowk skill and MCP server turn a session's screenshots, recordings, diffs and logs into links that unfurl in Slack and Basecamp; in GitHub and Linear, images show inline.",
-      "author": { "name": "Krowk" },
+      "name": "gruntas",
+      "displayName": "Gruntas",
+      "description": "Publishing from Gruntas, the coding agent harness, for Claude Code: the gruntas skill and MCP server turn a session's screenshots, recordings, diffs and logs into links that unfurl in Slack and Basecamp; in GitHub and Linear, images show inline.",
+      "author": { "name": "Gruntas" },
       "category": "development",
       "source": "./",
       "homepage": "https://krowk.com",

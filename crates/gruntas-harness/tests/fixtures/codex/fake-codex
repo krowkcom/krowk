@@ -246,7 +246,7 @@ play_turn() {
       text="${text%%\"\}\],\"success\"*}"
       # Built in a variable, not inside "$(…)": bash 3.2 mis-parses escaped
       # quotes nested in a command substitution inside double quotes.
-      local done_line='{"method":"item/completed","params":{"item":{"type":"dynamicToolCall","id":"'"$item"'","namespace":"krowk","tool":"session_info","arguments":{},"status":"completed","success":true,"contentItems":[{"type":"inputText","text":"'"$text"'"}]},"threadId":"{{THREAD}}","turnId":"{{TURN}}","completedAtMs":3}}'
+      local done_line='{"method":"item/completed","params":{"item":{"type":"dynamicToolCall","id":"'"$item"'","namespace":"gruntas","tool":"session_info","arguments":{},"status":"completed","success":true,"contentItems":[{"type":"inputText","text":"'"$text"'"}]},"threadId":"{{THREAD}}","turnId":"{{TURN}}","completedAtMs":3}}'
       say "$(fill "$done_line")"
       ;;
     "@await-interrupt")

@@ -3,7 +3,7 @@
 //! and renderers the CLI uses, and a failure comes back as a tool result with
 //! the registry's fix line rather than as a transport error.
 //!
-//! krowk_push is confined to a root. In the CLI a person types the path; here
+//! gruntas_push is confined to a root. In the CLI a person types the path; here
 //! a model picks it, and a model reads repository files, web pages and issue
 //! bodies — so without the boundary, a prompt injection anywhere turns push
 //! into "publish any file on this machine".
@@ -38,7 +38,7 @@ fn instructions() -> String {
         "krowk turns local files into permalinks, one artifact per file, grouped under a
 run that carries the metadata about where they came from.
 
-Call krowk_push with the paths you want to share. Every artifact comes back in
+Call gruntas_push with the paths you want to share. Every artifact comes back in
 two paste-ready forms and you must pick by destination. For a public artifact,
 which is what a push is unless it asks otherwise:
 
@@ -57,13 +57,13 @@ nowhere. Read the labels on the result rather than these two lines — and never
 tell somebody a link will preview without having read them.
 
 If a push comes back anonymous, each artifact carries a claim_token. Spending it
-— krowk_claim_artifact, or `krowk claim <slug> <token>` — is the only way to
+— gruntas_claim_artifact, or `krowk claim <slug> <token>` — is the only way to
 keep that upload past its expiry, and anyone holding the token can do it. Treat
 it as a secret: give it to the human, never paste it into a pull request, an
 issue or a chat message. An anonymous upload belongs to no run, so pass the run
-to krowk_claim_artifact if the upload should be grouped with the rest of them.
+to gruntas_claim_artifact if the upload should be grouped with the rest of them.
 
-krowk_push only uploads files from the working directory and below. Anything
+gruntas_push only uploads files from the working directory and below. Anything
 outside it is refused, symlinks included, and credential files are refused even
 inside it — .env, .ssh, .aws, .netrc, private keys, credentials.json, and
 anything in gruntas's own home (~/.gruntas). An artifact
@@ -144,7 +144,7 @@ fn permit(root: &Path, base: &Path, path: &str) -> Result<String, Error> {
     let Ok(rel) = real.strip_prefix(root) else {
         return Err(fail(
             "outside_root",
-            format!("`{path}` is outside {} — krowk_push only uploads files from the working directory", root.display()),
+            format!("`{path}` is outside {} — gruntas_push only uploads files from the working directory", root.display()),
         ));
     };
     if let Some(name) = secret_component(rel) {
@@ -246,7 +246,7 @@ impl Server<'_> {
                 Ok(json!({
                     "protocolVersion": version,
                     "capabilities": { "tools": {} },
-                    "serverInfo": { "name": "krowk", "version": self.version },
+                    "serverInfo": { "name": "gruntas", "version": self.version },
                     "instructions": instructions(),
                 }))
             }
@@ -262,12 +262,12 @@ impl Server<'_> {
         let name = params.and_then(|p| p.get("name")).and_then(Value::as_str).ok_or_else(|| rpc_error(-32602, "tools/call needs a name and arguments"))?;
         let args = params.and_then(|p| p.get("arguments")).cloned().unwrap_or(Value::Null);
         let outcome = match name {
-            "krowk_push" => self.push(&args),
-            "krowk_list_artifacts" => self.list_artifacts(&args),
-            "krowk_get_artifact" => self.get_artifact(&args),
-            "krowk_claim_artifact" => self.claim_artifact(&args),
-            "krowk_get_run" => self.get_run(),
-            "krowk_verify_key" => self.verify_key(),
+            "gruntas_push" => self.push(&args),
+            "gruntas_list_artifacts" => self.list_artifacts(&args),
+            "gruntas_get_artifact" => self.get_artifact(&args),
+            "gruntas_claim_artifact" => self.claim_artifact(&args),
+            "gruntas_get_run" => self.get_run(),
+            "gruntas_verify_key" => self.verify_key(),
             #[cfg(all(feature = "harness", unix))]
             "krowk_delegate" => delegate(&args),
             #[cfg(all(feature = "harness", unix))]
@@ -283,9 +283,9 @@ impl Server<'_> {
     }
 }
 
-/// `publish`, the harness's evidence tool (R-EVID-1): krowk_push for a krowk
+/// `publish`, the harness's evidence tool (R-EVID-1): gruntas_push for a krowk
 /// session, run with the session's working directory as the root, so its
-/// confinement, its credential-file and hard-link refusals are krowk_push's
+/// confinement, its credential-file and hard-link refusals are gruntas_push's
 /// own, unchanged. With a key, the session's first publish opens its run —
 /// the session recorded on it — and every artifact is tagged with the
 /// session (`krowk.session`) and attached to that run; without one the
@@ -308,7 +308,7 @@ impl Server<'_> {
             }
             let meta = runctx::resolve_in(
                 self.env,
-                Overrides { session: req.session_id.clone(), agent: "krowk".into(), client: format!("krowk/{}", self.version), ..Overrides::default() },
+                Overrides { session: req.session_id.clone(), agent: "gruntas".into(), client: format!("gruntas/{}", self.version), ..Overrides::default() },
                 Some(&req.root),
             );
             run = Some(self.client.create_run(&serde_json::to_value(&meta).expect("metadata serializes"))?.slug);
@@ -327,15 +327,15 @@ impl Server<'_> {
                 }
             }
             // Pushed by krowk's engine, through its MCP server's code.
-            metadata.insert("krowk.client", format!("krowk/{}", self.version));
+            metadata.insert("krowk.client", format!("gruntas/{}", self.version));
             if let Some(c) = &req.caption {
                 metadata.insert("krowk.caption", c.clone());
             }
         }
-        // The harness is krowk, as on the run: left to detection it names
+        // The harness is gruntas, as on the run: left to detection it names
         // whatever shell krowk was started from, and the artifact's key wins
         // over the run's on a card, so it would contradict `krowk.engine`.
-        let args = json!({ "files": req.files, "run": run.clone().unwrap_or_default(), "metadata": metadata, "agent": "krowk" });
+        let args = json!({ "files": req.files, "run": run.clone().unwrap_or_default(), "metadata": metadata, "agent": "gruntas" });
         let (_, pushed) = self.push_from(&req.root, &args)?;
         // A keyless upload's claim token is a secret the person spends:
         // what the model reads is logged, sent to the provider on every
@@ -448,7 +448,7 @@ impl Server<'_> {
         self.push_from(Path::new(""), args)
     }
 
-    /// krowk_push, with relative paths resolved from `base`.
+    /// gruntas_push, with relative paths resolved from `base`.
     fn push_from(&self, base: &Path, args: &Value) -> Outcome {
         let a: PushArgs = arguments(
             args,
@@ -619,7 +619,7 @@ impl Server<'_> {
         if !run.is_empty() {
             artifact = self.client.attach_run(&artifact.slug, &run).map_err(|mut e| {
                 e.body.insert("claimed".into(), json!(artifact.slug));
-                let retry = "the upload is claimed and kept, only the run is not attached — call krowk_claim_artifact again with the same slug and claim_token, and a run this workspace holds; claiming twice with the same key is the same success";
+                let retry = "the upload is claimed and kept, only the run is not attached — call gruntas_claim_artifact again with the same slug and claim_token, and a run this workspace holds; claiming twice with the same key is the same success";
                 let fix = if e.fix().is_empty() { retry.to_string() } else { format!("{}; {retry}", e.fix()) };
                 e.body.insert("fix".into(), json!(fix));
                 e
@@ -630,7 +630,7 @@ impl Server<'_> {
             text += &format!("\n\nGrouped under run {run}.");
         } else if artifact.run_slug().is_empty() {
             text += "\n\nIt belongs to no run. A run is where the pull request, commit and session are recorded — call \
-                     krowk_claim_artifact again with the same slug and claim_token and a `run` this workspace holds to group \
+                     gruntas_claim_artifact again with the same slug and claim_token and a `run` this workspace holds to group \
                      it under one; claiming twice with the same key is the same success.";
         }
         Ok((text, structured))
@@ -845,7 +845,7 @@ fn tool_schemas() -> Value {
     #[cfg_attr(not(all(feature = "harness", unix)), allow(unused_mut))]
     let mut tools = json!([
         {
-            "name": "krowk_push",
+            "name": "gruntas_push",
             "description": "Upload one or more local files; every file becomes its own artifact with a permalink, grouped under a run when an API key is configured. Returns both paste-ready forms per artifact: the markdown image embed for GitHub, Linear and Notion, and the bare URL for Slack and Basecamp. Repo, commit, branch and agent are detected automatically. Uploads are public unless `private` says otherwise, and each artifact reports its own `visibility`.",
             "inputSchema": {
                 "type": "object",
@@ -881,7 +881,7 @@ fn tool_schemas() -> Value {
             }
         },
         {
-            "name": "krowk_list_artifacts",
+            "name": "gruntas_list_artifacts",
             "description": "List the workspace's artifacts, newest first. Needs an API key: keyless uploads share the anonymous workspace, so there is nothing of one's own to list.",
             "inputSchema": { "type": "object", "properties": {
                 "limit": { "type": "integer", "description": "Artifacts per page (1–100, default 50)." },
@@ -889,12 +889,12 @@ fn tool_schemas() -> Value {
             }, "additionalProperties": false }
         },
         {
-            "name": "krowk_get_artifact",
+            "name": "gruntas_get_artifact",
             "description": "Look up an artifact already uploaded, by its slug. Returns the same paste-ready forms as a push.",
             "inputSchema": { "type": "object", "required": ["slug"], "properties": { "slug": { "type": "string", "description": slug } }, "additionalProperties": false }
         },
         {
-            "name": "krowk_claim_artifact",
+            "name": "gruntas_claim_artifact",
             "description": "Spend a claim token to move an anonymous artifact into the key's workspace. A Pro or Business workspace keeps it; a free one restamps a fresh 24-hour expiry. Pass `run` to also group it under a run — an anonymous upload could not name one, so this is the only way it gets one. Needs an API key.",
             "inputSchema": { "type": "object", "required": ["slug", "claim_token"], "properties": {
                 "slug": { "type": "string", "description": slug },
@@ -903,12 +903,12 @@ fn tool_schemas() -> Value {
             }, "additionalProperties": false }
         },
         {
-            "name": "krowk_get_run",
+            "name": "gruntas_get_run",
             "description": "Report the repository, commit, branch and agent that will be attached to the next push. Useful for checking detection before uploading.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         },
         {
-            "name": "krowk_verify_key",
+            "name": "gruntas_verify_key",
             "description": "Check whether an API key is configured, and which workspace uploads made with it land in. Without a key, pushes still work but are anonymous and expire in 24h. Call it when a push is refused: if this checkout pinned a workspace the server could not reach, the reason is here.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }
@@ -960,7 +960,7 @@ mod tests {
         assert!(secret_component(Path::new("src/env.rs")).is_none());
     }
 
-    /// R-EVID-1: what `publish` — krowk_push, and the bridge's `publish` on
+    /// R-EVID-1: what `publish` — gruntas_push, and the bridge's `publish` on
     /// Claude Code and Codex — refuses: a credential file, a path outside
     /// the root (a symlink out of it too), and a file with a second name.
     #[test]

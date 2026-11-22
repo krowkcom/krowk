@@ -1,14 +1,14 @@
 {
-  "name": "krowk",
-  "displayName": "Krowk",
-  "description": "Publishing from Krowk, the coding agent harness, for Claude Code: the krowk skill and MCP server turn a session's screenshots, recordings, diffs and logs into links that unfurl in Slack and Basecamp; in GitHub and Linear, images show inline.",
+  "name": "gruntas",
+  "displayName": "Gruntas",
+  "description": "Publishing from Gruntas, the coding agent harness, for Claude Code: the gruntas skill and MCP server turn a session's screenshots, recordings, diffs and logs into links that unfurl in Slack and Basecamp; in GitHub and Linear, images show inline.",
   "version": "0.18.0",
   "author": {
-    "name": "Krowk",
+    "name": "Gruntas",
     "url": "https://krowk.com"
   },
   "homepage": "https://krowk.com",
-  "repository": "https://github.com/krowkcom/krowk",
+  "repository": "https://github.com/gruntas/gruntas",
   "license": "MIT",
   "keywords": [
     "agent-harness",
@@ -19,9 +19,9 @@
     "unfurl"
   ],
   "mcpServers": {
-    "krowk": {
+    "gruntas": {
       "command": "npx",
-      "args": ["-y", "@krowk/mcp"]
+      "args": ["-y", "@gruntas/mcp"]
     }
   }
 }

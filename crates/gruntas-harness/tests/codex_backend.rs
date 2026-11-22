@@ -275,23 +275,23 @@ fn r_back_3_a_tool_using_turn_on_a_codex_instance_completes_and_is_logged() {
         assert!(matches!(&got[3], Item::ToolResult { output, is_error: false, .. } if output == "README.md\n"));
         // krowk's own tool, injected as Codex's dynamic tools and answered by
         // the bridge: the result is what krowk said.
-        assert!(matches!(&got[4], Item::ToolCall { name, .. } if name == "mcp__krowk__session_info"));
+        assert!(matches!(&got[4], Item::ToolCall { name, .. } if name == "mcp__gruntas__session_info"));
         let Item::ToolResult { output, is_error: false, .. } = &got[5] else { panic!("{:?}", got[5]) };
         assert!(output.contains(&format!("krowk session: {}", r.session_id)) && output.contains("instance: codex:team") && output.contains("backend: codex-app-server"), "{output}");
         let responses: Vec<usize> = events.iter().filter_map(|e| if let LogBody::ResponseCompleted { item_ids, .. } = &e.body { Some(item_ids.len()) } else { None }).collect();
         assert_eq!(responses, [3, 1], "each model call names the model output it made");
 
         let ctx = h.context(&r.session_id);
-        assert_eq!((ctx[0].toolset.as_str(), ctx[0].wire_api, ctx[0].tools[0].name.as_str()), ("codex-app-server", WireApi::CodexAppServer, "mcp__krowk__session_info"));
+        assert_eq!((ctx[0].toolset.as_str(), ctx[0].wire_api, ctx[0].tools[0].name.as_str()), ("codex-app-server", WireApi::CodexAppServer, "mcp__gruntas__session_info"));
         assert!(ctx[0].system.contains("Codex's own system prompt"));
 
-        // What krowk told Codex: itself as the client, the thread in its
+        // What gruntas told Codex: itself as the client, the thread in its
         // read-only sandbox with krowk reviewing, krowk's tools, the prompt.
         let log = h.fake_log();
         let sent = lines_of(&log, "in ");
-        assert!(sent[0].contains(r#""method":"initialize""#) && sent[0].contains(r#""name":"krowk""#) && sent[0].contains(r#""experimentalApi":true"#), "{}", sent[0]);
+        assert!(sent[0].contains(r#""method":"initialize""#) && sent[0].contains(r#""name":"gruntas""#) && sent[0].contains(r#""experimentalApi":true"#), "{}", sent[0]);
         let start = sent.iter().find(|l| l.contains(r#""method":"thread/start""#)).unwrap();
-        for want in [r#""sandbox":"read-only""#, r#""approvalPolicy":"on-request""#, r#""approvalsReviewer":"user""#, r#""dynamicTools":[{"type":"namespace","name":"krowk""#] {
+        for want in [r#""sandbox":"read-only""#, r#""approvalPolicy":"on-request""#, r#""approvalsReviewer":"user""#, r#""dynamicTools":[{"type":"namespace","name":"gruntas""#] {
             assert!(start.contains(want), "{want} in {start}");
         }
         let answer = sent.iter().find(|l| l.starts_with(r#"{"id":"srv-1""#)).unwrap();

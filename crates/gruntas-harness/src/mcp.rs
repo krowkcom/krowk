@@ -987,7 +987,7 @@ fn render(r: &Value, images: &mut Vec<crate::images::Decoded>) -> (String, bool)
 /// Connects, initializes and lists the tools, following `nextCursor`.
 async fn start(s: &Server, credentials: Option<&Path>) -> Result<(Conn, (Vec<Tool>, Option<String>)), String> {
     let conn = Conn::open(&s.config, &s.cwd, &s.name, credentials)?;
-    conn.request("initialize", json!({"protocolVersion": MCP_VERSION, "capabilities": {}, "clientInfo": {"name": "krowk", "version": env!("CARGO_PKG_VERSION")}})).await?;
+    conn.request("initialize", json!({"protocolVersion": MCP_VERSION, "capabilities": {}, "clientInfo": {"name": "gruntas", "version": env!("CARGO_PKG_VERSION")}})).await?;
     conn.notify("notifications/initialized").await?;
     let (mut tools, mut listed, mut big, mut unnamed) = (Vec::new(), 0usize, 0usize, 0usize);
     let mut left_out = None;

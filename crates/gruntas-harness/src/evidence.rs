@@ -4,7 +4,7 @@
 //! krowk run and tagged with the session (`krowk.session`).
 //!
 //! The push itself is krowk's own: the harness does not link the registry
-//! client, so the CLI hands the host a `Publisher` that runs `krowk_push`'s
+//! client, so the CLI hands the host a `Publisher` that runs `gruntas_push`'s
 //! code — its root confinement, its credential-file and hard-link refusals,
 //! unchanged — with the session's working directory as the root. What this
 //! module owns is the tool's input, and the session's run: none until the
@@ -13,7 +13,7 @@
 //! later publish — a resumed session's included — attaches to it.
 //!
 //! Every backend is offered it through the tool bridge as
-//! `mcp__krowk__publish`.
+//! `mcp__gruntas__publish`.
 
 use crate::engine::{EngineEvent, Events};
 use schemars::JsonSchema;
@@ -71,9 +71,9 @@ pub struct Producer {
 
 impl Producer {
     /// The engine name for a turn on this instance: its backend's kind
-    /// (`krowk` for an instance with none, which runs no turn).
+    /// (`gruntas` for an instance with none, which runs no turn).
     pub fn new(instance: &crate::instances::Resolved, model: &str) -> Producer {
-        let engine = if instance.backend.is_some() { instance.kind } else { "krowk" };
+        let engine = if instance.backend.is_some() { instance.kind } else { "gruntas" };
         Producer { engine: engine.into(), model: model.into(), provider: instance.provider.clone() }
     }
 }
@@ -182,7 +182,7 @@ mod tests {
             seen.lock().unwrap().push(r.clone());
             Ok(Published { text: format!("published {}", r.files.join(", ")), run: Some(r.run.clone().unwrap_or_else(|| "run_1".into())), for_person: Vec::new() })
         });
-        let producer = Producer { engine: "krowk".into(), model: "claude-sonnet-4-6".into(), provider: "anthropic".into() };
+        let producer = Producer { engine: "gruntas".into(), model: "claude-sonnet-4-6".into(), provider: "anthropic".into() };
         let ev = Evidence::new(publisher, "s-1", None, producer.clone());
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);

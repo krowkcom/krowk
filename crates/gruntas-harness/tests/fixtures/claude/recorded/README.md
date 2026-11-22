@@ -14,7 +14,7 @@ The command, krowk's flags plus `--replay-user-messages`:
 ```text
 claude -p --input-format stream-json --output-format stream-json --verbose
        --include-partial-messages --replay-user-messages --permission-prompt-tool stdio
-       --mcp-config '{"mcpServers":{"krowk":{"type":"sdk","name":"krowk"}}}' --strict-mcp-config
+       --mcp-config '{"mcpServers":{"gruntas":{"type":"sdk","name":"gruntas"}}}' --strict-mcp-config
        --settings '{"attribution":{"commit":"","pr":""},"includeCoAuthoredBy":false}'
        --model claude-haiku-4-5-20251001 --permission-mode default
 ```

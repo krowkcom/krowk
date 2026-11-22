@@ -188,7 +188,7 @@ async fn resource_metadata(http: &reqwest::Client, server: &str, url: &str) -> R
         .header("content-type", "application/json")
         .header("mcp-protocol-version", "2025-06-18")
         .timeout(AUTH_REQUEST_TIMEOUT)
-        .body(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "krowk", "version": env!("CARGO_PKG_VERSION")}}}).to_string())
+        .body(json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "gruntas", "version": env!("CARGO_PKG_VERSION")}}}).to_string())
         .send()
         .await
         .map_err(|e| fail(format!("{server} ({url}) could not be reached: {e}")))?;
@@ -249,7 +249,7 @@ async fn register(http: &reqwest::Client, server: &str, e: &Endpoints, redirect:
         return Err(fail(format!("{server} requires a sign-in, but its authorization server ({}) offers no client registration — krowk cannot sign in to it", e.issuer)));
     };
     let body = json!({
-        "client_name": "krowk",
+        "client_name": "gruntas",
         "redirect_uris": [redirect],
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],

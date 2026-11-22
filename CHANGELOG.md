@@ -66,6 +66,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
   under `refs/gruntas/snapshots/`. The host's runtime directory is
   `$XDG_RUNTIME_DIR/gruntas`, so stop a host daemon the old binary started
   before upgrading.
+- **What agents and integrations see is gruntas.** The MCP server is
+  `gruntas`, its tools `gruntas_push`, `gruntas_list_artifacts`,
+  `gruntas_get_artifact`, `gruntas_claim_artifact`, `gruntas_get_run` and
+  `gruntas_verify_key`; inside a session the bridge's tools are
+  `mcp__gruntas__*`, so allow rules naming `mcp__krowk__*` need renaming.
+  The Claude Code plugin reinstalls as `gruntas@gruntas` (running
+  `npx -y @gruntas/mcp`), the skill is `gruntas`, the Gemini extension and
+  the GitHub Action are named gruntas (the Action installs from
+  `gruntas/gruntas`), and OSC 7501 reports `app=gruntas`. The manifests now
+  document `GRUNTAS_TOKEN`, the variable the CLI actually reads. New
+  sessions record their harness as `gruntas`; sessions stored as `krowk`
+  read as the same harness, so `sessions --harness gruntas` lists both, and
+  `sessions import --from gruntas` reads gruntas's own logs.
 
 ### Changed
 

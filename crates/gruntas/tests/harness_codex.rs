@@ -129,7 +129,7 @@ fn r_inst_2_two_codex_accounts_sign_in_through_codex_login_and_each_runs_a_sessi
         let home = b.data().join("accounts").join(format!("codex-{name}"));
         assert!(backend["transcriptPath"].as_str().unwrap().starts_with(&home.display().to_string()), "{backend}");
         assert_eq!(backend["billing"], "subscription");
-        assert!(events.iter().any(|e| e["type"] == "item.completed" && e["item"]["name"] == "mcp__krowk__session_info"), "krowk's tool ran");
+        assert!(events.iter().any(|e| e["type"] == "item.completed" && e["item"]["name"] == "mcp__gruntas__session_info"), "krowk's tool ran");
         sessions.push(session);
     }
     let fake = b.fake_log();

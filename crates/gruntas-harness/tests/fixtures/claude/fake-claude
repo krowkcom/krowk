@@ -219,8 +219,8 @@ control() {
   *'"subtype":"initialize"'*)
     # As Claude Code does: the MCP servers are connected before initialize
     # is answered.
-    ask '{"subtype":"mcp_message","server_name":"krowk","message":{"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"fake-claude","version":"0"}},"jsonrpc":"2.0","id":0}}'
-    ask '{"subtype":"mcp_message","server_name":"krowk","message":{"method":"tools/list","jsonrpc":"2.0","id":1}}'
+    ask '{"subtype":"mcp_message","server_name":"gruntas","message":{"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"fake-claude","version":"0"}},"jsonrpc":"2.0","id":0}}'
+    ask '{"subtype":"mcp_message","server_name":"gruntas","message":{"method":"tools/list","jsonrpc":"2.0","id":1}}'
     local account=""
     [ -n "${FAKE_CLAUDE_ACCOUNT:-}" ] && account=',"account":{"email":"'"$FAKE_CLAUDE_ACCOUNT"'"}'
     ack "$id" '{"commands":[],"models":[{"value":"sonnet"},{"value":"haiku"}],"pid":'$$$account'}'
@@ -369,7 +369,7 @@ replay() {
 }
 
 init() {
-  emit '{"type":"system","subtype":"init","cwd":"{{CWD}}","session_id":"{{SESSION}}","tools":["Read","Edit","Bash","mcp__krowk__session_info"],"mcp_servers":[{"name":"krowk","status":"connected","source":"sdk"}],"model":"{{MODEL}}","permissionMode":"'$PMODE'","apiKeySource":"'$SOURCE'","claude_code_version":"2.1.280","capabilities":['"${FAKE_CLAUDE_CAPABILITIES-\"interrupt_receipt_v1\",\"interrupt_cancel_queued_v1\"}"']}'
+  emit '{"type":"system","subtype":"init","cwd":"{{CWD}}","session_id":"{{SESSION}}","tools":["Read","Edit","Bash","mcp__gruntas__session_info"],"mcp_servers":[{"name":"gruntas","status":"connected","source":"sdk"}],"model":"{{MODEL}}","permissionMode":"'$PMODE'","apiKeySource":"'$SOURCE'","claude_code_version":"2.1.280","capabilities":['"${FAKE_CLAUDE_CAPABILITIES-\"interrupt_receipt_v1\",\"interrupt_cancel_queued_v1\"}"']}'
 }
 
 turn() {

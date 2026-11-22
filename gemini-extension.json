@@ -1,19 +1,19 @@
 {
-  "name": "krowk",
+  "name": "gruntas",
   "version": "0.18.0",
-  "description": "Publishing from Krowk, the coding agent harness, for Gemini CLI: the krowk MCP server turns a session's screenshots, recordings, diffs and logs into links that unfurl in Slack and Basecamp; in GitHub and Linear, images show inline.",
+  "description": "Publishing from Gruntas, the coding agent harness, for Gemini CLI: the gruntas MCP server turns a session's screenshots, recordings, diffs and logs into links that unfurl in Slack and Basecamp; in GitHub and Linear, images show inline.",
   "contextFileName": "GEMINI.md",
   "mcpServers": {
-    "krowk": {
+    "gruntas": {
       "command": "npx",
-      "args": ["-y", "@krowk/mcp"]
+      "args": ["-y", "@gruntas/mcp"]
     }
   },
   "settings": [
     {
-      "name": "Krowk API key",
+      "name": "Gruntas API key",
       "description": "Optional. Adds run grouping, listings and permanence.",
-      "envVar": "GRUNTAS_API_KEY",
+      "envVar": "GRUNTAS_TOKEN",
       "sensitive": true
     }
   ]

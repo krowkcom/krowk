@@ -27,7 +27,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 REPO_ROOT=$(pwd)
 # The skill the release carries, as the repository holds it.
-SKILL_SRC=skills/krowk/SKILL.md
+SKILL_SRC=skills/gruntas/SKILL.md
 
 host_os=$(uname -s | tr '[:upper:]' '[:lower:]')
 case "$(uname -m)" in
