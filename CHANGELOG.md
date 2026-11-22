@@ -9,6 +9,35 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+## [2026.11.0] - 2026-11-22
+
+**krowk is now gruntas.** This is the first gruntas release, and versions are
+now calendar versions (`YYYY.M.N`). A krowk install can't upgrade itself
+into gruntas, so install it fresh:
+
+- **Installer:** `curl -fsSL https://gruntas.com/install | bash`
+- **npm:** `npm i -g @gruntas/cli` (the MCP server is `@gruntas/mcp`; the
+  `@krowk/*` packages are retired)
+- **Claude Code plugin:** `/plugin marketplace add gruntas/gruntas`, then
+  `/plugin install gruntas@gruntas`; GitHub workflows use
+  `uses: gruntas/gruntas@v0`
+
+**What moved:** the command, its home (`~/.gruntas`, copied once from
+`~/.krowk` on the first run), its environment variables (`GRUNTAS_*`), a
+repository's `.gruntas/`, the packages, the MCP registry entry
+(`io.github.gruntas/gruntas`), this repository (`gruntas/gruntas`) and the
+hosts, now on gruntas.com (`api.gruntas.com`, `relay.gruntas.com`,
+`app.gruntas.com`).
+
+**What didn't:** your account, workspaces, API keys (`krowk_sk_…`), devices
+and artifacts. Links on krowk.com redirect to the same page on gruntas.com.
+
+**Until 2027-01-20:** `api.krowk.com` and `relay.krowk.com` keep serving, so
+krowk installs not yet switched keep working until then. After that date
+they may stop. Switch before it.
+
+The details, and every breaking change, follow.
+
 ### Breaking change
 
 - **krowk is now gruntas.** The command, its home, its environment
@@ -3753,7 +3782,8 @@ was released on GitHub but never published to npm.
   credentials travel, and a refusal is written to stderr and into the JSON
   envelope.
 
-[Unreleased]: https://github.com/krowkcom/krowk/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/gruntas/gruntas/compare/v2026.11.0...HEAD
+[2026.11.0]: https://github.com/gruntas/gruntas/compare/v0.18.0...v2026.11.0
 [0.18.0]: https://github.com/krowkcom/krowk/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/krowkcom/krowk/compare/v0.16.2...v0.17.0
 [0.16.2]: https://github.com/krowkcom/krowk/compare/v0.16.1...v0.16.2
