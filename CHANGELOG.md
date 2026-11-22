@@ -16,8 +16,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   (`gruntas/gruntas`) are renamed, with no fallback to the old names: there
   is no `krowk` command, and `KROWK_*`, `.krowk/` and (after a one-time
   copy) `~/.krowk` are no longer read.
-  Your account, API keys (`krowk_sk_…`) and links on krowk.com are
-  unchanged. To switch:
+  Your account, API keys (`krowk_sk_…`) and links on krowk.com (which
+  redirect to gruntas.com) keep working. To switch:
   - **Install gruntas fresh.** A krowk binary cannot upgrade itself into
     gruntas. Release archives are `gruntas_<version>_<os>_<arch>` and
     `gruntas-lean_…`, holding `gruntas` and `gruntas-mcp`; npm packages are
@@ -104,7 +104,6 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **The help text, the greeting and every message say gruntas.** Hints
   print `gruntas <command>`, `gruntas help` and `gruntas-mcp` describe
   themselves as gruntas, and no `krowk` binary is built any more.
-  Hosts stay on krowk.com for now.
 
 - **Requests and run metadata say gruntas.** The user agent is
   `gruntas-cli/<version>`, and the client recorded on runs and artifacts
