@@ -1,4 +1,4 @@
-//! An in-memory stand-in for api.krowk.com, so the CLI can be tested and
+//! An in-memory stand-in for api.gruntas.com, so the CLI can be tested and
 //! demoed without Postgres, object storage or a Rails process.
 //!
 //! It implements the contract the real registry does — declare, upload,

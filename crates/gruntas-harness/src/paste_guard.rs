@@ -346,13 +346,15 @@ fn bare_in(line: &str) -> Option<String> {
 }
 
 /// The card link a word is, trimmed of the punctuation around it: a link
-/// whose path is `/a/art_<slug>`, with a host before it.
+/// whose path is `/a/art_<slug>`, with a scheme'd host before it, or bare
+/// gruntas.com (or krowk.com, which redirects there).
 fn card_link(word: &str) -> Option<String> {
     let word = word.trim_matches(|c: char| matches!(c, '*' | '_' | '.' | ',' | ';' | ':' | '!' | '?'));
     let at = word.find(ARTIFACT_PATH)?;
     let slug = word[at + ARTIFACT_PATH.len()..].chars().take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit()).count();
     let host = &word[..at];
-    (slug >= SLUG_LENGTH && (host.contains("://") || host.trim_start_matches("www.").starts_with("krowk.com"))).then(|| word.to_string())
+    let site = host.trim_start_matches("www.");
+    (slug >= SLUG_LENGTH && (host.contains("://") || site.starts_with("gruntas.com") || site.starts_with("krowk.com"))).then(|| word.to_string())
 }
 
 /// Whether what precedes a link makes it a gruntas block line's target:
@@ -366,9 +368,9 @@ fn in_block(before: &str, image: Option<usize>) -> bool {
 mod tests {
     use super::*;
 
-    const CARD: &str = "https://krowk.com/a/art_0123456789abcdefghijklmn";
-    const CARD2: &str = "https://krowk.com/a/art_nmlkjihgfedcba9876543210";
-    const FILE: &str = "https://cdn.krowk.com/f/0123456789abcdefghijklmn/shot.png";
+    const CARD: &str = "https://gruntas.com/a/art_0123456789abcdefghijklmn";
+    const CARD2: &str = "https://gruntas.com/a/art_nmlkjihgfedcba9876543210";
+    const FILE: &str = "https://cdn.krowkusercontent.com/f/0123456789abcdefghijklmn/shot.png";
 
     fn refused(cmd: &str) -> bool {
         refusal(cmd, Path::new("/nonexistent")).is_some()
@@ -398,7 +400,7 @@ mod tests {
 
     #[test]
     fn the_block_the_registry_hands_back_goes_through() {
-        let block = "[![cyton-eog.png](https://cdn.krowkusercontent.com/weur/ws_xuv48ya3we0s0mf0bftjsu20/art_5jed46cyrzwfamf3aegkf4lw/cyton-eog.png)](https://krowk.com/a/art_5jed46cyrzwfamf3aegkf4lw)\ncyton-eog.png · [View preview ↗](https://krowk.com/a/art_5jed46cyrzwfamf3aegkf4lw)";
+        let block = "[![cyton-eog.png](https://cdn.krowkusercontent.com/weur/ws_xuv48ya3we0s0mf0bftjsu20/art_5jed46cyrzwfamf3aegkf4lw/cyton-eog.png)](https://gruntas.com/a/art_5jed46cyrzwfamf3aegkf4lw)\ncyton-eog.png · [View preview ↗](https://gruntas.com/a/art_5jed46cyrzwfamf3aegkf4lw)";
         assert!(!refused(&format!("gh pr comment 12 --body 'The EOG trace:\n\n{block}'")));
     }
 
@@ -411,7 +413,7 @@ mod tests {
 
     #[test]
     fn a_multi_artifact_block_goes_through_and_a_stray_link_beside_it_does_not() {
-        let run = "Part of [run](https://krowk.com/r/run_0123456789abcdefghijklmn) · 3 artifacts";
+        let run = "Part of [run](https://gruntas.com/r/run_0123456789abcdefghijklmn) · 3 artifacts";
         let body = format!("{}\n{}\n{}\n{run}", image_block("One", CARD), block("Two", CARD2), block("Three", CARD));
         assert!(!refused(&format!("gh pr comment 1 --body '{body}'")));
         assert!(refused(&format!("gh pr comment 1 --body '{body}\nalso {CARD2}'")));
@@ -422,6 +424,8 @@ mod tests {
         assert!(refused(&format!("gh pr comment 1 --body '[screenshot]({CARD})'")));
         assert!(refused(&format!("gh pr comment 1 --body '<{CARD}>'")));
         assert!(refused(&format!("gh pr comment 1 --body 'see {CARD}?share=tok_abc'")));
+        assert!(refused("gh pr comment 1 --body 'see gruntas.com/a/art_0123456789abcdefghijklmn'"));
+        assert!(refused("gh pr comment 1 --body 'see www.gruntas.com/a/art_0123456789abcdefghijklmn'"));
         assert!(refused("gh pr comment 1 --body 'see krowk.com/a/art_0123456789abcdefghijklmn'"));
         assert!(!refused(&format!("gh pr comment 1 --body '{}'", block("Shared", &format!("{CARD}?share=tok_abc")))));
     }

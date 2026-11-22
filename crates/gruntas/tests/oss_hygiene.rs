@@ -77,7 +77,7 @@ fn r_oss_4_no_telemetry_or_crash_reporter_is_linked() {
 fn r_oss_5_security_md_says_where_to_report() {
     let security = read("SECURITY.md");
     assert!(security.contains("## Reporting a vulnerability"), "SECURITY.md has a reporting section");
-    assert!(security.contains("security@krowk.com"), "SECURITY.md names the private address");
+    assert!(security.contains("security@gruntas.com"), "SECURITY.md names the private address");
 }
 
 /// Names that belong to someone else's product.

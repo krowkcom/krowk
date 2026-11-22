@@ -2,7 +2,7 @@
 # R-REN-13: the product is gruntas. Every line of the repo that still says
 # krowk (`git grep -i krowk`) has to be on scripts/name_sweep.allow, which
 # says why: an identifier existing data, signatures or other machines
-# depend on (D9), a krowk.com host kept until the domain move, the one-time
+# depend on (D9), the krowk.com API and relay old CLIs still use, the one-time
 # copy of ~/.krowk, history. Anything else fails `make check`.
 #
 # An allow entry is a regex taken out of each matching line, or a whole

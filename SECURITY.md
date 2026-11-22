@@ -8,7 +8,7 @@ this repository built.
 
 ## Reporting a vulnerability
 
-Email **security@krowk.com**. Please don't open a public issue, pull request
+Email **security@gruntas.com**. Please don't open a public issue, pull request
 or discussion for a vulnerability.
 
 Include what you found, the version (`gruntas --version`) and platform, and
@@ -34,7 +34,7 @@ before going public.
 
 This repository — the `gruntas` and `gruntas-mcp` binaries, both builds, the
 installer (`scripts/install.sh`), the npm packages and the GitHub Action —
-and the services it talks to: the registry at `api.krowk.com`, the relay,
+and the services it talks to: the registry at `api.gruntas.com`, the relay,
 and the permalinks it serves. The sharpest edges, and the ones we most want
 reports about:
 
@@ -145,7 +145,7 @@ checks the checksum only, over HTTPS, and prints the command.
 without cosign:
 
 ```bash
-curl -fsSL https://krowk.com/install | GRUNTAS_REQUIRE_SIGNATURE=1 bash
+curl -fsSL https://gruntas.com/install | GRUNTAS_REQUIRE_SIGNATURE=1 bash
 ```
 
 Releases before 0.12.0 were not signed, so a `GRUNTAS_VERSION` pinned before

@@ -21,7 +21,7 @@ npx @gruntas/cli push screenshot.png \
 ```
 
 ```
-✓ Uploaded screenshot.png → https://krowk.com/a/art_2e1d
+✓ Uploaded screenshot.png → https://gruntas.com/a/art_2e1d
   412 KB · expires tomorrow
 ```
 

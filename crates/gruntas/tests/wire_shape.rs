@@ -2,7 +2,7 @@
 //!
 //! The stand-in registry keeps the suite hermetic, and that is also its hazard:
 //! a stand-in drifting with the client keeps every other test green while
-//! api.krowk.com answers 404. This list is the one to hold against
+//! api.gruntas.com answers 404. This list is the one to hold against
 //! `bin/rails routes` in the registry when either side moves.
 //!
 //! The binary runs as a subprocess with an empty environment and a temporary

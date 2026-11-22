@@ -193,15 +193,15 @@ mod tests {
         assert!(j.message(&signing(), &challenge()).is_err(), "a second challenge after joining is not answered");
     }
 
-    /// R-RELAY-1: `wss://Relay.krowk.com:443` signs as `wss://relay.krowk.com`,
+    /// R-RELAY-1: `wss://Relay.gruntas.com:443` signs as `wss://relay.gruntas.com`,
     /// and a viewer's join says so.
     #[test]
     fn r_relay_1_a_wss_dial_signs_its_canonical_origin() {
-        let (_, v) = join_sent("wss://Relay.krowk.com:443", RELAY_ROLE_VIEWER, json!({"stream": "cd".repeat(16), "afterSeq": 7}));
+        let (_, v) = join_sent("wss://Relay.gruntas.com:443", RELAY_ROLE_VIEWER, json!({"stream": "cd".repeat(16), "afterSeq": 7}));
         assert_eq!(v["role"], "viewer");
         assert_eq!(v["afterSeq"], 7);
-        assert!(verifies(&v, RELAY_ROLE_VIEWER, "wss://relay.krowk.com"));
-        assert!(Joining::new("relay.krowk.com", SESSION, "production", DeviceId([1; 16]), RELAY_ROLE_VIEWER, json!({})).is_err_and(|e| e == "relay.krowk.com has no origin a relay signs"));
+        assert!(verifies(&v, RELAY_ROLE_VIEWER, "wss://relay.gruntas.com"));
+        assert!(Joining::new("relay.gruntas.com", SESSION, "production", DeviceId([1; 16]), RELAY_ROLE_VIEWER, json!({})).is_err_and(|e| e == "relay.gruntas.com has no origin a relay signs"));
     }
 
     /// R-RELAY-1: the ticket rides the header, the env the query, and
@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn r_relay_1_dial_adds_the_env_but_never_the_ticket() {
         assert_eq!(dial("ws://127.0.0.1:7790/", SESSION, "development", "t0"), Dial { url: format!("ws://127.0.0.1:7790/v1/relay/{SESSION}?env=development"), ticket: "t0".into() });
-        assert_eq!(dial("wss://relay.krowk.com", SESSION, "production", "t0").url, format!("wss://relay.krowk.com/v1/relay/{SESSION}"));
+        assert_eq!(dial("wss://relay.gruntas.com", SESSION, "production", "t0").url, format!("wss://relay.gruntas.com/v1/relay/{SESSION}"));
     }
 
     /// R-CLIENT-1: what the relay says in place of the challenge or of

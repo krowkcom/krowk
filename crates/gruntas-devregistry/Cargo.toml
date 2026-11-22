@@ -1,4 +1,4 @@
-# The stand-in for api.krowk.com that the golden cases and the client's own
+# The stand-in for api.gruntas.com that the golden cases and the client's own
 # tests run against. Test infrastructure: built by no release, never shipped.
 [package]
 name = "gruntas-devregistry"

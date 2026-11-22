@@ -419,7 +419,7 @@ jobs:
 
           # The installer: the full build on a workstation, the lean one in CI
           # and containers (or with --lean)
-          curl -fsSL https://krowk.com/install | bash
+          curl -fsSL https://gruntas.com/install | bash
 
           # Direct download — no runtime, no package manager. gruntas_… is the
           # full build (the agent, sessions); gruntas-lean_… the lean
