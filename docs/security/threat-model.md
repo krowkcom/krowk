@@ -1,6 +1,6 @@
 # Threat model
 
-> Published from Canon, krowk's private design repository (`engineering/threat-model.md` at 9c0ec67). `crypto.md` is in this directory. The other design files it cites, such as `relay.md`, `harness.md` and `devices.md`, are not published.
+> Published from Canon, krowk's private design specs (`canon/engineering/threat-model.md` in `gruntas/cloud` at 7614c20). `crypto.md` is in this directory. The other design files it cites, such as `relay.md`, `harness.md` and `devices.md`, are not published.
 
 What krowk protects, from whom, where each protection lives, and what it does not protect against. This is the public threat model spec R-OSS-1 asks for before sync ships; `crypto.md` is the crypto design it rests on, and `relay.md` the relay's contract. It states each defence once and links the file that holds it, so that the two cannot drift.
 
@@ -26,6 +26,7 @@ Holds ciphertext and metadata; can substitute, replay, reorder, drop and delay a
 - **Cannot change, move or replay content unnoticed.** Each sealed message is bound to its session, direction, the receiver's epoch and a strictly increasing counter; chunks at rest form a chain that binds each one's predecessor and its lease fence; a truncated stream is caught by the missing final sealed message and a truncated log by the head in the sealed index (`crypto.md` → Blob formats, Nonces).
 - **Cannot add its own device.** The device list is signed and chained by the person's devices, and a device adopts a user key only when its id is the one the verified list names; pairing is by a short SPAKE2 code, so the registry gets one online guess per side (`crypto.md` → The device list, Adding a device, Threats to the device list).
 - **Cannot act as a device.** Every registry call that acts as a device is signed by that device's Ed25519 key, which never leaves it, with a five-minute window and a replay memory; a relay join is a signature over the dialled origin and a fresh challenge (`crypto.md` → Signed registry requests, `relay.md` → Joining).
+- **Can drop the start of a session's log.** On Free a log's oldest chunks expire, so a reader accepts a log that starts later when the registry declares it, and shows it as expired history; a registry claiming the plan is Free can do the same to a paid session. That is what deleting the chunks already does; what is left still has to chain, and a log that stops short of a head the reader holds is still refused (`crypto.md` → An expired start).
 - **Can drop, delay or fake a generic alert.** It sends the push notifications, so it can make a phone buzz for nothing, late, or not at all. It cannot make the alert show content, since it has none to put there, nor answer for it: an approval is still a signed command over the relay.
 - **Can** see the metadata `crypto.md` → What the server side can and cannot see lists: how many devices and sessions an account has, when each is active, every message's size and timing, device host names, the addresses devices connect from. And it can deny service.
 
@@ -76,12 +77,13 @@ Each is known, named here rather than left for a reader to find, and either acce
 - **Published artifacts carry plaintext metadata** — the session id, engine, model and provider — by design, so a card can link back to its session (`metadata.md`). Publishing is a per-file choice.
 - **The OS sandbox's `workspace` profile shares the host's network namespace**, so a command can connect to an abstract Unix socket a host program listens on (X11's `@/tmp/.X11-unix/X0`, others). `strict` and `read-only` have their own namespace and reach none (`harness.md` → The OS sandbox).
 - **Workspace files a host tool runs later** — `.cargo/config.toml`, `.envrc`, `.vscode/tasks.json`, a `Makefile`, `package.json` scripts, husky's `.husky/<hook>` scripts — are written freely under `workspace`: writing the workspace is that profile's point, and what runs them is the person, later, outside the sandbox. What git itself runs (`.git`, every nested repository's, the directory `core.hooksPath` names, husky's `.husky/_` included) stays read-only.
+- **A background job is swept when it exits, not after each call.** A foreground call's sweep (`harness.md` → The OS sandbox) runs once the call's pid namespace is empty, so nothing the call started can plant a link after it. A background job (`harness.md` → Tools, R-STEER-2) runs beside later calls, so until it exits, a `.git` or a link it plants can outlive the sweep of every call that ran meanwhile, and a git that the person or a later call runs in that window can follow it. The sweep at the job's exit, once its namespace is empty, removes what it left as a call's sweep does: the `.git` and fenced directories it created, anything but a regular file or directory in a krowk worktree's writable git directories, and access it locked away. It does not undo what ran in the window, such as a hook git ran or a commit that followed a link. And it cannot tell who made what appeared: a repository the person cloned into the workspace while the job ran is removed with the rest, as one made during a long foreground call would be, so the job's note names what the sweep removed. The window is the job's lifetime, which has no timeout; `kill_bash` closes it early, and the job ends with the session's host.
 - **A trusted repository's MCP config reads the person's environment.** `${VAR}` and `${VAR:-default}` in a `.mcp.json` server's `url`, `headers`, `env`, `args` and `command` are expanded from krowk's environment, as Claude Code expands them, so a repository the person trusted can send an environment secret — a token in their shell — to a host it chose. Untrusted, a repository's servers are not started at all (`harness.md` → MCP servers). Accepted because trust is the line: a trusted repository may already run commands with the person's whole environment, through its hooks and its servers.
 - **The audit has not happened** (below).
 
 ## The independent audit
 
-Spec R-OSS-2: an independent audit of the crypto and the relay before Pro sync reaches general availability. A beta may ship before it. Booking it is a person's job, recorded on the spec message; performing it is Harness P2 ticket 37. This is what it covers.
+Spec R-OSS-2: an independent audit of the crypto and the relay before sync reaches general availability. A beta may ship before it. Booking it is a person's job, recorded on the spec message; performing it is Harness P2 ticket 37. This is what it covers.
 
 **In scope**
 
@@ -97,7 +99,7 @@ Spec R-OSS-2: an independent audit of the crypto and the relay before Pro sync r
 
 ## Change log
 
-- **2026-11-21** — Native loop removal NL06: krowk no longer runs its own tools, so the accepted risk of a background job's sweep coming at its exit is gone with them.
+- **2026-11-19** — Sync paywall: a hostile registry can drop the start of a session's log, shown as expired history (`crypto.md` → An expired start).
 - **2026-10-25** — Harness P4 ticket 129: An iPhone in someone else's hand — the on-device cache of session lists and recent transcripts is readable only while the phone is unlocked (`.complete`), like the transcript on screen, and kept out of backups.
 - **2026-10-23** — Harness P4 ticket 91: A lost, stolen or removed device — what Face ID before an allow on the iPhone stops (an unlocked phone in someone else's hand approving a command) and what it doesn't (a persuaded owner, a known passcode, code inside the unlocked app, reading and denying) (R-IOS-11).
 - **2026-10-22** — Harness P4 ticket 88: Content the agent reads — what it writes back is hostile to its reader: the iPhone's rules for drawing agent output (R-IOS-10).
