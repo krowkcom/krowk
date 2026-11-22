@@ -8,12 +8,13 @@
 //! phone's pairing invite, left with the phone code; nothing here builds it.)
 //! scripts/name_sweep.allow lets the same names through the krowk sweep.
 
-#![cfg(feature = "harness")]
+#![cfg(all(feature = "harness", unix))]
 
 use gruntas::runctx::{self, Link, Metadata};
 use gruntas_api::client as registry;
 use gruntas_client::{device_chain, e2e, pairing, recovery, relay_link, relay_ticket, session_record, user_key};
-use gruntas_harness::sync::mdns;
+use gruntas_harness::connect;
+use gruntas_harness::sync::{handoff, mdns};
 
 #[test]
 fn d9_the_domain_separation_labels_are_unchanged() {
@@ -75,6 +76,8 @@ fn d9_the_headers_prefixes_and_discovery_name_are_unchanged() {
         (gruntas_api::API_KEY_PREFIX, "krowk_sk_"),
         (gruntas_api::CLAIM_TOKEN_PREFIX, "krowk_claim_"),
         (mdns::SERVICE, "_krowk._tcp.local."),
+        (connect::PROVIDER_PREFIX, "krowk-"),
+        (handoff::JOB_REFS, "refs/krowk/jobs/"),
     ];
     for (got, want) in names {
         assert_eq!(got, want, "{want} changed");

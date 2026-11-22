@@ -309,6 +309,11 @@ pub struct JobApplied {
     pub snapshot: String,
 }
 
+/// Where a job's commits are held while it is placed. Historical: the
+/// hand-off between machines keeps the old name (the gruntas crate's
+/// `historical_names` test pins it).
+pub const JOB_REFS: &str = "refs/krowk/jobs/";
+
 /// The target's half of a job: as `apply`, a fresh worktree of `repo` at
 /// the job's base with its changes, and the state recorded as a snapshot
 /// commit. Refused (`bad_job` to the supervisor) for a `base` that is not
@@ -361,7 +366,7 @@ pub fn apply_job(b: &Bundle, repo: &Path, worktrees: &Path) -> Result<JobApplied
     // ref of gruntas's own (never a branch or tag the person has). They stand
     // on commits a remote has, which the clone may lack: then origin is
     // fetched and the bundle read again.
-    let job_ref = format!("refs/krowk/jobs/{}", b.base);
+    let job_ref = format!("{JOB_REFS}{}", b.base);
     let unbundle = || {
         if !b.commits.is_empty() && git_run(repo, &["-c", "transfer.fsckObjects=true", "bundle", "unbundle", "-"], Some(&b.commits)).is_ok() && has() {
             let _ = git_run(repo, &["update-ref", &job_ref, &b.base], None);

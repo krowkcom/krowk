@@ -34,7 +34,8 @@ in crates/gruntas/tests/harness_connect.rs :: krowk-
 # as gruntas.
 in crates/gruntas-client/src/protocol.rs :: alias = "krowk"
 in crates/gruntas-harness/src/codex/mod.rs :: "namespace": "krowk"
-in crates/gruntas-store/src/** :: \bkrowk\b
+in crates/gruntas-store/src/query.rs :: `krowk`|"krowk"
+in crates/gruntas-store/src/writer.rs :: "krowk"|reads krowk as
 in crates/gruntas/tests/sessions_vintage.rs :: \bkrowk\b
 in crates/gruntas/tests/sync_cli.rs :: "krowk"
 
@@ -46,12 +47,11 @@ krowkusercontent\.com
 # shares its keys, so it stays fenced; the old XDG layout is moved in once.
 file: crates/gruntas-api/src/migrate.rs
 file: crates/gruntas/tests/home_migration.rs
-\.(config|cache|local/share)/krowk\b
-~/\.krowk\b
-"\.krowk"
-in crates/gruntas-api/src/home.rs :: \bkrowk('s)?\b|copy_krowk|krowk_home
-in crates/gruntas-harness/src/permissions/mod.rs :: \bkrowk(_home)?\b
-in scripts/test_home.sh :: krowk's
+in crates/gruntas-api/src/home.rs :: krowk's (own )?home \(`~/\.krowk`\)|an older krowk|\bkrowk\b(?=[\],])|let krowk =|migrate::(copy_krowk|krowk_home)|"/h/\.krowk"
+in crates/gruntas-harness/src/permissions/mod.rs :: the old `~/\.krowk`|let krowk =|migrate::krowk_home|\bkrowk\.iter
+in crates/gruntas/src/mcp.rs :: "\.krowk"|`~/\.krowk`
+in scripts/test_home.sh :: krowk's ~/\.krowk
+in tests/golden/cases/one-home/cmd :: \.(config|local/share|cache)/krowk\b
 # D7: a repository's old .krowk/ is not read, and not fenced.
 in crates/gruntas-harness/src/permissions/** :: \.krowk\b
 
@@ -67,7 +67,7 @@ file: scripts/install_test.sh
 file: CHANGELOG.md
 file: docs/security/**
 krowkcom/krowk-apps
-in README.md :: \bkrowk\b
+in README.md :: Coming from krowk\?|a krowk binary|`~/\.krowk`|`krowk@krowk`
 # Recordings of real Claude Code runs, kept as recorded.
 file: crates/gruntas-harness/tests/fixtures/claude/recorded/*.txt
 

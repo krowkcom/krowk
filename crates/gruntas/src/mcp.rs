@@ -84,7 +84,7 @@ const SECRET_NAMES: &[&str] = &[
 ];
 
 /// gruntas's home, wherever `GRUNTAS_HOME` put it, the default `~/.gruntas`,
-/// gruntas's `~/.krowk`, and a move's staging directory and lock beside
+/// the old `~/.krowk` it was copied from, and a move's staging directory and lock beside
 /// each: their keys, logins and sessions are never published, whatever the
 /// path is called.
 fn in_gruntas_home(real: &Path) -> bool {
