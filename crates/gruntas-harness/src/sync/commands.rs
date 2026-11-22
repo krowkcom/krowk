@@ -767,8 +767,12 @@ async fn follow(c: &Config, a: &Announcer, task: &RunTask, child: &Child, ran: &
 
 /// The origin a host command's prompt carries when an agent sent the
 /// command: its session, which the started session records as its parent.
+/// An id that is no session id is dropped, as a command from another device
+/// is not trusted to name what the log then records. Note that a session
+/// with a parent is read as a subagent elsewhere (it is not bridged for
+/// sync, and takes no model switch).
 fn sent_by(session: Option<&str>) -> Option<Box<crate::protocol::Origin>> {
-    session.map(|s| Box::new(crate::protocol::Origin { kind: crate::protocol::OriginKind::Agent, session_id: Some(s.to_string()), device: None }))
+    session.filter(|s| crate::log::valid_id(s)).map(|s| Box::new(crate::protocol::Origin { kind: crate::protocol::OriginKind::Agent, session_id: Some(s.to_string()), device: None }))
 }
 
 async fn start(c: &Config, cwd: &str, model: crate::protocol::ModelRef, prompt: String, sending_session: Option<String>, mode: PermissionMode, tell: &dyn Fn(HostAnswer)) {

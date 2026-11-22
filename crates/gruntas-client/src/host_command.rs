@@ -97,6 +97,9 @@ pub struct RunTask {
     pub requested_by: String,
     /// The session that delegated the task, when an agent did (D4): the
     /// child records it as its parent. Absent, the child has no parent.
+    /// Nothing sends it yet: a session with a parent is read as a subagent
+    /// (not bridged for sync), so the sender waits for the ticket that
+    /// settles that.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sending_session: Option<String>,
     /// A mode stricter than the host's own for the directory, when the
