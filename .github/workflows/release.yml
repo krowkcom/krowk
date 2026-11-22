@@ -1,6 +1,6 @@
 name: Release
 
-# A tag is the whole trigger. `git tag -a v0.1.0 -m ... && git push origin v0.1.0`
+# A tag is the whole trigger. `git tag -a v2026.11.0 -m ... && git push origin v2026.11.0`
 # checks the tag, builds both builds of gruntas (full and lean) and gruntas-mcp for
 # five platforms in parallel (dist.yml), rebuilds one platform on a second
 # runner and refuses to go on unless the bytes match, signs the checksums and
@@ -8,9 +8,10 @@ name: Release
 # seven npm packages with provenance and, for a stable release, server.json to
 # the MCP registry. SECURITY.md says how to verify each.
 #
-# Three components, deliberately: the moving major tag this workflow pushes at
+# Three components, deliberately: the moving `v0` tag this workflow pushes at
 # the end is also `v*`, and a release run for `v0` would cut a release of
-# version "0" and ask npm to publish it.
+# version "0" and ask npm to publish it. Which three is the `check` job's
+# first step (scripts/release_tag.sh): calendar versions, YYYY.M.N.
 on:
   push:
     tags: ["v[0-9]*.[0-9]*.[0-9]*"]
@@ -33,8 +34,10 @@ jobs:
         with:
           persist-credentials: false
 
+      # vYYYY.M.N or vYYYY.M.N-rcK, with no leading zero in the month or N;
+      # any other tag stops here, before anything is built or published.
       - id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(scripts/release_tag.sh "$GITHUB_REF_NAME")" >> "$GITHUB_OUTPUT"
 
       # The release notes are the tag's CHANGELOG.md section, written for the
       # people upgrading, rather than a list of every commit.
@@ -43,7 +46,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          # A pre-release (v0.12.0-rc1) carries its release's notes, so
+          # A pre-release (v2026.11.0-rc1) carries its release's notes, so
           # every rc of one version reads the same CHANGELOG.md section.
           v="${VERSION%%-*}"
           awk -v v="$v" '
@@ -496,15 +499,17 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: node npm/publish.mjs
 
-      # The moving major tag, so `uses: gruntas/gruntas@v0` follows the 0.x line
-      # instead of freezing a workflow on one patch release. It moves once the
+      # The moving `v0` tag, so `uses: gruntas/gruntas@v0` follows every
+      # stable release instead of freezing a workflow on one. Named here, not
+      # derived from the version: a calendar version's first number is a year,
+      # and `v2026` is a tag nobody uses. It moves once the
       # release exists and npm carries the packages: a tag pointing at bytes
       # nobody can download yet is worse than a tag that lags by a minute.
       #
       # Pushed through the API rather than git, because the checkout above keeps
       # no credentials on disk. A ref moved by GITHUB_TOKEN starts no workflow
       # run either way, and the narrowed trigger above would ignore it.
-      - name: Move the major tag
+      - name: Move the v0 tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -512,22 +517,21 @@ jobs:
           # A prerelease is not what `@v0` should hand an unsuspecting workflow.
           case "$GITHUB_REF_NAME" in
             *-*)
-              echo "::notice::$GITHUB_REF_NAME is a prerelease, so the major tag stays where it is"
+              echo "::notice::$GITHUB_REF_NAME is a prerelease, so v0 stays where it is"
               exit 0
               ;;
           esac
-          major="${GITHUB_REF_NAME%%.*}"
-          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$major" \
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/v0" \
             -f sha="$GITHUB_SHA" -F force=true >/dev/null \
             || gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
-              -f ref="refs/tags/$major" -f sha="$GITHUB_SHA" >/dev/null
-          echo "\`$major\` now points at $GITHUB_REF_NAME." >> "$GITHUB_STEP_SUMMARY"
+              -f ref="refs/tags/v0" -f sha="$GITHUB_SHA" >/dev/null
+          echo "\`v0\` now points at $GITHUB_REF_NAME." >> "$GITHUB_STEP_SUMMARY"
 
       # The MCP registry entry, io.github.gruntas/gruntas, from the tag's
       # server.json (the check job held its versions to the tag). The registry
       # checks that npm carries @gruntas/mcp at that version naming this entry,
       # so it goes after npm; and last, so a registry that refuses it fails
-      # this job visibly with the release, npm and the major tag already done,
+      # this job visibly with the release, npm and v0 already done,
       # and nothing is taken back. Re-running the job, whose steps above each
       # finish what is half done, publishes it then. A prerelease keeps the
       # entry where it was.

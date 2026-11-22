@@ -140,11 +140,12 @@ jobs:
             exit 1
           }
 
-      # The moving major tag has no release of its own, so it installs the
-      # latest — and the guard in the step refuses to hand a workflow that
-      # asked for 0.x a binary from another major line.
-      - name: The moving major tag installs that major
+      # The moving `v0` tag has no release of its own, so it installs the
+      # latest, whatever its number: v0 follows every stable release.
+      - name: The moving v0 tag installs the latest release
         if: runner.os == 'Linux'
+        env:
+          LATEST: ${{ needs.release.outputs.latest }}
         run: |
           set -euo pipefail
           ruby -ryaml -e 'puts YAML.load_file("action.yml")["runs"]["steps"][0]["run"]' > /tmp/install_step.sh
@@ -153,22 +154,8 @@ jobs:
           mkdir -p /tmp/major && : > /tmp/major_path
           bash /tmp/install_step.sh
           got=$(/tmp/major/gruntas-bin/gruntas --version)
-          case "$got" in
-            0.*) echo "@v0 installed $got" ;;
-            *) echo "::error::@v0 installed $got, which the guard should have refused" >&2; exit 1 ;;
-          esac
-          # The same step, asked for a major that is not the latest line, must
-          # fail rather than install across it.
-          export GITHUB_ACTION_REF=v9 RUNNER_TEMP=/tmp/major9 GITHUB_PATH=/tmp/major9_path
-          mkdir -p /tmp/major9 && : > /tmp/major9_path
-          if out=$(bash /tmp/install_step.sh 2>&1); then
-            echo "::error::@v9 installed a 0.x binary instead of failing" >&2
-            exit 1
-          fi
-          grep -q "not on the 9.x line" <<<"$out" || {
-            echo "::error::@v9 failed, but not about the major: $out" >&2
-            exit 1
-          }
+          [[ "$got" == "${LATEST#v}" ]] || { echo "::error::@v0 installed $got, not the latest release $LATEST" >&2; exit 1; }
+          echo "@v0 installed $got"
 
       - name: A ** glob fails plainly on bash 3.2
         if: runner.os == 'macOS'

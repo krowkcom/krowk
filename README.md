@@ -53,6 +53,10 @@ gruntas -p --resume <id> "go on" # continue an earlier session
 
 `gruntas help` lists the commands, `gruntas help --all` every one, and `--json` gives them as data. [`skills/gruntas/SKILL.md`](skills/gruntas/SKILL.md) teaches another agent to use gruntas, and in Claude Code `/plugin marketplace add gruntas/gruntas` and `/plugin install gruntas@gruntas` add the skill and the MCP server.
 
+## Versions
+
+Releases use calendar versions, `YYYY.M.N` (`2026.11.0` is November 2026's first release), and the number promises nothing about compatibility. Removing or changing the meaning of a command, flag, environment variable, config key, or MCP tool or its arguments is a breaking change: it is announced in [CHANGELOG.md](CHANGELOG.md) at least one release ahead with the date it takes effect, and the release that makes it lists it under **Breaking change**. Each release is supported for one year, after which breaking changes may affect it without notice. `uses: gruntas/gruntas@v0` follows every stable release; pin a release tag to stay on one.
+
 ## Development
 
 Build, test and benchmark instructions are in [the development docs](https://gruntas.com/docs#development). See [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
