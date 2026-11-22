@@ -436,11 +436,11 @@ fn harness_gruntas_lists_a_session_stored_as_krowk_and_a_new_one() {
         gruntas_store::Writer::new(&conn).ingest(&gruntas_store::Thread { worktree, session, binding, ..Default::default() }).unwrap();
     }
     let m = Machine { home: home.clone(), api_url: "http://127.0.0.1:9/v1".into(), token: FREE_TOKEN };
-    let (ok, _, out) = m.krowk(&["sessions", "--harness", "gruntas"]);
+    let (ok, _, out) = m.gruntas(&["sessions", "--harness", "gruntas"]);
     assert!(ok && out.contains(&old) && !out.contains(&new), "the old session, before any import: {out}");
-    let (ok, _, out) = m.krowk(&["sessions", "import", "--from", "gruntas"]);
+    let (ok, _, out) = m.gruntas(&["sessions", "import", "--from", "gruntas"]);
     assert!(ok, "{out}");
-    let (ok, v, out) = m.krowk(&["sessions", "--harness", "gruntas"]);
+    let (ok, v, out) = m.gruntas(&["sessions", "--harness", "gruntas"]);
     assert!(ok, "{out}");
     let listed = v["data"]["sessions"].as_array().unwrap_or_else(|| panic!("{out}"));
     let mut got: Vec<(String, String)> = listed.iter().map(|s| (s["id"].as_str().unwrap().to_string(), s["harness"].as_str().unwrap().to_string())).collect();

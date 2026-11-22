@@ -268,7 +268,7 @@ fn a_gh_post_with_a_bare_card_link_is_denied_by_krowks_hook_in_every_mode() {
         let host = home.host(vec![("claude", home.instance(&dir, Some("paste_guard.jsonl")))], trust::allow_all());
         let lines = rt().block_on(async {
             let (lines, r) = run(&host, prompt(None, "post the result", "claude/sonnet", mode)).await;
-            assert_eq!(r.unwrap().unwrap().result, "Posted the gruntas block.", "{mode:?}");
+            assert_eq!(r.unwrap().unwrap().result, "Posted the krowk block.", "{mode:?}");
             host.shutdown().await;
             lines
         });
