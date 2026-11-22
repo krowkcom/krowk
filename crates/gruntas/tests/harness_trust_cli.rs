@@ -114,7 +114,7 @@ fn trust_revoke_drops_the_recorded_mcp_digest() {
     let b = Sandbox::new("digest");
     std::fs::write(b.repo().join(".mcp.json"), r#"{"mcpServers": {"x": {"command": "x"}}}"#).unwrap();
     b.json(&["trust", "--json"]);
-    let file = b.root.join("home/.krowk/trusted.json");
+    let file = b.root.join("home/.gruntas/trusted.json");
     let held: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
     assert!(held["mcp"].as_object().is_some_and(|m| m.len() == 1), "{held}");
     b.json(&["trust", "--revoke", "--json"]);

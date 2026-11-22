@@ -66,7 +66,7 @@ to krowk_claim_artifact if the upload should be grouped with the rest of them.
 krowk_push only uploads files from the working directory and below. Anything
 outside it is refused, symlinks included, and credential files are refused even
 inside it — .env, .ssh, .aws, .netrc, private keys, credentials.json, and
-anything in krowk's own home (~/.krowk). An artifact
+anything in gruntas's own home (~/.gruntas). An artifact
 is published at a URL that needs no credential to read — `private: true` narrows
 who finds the card, not who can fetch the bytes off the link — so do not try to
 route around this: if a file you were asked to share sits elsewhere, say so and
@@ -83,9 +83,10 @@ const SECRET_NAMES: &[&str] = &[
     "credentials.json", ".gruntas", ".krowk", "id_rsa", "id_ed25519", "id_ecdsa",
 ];
 
-/// krowk's home, wherever `GRUNTAS_HOME` put it, the default `~/.krowk`, and
-/// a move's staging directory and lock beside each: their keys, logins and
-/// sessions are never published, whatever the path is called.
+/// gruntas's home, wherever `GRUNTAS_HOME` put it, the default `~/.gruntas`,
+/// krowk's `~/.krowk`, and a move's staging directory and lock beside
+/// each: their keys, logins and sessions are never published, whatever the
+/// path is called.
 fn in_krowk_home(real: &Path) -> bool {
     gruntas_api::home::fenced(&gruntas_api::home::process_env).iter().any(|h| gruntas_api::home::holds(h, real))
 }

@@ -12,7 +12,7 @@ use std::process::{Command, Output, Stdio};
 fn home(name: &str) -> PathBuf {
     let root = std::env::temp_dir().join(format!("krowk-machines-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(root.join(".krowk")).unwrap();
+    std::fs::create_dir_all(root.join(".gruntas")).unwrap();
     root.canonicalize().unwrap()
 }
 
@@ -31,7 +31,7 @@ fn krowk(home: &Path, args: &[&str]) -> Output {
 }
 
 fn config(home: &Path) -> Value {
-    serde_json::from_slice(&std::fs::read(home.join(".krowk/config.json")).unwrap()).unwrap()
+    serde_json::from_slice(&std::fs::read(home.join(".gruntas/config.json")).unwrap()).unwrap()
 }
 
 /// Slice 09 (R-ALLOC-12, D14): `accept off` writes `sync.accept: false`
@@ -40,7 +40,7 @@ fn config(home: &Path) -> Value {
 #[test]
 fn alloc_09_accept_off_and_on_set_sync_accept() {
     let home = home("accept");
-    std::fs::write(home.join(".krowk/config.json"), json!({"sync": {"idleMinutes": 5}}).to_string()).unwrap();
+    std::fs::write(home.join(".gruntas/config.json"), json!({"sync": {"idleMinutes": 5}}).to_string()).unwrap();
     let off = krowk(&home, &["machines", "accept", "off"]);
     assert!(off.status.success(), "{}", String::from_utf8_lossy(&off.stderr));
     assert_eq!(config(&home)["sync"], json!({"idleMinutes": 5, "accept": false}));

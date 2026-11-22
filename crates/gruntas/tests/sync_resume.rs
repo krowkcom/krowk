@@ -43,7 +43,7 @@ fn r_sync_1_resume_of_a_session_only_another_machine_holds_attaches_it_through_s
     let home = |name: &str| {
         let dir = root.join(name);
         std::fs::create_dir_all(&dir).unwrap();
-        let ks = Keystore::new(&dir.join(".krowk"));
+        let ks = Keystore::new(&dir.join(".gruntas"));
         ks.recover(AccountKey::from_bytes(*account.as_bytes())).unwrap();
         (dir, ks)
     };

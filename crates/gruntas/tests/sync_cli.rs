@@ -172,7 +172,7 @@ impl World {
         std::os::unix::fs::symlink(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../gruntas-harness/tests/fixtures/claude/fake-claude"), bin.join("claude")).unwrap();
         std::fs::create_dir_all(home.join(".claude")).unwrap();
         std::fs::write(home.join(".claude/fake-login"), "").unwrap();
-        std::fs::write(home.join(".krowk/trusted.json"), serde_json::json!({"directories": [repo]}).to_string()).unwrap();
+        std::fs::write(home.join(".gruntas/trusted.json"), serde_json::json!({"directories": [repo]}).to_string()).unwrap();
         vec![
             ("PATH".into(), format!("{}:/usr/bin:/bin", bin.display())),
             ("FAKE_CLAUDE_SCENARIO".into(), self.scenario.display().to_string()),
@@ -184,13 +184,13 @@ impl World {
         let home = self.root.join(name);
         let repo = home.join("repo");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
-        std::fs::create_dir_all(home.join(".krowk")).unwrap();
+        std::fs::create_dir_all(home.join(".gruntas")).unwrap();
         let run = PathBuf::from(format!("/tmp/krowk-sc-{}-{name}-{}", self.name, std::process::id()));
         let _ = std::fs::remove_dir_all(&run);
         std::fs::create_dir_all(&run).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let ks = Keystore::new(&home.join(".krowk"));
+        let ks = Keystore::new(&home.join(".gruntas"));
         ks.recover(AccountKey::from_bytes(*self.account.as_bytes())).unwrap();
         let api = {
             let mut people = self.people.lock().unwrap();
@@ -221,8 +221,8 @@ impl World {
         let home = self.root.join(name);
         let repo = home.join("repo");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
-        std::fs::create_dir_all(home.join(".krowk")).unwrap();
-        std::fs::write(home.join(".krowk/config.json"), "{}").unwrap();
+        std::fs::create_dir_all(home.join(".gruntas")).unwrap();
+        std::fs::write(home.join(".gruntas/config.json"), "{}").unwrap();
         let run = PathBuf::from(format!("/tmp/krowk-sc-{}-{name}-{}", self.name, std::process::id()));
         let _ = std::fs::remove_dir_all(&run);
         std::fs::create_dir_all(&run).unwrap();
@@ -258,7 +258,7 @@ impl Machine {
 
     /// The one session this machine has logged.
     fn session(&self) -> String {
-        let dir = self.home.join(".krowk/sessions");
+        let dir = self.home.join(".gruntas/sessions");
         std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).find(|n| n.len() == 36).expect("a session was logged")
     }
 }
@@ -444,12 +444,12 @@ fn sync_attach_hears_a_prompt_the_host_refuses_as_untrusted_and_the_next_runs_on
     let a = w.machine("a");
     let b = w.machine("b");
     // A's repository on no trusted list.
-    std::fs::remove_file(a.home.join(".krowk/trusted.json")).unwrap();
+    std::fs::remove_file(a.home.join(".gruntas/trusted.json")).unwrap();
     let added = a.command(&["providers", "add", "claude", "--json"]).output().unwrap();
     assert!(added.status.success(), "A adds Claude Code: {}", String::from_utf8_lossy(&added.stderr));
     let made = a.command(&["-p", "hello", "--model", "claude/sonnet", "--trust"]).output().unwrap();
     assert!(made.status.success(), "A makes a session: {}", String::from_utf8_lossy(&made.stderr));
-    let trusted = a.home.join(".krowk/trusted.json");
+    let trusted = a.home.join(".gruntas/trusted.json");
     assert!(!trusted.exists(), "--trust is for one run");
     let session = a.session();
     let host = Running::spawn(a.command(&["sync", "host", &session]));
@@ -500,7 +500,7 @@ fn r_switch_4_sync_attach_names_a_limits_offer_and_switch_takes_it() {
     let result = view.until("the turn again", |v| v["type"] == "result" && v["sessionId"] == session.as_str());
     assert_eq!((result["status"].as_str(), result["model"]["instance"].as_str()), (Some("completed"), Some("claude:personal")), "{result}");
     assert!(result["result"].as_str().is_some_and(|r| r.contains("on the other")), "{result}");
-    let log = std::fs::read_to_string(a.home.join(".krowk/sessions").join(&session).join("events.jsonl")).unwrap();
+    let log = std::fs::read_to_string(a.home.join(".gruntas/sessions").join(&session).join("events.jsonl")).unwrap();
     let events: Vec<serde_json::Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     let switched: Vec<_> = events.iter().filter(|e| e["type"] == "model.switched").collect();
     assert_eq!(switched.len(), 1, "{switched:?}");
@@ -524,7 +524,7 @@ fn r_roll_12_sync_attach_switch_takes_an_early_offer_without_sending_again() {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
     // Five hours 90% used before the turn takes it to 96%; the other
     // account seen with room, on the same model.
-    let usage = gruntas_harness::usage::Usage::in_home(&a.home.join(".krowk"));
+    let usage = gruntas_harness::usage::Usage::in_home(&a.home.join(".gruntas"));
     for (instance, used) in [("claude", 90.0), ("claude:personal", 20.0)] {
         usage.record_instance(instance, instance, &["sonnet".to_string()], now).unwrap();
         let limit = gruntas_harness::protocol::LimitStatus { status: gruntas_harness::protocol::LimitState::Allowed, window: Some("five_hour".into()), used_percent: Some(used), resets_at_ms: Some(now + 3_600_000) };
@@ -541,7 +541,7 @@ fn r_roll_12_sync_attach_switch_takes_an_early_offer_without_sending_again() {
     view.until("the switch", |v| v["type"] == "model.switched" && v["to"]["instance"] == "claude:personal");
     std::thread::sleep(Duration::from_millis(500));
     assert!(prompts(&other).is_empty(), "nothing was sent again");
-    let log = std::fs::read_to_string(a.home.join(".krowk/sessions").join(&session).join("events.jsonl")).unwrap();
+    let log = std::fs::read_to_string(a.home.join(".gruntas/sessions").join(&session).join("events.jsonl")).unwrap();
     let turns = log.lines().filter(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["type"] == "turn.started").count();
     assert_eq!(turns, 2, "hello and the early one, no third");
 }
@@ -557,7 +557,7 @@ fn personal(w: &World, a: &Machine) -> PathBuf {
     let log = a.home.join("claude-personal.log");
     let env = serde_json::json!({"FAKE_CLAUDE_SCENARIO": scenario, "FAKE_CLAUDE_LOG": log});
     let config = serde_json::json!({"instances": {"claude:personal": {"kind": "claude-code", "configDir": dir, "env": env}}});
-    std::fs::write(a.home.join(".krowk/config.json"), config.to_string()).unwrap();
+    std::fs::write(a.home.join(".gruntas/config.json"), config.to_string()).unwrap();
     log
 }
 
@@ -680,7 +680,7 @@ fn sync_host_refuses_when_the_registry_cannot_give_it_the_device_list() {
     let w = World::new("stale-list");
     let a = w.machine("a");
     let id = "01a0ec7b-3333-7000-8000-000000000033";
-    let log = a.home.join(".krowk/sessions").join(id);
+    let log = a.home.join(".gruntas/sessions").join(id);
     std::fs::create_dir_all(&log).unwrap();
     std::fs::write(log.join(gruntas_harness::log::EVENTS_FILE), "").unwrap();
     let dead = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -702,7 +702,7 @@ fn sync_host_takes_the_id_an_older_store_listed_a_session_under() {
     let w = World::new("store-id");
     let a = w.machine("a");
     let log_id = "01a0ec7b-4444-7000-8000-000000000044";
-    let log = a.home.join(".krowk/sessions").join(log_id);
+    let log = a.home.join(".gruntas/sessions").join(log_id);
     std::fs::create_dir_all(&log).unwrap();
     std::fs::write(log.join(gruntas_harness::log::EVENTS_FILE), "").unwrap();
     let home = a.home.display().to_string();
@@ -820,7 +820,7 @@ fn r_net_1_sync_host_goes_direct_with_the_ticket_keys_the_registry_publishes() {
     a.env.retain(|(k, _)| k != "GRUNTAS_TAILSCALE_SOCKET");
     a.env.push(("GRUNTAS_TAILSCALE_SOCKET".into(), socket.display().to_string()));
     assert!(!a.env.iter().any(|(k, _)| k == "GRUNTAS_RELAY_TICKET_KEYS"));
-    let kept = a.home.join(".krowk/cache/relay-ticket-keys.json");
+    let kept = a.home.join(".gruntas/cache/relay-ticket-keys.json");
     std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
     std::fs::write(&kept, serde_json::json!({"registry": w.api, "fetchedMs": now, "ticketKeys": {e2e::hex(&gruntas_devregistry::TICKET_KID): "ab".repeat(32)}}).to_string()).unwrap();
@@ -856,7 +856,7 @@ fn r_net_1_with_tailscale_stopped_the_host_says_why_in_one_line_and_goes_by_the_
     let said: Vec<_> = host.stderr().into_iter().filter(|l| l.contains("direct path")).collect();
     assert_eq!(said.len(), 1, "{said:?}");
     assert!(said[0].contains("Tailscale isn't running: it is Stopped"), "{said:?}");
-    assert!(!a.home.join(".krowk/cache/relay-ticket-keys.json").exists(), "no keys fetched");
+    assert!(!a.home.join(".gruntas/cache/relay-ticket-keys.json").exists(), "no keys fetched");
 }
 
 /// Ticket 42: `GRUNTAS_RELAY_TICKET_KEYS` still wins over the registry's
@@ -882,7 +882,7 @@ fn r_net_1_krowk_relay_ticket_keys_overrides_the_published_keys() {
     view.type_line("still by the relay");
     view.until("the turn's end", is("result"));
     assert!(!view.seen.iter().any(|l| l.contains("direct over")), "B joined under keys A does not hold: {:?}", view.seen);
-    assert!(!a.home.join(".krowk/cache/relay-ticket-keys.json").exists(), "the registry's keys were not fetched");
+    assert!(!a.home.join(".gruntas/cache/relay-ticket-keys.json").exists(), "the registry's keys were not fetched");
     let said = host.stderr();
     assert!(!said.iter().any(|l| l.contains("no direct path")), "A listened, under the named keys: {said:?}");
     assert!(said.iter().any(|l| l.contains("bad_ticket")), "B raced the direct path and its ticket was refused there: {said:?}");
@@ -926,7 +926,7 @@ fn r_sync_3_a_daemon_session_is_listed_elsewhere_with_no_sync_command() {
     let made = a.command(&["-p", "--daemon", "hello", "--model", "claude/sonnet"]).stdin(Stdio::null()).output().unwrap();
     assert!(made.status.success(), "A runs a turn in its daemon: {}", String::from_utf8_lossy(&made.stderr));
     let session = a.session();
-    let host_log = || std::fs::read_to_string(a.home.join(".krowk/host.log")).unwrap_or_default();
+    let host_log = || std::fs::read_to_string(a.home.join(".gruntas/host.log")).unwrap_or_default();
 
     let listed = loop {
         let out = b.command(&["sync", "sessions", "--json"]).stdin(Stdio::null()).output().unwrap();
@@ -990,7 +990,7 @@ fn r_sync_3_sync_status_says_what_applies_here() {
     assert_eq!(data["directory"]["synced"], false, "{data}");
 
     let repo = a.repo.display().to_string();
-    std::fs::write(a.home.join(".krowk/config.json"), serde_json::json!({"sync": {"exclude": [repo]}}).to_string()).unwrap();
+    std::fs::write(a.home.join(".gruntas/config.json"), serde_json::json!({"sync": {"exclude": [repo]}}).to_string()).unwrap();
     let data = sync_status(&a, &[]);
     assert_eq!(data["directory"]["synced"], false, "{data}");
     assert!(data["directory"]["optedOutBy"].as_str().is_some_and(|by| by.contains("sync.exclude") && by.contains(&repo)), "names the entry: {data}");
@@ -998,7 +998,7 @@ fn r_sync_3_sync_status_says_what_applies_here() {
     let human = String::from_utf8_lossy(&human.stdout);
     assert!(human.lines().any(|l| l == format!("this directory: opted out by sync.exclude ({repo})")), "{human}");
 
-    std::fs::write(a.home.join(".krowk/config.json"), r#"{"sync": {"auto": "no"}}"#).unwrap();
+    std::fs::write(a.home.join(".gruntas/config.json"), r#"{"sync": {"auto": "no"}}"#).unwrap();
     let data = sync_status(&a, &[]);
     assert_eq!(data["autoSync"]["on"], false, "a policy that does not read is off: {data}");
     assert!(data["autoSync"]["why"].as_str().is_some_and(|w| w.contains("sync.auto")), "{data}");
@@ -1039,7 +1039,7 @@ fn r_sync_1_a_machine_without_sync_makes_no_sync_call() {
     std::thread::sleep(Duration::from_secs(3));
     let seen = (api_seen.load(std::sync::atomic::Ordering::SeqCst), relay_seen.load(std::sync::atomic::Ordering::SeqCst));
     // The supervisor was told of the turn, and its check stopped at the set-up.
-    let log = std::fs::read_to_string(repo.parent().unwrap().join(".krowk/host.log")).unwrap_or_default();
+    let log = std::fs::read_to_string(repo.parent().unwrap().join(".gruntas/host.log")).unwrap_or_default();
 
     let status = command(&["sync", "status"]).output().unwrap();
     let _ = command(&["host", "stop", "--force"]).output();
@@ -1059,7 +1059,7 @@ fn r_sync_1_a_machine_without_sync_makes_no_sync_call() {
 fn r_sync_3_the_daemon_syncs_nothing_the_policy_leaves_out() {
     let w = World::new("autooff");
     let off = w.machine("a");
-    std::fs::write(off.home.join(".krowk/config.json"), r#"{"sync": {"auto": false}}"#).unwrap();
+    std::fs::write(off.home.join(".gruntas/config.json"), r#"{"sync": {"auto": false}}"#).unwrap();
     let marked = w.machine("b");
     std::fs::create_dir_all(marked.repo.join(".gruntas")).unwrap();
     std::fs::write(marked.repo.join(".gruntas/no-sync"), "").unwrap();
@@ -1069,7 +1069,7 @@ fn r_sync_3_the_daemon_syncs_nothing_the_policy_leaves_out() {
         let session = m.session();
         let deadline = Instant::now() + Duration::from_secs(10);
         let log = loop {
-            let log = std::fs::read_to_string(m.home.join(".krowk/host.log")).unwrap_or_default();
+            let log = std::fs::read_to_string(m.home.join(".gruntas/host.log")).unwrap_or_default();
             if log.contains(why) {
                 break log;
             }
@@ -1094,7 +1094,7 @@ fn r_host_3_krowk_hosts_shows_an_announced_host_online_with_no_tailscale() {
     let b = w.machine("b");
     a.env.retain(|(k, _)| k != "GRUNTAS_HOST_IDLE");
     a.env.push(("GRUNTAS_HOST_IDLE".into(), "0".into()));
-    std::fs::write(a.home.join(".krowk/trusted.json"), serde_json::json!({"directories": [a.repo]}).to_string()).unwrap();
+    std::fs::write(a.home.join(".gruntas/trusted.json"), serde_json::json!({"directories": [a.repo]}).to_string()).unwrap();
     let made = a.command(&["-p", "--daemon", "hello", "--model", "claude/sonnet"]).stdin(Stdio::null()).output().unwrap();
     assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
 
@@ -1106,7 +1106,7 @@ fn r_host_3_krowk_hosts_shows_an_announced_host_online_with_no_tailscale() {
         if let Some(h) = v["machines"].as_array().and_then(|l| l.iter().find(|h| h["name"] == "a" && h["announced"] == true)).cloned() {
             break (v, h);
         }
-        assert!(Instant::now() < deadline, "B never saw A announced: {v}\nA's host.log: {}", std::fs::read_to_string(a.home.join(".krowk/host.log")).unwrap_or_default());
+        assert!(Instant::now() < deadline, "B never saw A announced: {v}\nA's host.log: {}", std::fs::read_to_string(a.home.join(".gruntas/host.log")).unwrap_or_default());
         std::thread::sleep(Duration::from_millis(250));
     };
     assert_eq!((v["tailscale"].as_bool(), v["unopened"].as_u64()), (Some(false), Some(0)), "{v}");
@@ -1135,7 +1135,7 @@ fn serving(w: &World) -> (Machine, Machine, Running) {
     let b = w.machine("b");
     a.env.retain(|(k, _)| k != "GRUNTAS_HOST_IDLE");
     a.env.push(("GRUNTAS_HOST_IDLE".into(), "0".into()));
-    std::fs::write(a.home.join(".krowk/trusted.json"), serde_json::json!({"directories": [a.repo]}).to_string()).unwrap();
+    std::fs::write(a.home.join(".gruntas/trusted.json"), serde_json::json!({"directories": [a.repo]}).to_string()).unwrap();
     let serve = Running::spawn(a.command(&["host", "serve"]));
     a_as_b_sees_it(&b, &a, |h| h["announced"] == true && h["online"] == true);
     (a, b, serve)
@@ -1150,7 +1150,7 @@ fn a_as_b_sees_it(b: &Machine, a: &Machine, want: impl Fn(&serde_json::Value) ->
         if let Some(h) = v["machines"].as_array().and_then(|l| l.iter().find(|h| h["name"] == "a")).filter(|h| want(h)) {
             return h.clone();
         }
-        assert!(Instant::now() < deadline, "B never saw A as wanted: {v}\nA's host.log: {}", std::fs::read_to_string(a.home.join(".krowk/host.log")).unwrap_or_default());
+        assert!(Instant::now() < deadline, "B never saw A as wanted: {v}\nA's host.log: {}", std::fs::read_to_string(a.home.join(".gruntas/host.log")).unwrap_or_default());
         std::thread::sleep(Duration::from_millis(250));
     }
 }
@@ -1400,17 +1400,17 @@ impl Moving {
         b.env.push(("GRUNTAS_HOST_IDLE".into(), "0".into()));
         let mut env = b.env.clone();
         b_env(&mut env);
-        std::fs::write(b.home.join(".krowk/trusted.json"), serde_json::json!({"directories": [b.repo]}).to_string()).unwrap();
+        std::fs::write(b.home.join(".gruntas/trusted.json"), serde_json::json!({"directories": [b.repo]}).to_string()).unwrap();
         let mut serve = b.command(&["host", "serve"]);
         serve.env_clear().envs(env.iter().map(|(k, v)| (k, v)));
         let serve = Running::spawn(serve);
         let (host_a, session) = hosted(w, &a);
         let takes = Takes(session.clone());
-        let device = |m: &Machine| Keystore::new(&m.home.join(".krowk")).device().unwrap().unwrap().id();
+        let device = |m: &Machine| Keystore::new(&m.home.join(".gruntas")).device().unwrap().unwrap().id();
         let ids = [device(&a), device(&b), device(&c)];
         let deadline = Instant::now() + Duration::from_secs(20);
         while !c.api.list_presences().unwrap_or_default().iter().any(|p| p.device == ids[1].to_string() && p.online) {
-            assert!(Instant::now() < deadline, "B never announced itself: {}", std::fs::read_to_string(b.home.join(".krowk/host.log")).unwrap_or_default());
+            assert!(Instant::now() < deadline, "B never announced itself: {}", std::fs::read_to_string(b.home.join(".gruntas/host.log")).unwrap_or_default());
             std::thread::sleep(Duration::from_millis(250));
         }
         Moving { _takes: takes, _serve: serve, _host_a: host_a, a, b, c, session, ids }
@@ -1421,7 +1421,7 @@ impl Moving {
     fn ask(&self, w: &World, n: u32, cwd: &std::path::Path) -> gruntas_client::host_command::HostAnswer {
         use gruntas_client::host_command::{self, HostCommand};
         let [_, b, c] = &self.ids;
-        let keys = Keystore::new(&self.c.home.join(".krowk")).user_keys().unwrap().unwrap();
+        let keys = Keystore::new(&self.c.home.join(".gruntas")).user_keys().unwrap().unwrap();
         let chain = w.people.lock().unwrap().chain().clone();
         let id = format!("0190f3c1-8a2b-4c4d-9e5f-{n:012x}");
         let take = HostCommand::Take { session_id: self.session.clone(), cwd: cwd.display().to_string() };
@@ -1434,7 +1434,7 @@ impl Moving {
             if let Some(sealed) = self.c.api.host_command(&b.to_string(), &id).unwrap().answer {
                 return host_command::open_answer(&sealed, &id, b, c, &keys, &chain).unwrap();
             }
-            assert!(Instant::now() < deadline, "B never answered: {}", std::fs::read_to_string(self.b.home.join(".krowk/host.log")).unwrap_or_default());
+            assert!(Instant::now() < deadline, "B never answered: {}", std::fs::read_to_string(self.b.home.join(".gruntas/host.log")).unwrap_or_default());
             std::thread::sleep(Duration::from_millis(250));
         }
     }
@@ -1464,9 +1464,9 @@ fn r_hand_4_a_third_device_moves_a_session_from_a_to_b() {
     assert_eq!(m.holder(), Some(a_id), "nothing moved");
 
     let taken = m.ask(&w, 2, &m.b.repo);
-    assert_eq!(taken, HostAnswer::Taken { session_id: session.clone() }, "B's take.log: {}", std::fs::read_to_string(m.b.home.join(format!(".krowk/takes/{session}.log"))).unwrap_or_default());
+    assert_eq!(taken, HostAnswer::Taken { session_id: session.clone() }, "B's take.log: {}", std::fs::read_to_string(m.b.home.join(format!(".gruntas/takes/{session}.log"))).unwrap_or_default());
     assert_eq!(m.holder(), Some(b_id), "the lease is B's (R-SYNC-2)");
-    let b_log = || std::fs::read_to_string(m.b.home.join(".krowk/sessions").join(&session).join("events.jsonl")).unwrap_or_default();
+    let b_log = || std::fs::read_to_string(m.b.home.join(".gruntas/sessions").join(&session).join("events.jsonl")).unwrap_or_default();
     assert!(b_log().contains("\"session.moved\""), "B's log has session.moved: {}", b_log());
 
     // The next prompt, from C, runs on B.
@@ -1476,7 +1476,7 @@ fn r_hand_4_a_third_device_moves_a_session_from_a_to_b() {
     let result = view.heard_within("the turn's end", true, Duration::from_secs(60), |v| v["type"] == "result" && v["sessionId"] == session.as_str());
     assert_eq!(result["status"], "completed", "{result}");
     assert!(b_log().contains("hello from c on b"), "the turn ran on B: {}", b_log());
-    let a_log = std::fs::read_to_string(m.a.home.join(".krowk/sessions").join(&session).join("events.jsonl")).unwrap_or_default();
+    let a_log = std::fs::read_to_string(m.a.home.join(".gruntas/sessions").join(&session).join("events.jsonl")).unwrap_or_default();
     assert!(!a_log.contains("hello from c on b"), "and not on A");
 }
 
@@ -1519,8 +1519,8 @@ fn allocating(w: &World) -> (Machine, Machine, Running) {
     }
     a.env.retain(|(k, _)| k != "GRUNTAS_HOST_IDLE");
     a.env.push(("GRUNTAS_HOST_IDLE".into(), "0".into()));
-    std::fs::write(a.home.join(".krowk/trusted.json"), serde_json::json!({"directories": [a.repo]}).to_string()).unwrap();
-    std::fs::write(a.home.join(".krowk/config.json"), serde_json::json!({"permissions": {"defaultMode": "acceptEdits"}}).to_string()).unwrap();
+    std::fs::write(a.home.join(".gruntas/trusted.json"), serde_json::json!({"directories": [a.repo]}).to_string()).unwrap();
+    std::fs::write(a.home.join(".gruntas/config.json"), serde_json::json!({"permissions": {"defaultMode": "acceptEdits"}}).to_string()).unwrap();
     let serve = Running::spawn(a.command(&["host", "serve"]));
     let _ = machines_row(&b, "a", |m| m["online"] == true && m["accepting"] == true && m["repositories"].as_array().is_some_and(|r| !r.is_empty()));
     (a, b, serve)
@@ -1668,8 +1668,8 @@ fn krowk_mcp_machines_lists_what_krowk_machines_json_does() {
 fn krowk_mcp_runs_a_task_pinned_here_in_a_worktree() {
     let w = World::new("mcp-here");
     let (_a, b, _serve) = allocating(&w);
-    std::fs::write(b.home.join(".krowk/trusted.json"), serde_json::json!({"directories": [b.repo]}).to_string()).unwrap();
-    std::fs::write(b.home.join(".krowk/config.json"), serde_json::json!({"permissions": {"defaultMode": "acceptEdits"}}).to_string()).unwrap();
+    std::fs::write(b.home.join(".gruntas/trusted.json"), serde_json::json!({"directories": [b.repo]}).to_string()).unwrap();
+    std::fs::write(b.home.join(".gruntas/config.json"), serde_json::json!({"permissions": {"defaultMode": "acceptEdits"}}).to_string()).unwrap();
     let mut mcp = Mcp::start(&b);
     let (said, err, started) = mcp.call("krowk_delegate", serde_json::json!({"task": DELEGATED, "host": "b"}));
     assert!(!err, "{said}");

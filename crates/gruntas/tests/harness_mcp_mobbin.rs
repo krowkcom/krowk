@@ -34,7 +34,7 @@ fn mobbin_add_and_login_with_a_pasted_address_store_its_token() {
     // krowk mcp add, then krowk mcp login --no-browser with the address pasted.
     let out = krowk(&root, &["mcp", "add", "mobbin", &url, "--header", "X-Client: krowk-test"]).stdin(Stdio::null()).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    let config: Value = serde_json::from_slice(&std::fs::read(root.join("home/.krowk/config.json")).unwrap()).unwrap();
+    let config: Value = serde_json::from_slice(&std::fs::read(root.join("home/.gruntas/config.json")).unwrap()).unwrap();
     assert_eq!(config["mcpServers"]["mobbin"]["headers"]["X-Client"], "krowk-test");
     let mut login = krowk(&root, &["mcp", "login", "mobbin", "--no-browser"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     let mut stderr = std::io::BufReader::new(login.stderr.take().unwrap());
@@ -51,7 +51,7 @@ fn mobbin_add_and_login_with_a_pasted_address_store_its_token() {
     let mut rest = String::new();
     std::io::Read::read_to_string(&mut stderr, &mut rest).unwrap();
     assert!(out.status.success(), "{}{rest}", String::from_utf8_lossy(&out.stdout));
-    let creds = root.join("home/.krowk/credentials.json");
+    let creds = root.join("home/.gruntas/credentials.json");
     let stored: Value = serde_json::from_str(&std::fs::read_to_string(&creds).unwrap()).unwrap();
     assert_eq!(stored["mcp"]["mobbin"]["accessToken"], "at-secret-1");
     assert!(!format!("{}{rest}", String::from_utf8_lossy(&out.stdout)).contains("at-secret-1"), "the token is never printed");

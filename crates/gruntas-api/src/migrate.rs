@@ -9,7 +9,7 @@
 //! the old `config.json` and credentials (the registry key, and a dev
 //! build's provider file, which is the same format) are *read* and written
 //! as the new home's `config.json` and one merged `credentials.json`, in a
-//! staging directory (`.krowk.migrating`) that holds only what krowk writes
+//! staging directory (`.gruntas.migrating`) that holds only what krowk writes
 //! and is renamed into place in one step. Only then are the old credential
 //! files, config.json, update check and cache deleted — taking the keys
 //! out of a directory a dotfiles repository may track is the point.
@@ -21,7 +21,7 @@
 //! one holds. Everything else in the old directories — krowk.db, a dev
 //! build's accounts and sessions — stays where it is, and that check names
 //! it once, with the command that deals with it. Two krowks starting at
-//! once take turns on a lock file beside the home (`.krowk.migrate.lock`),
+//! once take turns on a lock file beside the home (`.gruntas.migrate.lock`),
 //! never removed: a stale one is harmless under `flock`.
 
 use crate::creds::{self, Env};
@@ -155,6 +155,128 @@ pub fn run(home: &Path, env: Env) -> Result<(), String> {
     let _ = std::fs::remove_file(conf);
     leftovers(&cfg, &cache);
     let _ = std::fs::remove_dir(&cfg);
+    Ok(())
+}
+
+/// The home krowk kept, beside gruntas's: `~/.krowk` for `~/.gruntas`.
+pub fn krowk_home(home: &Path) -> PathBuf {
+    home.with_file_name(".krowk")
+}
+
+/// The files that name a path in the home, rewritten in the copy to name
+/// the same path in the new one: the accounts in `config.json`, and each
+/// Claude account's plugin lists.
+fn naming_home(home: &Path) -> Vec<PathBuf> {
+    let mut files = vec![home.join(home::CONFIG)];
+    for a in std::fs::read_dir(home.join(home::ACCOUNTS)).into_iter().flatten().flatten() {
+        files.extend(["known_marketplaces.json", "installed_plugins.json"].map(|f| a.path().join("plugins").join(f)));
+    }
+    files
+}
+
+/// The first gruntas run with no home of its own: a copy of krowk's
+/// (`~/.krowk`), so a person keeps their login, sync identity, sessions and
+/// accounts. Built in the staging directory under the migration lock and
+/// renamed into place in one step, the session index renamed `gruntas.db`
+/// and the paths into `~/.krowk` that the copy's files name pointed into
+/// the copy. `~/.krowk` is only read: krowk keeps it, and gruntas never
+/// reads it again. Whether the home is in place (copied, or by another
+/// gruntas that held the lock first).
+pub fn copy_krowk(home: &Path) -> Result<bool, String> {
+    let from = krowk_home(home);
+    if !std::fs::symlink_metadata(&from).is_ok_and(|m| m.is_dir()) {
+        return Ok(false);
+    }
+    let io = |what: &Path, e: std::io::Error| format!("copying {} into {}: {}: {e}", from.display(), home.display(), what.display());
+    let (lock_file, staging) = (lock_path(home), staging(home));
+    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&lock_file).map_err(|e| io(&lock_file, e))?;
+    lock.lock().map_err(|e| io(&lock_file, e))?;
+    if exists(home) {
+        return Ok(true);
+    }
+    if exists(&staging) {
+        std::fs::remove_dir_all(&staging).map_err(|e| io(&staging, e))?;
+    }
+    eprintln!("gruntas: copying {} into {}, once — {} is left as it is", from.display(), home.display(), from.display());
+    let built = (|| {
+        copy_tree(&from, &staging).map_err(|(p, e)| io(&p, e))?;
+        let sessions = staging.join(home::SESSIONS);
+        for end in ["", "-wal", "-shm"] {
+            let db = sessions.join(format!("krowk.db{end}"));
+            if exists(&db) {
+                let to = sessions.join(format!("gruntas.db{end}"));
+                std::fs::rename(&db, &to).map_err(|e| io(&to, e))?;
+            }
+        }
+        // As JSON writes them: quoted, and Windows's `\` separators doubled.
+        let json = |p: &Path| serde_json::to_string(&p.display().to_string()).unwrap_or_default();
+        let (old, new) = (json(&from), json(home));
+        let (old_open, new_open) = (old.trim_end_matches('"'), new.trim_end_matches('"'));
+        for f in naming_home(&staging) {
+            let Ok(text) = std::fs::read_to_string(&f) else { continue };
+            let mut moved = text.replace(&old, &new);
+            for sep in ["/", "\\\\"] {
+                moved = moved.replace(&format!("{old_open}{sep}"), &format!("{new_open}{sep}"));
+            }
+            if moved != text {
+                std::fs::write(&f, moved).map_err(|e| io(&f, e))?;
+            }
+        }
+        sync_dir(&staging);
+        std::fs::rename(&staging, home).map_err(|e| io(home, e))?;
+        sync_dir(home.parent().unwrap_or(home));
+        Ok::<(), String>(())
+    })();
+    if let Err(e) = built {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(format!("{e} — fix it, and gruntas copies {} again on its next run", from.display()));
+    }
+    Ok(true)
+}
+
+/// `from` copied to `to`, which does not exist: directories with their
+/// mode (set once their contents are in), files with theirs, symlinks as
+/// symlinks, never followed. Sockets and pipes are a running program's,
+/// and a file gone in between was a running krowk's: both skipped.
+fn copy_tree(from: &Path, to: &Path) -> Result<(), (PathBuf, std::io::Error)> {
+    let m = std::fs::symlink_metadata(from).map_err(|e| (from.to_path_buf(), e))?;
+    let mut b = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+    b.create(to).map_err(|e| (to.to_path_buf(), e))?;
+    for e in std::fs::read_dir(from).map_err(|e| (from.to_path_buf(), e))? {
+        let e = e.map_err(|e| (from.to_path_buf(), e))?;
+        let (src, dst) = (e.path(), to.join(e.file_name()));
+        let t = match std::fs::symlink_metadata(&src) {
+            Ok(m) => m.file_type(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err((src, e)),
+        };
+        let done = if t.is_dir() {
+            copy_tree(&src, &dst)
+        } else if t.is_file() {
+            std::fs::copy(&src, &dst).map(|_| ()).map_err(|e| (src.clone(), e))
+        } else if t.is_symlink() {
+            link(&src, &dst)
+        } else {
+            Ok(())
+        };
+        match done {
+            Err((_, e)) if e.kind() == std::io::ErrorKind::NotFound && !exists(&src) => {}
+            r => r?,
+        }
+    }
+    std::fs::set_permissions(to, m.permissions()).map_err(|e| (to.to_path_buf(), e))
+}
+
+#[cfg(unix)]
+fn link(src: &Path, dst: &Path) -> Result<(), (PathBuf, std::io::Error)> {
+    let target = std::fs::read_link(src).map_err(|e| (src.to_path_buf(), e))?;
+    std::os::unix::fs::symlink(target, dst).map_err(|e| (dst.to_path_buf(), e))
+}
+
+#[cfg(not(unix))]
+fn link(_: &Path, _: &Path) -> Result<(), (PathBuf, std::io::Error)> {
     Ok(())
 }
 
@@ -323,11 +445,11 @@ mod tests {
     }
 
     fn assert_moved(d: &Path) {
-        let home = d.join(".krowk");
+        let home = d.join(".gruntas");
         let c: Map<String, Value> = creds::read(&home.join(home::CREDENTIALS)).unwrap();
         assert_eq!((c["workspaces"]["ws"]["token"].as_str(), c["keys"]["openai"]["env"].as_str()), (Some(KEY), Some("K")));
         assert_eq!(std::fs::read_to_string(home.join(home::CONFIG)).unwrap(), r#"{"workspace":"ws"}"#);
-        for gone in [".config/krowk/credentials.json", ".config/krowk/providers", ".config/krowk/config.json", ".config/krowk/update-check.json", ".cache/krowk", ".krowk.migrating"] {
+        for gone in [".config/krowk/credentials.json", ".config/krowk/providers", ".config/krowk/config.json", ".config/krowk/update-check.json", ".cache/krowk", ".gruntas.migrating"] {
             assert!(!d.join(gone).exists(), "{gone} is left");
         }
         assert!(d.join(".local/share/krowk/krowk.db").exists(), "the index is not moved");
@@ -336,13 +458,13 @@ mod tests {
     #[test]
     fn the_config_and_every_key_move_and_the_old_secrets_are_deleted() {
         let (d, env) = old_layout("fresh");
-        run(&d.join(".krowk"), &env).unwrap();
+        run(&d.join(".gruntas"), &env).unwrap();
         assert_moved(&d);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(std::fs::metadata(d.join(".krowk/credentials.json")).unwrap().permissions().mode() & 0o777, 0o600);
-            assert_eq!(std::fs::metadata(d.join(".krowk")).unwrap().permissions().mode() & 0o777, 0o700);
+            assert_eq!(std::fs::metadata(d.join(".gruntas/credentials.json")).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(std::fs::metadata(d.join(".gruntas")).unwrap().permissions().mode() & 0o777, 0o700);
         }
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -350,7 +472,7 @@ mod tests {
     #[test]
     fn a_crash_after_the_rename_is_finished_by_the_next_start() {
         let (d, env) = old_layout("crash");
-        let home = d.join(".krowk");
+        let home = d.join(".gruntas");
         CRASH_AFTER_RENAME.with(|c| c.set(true));
         run(&home, &env).unwrap();
         CRASH_AFTER_RENAME.with(|c| c.set(false));
@@ -365,20 +487,20 @@ mod tests {
     #[test]
     fn a_staging_directory_left_by_a_crash_is_deleted_and_the_move_made_again() {
         let (d, env) = old_layout("staging");
-        let staging = d.join(".krowk.migrating");
+        let staging = d.join(".gruntas.migrating");
         std::fs::create_dir_all(&staging).unwrap();
         std::fs::write(staging.join("credentials.json"), "{\"half").unwrap();
         std::fs::write(staging.join(".credentials-1234.json"), "{").unwrap();
-        run(&d.join(".krowk"), &env).unwrap();
+        run(&d.join(".gruntas"), &env).unwrap();
         assert_moved(&d);
-        assert!(!d.join(".krowk/.credentials-1234.json").exists());
+        assert!(!d.join(".gruntas/.credentials-1234.json").exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
     fn a_home_that_exists_takes_nothing_and_an_old_key_goes_only_when_it_holds_it_all() {
         let (d, env) = old_layout("exists");
-        let home = d.join(".krowk");
+        let home = d.join(".gruntas");
         std::fs::create_dir_all(&home).unwrap();
         // The home names the registry's workspace with another key: the old
         // one is not the home's, and is kept.
@@ -429,8 +551,8 @@ mod tests {
             "XDG_CONFIG_HOME" | "XDG_DATA_HOME" | "XDG_CACHE_HOME" => xs.clone(),
             _ => String::new(),
         };
-        run(&d.join(".krowk"), &env).unwrap();
-        let c: Map<String, Value> = creds::read(&d.join(".krowk").join(home::CREDENTIALS)).unwrap();
+        run(&d.join(".gruntas"), &env).unwrap();
+        let c: Map<String, Value> = creds::read(&d.join(".gruntas").join(home::CREDENTIALS)).unwrap();
         assert_eq!(c["workspaces"]["ws"]["token"].as_str(), Some(KEY));
         for kept in ["trusted.json", "krowk.db", "claude/claude-work/fake-login"] {
             assert!(x.join(kept).exists(), "{kept} was deleted");
@@ -448,17 +570,17 @@ mod tests {
         let (d, env) = old_layout("collide");
         let reg = d.join(".config/krowk/credentials.json");
         std::fs::write(&reg, json!({"default": "ws", "workspaces": {"ws": {"token": KEY}}, "keys": {"anthropic": {"env": "A"}}}).to_string()).unwrap();
-        run(&d.join(".krowk"), &env).unwrap();
-        let c: Map<String, Value> = creds::read(&d.join(".krowk").join(home::CREDENTIALS)).unwrap();
+        run(&d.join(".gruntas"), &env).unwrap();
+        let c: Map<String, Value> = creds::read(&d.join(".gruntas").join(home::CREDENTIALS)).unwrap();
         assert_eq!((c["keys"]["anthropic"]["env"].as_str(), c["keys"]["openai"]["env"].as_str()), (Some("A"), Some("K")), "both files' keys: {c:?}");
         let _ = std::fs::remove_dir_all(&d);
 
         let (d, env) = old_layout("conflict");
         let reg = d.join(".config/krowk/credentials.json");
         std::fs::write(&reg, json!({"default": "ws", "workspaces": {"ws": {"token": KEY}}, "keys": {"openai": {"env": "OTHER"}}}).to_string()).unwrap();
-        let e = run(&d.join(".krowk"), &env).unwrap_err();
+        let e = run(&d.join(".gruntas"), &env).unwrap_err();
         assert!(e.contains("keys.openai") && !e.contains(KEY), "{e}");
-        assert!(reg.exists() && prov_exists(&d) && !d.join(".krowk").exists(), "nothing moved, nothing deleted");
+        assert!(reg.exists() && prov_exists(&d) && !d.join(".gruntas").exists(), "nothing moved, nothing deleted");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -476,7 +598,7 @@ mod tests {
         let dotfiles = d.join("dotfiles-credentials.json");
         std::fs::rename(&reg, &dotfiles).unwrap();
         std::os::unix::fs::symlink(&dotfiles, &reg).unwrap();
-        run(&d.join(".krowk"), &env).unwrap();
+        run(&d.join(".gruntas"), &env).unwrap();
         assert!(reg.symlink_metadata().is_err() && dotfiles.exists());
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -487,7 +609,7 @@ mod tests {
     fn a_stale_staging_directory_with_nothing_old_moves_nothing() {
         let d = std::env::temp_dir().join(format!("krowk-migrate-stale-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        let home = d.join(".krowk");
+        let home = d.join(".gruntas");
         std::fs::create_dir_all(staging(&home)).unwrap();
         let h = d.display().to_string();
         run(&home, &move |k: &str| if k == "HOME" { h.clone() } else { String::new() }).unwrap();
@@ -500,9 +622,9 @@ mod tests {
         let (d, env) = old_layout("malformed");
         let reg = d.join(".config/krowk/credentials.json");
         std::fs::write(&reg, format!("{{\"token\": \"{KEY}\", oops}}")).unwrap();
-        let e = run(&d.join(".krowk"), &env).unwrap_err();
+        let e = run(&d.join(".gruntas"), &env).unwrap_err();
         assert!(e.contains("is not valid (line 1, column") && !e.contains(KEY), "{e}");
-        assert!(reg.exists() && !d.join(".krowk").exists() && !d.join(".krowk.migrating").exists());
+        assert!(reg.exists() && !d.join(".gruntas").exists() && !d.join(".gruntas.migrating").exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -510,7 +632,7 @@ mod tests {
     #[cfg(unix)]
     fn two_krowks_starting_at_once_move_everything_once() {
         let (d, env) = old_layout("race");
-        let home = d.join(".krowk");
+        let home = d.join(".gruntas");
         let runs: Vec<_> = (0..2)
             .map(|_| {
                 let (home, env) = (home.clone(), env.clone());
@@ -524,12 +646,58 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// krowk's home copied once: every file, its modes and links, the
+    /// session index renamed, the account paths pointed at the copy, and
+    /// `~/.krowk` as it was.
+    #[test]
+    #[cfg(unix)]
+    fn krowks_home_is_copied_once_and_left_as_it_is() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = std::env::temp_dir().join(format!("gruntas-migrate-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (old, home) = (d.join(".krowk"), d.join(".gruntas"));
+        std::fs::create_dir_all(old.join("accounts/claude-work/plugins")).unwrap();
+        std::fs::create_dir_all(old.join("sessions")).unwrap();
+        let account = old.join("accounts/claude-work").display().to_string();
+        let config = json!({"instances": {"claude:work": {"kind": "claude-code", "configDir": account}}, "note": format!("{}x", old.display()), "win": format!("{}\\accounts", old.display())}).to_string();
+        for (f, body) in [("config.json", config.as_str()), ("credentials.json", "{}"), ("sessions/krowk.db", "db"), ("sessions/krowk.db-wal", "wal"), ("accounts/claude-work/plugins/known_marketplaces.json", &format!("{{\"m\": {{\"installLocation\": \"{account}/plugins/m\"}}}}"))] {
+            std::fs::write(old.join(f), body).unwrap();
+        }
+        std::fs::set_permissions(old.join("credentials.json"), std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::os::unix::fs::symlink("../../../shared/skill", old.join("accounts/claude-work/skill")).unwrap();
+        let before = std::fs::read_to_string(old.join("config.json")).unwrap();
+
+        assert!(copy_krowk(&home).unwrap());
+        assert_eq!(std::fs::read_to_string(home.join("sessions/gruntas.db")).unwrap(), "db");
+        assert_eq!(std::fs::read_to_string(home.join("sessions/gruntas.db-wal")).unwrap(), "wal");
+        assert!(!home.join("sessions/krowk.db").exists() && !staging(&home).exists());
+        assert_eq!(std::fs::metadata(home.join("credentials.json")).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::read_link(home.join("accounts/claude-work/skill")).unwrap(), Path::new("../../../shared/skill"));
+        let c: Value = serde_json::from_str(&std::fs::read_to_string(home.join("config.json")).unwrap()).unwrap();
+        assert_eq!(c["instances"]["claude:work"]["configDir"].as_str(), Some(home.join("accounts/claude-work").to_str().unwrap()));
+        assert_eq!(c["note"].as_str(), Some(format!("{}x", old.display()).as_str()), "only a path into the home moves");
+        assert_eq!(c["win"].as_str(), Some(format!("{}\\accounts", home.display()).as_str()), "a Windows separator too");
+        let m = std::fs::read_to_string(home.join("accounts/claude-work/plugins/known_marketplaces.json")).unwrap();
+        assert!(m.contains(&home.join("accounts/claude-work/plugins/m").display().to_string()), "{m}");
+        assert_eq!(std::fs::read_to_string(old.join("config.json")).unwrap(), before, "~/.krowk untouched");
+        assert!(old.join("sessions/krowk.db").exists());
+
+        // Once: a home that is there takes nothing more.
+        std::fs::write(old.join("later.json"), "{}").unwrap();
+        assert!(copy_krowk(&home).unwrap());
+        assert!(!home.join("later.json").exists());
+        // No krowk home: nothing to copy.
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(!copy_krowk(&d.join("elsewhere/.gruntas")).unwrap());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn the_single_key_file_of_older_logins_is_normalised() {
         let (d, env) = old_layout("legacy");
         std::fs::write(d.join(".config/krowk/credentials.json"), r#"{"token":"legacy-key","workspace":"ws"}"#).unwrap();
-        run(&d.join(".krowk"), &env).unwrap();
-        let c: Map<String, Value> = creds::read(&d.join(".krowk/credentials.json")).unwrap();
+        run(&d.join(".gruntas"), &env).unwrap();
+        let c: Map<String, Value> = creds::read(&d.join(".gruntas/credentials.json")).unwrap();
         assert_eq!((c["workspaces"]["ws"]["token"].as_str(), c["default"].as_str()), (Some("legacy-key"), Some("ws")));
         assert!(c.get("token").is_none());
         let _ = std::fs::remove_dir_all(&d);

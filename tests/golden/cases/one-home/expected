@@ -3,7 +3,7 @@ stdout:
 {
   "ok": true,
   "data": {
-    "path": "<scratch>/home/.krowk/credentials.json",
+    "path": "<scratch>/home/.gruntas/credentials.json",
     "confirmed": true,
     "key_id": "<key_1>",
     "workspace": "<ws_1>"
@@ -26,9 +26,9 @@ stdout:
   "data": {
     "key": "workspace",
     "value": "ws_x",
-    "path": "<scratch>/home/.krowk/config.json"
+    "path": "<scratch>/home/.gruntas/config.json"
   },
-  "summary": "workspace = ws_x in <scratch>/home/.krowk/config.json",
+  "summary": "workspace = ws_x in <scratch>/home/.gruntas/config.json",
   "breadcrumbs": [
     {
       "action": "check the effective configuration",
@@ -43,7 +43,7 @@ $ krowk sessions import --from claude --quiet
 stdout:
 {
   "dry_run": false,
-  "store": "<scratch>/home/.krowk/sessions/krowk.db",
+  "store": "<scratch>/home/.gruntas/sessions/gruntas.db",
   "providers": [
     {
       "provider": "claude",
@@ -71,14 +71,14 @@ stdout:
 }
 exit: 0
 
-@ls {home}/.krowk
+@ls {home}/.gruntas
 .old-layout-checked 644
 config.json 644
 credentials.json 600
 credentials.lock 600
 sessions/
+sessions/gruntas.db 600
 sessions/import.lock 600
-sessions/krowk.db 600
 
 $ krowk auth login --token krowk_sk_test
 stdout:
@@ -112,13 +112,13 @@ exit: 0
 credentials.json 600
 credentials.lock 600
 sessions/
-sessions/krowk.db 600
+sessions/gruntas.db 600
 
 $ krowk sessions --quiet
 stderr:
 {
   "error": "bad_home",
-  "fix": "GRUNTAS_HOME is \"relative/home\", which is not an absolute path below the root and apart from your home directory — set it to one, or unset it for ~/.krowk",
+  "fix": "GRUNTAS_HOME is \"relative/home\", which is not an absolute path below the root and apart from your home directory — set it to one, or unset it for ~/.gruntas",
   "retryable": false
 }
 exit: 1
@@ -129,7 +129,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "bad_home",
-    "fix": "GRUNTAS_HOME is \"relative/home\", which is not an absolute path below the root and apart from your home directory — set it to one, or unset it for ~/.krowk",
+    "fix": "GRUNTAS_HOME is \"relative/home\", which is not an absolute path below the root and apart from your home directory — set it to one, or unset it for ~/.gruntas",
     "retryable": false
   }
 }

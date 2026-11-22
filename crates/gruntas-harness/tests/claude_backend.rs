@@ -119,7 +119,7 @@ impl Home {
             krowk_version: "test".into(),
             pricer: Arc::new(|_, _, _| None),
             catalog: Arc::new(|_, _| None),
-            credentials: self.root.join("home/.krowk/credentials.json"),
+            credentials: self.root.join("home/.gruntas/credentials.json"),
             trust: gate,
             publisher,
             permissions: gruntas_harness::permissions::Config { home: Some(self.root.join("home")), ..Default::default() },

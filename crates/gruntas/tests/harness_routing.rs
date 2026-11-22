@@ -112,8 +112,8 @@ impl Sandbox {
     /// signed in to nothing, so a Codex installed on the machine running
     /// the tests is never asked.
     fn config(&self, v: &Value) {
-        std::fs::create_dir_all(self.root.join("home/.krowk")).unwrap();
-        std::fs::write(self.root.join("home/.krowk/config.json"), v.to_string()).unwrap();
+        std::fs::create_dir_all(self.root.join("home/.gruntas")).unwrap();
+        std::fs::write(self.root.join("home/.gruntas/config.json"), v.to_string()).unwrap();
     }
 
     /// krowk's config: `v`, with the implicit `codex` the fake one, signed
@@ -123,13 +123,13 @@ impl Sandbox {
         v["instances"]["codex"] = json!({"kind": "codex-app-server", "binary": self.root.join("bin/codex").display().to_string()});
         std::fs::create_dir_all(self.root.join("home/.codex")).unwrap();
         std::fs::write(self.root.join("home/.codex/fake-login"), "chatgpt person@example.com\n").unwrap();
-        std::fs::create_dir_all(self.root.join("home/.krowk")).unwrap();
-        std::fs::write(self.root.join("home/.krowk/config.json"), v.to_string()).unwrap();
+        std::fs::create_dir_all(self.root.join("home/.gruntas")).unwrap();
+        std::fs::write(self.root.join("home/.gruntas/config.json"), v.to_string()).unwrap();
     }
 
     /// An account's own directory in krowk's home, as `krowk connect` makes it.
     fn account(&self, name: &str) -> String {
-        let dir = self.root.join("home/.krowk/accounts").join(name);
+        let dir = self.root.join("home/.gruntas/accounts").join(name);
         std::fs::create_dir_all(&dir).unwrap();
         dir.display().to_string()
     }
@@ -166,7 +166,7 @@ fn only_claude_signed_in_a_bare_sonnet_and_no_model_at_all_run_on_claude_asking_
     let out = b.krowk(&["-p", "hi", "--model", "sonnet"], &[]);
     assert_eq!(out.status.code(), Some(4), "untrusted_directory: {}", String::from_utf8_lossy(&out.stderr));
     assert!(String::from_utf8_lossy(&out.stderr).contains("trust"), "{}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(b.status_checks(), vec![b.root.join("home/.krowk/readiness")], "{}", b.fake_log());
+    assert_eq!(b.status_checks(), vec![b.root.join("home/.gruntas/readiness")], "{}", b.fake_log());
     assert!(b.turns().is_empty(), "Claude Code never ran a turn in an untrusted repository");
 }
 
@@ -283,7 +283,7 @@ fn with_nothing_connected_the_refusal_is_the_one_line() {
     // Neither run spawned anything but the status checks, and those in
     // krowk's own directory.
     assert!(b.turns().is_empty());
-    assert!(b.status_checks().iter().all(|d| d.ends_with(".krowk/readiness")), "{}", b.fake_log());
+    assert!(b.status_checks().iter().all(|d| d.ends_with(".gruntas/readiness")), "{}", b.fake_log());
 }
 
 /// R-NAT-3, D4: a provider krowk no longer runs — named by `--model`, by

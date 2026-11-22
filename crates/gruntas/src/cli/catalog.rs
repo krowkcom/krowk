@@ -573,7 +573,7 @@ pub fn catalog(version: &str) -> Catalog {
             EnvVar { name: "GRUNTAS_DEV", usage: "1/true/yes/on — same as --dev", default: "" },
             EnvVar { name: "GRUNTAS_AGENT", usage: "Agent name to report", default: "" },
             EnvVar { name: "GRUNTAS_NO_UPDATE_CHECK", usage: "1/true/yes/on — never check for or mention new releases", default: "" },
-            EnvVar { name: "GRUNTAS_HOME", usage: "Where krowk keeps its files, an absolute path", default: "~/.krowk" },
+            EnvVar { name: "GRUNTAS_HOME", usage: "Where krowk keeps its files, an absolute path", default: "~/.gruntas" },
             EnvVar { name: "NO_COLOR", usage: "Set to anything — no colour, even on a terminal (no-color.org); TERM=dumb does the same", default: "" },
         ],
     };
@@ -923,7 +923,7 @@ fn connect_commands() -> Vec<Command> {
                 flag("key-ref", STRING, "An API key: store a reference instead — '$VAR' (read from that variable) or '!command' (its output, e.g. '!pass show anthropic', run once per krowk process). At a terminal, pasting at the prompt does either"),
                 flag("base-url", STRING, "Where the API is, for a gateway, a router or a local server — asked for openai-compatible"),
                 flag("binary", STRING, "A subscription: the claude or codex binary to run; the one on PATH when absent"),
-                flag("config-dir", STRING, "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named account"),
+                flag("config-dir", STRING, "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one in ~/.gruntas/accounts/ for a named account"),
             ],
             ..cmd(
                 "connect",
@@ -957,7 +957,7 @@ fn providers_command() -> Command {
                     flag("base-url", STRING, "Where the API is, for a gateway, a router or a local server — required for openai-compatible"),
                     flag("device", BOOL, "codex: sign in with a code typed into any browser, instead of one opened here"),
                     flag("binary", STRING, "claude, codex: the binary to run; claude or codex on PATH when absent"),
-                    flag("config-dir", STRING, "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named instance"),
+                    flag("config-dir", STRING, "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one in ~/.gruntas/accounts/ for a named instance"),
                 ],
                 ..cmd(
                     "add",
@@ -1179,7 +1179,7 @@ prompt, or piped from a file (`krowk sync recover < kit.txt`), never `echo`,
 which keeps them in your shell history.
 
 Once sync is set up, every session that runs a turn in the host daemon is
-synced by itself. `sync.auto: false` in ~/.krowk/config.json turns that off,
+synced by itself. `sync.auto: false` in ~/.gruntas/config.json turns that off,
 and `sync.exclude` or a `.gruntas/no-sync` file keeps a directory off sync. A
 session idle for `sync.idleMinutes` (10), with no other device watching it,
 stops syncing until its next prompt here, or until another device opens it

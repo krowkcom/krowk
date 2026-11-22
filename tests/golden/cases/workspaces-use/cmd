@@ -8,7 +8,7 @@ krowk auth login --token krowk_sk_second
 krowk workspaces
 krowk workspaces use {WS1}
 krowk workspaces
-@cat {home}/.krowk/credentials.json
+@cat {home}/.gruntas/credentials.json
 krowk auth verify
 krowk auth verify --workspace {WS2}
 @env GRUNTAS_WORKSPACE={WS2}

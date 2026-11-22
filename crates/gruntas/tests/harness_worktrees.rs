@@ -309,7 +309,7 @@ fn add_runs_no_setup_for_a_ref_on_neither_the_checkout_nor_origin() {
         return;
     }
     let b = Sandbox::new("add-foreign");
-    let krowk_home = b.root.join("home/.krowk");
+    let krowk_home = b.root.join("home/.gruntas");
     std::fs::create_dir_all(&krowk_home).unwrap();
     std::fs::write(krowk_home.join("config.json"), r#"{ "worktrees": { "setup": "touch ran" } }"#).unwrap();
     let first = git(&b.repo(), &["rev-parse", "HEAD"]);

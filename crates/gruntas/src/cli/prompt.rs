@@ -208,7 +208,7 @@ fn turn(ctx: &mut Ctx, cfg: HostConfig, opts: headless::Options) -> Result<(), E
     if let Some(id) = &outcome.session_id
         && let Err(e) = sessions::project_native(ctx.io.env, id)
     {
-        ctx.warn(&format!("the session is saved, but krowk.db was not updated: {} — `krowk sessions sync` retries", e.fix()));
+        ctx.warn(&format!("the session is saved, but gruntas.db was not updated: {} — `krowk sessions sync` retries", e.fix()));
     }
     if let Some(e) = outcome.error {
         return Err(engine_error(&e.code, &e.message, e.status));

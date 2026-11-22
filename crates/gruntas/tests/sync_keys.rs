@@ -48,7 +48,7 @@ fn piped(home: &Path, args: &[&str], input: &str) -> Output {
 /// with `kit` as the recovery device when there is one, the list kept and
 /// generation 1 held.
 fn set_up(home: &Path, kit: Option<&RecoveryKit>) {
-    let ks = Keystore::new(&home.join(".krowk"));
+    let ks = Keystore::new(&home.join(".gruntas"));
     let (device, signing) = (ks.device_key().unwrap(), ks.signing_key().unwrap());
     let me = Subject { kind: Kind::Device, name: "laptop".into(), os: "linux".into(), device: device.public(), signing: signing.public() };
     let kd = kit.map(RecoveryKit::device);
@@ -70,7 +70,7 @@ fn d6_sync_init_needs_a_person_at_a_terminal() {
     let r = root("notty");
     let e = err(&command(&r, &["sync", "init", "--json"]).output().unwrap());
     assert!(e.contains("confirmation_required") && e.contains("a person at a terminal"), "{e}");
-    assert!(!r.join(".krowk/device-list.json").exists() && !r.join(".krowk/user-keys.json").exists());
+    assert!(!r.join(".gruntas/device-list.json").exists() && !r.join(".gruntas/user-keys.json").exists());
     let _ = std::fs::remove_dir_all(&r);
 }
 
@@ -90,7 +90,7 @@ fn d6_recover_refuses_words_that_are_not_a_kit_before_anything_leaves_the_machin
         assert!(e.contains("bad_recovery_kit") && e.contains(why), "{e}");
         assert!(!e.contains(&words[..12]), "the words are never echoed: {e}");
     }
-    assert!(!r.join(".krowk/device-list.json").exists());
+    assert!(!r.join(".gruntas/device-list.json").exists());
     let _ = std::fs::remove_dir_all(&r);
 }
 

@@ -66,7 +66,7 @@ impl Home {
             // A catalog that knows one model a router serves under a name
             // that says nothing of its family.
             catalog: Arc::new(|_, model| (model == "house-coder").then(|| ModelInfo { family: Some("grok-build".into()), ..ModelInfo::default() })),
-            credentials: self.root.join("home/.krowk/credentials.json"),
+            credentials: self.root.join("home/.gruntas/credentials.json"),
             trust: gruntas_harness::trust::allow_all(),
             publisher: None,
             permissions: Default::default(),
@@ -216,7 +216,7 @@ fn detail(env: &dyn Fn(&str) -> String, id: &str) -> String {
 #[test]
 fn r_cred_1_a_stored_keys_command_never_blocks_the_hosts_runtime() {
     let mut home = Home::new("keycmd");
-    let creds = home.root.join("home/.krowk/credentials.json");
+    let creds = home.root.join("home/.gruntas/credentials.json");
     std::fs::create_dir_all(creds.parent().unwrap()).unwrap();
     std::fs::write(&creds, serde_json::json!({"version": 1, "keys": {"anthropic": {"command": "sleep 1.5; echo sk-from-command"}}}).to_string()).unwrap();
     // A gateway's account: the key goes on as ANTHROPIC_AUTH_TOKEN, which

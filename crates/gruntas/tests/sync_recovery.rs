@@ -71,7 +71,7 @@ fn ok(out: &Output) -> Value {
 }
 
 fn keys(home: &Path) -> Keystore {
-    Keystore::new(&home.join(".krowk"))
+    Keystore::new(&home.join(".gruntas"))
 }
 
 /// `sync init` on `home`, the kit written to `kit` (0600, never stdout).
@@ -151,7 +151,7 @@ fn d6_a_start_over_seals_this_devices_sessions_again_under_the_new_list() {
     assert_eq!(ks.user_keys().unwrap().unwrap().newest().generation(), 1);
     let (first, epoch) = open_ring(&laptop, &api, LAPTOP, id).unwrap();
     assert_eq!((first.as_bytes(), epoch), (key.as_bytes(), 1), "the old session opens under the new list, a key epoch on");
-    assert!(laptop.join(".krowk/before-start-over").is_dir(), "the old keys stay aside");
+    assert!(laptop.join(".gruntas/before-start-over").is_dir(), "the old keys stay aside");
 
     // Run again, it goes through what is left: nothing.
     let again = ok(&krowk(&laptop, &api, LAPTOP, &["sync", "init", "--start-over", "--json"], "", ""));
@@ -162,7 +162,7 @@ fn d6_a_start_over_seals_this_devices_sessions_again_under_the_new_list() {
     // And the aside goes only when the person says so.
     let dropped = ok(&krowk(&laptop, &api, LAPTOP, &["sync", "recovery", "discard-old", "--json"], "y", ""));
     assert_eq!((dropped["data"]["discarded"].clone(), dropped["data"]["left"].clone()), (true.into(), 0.into()), "{dropped}");
-    assert!(!laptop.join(".krowk/before-start-over").exists());
+    assert!(!laptop.join(".gruntas/before-start-over").exists());
     let _ = std::fs::remove_dir_all(&r);
 }
 

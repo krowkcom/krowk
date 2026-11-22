@@ -51,8 +51,8 @@ impl Sandbox {
     fn claude(&self, scenario: Option<&str>) {
         std::fs::create_dir_all(self.root.join("home/.claude")).unwrap();
         std::fs::write(self.root.join("home/.claude/fake-login"), "").unwrap();
-        std::fs::create_dir_all(self.root.join("home/.krowk")).unwrap();
-        std::fs::write(self.root.join("home/.krowk/trusted.json"), serde_json::json!({"directories": [self.root.join("repo")]}).to_string()).unwrap();
+        std::fs::create_dir_all(self.root.join("home/.gruntas")).unwrap();
+        std::fs::write(self.root.join("home/.gruntas/trusted.json"), serde_json::json!({"directories": [self.root.join("repo")]}).to_string()).unwrap();
         if let Some(s) = scenario {
             std::fs::write(self.root.join("scenario.jsonl"), s).unwrap();
         }
@@ -127,7 +127,7 @@ fn p_flags_are_refused_elsewhere_and_bad_values_are_named() {
     let out = b.krowk(&["-p", "hi"]);
     assert_eq!(out.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&out.stderr).contains("connect a Claude Code or Codex account"));
-    assert!(!b.root.join("home/.krowk/sessions").exists(), "a refused prompt leaves no session behind");
+    assert!(!b.root.join("home/.gruntas/sessions").exists(), "a refused prompt leaves no session behind");
 }
 
 // ---- R-PRES-6: the record `krowk -p` leaves on the terminal --------------
@@ -363,7 +363,7 @@ fn krowk_p_image_sends_each_file_with_the_prompt_and_refuses_a_bad_one_first() {
 fn two_claude_accounts(b: &Sandbox, scenario: &str, rollover: Option<&str>) {
     let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../gruntas-harness/tests/fixtures/claude");
     let account = |name: &str, scenario: &str| {
-        let dir = b.root.join("home/.krowk/accounts").join(name);
+        let dir = b.root.join("home/.gruntas/accounts").join(name);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("fake-login"), "").unwrap();
         serde_json::json!({"kind": "claude-code", "binary": b.root.join("bin/claude"), "configDir": dir, "env": {"FAKE_CLAUDE_SCENARIO": fixtures.join(scenario)}})
@@ -372,14 +372,14 @@ fn two_claude_accounts(b: &Sandbox, scenario: &str, rollover: Option<&str>) {
     if let Some(r) = rollover {
         cfg["rollover"] = r.into();
     }
-    std::fs::write(b.root.join("home/.krowk/config.json"), cfg.to_string()).unwrap();
+    std::fs::write(b.root.join("home/.gruntas/config.json"), cfg.to_string()).unwrap();
 }
 
 /// Saves `instance`'s five-hour window with `used` percent used, as seen
 /// now, under a login of its own name, listing `haiku`.
 fn seed_usage(home: &std::path::Path, instance: &str, used: f64) {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
-    let usage = gruntas_harness::usage::Usage::in_home(&home.join(".krowk"));
+    let usage = gruntas_harness::usage::Usage::in_home(&home.join(".gruntas"));
     usage.record_instance(instance, instance, &["haiku".to_string()], now).unwrap();
     let limit = gruntas_harness::protocol::LimitStatus { status: gruntas_harness::protocol::LimitState::Allowed, window: Some("five_hour".into()), used_percent: Some(used), resets_at_ms: Some(now + 3_600_000) };
     usage.record_limit(instance, &limit, now).unwrap();
@@ -392,7 +392,7 @@ fn seed_usage(home: &std::path::Path, instance: &str, used: f64) {
 #[test]
 fn r_roll_11_krowk_p_shows_an_early_offer_in_json_and_hints_on_stderr() {
     let b = Sandbox::new("early");
-    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
+    std::fs::create_dir_all(b.root.join("home/.gruntas")).unwrap();
     two_claude_accounts(&b, "low.jsonl", None);
     seed_usage(&b.root.join("home"), "claude:a", 90.0);
     seed_usage(&b.root.join("home"), "claude:b", 20.0);
@@ -417,7 +417,7 @@ fn r_roll_11_krowk_p_shows_an_early_offer_in_json_and_hints_on_stderr() {
 #[test]
 fn r_roll_5_krowk_p_resolves_rollover_per_session_repo_and_global() {
     let b = Sandbox::new("rollover");
-    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
+    std::fs::create_dir_all(b.root.join("home/.gruntas")).unwrap();
     let global = |rollover: Option<&str>| two_claude_accounts(&b, "limited.jsonl", rollover);
     let repo = |rollover: &str| {
         std::fs::create_dir_all(b.root.join("repo/.gruntas")).unwrap();
@@ -472,8 +472,8 @@ fn r_cut_8_bare_krowk_on_a_terminal_prints_the_overview_and_the_old_tui_flags_po
     let b = Sandbox::new("bare-tty");
     // A Claude Code account on an API key, ready here without a login, so
     // bare `krowk` has no first-machine setup to ask.
-    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
-    std::fs::write(b.root.join("home/.krowk/config.json"), serde_json::json!({"instances": {"claude:console": {"kind": "claude-code", "apiKeyEnv": "ANTHROPIC_API_KEY"}}}).to_string()).unwrap();
+    std::fs::create_dir_all(b.root.join("home/.gruntas")).unwrap();
+    std::fs::write(b.root.join("home/.gruntas/config.json"), serde_json::json!({"instances": {"claude:console": {"kind": "claude-code", "apiKeyEnv": "ANTHROPIC_API_KEY"}}}).to_string()).unwrap();
     let on_a_tty = |args: &[&str]| {
         let mut c = b.command(args);
         c.env("NO_COLOR", "1").env("TERM", "xterm-256color").env("ANTHROPIC_API_KEY", "sk-test");

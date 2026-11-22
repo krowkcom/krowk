@@ -376,7 +376,7 @@ impl World {
     fn serve_hooked(&self, env: impl Fn(&str) -> String + Clone + Send + Sync + 'static, home: &str, instances: InstancesConfig, turns: Option<mpsc::UnboundedSender<server::TurnEvent>>, bridged: Option<Arc<Mutex<BTreeSet<String>>>>) -> std::thread::JoinHandle<()> {
         let socket = daemon::socket(&env).unwrap();
         let late = self.late.clone();
-        let credentials = self.root.join(home).join(".krowk/credentials.json");
+        let credentials = self.root.join(home).join(".gruntas/credentials.json");
         let wait = env.clone();
         let thread = std::thread::Builder::new().name(DAEMON_THREAD.into()).spawn(move || {
             let factory: server::Factory = Box::new(move |cwd: &Path, answers: bool| {
@@ -3184,7 +3184,7 @@ impl World {
             socket: daemon::socket(&env).unwrap(),
             sessions: log::sessions_dir(&env).unwrap(),
             version: "test".into(),
-            krowk_home: Some(self.root.join(home).join(".krowk")),
+            krowk_home: Some(self.root.join(home).join(".gruntas")),
             build,
             // The switch and the idle window as the environment says them.
             policy: Box::new(move || {
@@ -3216,7 +3216,7 @@ impl World {
     fn announcer(&self, a: &Device, home: &str, run: &str) -> announce::Options {
         let (api, device, user, chain) = (self.as_device(a), a.key.id(), self.user_key(), self.chain());
         let (env, instances) = (self.env_at(home, run), self.instances());
-        let krowk = self.root.join(home).join(".krowk");
+        let krowk = self.root.join(home).join(".gruntas");
         // Where `claude auth status` is asked.
         std::fs::create_dir_all(krowk.join("probe")).unwrap();
         let trusted = gruntas_harness::trust::Store::new(Some(krowk.join(gruntas_harness::trust::FILE)), Some(self.root.join(home)));

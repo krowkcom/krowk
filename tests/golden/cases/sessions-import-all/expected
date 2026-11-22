@@ -4,7 +4,7 @@ stdout:
   "ok": true,
   "data": {
     "dry_run": true,
-    "store": "<scratch>/home/.krowk/sessions/krowk.db",
+    "store": "<scratch>/home/.gruntas/sessions/gruntas.db",
     "providers": [
       {
         "provider": "claude",
@@ -94,7 +94,7 @@ stdout:
   "ok": true,
   "data": {
     "dry_run": false,
-    "store": "<scratch>/home/.krowk/sessions/krowk.db",
+    "store": "<scratch>/home/.gruntas/sessions/gruntas.db",
     "providers": [
       {
         "provider": "claude",
@@ -513,7 +513,7 @@ stdout:
   "ok": true,
   "data": {
     "dry_run": false,
-    "store": "<scratch>/home/.krowk/sessions/krowk.db",
+    "store": "<scratch>/home/.gruntas/sessions/gruntas.db",
     "providers": [
       {
         "provider": "claude",
@@ -591,7 +591,7 @@ stdout:
 }
 exit: 0
 
-@ls {home}/.krowk/sessions
+@ls {home}/.gruntas/sessions
+gruntas.db 600
 import.lock 600
-krowk.db 600
 

@@ -52,7 +52,7 @@ fn add_list_and_remove_round_trip_through_config_json() {
     assert!(s.krowk(&["mcp", "add", "mobbin", "https://api.mobbin.com/mcp", "--header", "X-Key: ${KEY}", "--header", "A: b"]).status.success());
     let out = s.krowk(&["mcp", "add", "files", "--env", "K=V", "--", "npx", "-y", "srv", "--flag"]);
     assert!(out.status.success(), "{}", text(&out));
-    let config: Value = serde_json::from_slice(&std::fs::read(s.root.join("home/.krowk/config.json")).unwrap()).unwrap();
+    let config: Value = serde_json::from_slice(&std::fs::read(s.root.join("home/.gruntas/config.json")).unwrap()).unwrap();
     assert_eq!(config["mcpServers"]["mobbin"], json!({"type": "http", "url": "https://api.mobbin.com/mcp", "headers": {"X-Key": "${KEY}", "A": "b"}}));
     assert_eq!(config["mcpServers"]["files"], json!({"command": "npx", "args": ["-y", "srv", "--flag"], "env": {"K": "V"}}));
 
@@ -70,7 +70,7 @@ fn add_list_and_remove_round_trip_through_config_json() {
 
     assert_eq!(s.list().iter().find(|r| r["name"] == "mobbin").unwrap()["sign_in"], "not signed in");
     // A stored sign-in goes with it; the credentials file's other keys stay.
-    let creds = s.root.join("home/.krowk/credentials.json");
+    let creds = s.root.join("home/.gruntas/credentials.json");
     let entry = |url: &str| json!({"url": url, "issuer": "i", "clientId": "c", "tokenEndpoint": "t", "accessToken": "a", "obtainedAtMs": 1});
     std::fs::write(&creds, json!({"mcp": {"mobbin": entry("https://other.example/mcp"), "keep": entry("https://k.example/mcp")}, "other": 1}).to_string()).unwrap();
     assert_eq!(s.list().iter().find(|r| r["name"] == "mobbin").unwrap()["sign_in"], "signed in");
@@ -95,7 +95,7 @@ fn other_sources_are_listed_and_not_removed() {
         assert!(!out.status.success() && text(&out).contains("does not edit"), "{}", text(&out));
     }
     // Nothing was written, and a server nobody has is not found.
-    assert!(!s.root.join("home/.krowk/config.json").exists());
+    assert!(!s.root.join("home/.gruntas/config.json").exists());
     assert!(text(&s.krowk(&["mcp", "remove", "ghost"])).contains("no MCP server named ghost"));
     assert!(text(&s.krowk(&["help", "--all"])).contains("mcp add"));
 }

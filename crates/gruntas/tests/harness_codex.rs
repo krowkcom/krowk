@@ -76,7 +76,7 @@ impl Sandbox {
     }
 
     fn data(&self) -> PathBuf {
-        self.root.join("home/.krowk")
+        self.root.join("home/.gruntas")
     }
 
     fn events(&self, session: &str) -> Vec<Value> {

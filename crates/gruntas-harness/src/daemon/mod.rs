@@ -21,7 +21,7 @@
 //! Where it listens: `$XDG_RUNTIME_DIR/gruntas/<home>/host.sock`, and where
 //! there is no runtime directory (macOS), `$TMPDIR/gruntas-<uid>/<home>/…`.
 //! `<home>` is the first twelve hex digits of the SHA-256 of krowk's home
-//! (`~/.krowk`, or `GRUNTAS_HOME`): a daemon serves one home's config, keys
+//! (`~/.gruntas`, or `GRUNTAS_HOME`): a daemon serves one home's config, keys
 //! and sessions, so each home gets its own. The directories are `0700` and
 //! must be this user's own, the socket `0600`: the socket runs turns with
 //! the user's keys, so nobody else may reach it. Beside it, `host.lock` is
@@ -204,7 +204,7 @@ pub async fn ensure(env: &dyn Fn(&str) -> String, cwd: &Path, version: &str, ans
                 // Gone before it listened: a config it refuses, say. Its
                 // log says why; there is nothing to wait for.
                 if let Some(Ok(Some(status))) = child.as_mut().map(|c| c.try_wait()) {
-                    return Err(EngineError::new("host_unavailable", format!("the host daemon exited as it started ({status}) — ~/.krowk/host.log says why")));
+                    return Err(EngineError::new("host_unavailable", format!("the host daemon exited as it started ({status}) — ~/.gruntas/host.log says why")));
                 }
                 tokio::time::sleep(Duration::from_millis(2)).await
             }
@@ -446,7 +446,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let e = [("XDG_RUNTIME_DIR", root.display().to_string()), ("HOME", "/home/ada".to_string())];
-        let key = home_key(Path::new("/home/ada/.krowk"));
+        let key = home_key(Path::new("/home/ada/.gruntas"));
         assert_eq!(socket(&env(&e)).unwrap(), root.join("gruntas").join(&key).join("host.sock"));
         assert_eq!(std::fs::metadata(root.join("gruntas")).unwrap().permissions().mode() & 0o777, 0o700);
         // macOS: no runtime directory, the per-user TMPDIR instead.

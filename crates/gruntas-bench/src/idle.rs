@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 /// after `window`; anything krowk did in between is polling. krowk's own
 /// process is measured, not the fake's.
 pub fn engine_idle(bin: &Path, home: &Path, window: Duration) -> Result<Idle, String> {
-    std::fs::create_dir_all(home.join(".krowk")).map_err(|e| format!("{}: {e}", home.display()))?;
+    std::fs::create_dir_all(home.join(".gruntas")).map_err(|e| format!("{}: {e}", home.display()))?;
     let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("../gruntas-harness/tests/fixtures/claude/fake-claude");
     let (account, scenario, log) = (home.join("claude"), home.join("silent.jsonl"), home.join("fake.log"));
     std::fs::create_dir_all(&account).map_err(|e| e.to_string())?;
@@ -25,7 +25,7 @@ pub fn engine_idle(bin: &Path, home: &Path, window: Duration) -> Result<Idle, St
         "defaultModel": "claude/sonnet",
         "instances": {"claude": {"kind": "claude-code", "binary": fake, "configDir": account, "env": {"FAKE_CLAUDE_SCENARIO": scenario, "FAKE_CLAUDE_LOG": log}}},
     });
-    std::fs::write(home.join(".krowk/config.json"), config.to_string()).map_err(|e| e.to_string())?;
+    std::fs::write(home.join(".gruntas/config.json"), config.to_string()).map_err(|e| e.to_string())?;
     let stderr = home.join("stderr");
     let mut child = sandboxed(bin, home)
         .args(["-p", "say hello", "--trust"])

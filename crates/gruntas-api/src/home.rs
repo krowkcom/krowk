@@ -1,4 +1,4 @@
-//! krowk's one home: `~/.krowk`, or `$GRUNTAS_HOME`. Every file krowk keeps —
+//! gruntas's one home: `~/.gruntas`, or `$GRUNTAS_HOME`. Every file gruntas keeps —
 //! its config, its keys and logins, its accounts, sessions and caches — is
 //! under it, and every path to one is derived here, in the lean build and
 //! the full one alike, so the file tools' fence and the files it fences can
@@ -8,7 +8,7 @@
 //! config.json        settings, no secrets
 //! credentials.json   0600: registry keys, provider logins, stored API keys
 //! accounts/<name>/   a named Claude Code or Codex account's own home
-//! sessions/          krowk.db and each session's log
+//! sessions/          gruntas.db and each session's log
 //! usage.json         each login's last known usage and each instance's model list
 //! cache/             the models.dev listing, the update check
 //! readiness/         where a vendor is asked whether it is signed in
@@ -50,7 +50,7 @@ fn no_home() -> Error {
 }
 
 /// Where the home is, by the environment alone: `$GRUNTAS_HOME` when set,
-/// which must be absolute, else `.krowk` in the user's home directory
+/// which must be absolute, else `.gruntas` in the user's home directory
 /// (`HOME`, or `USERPROFILE` on Windows). Never a relative path — that would
 /// make a repository's own files krowk's keys and settings.
 pub fn resolve(env: Env) -> Result<PathBuf, Error> {
@@ -69,11 +69,11 @@ fn resolve_on(env: Env, windows: bool) -> Result<PathBuf, Error> {
         // regardless of case, as macOS and Windows open them.
         let is_user = user.as_ref().is_some_and(|u| holds(u, &p) && holds(&p, u));
         if !Path::new(&own).is_absolute() || p.parent().is_none() || is_user {
-            return Err(fail("bad_home", format!("GRUNTAS_HOME is {own:?}, which is not an absolute path below the root and apart from your home directory — set it to one, or unset it for ~/.krowk")));
+            return Err(fail("bad_home", format!("GRUNTAS_HOME is {own:?}, which is not an absolute path below the root and apart from your home directory — set it to one, or unset it for ~/.gruntas")));
         }
         return Ok(p);
     }
-    user.map(|u| u.join(".krowk")).ok_or_else(no_home)
+    user.map(|u| u.join(".gruntas")).ok_or_else(no_home)
 }
 
 /// The user's home directory, `..` taken out: `HOME`, or `USERPROFILE` on
@@ -87,11 +87,14 @@ fn user_home(env: Env, windows: bool) -> Option<PathBuf> {
 }
 
 /// Everything the file tools and `krowk_push` keep away from: the home in
-/// use and the default one (`~/.krowk`, when `GRUNTAS_HOME` names another),
-/// each with the staging directory and lock a move from the old layout
-/// uses beside it.
+/// use and the default one (`~/.gruntas`, when `GRUNTAS_HOME` names
+/// another), each with the staging directory and lock a move into it uses
+/// beside it, and krowk's own home (`~/.krowk`), which holds the same keys
+/// once copied.
 pub fn fenced(env: Env) -> Vec<PathBuf> {
-    let homes = [resolve(env).ok(), user_home(env, cfg!(windows)).map(|u| u.join(".krowk"))];
+    let default = user_home(env, cfg!(windows)).map(|u| u.join(".gruntas"));
+    let krowk = default.as_deref().map(crate::migrate::krowk_home);
+    let homes = [resolve(env).ok(), default, krowk];
     homes.into_iter().flatten().flat_map(|h| siblings(&h)).collect()
 }
 
@@ -122,8 +125,9 @@ static READY: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
 /// The home, checked once per process: one `lstat` when it is there, and
 /// for the default home one `stat` of its old-layout marker. When it is
-/// not, the files an older krowk kept under the XDG directories are moved
-/// in first (`crate::migrate`), and it is made `0700`.
+/// not, krowk's home (`~/.krowk`) is copied into it once, or else the files
+/// an older krowk kept under the XDG directories are moved in
+/// (`crate::migrate`), and it is made `0700`.
 pub fn dir(env: Env) -> Result<PathBuf, Error> {
     let home = resolve(env)?;
     let mut ready = READY.lock().unwrap_or_else(|e| e.into_inner());
@@ -140,8 +144,8 @@ pub fn get() -> Result<PathBuf, Error> {
 }
 
 fn prepare(home: &Path, env: Env) -> Result<(), Error> {
-    // Only the default home inherits an older krowk's files: a GRUNTAS_HOME
-    // is a sandbox, and never takes the person's own.
+    // Only the default home inherits krowk's files: a GRUNTAS_HOME is a
+    // sandbox, and never takes the person's own.
     let inherits = env("GRUNTAS_HOME").is_empty();
     match std::fs::symlink_metadata(home) {
         Ok(m) => {
@@ -154,7 +158,7 @@ fn prepare(home: &Path, env: Env) -> Result<(), Error> {
             Ok(())
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            if inherits {
+            if inherits && !crate::migrate::copy_krowk(home).map_err(|m| fail("migration_failed", m))? {
                 crate::migrate::run(home, env).map_err(|m| fail("migration_failed", m))?;
             }
             if let Some(parent) = home.parent() {
@@ -276,21 +280,21 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn the_home_is_krowk_home_or_dot_krowk_and_never_relative() {
-        assert_eq!(resolve(&env(&[("HOME", "/h")])).unwrap(), PathBuf::from("/h/.krowk"));
+    fn the_home_is_gruntas_home_or_dot_gruntas_and_never_relative() {
+        assert_eq!(resolve(&env(&[("HOME", "/h")])).unwrap(), PathBuf::from("/h/.gruntas"));
         assert_eq!(resolve(&env(&[("HOME", "/h"), ("GRUNTAS_HOME", "/k")])).unwrap(), PathBuf::from("/k"));
         assert_eq!(resolve(&env(&[("HOME", "/h"), ("GRUNTAS_HOME", "rel/k")])).unwrap_err().code(), "bad_home");
         assert_eq!(resolve(&env(&[("GRUNTAS_HOME", "/")])).unwrap_err().code(), "bad_home");
         assert_eq!(resolve(&env(&[("HOME", "relative")])).unwrap_err().code(), "no_home");
         assert_eq!(resolve(&env(&[])).unwrap_err().code(), "no_home");
         let xdg = env(&[("HOME", "/h"), ("XDG_CONFIG_HOME", "/x"), ("XDG_DATA_HOME", "/y")]);
-        assert_eq!(resolve(&xdg).unwrap(), PathBuf::from("/h/.krowk"), "XDG is not read");
+        assert_eq!(resolve(&xdg).unwrap(), PathBuf::from("/h/.gruntas"), "XDG is not read");
     }
 
     #[test]
     #[cfg(unix)]
     fn dot_dot_is_taken_out_before_the_home_is_judged() {
-        assert_eq!(resolve(&env(&[("HOME", "/x/gone/../h")])).unwrap(), PathBuf::from("/x/h/.krowk"));
+        assert_eq!(resolve(&env(&[("HOME", "/x/gone/../h")])).unwrap(), PathBuf::from("/x/h/.gruntas"));
         assert_eq!(resolve(&env(&[("HOME", "/h"), ("GRUNTAS_HOME", "/k/sub/..")])).unwrap(), PathBuf::from("/k"));
         // The person's own home, however spelled, and the root are refused.
         for own in ["/h/x/..", "/h", "/h/./", "/k/.."] {
@@ -302,7 +306,7 @@ mod tests {
             assert_eq!(resolve(&e).unwrap_err().code(), "bad_home", "{own}");
         }
         let fenced = fenced(&env(&[("HOME", "/h"), ("GRUNTAS_HOME", "/k")]));
-        for p in ["/k", "/k.migrating", "/k.migrate.lock", "/h/.krowk", "/h/.krowk.migrating", "/h/.krowk.migrate.lock"] {
+        for p in ["/k", "/k.migrating", "/k.migrate.lock", "/h/.gruntas", "/h/.gruntas.migrating", "/h/.gruntas.migrate.lock", "/h/.krowk"] {
             assert!(fenced.contains(&PathBuf::from(p)), "{p} in {fenced:?}");
         }
     }
@@ -322,13 +326,13 @@ mod tests {
     #[cfg(unix)]
     fn on_windows_the_home_is_under_userprofile_when_home_is_unset() {
         let up = env(&[("USERPROFILE", "/Users/ada")]);
-        assert_eq!(resolve_on(&up, true).unwrap(), PathBuf::from("/Users/ada/.krowk"));
+        assert_eq!(resolve_on(&up, true).unwrap(), PathBuf::from("/Users/ada/.gruntas"));
         assert_eq!(resolve_on(&up, false).unwrap_err().code(), "no_home");
-        assert_eq!(resolve_on(&env(&[("HOME", "/h"), ("USERPROFILE", "/u")]), true).unwrap(), PathBuf::from("/h/.krowk"));
+        assert_eq!(resolve_on(&env(&[("HOME", "/h"), ("USERPROFILE", "/u")]), true).unwrap(), PathBuf::from("/h/.gruntas"));
     }
 
     fn scratch(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("krowk-home-{name}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("gruntas-home-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d.canonicalize().unwrap()
@@ -360,9 +364,9 @@ mod tests {
     #[test]
     fn a_path_is_in_the_home_however_it_is_spelled() {
         let d = scratch("holds");
-        let home = d.join(".krowk");
+        let home = d.join(".gruntas");
         std::fs::create_dir_all(home.join("sessions")).unwrap();
-        for inside in [home.join("credentials.json"), home.join("sessions/../credentials.json"), d.join(".KROWK/config.json"), home.clone()] {
+        for inside in [home.join("credentials.json"), home.join("sessions/../credentials.json"), d.join(".GRUNTAS/config.json"), home.clone()] {
             assert!(holds(&home, &inside), "{}", inside.display());
         }
         #[cfg(unix)]

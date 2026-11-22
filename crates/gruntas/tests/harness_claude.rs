@@ -38,7 +38,7 @@ impl Sandbox {
         std::os::unix::fs::symlink(fixture("fake-claude"), &bin).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        std::fs::create_dir_all(root.join("home/.krowk")).unwrap();
+        std::fs::create_dir_all(root.join("home/.gruntas")).unwrap();
         Sandbox { root: root.canonicalize().unwrap() }
     }
 
@@ -75,7 +75,7 @@ impl Sandbox {
     }
 
     fn data(&self) -> PathBuf {
-        self.root.join("home/.krowk")
+        self.root.join("home/.gruntas")
     }
 
     fn events(&self, session: &str) -> Vec<Value> {
@@ -140,7 +140,7 @@ fn r_inst_2_two_claude_accounts_sign_in_through_claudes_own_flow_and_each_runs_a
     assert_eq!(out.status.code(), Some(3), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(String::from_utf8_lossy(&out.stderr).contains("claude auth login"));
     assert!(!b.data().join("accounts/claude-broken").exists());
-    let cfg: Value = serde_json::from_str(&std::fs::read_to_string(b.root.join("home/.krowk/config.json")).unwrap()).unwrap();
+    let cfg: Value = serde_json::from_str(&std::fs::read_to_string(b.root.join("home/.gruntas/config.json")).unwrap()).unwrap();
     assert!(cfg["instances"].get("claude:broken").is_none() && cfg["instances"].get("claude:work").is_some());
 
     // Removing one keeps Claude's own login where Claude keeps it.
@@ -254,7 +254,7 @@ fn r_back_6_headless_refuses_an_untrusted_repository_before_claude_is_spawned() 
     assert!(!b.data().join("sessions").exists() || std::fs::read_dir(b.data().join("sessions")).unwrap().next().is_none(), "no session was created");
     // --trust runs it, for this run only.
     b.json(&["-p", "hello", "--model", "claude/sonnet", "--trust", "--output-format", "json"], &[]);
-    assert!(!b.root.join("home/.krowk/trusted.json").exists(), "--trust is not remembered");
+    assert!(!b.root.join("home/.gruntas/trusted.json").exists(), "--trust is not remembered");
     // A repository trusted before (a yes at the prompt) needs no flag, and
     // covers its subdirectories.
     assert!(err.contains("`krowk trust`"), "the refusal names the fix: {err}");
@@ -267,7 +267,7 @@ fn r_back_6_headless_refuses_an_untrusted_repository_before_claude_is_spawned() 
     // the home, which is never trusted for good — only --trust runs there.
     std::fs::create_dir_all(b.root.join("home/.git")).unwrap();
     std::fs::create_dir_all(b.root.join("home/notes")).unwrap();
-    std::fs::write(b.root.join("home/.krowk/trusted.json"), serde_json::json!({"directories": [b.root.join("home"), b.root.join("repo")]}).to_string()).unwrap();
+    std::fs::write(b.root.join("home/.gruntas/trusted.json"), serde_json::json!({"directories": [b.root.join("home"), b.root.join("repo")]}).to_string()).unwrap();
     let out = b.command(&["-p", "hello", "--model", "claude/sonnet"], &[]).current_dir(b.root.join("home/notes")).output().unwrap();
     assert_eq!(out.status.code(), Some(4));
     assert!(String::from_utf8_lossy(&out.stderr).contains("home directory"), "{}", String::from_utf8_lossy(&out.stderr));
@@ -289,7 +289,7 @@ fn r_inst_1_providers_add_claude_with_a_router_hands_it_the_named_key_and_nothin
     assert_eq!(added["data"]["definition"]["apiKeyEnv"], "ROUTER_KEY", "the variable's name is stored");
     assert_eq!(added["data"]["definition"]["env"]["ANTHROPIC_BASE_URL"], "https://router.example/api");
     assert!(!b.fake_log().contains("argv auth login"), "a router signs in with its key, not a Claude login");
-    let cfg = std::fs::read_to_string(b.root.join("home/.krowk/config.json")).unwrap();
+    let cfg = std::fs::read_to_string(b.root.join("home/.gruntas/config.json")).unwrap();
     assert!(!cfg.contains("sk-or-"), "never the key");
 
     let listed = b.json(&["providers", "list", "--json"], &[("ROUTER_KEY", "sk-or-live")]);
@@ -334,7 +334,7 @@ fn r_cut_5_p_on_a_terminal_asks_in_plain_text_before_claude_runs() {
         assert!(!b.fake_log().contains("argv -p"), "nothing spawned before the answer");
         t.write(if yes { b"y\r" } else { b"n\r" });
         let st = t.wait(std::time::Duration::from_secs(10)).expect("krowk -p exits");
-        let trusted = b.root.join("home/.krowk/trusted.json");
+        let trusted = b.root.join("home/.gruntas/trusted.json");
         if yes {
             assert!(st.success(), "{st}: {:?}", t.text());
             assert!(std::fs::read_to_string(&trusted).unwrap().contains(&b.root.join("repo").display().to_string()), "a yes is remembered");
@@ -522,7 +522,7 @@ fn r_sub_7_claude_codes_parallel_agents_are_child_sessions_their_prompt_first_an
     // The parent's own spend still counts each agent's calls, once.
     assert!(parent.iter().any(|e| e["type"] == "subagent.response"));
     assert_eq!(listed_children(&b, &session), kids, "`krowk -p` lists them under it at once");
-    std::fs::remove_file(b.data().join("sessions/krowk.db")).unwrap();
+    std::fs::remove_file(b.data().join("sessions/gruntas.db")).unwrap();
     let out = b.krowk(&["sessions", "rebuild", "--yes"], &[]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(listed_children(&b, &session), kids, "the children hang from the parent again");

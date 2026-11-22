@@ -82,7 +82,7 @@ impl Home {
     /// would hand it: where turns are told, and the sessions it bridges.
     fn serve_hooked(&self, version: &str, idle: Option<Duration>, kick: Option<Arc<tokio::sync::Notify>>, hooks: Hooks) -> std::thread::JoinHandle<Result<(), String>> {
         let (env, socket, version) = (self.env(), self.socket(), version.to_string());
-        let credentials = self.root.join("home/.krowk/credentials.json");
+        let credentials = self.root.join("home/.gruntas/credentials.json");
         let (made, instances) = (self.made.clone(), self.instances.clone());
         let t = std::thread::spawn(move || {
             let factory: server::Factory = Box::new(move |cwd: &Path, answers: bool| {

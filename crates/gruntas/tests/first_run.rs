@@ -75,11 +75,11 @@ impl Sandbox {
     }
 
     fn state(&self) -> serde_json::Value {
-        serde_json::from_str(&std::fs::read_to_string(self.root.join("home/.krowk/first-run.json")).unwrap_or_else(|_| "{}".into())).unwrap()
+        serde_json::from_str(&std::fs::read_to_string(self.root.join("home/.gruntas/first-run.json")).unwrap_or_else(|_| "{}".into())).unwrap()
     }
 
     fn keystore(&self) -> gruntas_client::keystore::Keystore {
-        gruntas_client::keystore::Keystore::new(&self.root.join("home/.krowk"))
+        gruntas_client::keystore::Keystore::new(&self.root.join("home/.gruntas"))
     }
 }
 
@@ -196,7 +196,7 @@ fn a_fresh_home_signs_in_registers_for_sync_and_then_connects_a_model() {
     assert!(b.keystore().device_list().unwrap().is_some_and(|c| c.recovery().is_some()), "the kit is on the list");
     let state = b.state();
     assert!(state["always_on_asked"] == true && state["kit_offered"] == true, "{state}");
-    assert!(!b.root.join("home/.config/systemd/user/krowk-host.service").exists(), "declined: nothing installed");
+    assert!(!b.root.join("home/.config/systemd/user/gruntas-host.service").exists(), "declined: nothing installed");
     assert!(!t.text().contains(REMINDER), "a kit: no reminder");
 
     // Set up: the overview alone.
@@ -229,10 +229,10 @@ fn later_at_the_kit_is_not_asked_again_and_the_reminder_follows_while_there_is_o
     says(&t, "Later: `krowk machines recovery` makes one when you want it.");
     says(&t, REMINDER);
     ends(&mut t);
-    let unit = std::fs::read_to_string(b.root.join("home/.config/systemd/user/krowk-host.service")).unwrap_or_default();
+    let unit = std::fs::read_to_string(b.root.join("home/.config/systemd/user/gruntas-host.service")).unwrap_or_default();
     assert!(unit.contains("GRUNTAS_HOST_IDLE=0"), "a yes installs the service: {unit}");
     let log = std::fs::read_to_string(b.root.join("systemctl.log")).unwrap_or_default();
-    assert!(log.contains("--user enable --now krowk-host.service"), "{log}");
+    assert!(log.contains("--user enable --now gruntas-host.service"), "{log}");
     assert!(b.keystore().device_list().unwrap().is_some_and(|c| c.recovery().is_none()), "later: no kit");
 
     // The next run: reminded again, never offered the kit again; piped too.
@@ -308,7 +308,7 @@ fn signed_in_owing(name: &str, api: &str) -> Sandbox {
     let b = Sandbox::new(name);
     let login = b.command(api, &["login", "--token", "krowk_sk_first#second"]).output().unwrap();
     assert!(login.status.success(), "{}", String::from_utf8_lossy(&login.stderr));
-    std::fs::write(b.root.join("home/.krowk/first-run.json"), "{\"pending\": true}\n").unwrap();
+    std::fs::write(b.root.join("home/.gruntas/first-run.json"), "{\"pending\": true}\n").unwrap();
     b
 }
 
@@ -432,7 +432,7 @@ fn a_registration_left_owed_is_finished_by_the_next_krowk_and_any_other_answer_i
     // A key stored, the registration owed, and a model ready.
     let login = b.command(&api, &["login", "--token", "krowk_sk_owed#a"]).output().unwrap();
     assert!(login.status.success(), "{}", String::from_utf8_lossy(&login.stderr));
-    std::fs::write(b.root.join("home/.krowk/first-run.json"), "{\"pending\": true, \"always_on_asked\": true, \"kit_offered\": true}\n").unwrap();
+    std::fs::write(b.root.join("home/.gruntas/first-run.json"), "{\"pending\": true, \"always_on_asked\": true, \"kit_offered\": true}\n").unwrap();
     assert!(b.keystore().device_list().unwrap().is_none());
     b.claude_signed_in();
     let mut t = wide(b.command(&api, &[]));
@@ -483,8 +483,8 @@ fn the_overview_shows_the_top_problem_and_nothing_when_nothing_is_wrong() {
 
     // Using krowk locally, with a model: nothing is wrong, so nothing is said.
     let b = Sandbox::new("no-problem");
-    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
-    std::fs::write(b.root.join("home/.krowk/first-run.json"), "{\"local\": true, \"always_on_asked\": true}\n").unwrap();
+    std::fs::create_dir_all(b.root.join("home/.gruntas")).unwrap();
+    std::fs::write(b.root.join("home/.gruntas/first-run.json"), "{\"local\": true, \"always_on_asked\": true}\n").unwrap();
     b.claude_signed_in();
     let out = b.command(&api, &[]).output().unwrap();
     let said = String::from_utf8_lossy(&out.stdout);

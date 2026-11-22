@@ -67,12 +67,12 @@ pub(crate) fn other(what: &str, e: impl std::fmt::Display) -> StoreError {
     StoreError::Other(format!("store: {what}: {e}"))
 }
 
-/// `sessions/krowk.db` in krowk's home (`gruntas_api::home`); an error when
-/// there is no home to put it in — a store must never fall back to
-/// /krowk.db or the working directory.
+/// `sessions/gruntas.db` in gruntas's home (`gruntas_api::home`); an error
+/// when there is no home to put it in — a store must never fall back to
+/// /gruntas.db or the working directory.
 pub fn db_path(env: Env) -> Result<PathBuf, StoreError> {
     match gruntas_api::home::dir(env) {
-        Ok(home) => Ok(home.join(gruntas_api::home::SESSIONS).join("krowk.db")),
+        Ok(home) => Ok(home.join(gruntas_api::home::SESSIONS).join("gruntas.db")),
         Err(e) => Err(StoreError::NoHome(format!("store: {}", e.fix()))),
     }
 }
@@ -116,7 +116,7 @@ pub fn open(env: Env) -> Result<Connection, StoreError> {
     conn.pragma_update(None, "synchronous", "NORMAL").map_err(|e| other(&format!("persist synchronous {}", path.display()), e))?;
     let (version, tables) = read_version_and_tables(&conn).map_err(|e| other(&format!("read schema version {}", path.display()), e))?;
     if version == 0 {
-        return Err(rebuild_hint(&path, "krowk.db regressed to schema version 0 after the gate accepted it"));
+        return Err(rebuild_hint(&path, "gruntas.db regressed to schema version 0 after the gate accepted it"));
     }
     check_schema_content(&path, version, &tables)?;
     for side in ["-wal", "-shm", "-journal"] {
@@ -201,19 +201,19 @@ fn read_version_and_tables(conn: &Connection) -> rusqlite::Result<(i64, Vec<Stri
 fn check_schema_content(path: &Path, version: i64, tables: &[String]) -> Result<(), StoreError> {
     if version == 0 {
         if tables.iter().any(|t| !t.starts_with("sqlite_")) {
-            return Err(rebuild_hint(path, "krowk.db holds tables at schema version 0, which Open never writes"));
+            return Err(rebuild_hint(path, "gruntas.db holds tables at schema version 0, which Open never writes"));
         }
         return Ok(());
     }
     if version != SCHEMA_VERSION {
-        return Err(rebuild_hint(path, &format!("krowk.db schema version {version} (want {SCHEMA_VERSION})")));
+        return Err(rebuild_hint(path, &format!("gruntas.db schema version {version} (want {SCHEMA_VERSION})")));
     }
     if tables.iter().any(|t| t == "migrations") {
-        return Err(rebuild_hint(path, "krowk.db has a migrations table, which v1 never creates"));
+        return Err(rebuild_hint(path, "gruntas.db has a migrations table, which v1 never creates"));
     }
     for want in expected_tables() {
         if !tables.contains(&want) {
-            return Err(rebuild_hint(path, &format!("krowk.db is missing table {want:?} (schema version {SCHEMA_VERSION})")));
+            return Err(rebuild_hint(path, &format!("gruntas.db is missing table {want:?} (schema version {SCHEMA_VERSION})")));
         }
     }
     Ok(())
@@ -231,7 +231,7 @@ fn check_schema_file(path: &Path) -> Result<(), StoreError> {
     match inspected {
         Ok((version, tables)) => check_schema_content(path, version, &tables),
         Err(e) if e.to_string().contains("file is not a database") || e.to_string().contains("malformed") => {
-            Err(rebuild_hint(path, &format!("krowk.db is unreadable ({e})")))
+            Err(rebuild_hint(path, &format!("gruntas.db is unreadable ({e})")))
         }
         Err(e) => Err(other(&format!("inspect {}", path.display()), e)),
     }
@@ -276,7 +276,7 @@ pub fn check(env: Env) -> StatusCheck {
     let status = |status: &str, message: String, hint: String| StatusCheck { name: "store".into(), status: status.into(), message, hint };
     let path = match db_path(env) {
         Ok(p) => p,
-        Err(e) => return status("fail", "krowk.db has nowhere to live".into(), e.message().trim_start_matches("store: ").into()),
+        Err(e) => return status("fail", "gruntas.db has nowhere to live".into(), e.message().trim_start_matches("store: ").into()),
     };
     match open(env) {
         Ok(_) => status("pass", format!("healthy ({}, schema v{SCHEMA_VERSION}, wal)", path.display()), String::new()),

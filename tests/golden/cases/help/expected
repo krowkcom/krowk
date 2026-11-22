@@ -1080,7 +1080,7 @@ stdout:
     {
       "name": "GRUNTAS_HOME",
       "usage": "Where krowk keeps its files, an absolute path",
-      "default": "~/.krowk"
+      "default": "~/.gruntas"
     },
     {
       "name": "NO_COLOR",
