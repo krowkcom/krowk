@@ -3,7 +3,7 @@
 //! The stand-in registry keeps the suite hermetic, and that is also its hazard:
 //! a stand-in drifting with the client keeps every other test green while
 //! api.krowk.com answers 404. This list is the one to hold against
-//! `bin/rails routes` in krowk-registry when either side moves.
+//! `bin/rails routes` in the registry when either side moves.
 //!
 //! The binary runs as a subprocess with an empty environment and a temporary
 //! HOME — the credentials path is resolved from the process environment, and a
@@ -102,7 +102,7 @@ fn sync_wire_shape_matches_the_registrys_routes() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let failures = Arc::new(Mutex::new(Vec::new()));
     // Its own directory: the test beside it clears `scratch()` as it goes.
-    let dir = std::env::temp_dir().join(format!("krowk-wire-sync-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("gruntas-wire-sync-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("laptop/home")).unwrap();
     std::fs::create_dir_all(dir.join("desktop/home")).unwrap();
@@ -246,7 +246,7 @@ impl Gruntas {
 }
 
 fn scratch() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("krowk-wire-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("gruntas-wire-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("home")).unwrap();
     dir.canonicalize().unwrap()

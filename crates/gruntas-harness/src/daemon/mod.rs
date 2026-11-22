@@ -442,7 +442,7 @@ mod tests {
         // already ~50 bytes, and with this test's own directory on top the
         // socket path runs past what sun_path holds, which is the refusal
         // the last step checks for, not the answer the first steps expect.
-        let root = PathBuf::from("/tmp").join(format!("krowk-dp-{}", std::process::id()));
+        let root = PathBuf::from("/tmp").join(format!("gruntas-dp-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let e = [("XDG_RUNTIME_DIR", root.display().to_string()), ("HOME", "/home/ada".to_string())];
@@ -454,7 +454,7 @@ mod tests {
         let uid = unsafe { libc::getuid() };
         assert_eq!(socket(&env(&e)).unwrap(), root.join(format!("gruntas-{uid}")).join(&key).join("host.sock"));
         // Another home is another daemon: its config, keys and sessions.
-        let e = [("XDG_RUNTIME_DIR", root.display().to_string()), ("HOME", "/home/ada".to_string()), ("GRUNTAS_HOME", "/work/.krowk".to_string())];
+        let e = [("XDG_RUNTIME_DIR", root.display().to_string()), ("HOME", "/home/ada".to_string()), ("GRUNTAS_HOME", "/work/.gruntas".to_string())];
         assert_ne!(socket(&env(&e)).unwrap().parent().unwrap().file_name().unwrap().to_str().unwrap(), key);
         // One made loose by someone is made private again, and a symlink —
         // which could lead anywhere — is refused.
@@ -506,7 +506,7 @@ mod tests {
         // meanwhile takes it; left open across exec in this one child only.
         let (mut read, write) = std::io::pipe().unwrap();
         let fd = write.as_raw_fd();
-        let log = std::env::temp_dir().join(format!("krowk-detached-{}.log", std::process::id()));
+        let log = std::env::temp_dir().join(format!("gruntas-detached-{}.log", std::process::id()));
         // SAFETY: fcntl is async-signal-safe, on a descriptor the child has.
         let leave_open = move || if unsafe { libc::fcntl(fd, libc::F_SETFD, 0) } < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) };
         // SAFETY: `leave_open` makes one fcntl call.

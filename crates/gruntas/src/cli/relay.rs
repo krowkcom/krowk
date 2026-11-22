@@ -23,7 +23,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     let addr: SocketAddr = asked.to_socket_addrs().ok().and_then(|mut a| a.next()).ok_or_else(|| fail("bad_flags", format!("--addr {asked:?} needs a host and a numeric port, like {DEFAULT_ADDR}")))?;
     let origin = match Some(ctx.f.origin.clone()).filter(|o| !o.is_empty()) {
         None => None,
-        Some(o) => Some(krowk_client_origin(&o).ok_or_else(|| fail("bad_flags", format!("--origin {o:?} is ws://host[:port] or wss://host[:port], what devices dial")))?),
+        Some(o) => Some(client_origin(&o).ok_or_else(|| fail("bad_flags", format!("--origin {o:?} is ws://host[:port] or wss://host[:port], what devices dial")))?),
     };
     // Off loopback, the relay must be told what devices dial: taking it
     // from the Host a client sends would let a relay in the middle pass
@@ -50,7 +50,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
 }
 
 /// `--origin` in the form devices sign it.
-fn krowk_client_origin(o: &str) -> Option<String> {
+fn client_origin(o: &str) -> Option<String> {
     let lower = o.to_ascii_lowercase();
     gruntas_harness::relay::canonical_origin(o).filter(|_| lower.starts_with("ws://") || lower.starts_with("wss://"))
 }
@@ -86,9 +86,9 @@ mod tests {
     /// WebSocket URL.
     #[test]
     fn r_relay_1_origin_is_canonical_and_a_websocket_url() {
-        assert_eq!(krowk_client_origin("WSS://Relay.Example:443/v1").as_deref(), Some("wss://relay.example"));
-        assert_eq!(krowk_client_origin("ws://10.0.0.2:7790").as_deref(), Some("ws://10.0.0.2:7790"));
-        assert_eq!(krowk_client_origin("https://relay.example"), None);
-        assert_eq!(krowk_client_origin("relay.example"), None);
+        assert_eq!(client_origin("WSS://Relay.Example:443/v1").as_deref(), Some("wss://relay.example"));
+        assert_eq!(client_origin("ws://10.0.0.2:7790").as_deref(), Some("ws://10.0.0.2:7790"));
+        assert_eq!(client_origin("https://relay.example"), None);
+        assert_eq!(client_origin("relay.example"), None);
     }
 }

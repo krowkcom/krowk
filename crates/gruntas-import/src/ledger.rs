@@ -20,7 +20,7 @@
 //! and reasoning over output is capped at output.
 //!
 //! It is read through the same sandbox as every transcript an importer
-//! reads, rooted at gruntas's home rather than the user's (`in_krowk_home`).
+//! reads, rooted at gruntas's home rather than the user's (`in_gruntas_home`).
 //!
 //! Each file is one session (harness `ledger`, bound on the file name), one
 //! message per row. Turns, and whether a row is also in a local transcript
@@ -54,7 +54,7 @@ impl Source for Ledger {
     /// is no ledger, which is the usual answer.
     fn discover(&self, env: Env) -> Result<Vec<Ref>, ImportError> {
         check_os()?;
-        let Some(gruntas) = krowk_home(env) else { return Ok(Vec::new()) };
+        let Some(gruntas) = gruntas_home(env) else { return Ok(Vec::new()) };
         let env: Env = &|k: &str| if k == "HOME" { gruntas.clone() } else { env(k) };
         let home = home_dir(env);
         if home.is_empty() || std::fs::symlink_metadata(Path::new(&home).join(LEDGER_REL)).is_err() {
@@ -80,7 +80,7 @@ impl Source for Ledger {
     }
 
     fn read(&self, env: Env, r: &Ref, _cursor: &str) -> Result<(Thread, String, ReadResult), ImportError> {
-        let gruntas = krowk_home(env).ok_or_else(|| ImportError::NoHome("ledger: gruntas has no home".into()))?;
+        let gruntas = gruntas_home(env).ok_or_else(|| ImportError::NoHome("ledger: gruntas has no home".into()))?;
         let env: Env = &|k: &str| if k == "HOME" { gruntas.clone() } else { env(k) };
         let (mut file, path) = open_home(env, &r.path, 0).map_err(|e| context(e, &format!("ledger: open {}", r.path)))?;
         let mut rows: Vec<Row> = Vec::new();
@@ -104,14 +104,14 @@ impl Source for Ledger {
     }
 
     fn unchanged(&self, env: Env, r: &Ref, cursor: &str) -> bool {
-        let Some(gruntas) = krowk_home(env) else { return false };
+        let Some(gruntas) = gruntas_home(env) else { return false };
         jsonl_unchanged(&|k: &str| if k == "HOME" { gruntas.clone() } else { env(k) }, r, cursor)
     }
 }
 
 /// gruntas's home, the root a ledger is confined to — in place of the user's
 /// home the other importers are.
-fn krowk_home(env: Env) -> Option<String> {
+fn gruntas_home(env: Env) -> Option<String> {
     gruntas_api::home::dir(env).ok().map(|h| h.display().to_string())
 }
 
@@ -239,7 +239,7 @@ mod tests {
     }
 
     fn home(name: &str) -> (Tmp, impl Fn(&str) -> String) {
-        let dir = std::env::temp_dir().join(format!("krowk-ledger-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gruntas-ledger-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let dir = dir.canonicalize().unwrap();

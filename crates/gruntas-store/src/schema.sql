@@ -140,7 +140,7 @@ CREATE INDEX idx_session_worktree_updated ON session(worktree_id, time_updated);
 CREATE INDEX idx_session_updated ON session(time_updated DESC);
 -- The indexes above apply to fresh files only: the v1 gate checks tables,
 -- never indexes, so a store created before an index landed keeps working
--- without it (correct answers, a slower plan) until krowk sessions
+-- without it (correct answers, a slower plan) until gruntas sessions
 -- rebuild recreates the file from transcripts. There is no backfill path
 -- in v1 — every row is re-derivable, so rebuild is the migration.
 CREATE INDEX idx_turn_session ON turn(session_id);

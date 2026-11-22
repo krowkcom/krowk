@@ -436,7 +436,7 @@ mod tests {
     #[test]
     fn every_topic_has_a_page_and_every_page_fits() {
         let c = catalog::catalog("dev");
-        let files = Files { credentials: "/home/me/.config/krowk/credentials.json", config: "/home/me/.config/krowk/config.json" };
+        let files = Files { credentials: "/home/me/.gruntas/credentials.json", config: "/home/me/.gruntas/config.json" };
         let globals = &c.global_flags[..catalog::CORE_FLAGS];
         for (name, _) in TOPICS {
             let page = topic(name, &c, &files, false).or_else(|| c.find(&[name.to_string()]).map(|cmd| command_help(&cmd, globals, false)));

@@ -479,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn r_back_5_codex_items_become_krowks_events_in_the_same_shape_as_a_native_turn() {
+    fn r_back_5_codex_items_become_gruntas_events_in_the_same_shape_as_a_native_turn() {
         let mut t = Translator::new("gpt-5.5");
         let mut out = Vec::new();
         for (m, p) in [

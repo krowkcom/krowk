@@ -91,7 +91,7 @@ impl Home {
                     sessions_dir: log::sessions_dir(&env).unwrap(),
                     cwd: cwd.to_path_buf(),
                     registry: Registry::resolve(&instances, &env),
-                    krowk_version: "test".into(),
+                    gruntas_version: "test".into(),
                     pricer: Arc::new(|_, _, _| None),
                     catalog: Arc::new(|_, _| None),
                     credentials: credentials.clone(),
@@ -102,7 +102,7 @@ impl Home {
                     session: Default::default(),
                 })
             });
-            server::run(server::Options { socket, idle, krowk_version: version, kick, turns: hooks.turns, bridged: hooks.bridged, introductions: hooks.introductions, ..Default::default() }, factory)
+            server::run(server::Options { socket, idle, gruntas_version: version, kick, turns: hooks.turns, bridged: hooks.bridged, introductions: hooks.introductions, ..Default::default() }, factory)
         });
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while std::os::unix::net::UnixStream::connect(self.socket()).is_err() {
@@ -330,7 +330,7 @@ fn r_proto_1_a_client_of_another_protocol_version_is_refused_with_a_fix() {
 }
 
 #[test]
-fn r_host_1_two_krowks_starting_at_once_spawn_one_daemon_over_a_stale_socket() {
+fn r_host_1_two_gruntas_starting_at_once_spawn_one_daemon_over_a_stale_socket() {
     let home = Home::new("race", None);
     // A socket a daemon that died left behind: nothing answers on it.
     drop(std::os::unix::net::UnixListener::bind(home.socket()).unwrap());
@@ -652,9 +652,9 @@ fn r_host_1_an_older_daemon_is_replaced_and_a_newer_one_left() {
             Ok(None)
         });
         let r = daemon::remote::Remote::connect(Box::new(home.env()), home.repo(), "0.13.0".into(), true, spawn).await.unwrap();
-        assert_eq!(r.krowk_version(), "0.12.1");
+        assert_eq!(r.gruntas_version(), "0.12.1");
         assert!(r.renew().await, "replaced");
-        assert_eq!(r.krowk_version(), "0.13.0");
+        assert_eq!(r.gruntas_version(), "0.13.0");
         assert!(r.take_note().is_some_and(|n| n.contains("0.12.1") && n.contains("replaced")));
         assert!(!r.renew().await, "the same gruntas's is left");
         let (tx, _rx) = mpsc::channel(1024);
@@ -663,7 +663,7 @@ fn r_host_1_an_older_daemon_is_replaced_and_a_newer_one_left() {
         let spawn: Box<daemon::Spawn<'static>> = Box::new(|| Err("the daemon runs; none is to be started".into()));
         let older = daemon::remote::Remote::connect(Box::new(home.env()), home.repo(), "0.12.1".into(), true, spawn).await.unwrap();
         assert!(!older.renew().await, "a newer daemon is never replaced");
-        assert_eq!(older.krowk_version(), "0.13.0");
+        assert_eq!(older.gruntas_version(), "0.13.0");
     });
     drop(rt);
     old.join().unwrap().unwrap();
@@ -691,7 +691,7 @@ fn r_host_1_an_older_daemon_is_not_replaced_while_a_turn_runs() {
             rx.recv().await;
             tokio::time::sleep(Duration::from_millis(50)).await;
             assert!(!r.renew().await, "left to finish its turn");
-            assert_eq!(r.krowk_version(), "0.12.1");
+            assert_eq!(r.gruntas_version(), "0.12.1");
             while rx.recv().await.is_some() {}
         };
         let (done, ()) = tokio::join!(turn, check);

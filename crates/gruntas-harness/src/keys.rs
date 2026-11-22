@@ -416,7 +416,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn r_cred_1_a_failed_command_is_run_again_and_a_key_is_kept() {
-        let d = std::env::temp_dir().join(format!("krowk-keys-retry-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("gruntas-keys-retry-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let (locked, runs) = (d.join("locked"), d.join("runs"));

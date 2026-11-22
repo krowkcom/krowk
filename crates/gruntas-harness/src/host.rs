@@ -56,7 +56,7 @@ pub struct HostConfig {
     /// The instances: moved into the host by `Host::new` and read with
     /// `Host::registry` from then on.
     pub registry: Registry,
-    pub krowk_version: String,
+    pub gruntas_version: String,
     pub pricer: Pricer,
     pub catalog: Catalog,
     /// gruntas's provider credentials file, where OAuth logins live.
@@ -888,8 +888,8 @@ impl Shared {
         // the turn): the process is handed the key it gave.
         let instance = &*crate::keys::materialise(instance)?;
         let e: Arc<dyn Engine> = match instance.wire_api {
-            WireApi::CodexAppServer => Arc::new(CodexEngine::new(instance.clone(), &self.cfg.krowk_version)?),
-            _ => Arc::new(ClaudeEngine::new(instance.clone(), &self.cfg.krowk_version)?.watched(self.teller(session_id, children.clone()))),
+            WireApi::CodexAppServer => Arc::new(CodexEngine::new(instance.clone(), &self.cfg.gruntas_version)?),
+            _ => Arc::new(ClaudeEngine::new(instance.clone(), &self.cfg.gruntas_version)?.watched(self.teller(session_id, children.clone()))),
         };
         let old = backends.insert(session_id.to_string(), Backend { instance: instance.name.clone(), engine: e.clone(), used: Instant::now(), generation, children });
         // Let go of outside the lock: its children's holds take `running`.
@@ -1377,7 +1377,7 @@ impl Shared {
                 };
                 #[cfg(feature = "test-hooks")]
                 held(HoldAt::Open).await;
-                let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &id, &self.cfg.cwd, &self.cfg.krowk_version, None, None).await.map_err(log_failure)?;
+                let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &id, &self.cfg.cwd, &self.cfg.gruntas_version, None, None).await.map_err(log_failure)?;
                 // WT9: what kept worktrees left behind, cleared at most
                 // once a day, on a thread of its own the session never
                 // waits for.
@@ -1466,7 +1466,7 @@ impl Shared {
         // takes over, and be given a `woke_from` here.
         let woke_from = (ran_by == RanBy::Claude).then(|| *state.woke.borrow());
         let _pen = state.pen.clone().lock_owned().await;
-        Some(Kids { shared: self.clone(), state, _pen, woke_from, sessions_dir: self.cfg.sessions_dir.clone(), cwd: plan.cwd.clone(), krowk_version: self.cfg.krowk_version.clone(), ran_by, permission_mode: plan.permission_mode, effort: plan.effort })
+        Some(Kids { shared: self.clone(), state, _pen, woke_from, sessions_dir: self.cfg.sessions_dir.clone(), cwd: plan.cwd.clone(), gruntas_version: self.cfg.gruntas_version.clone(), ran_by, permission_mode: plan.permission_mode, effort: plan.effort })
     }
 
     /// Runs one settled turn to its end and logs it whole, with what
@@ -2065,7 +2065,7 @@ struct Kids {
     woke_from: Option<u64>,
     sessions_dir: PathBuf,
     cwd: PathBuf,
-    krowk_version: String,
+    gruntas_version: String,
     ran_by: RanBy,
     permission_mode: PermissionMode,
     effort: Option<Effort>,
@@ -2315,7 +2315,7 @@ impl Writer<'_> {
     async fn child_started(&mut self, session_id: &str, task_id: String, call_id: String, description: String, agent: Option<String>, model: &ModelRef) -> Result<(), EngineError> {
         let Some(k) = &self.kids else { return Ok(()) };
         let child = gruntas_store::new_id();
-        let (mut log, root) = match SessionLog::create_child_off(&k.sessions_dir, &child, &k.cwd, &k.krowk_version, Some(session_id), agent.as_deref()).await {
+        let (mut log, root) = match SessionLog::create_child_off(&k.sessions_dir, &child, &k.cwd, &k.gruntas_version, Some(session_id), agent.as_deref()).await {
             Ok(made) => made,
             Err(e) => {
                 self.child_lost(session_id, &description, e, None).await;

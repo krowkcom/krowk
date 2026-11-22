@@ -52,7 +52,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     let idle = daemon::idle_window(ctx.io.env, Some(&config)).map_err(|e| fail("bad_config", e))?;
     let websocket = daemon::websocket_addr(ctx.io.env, Some(&config)).map_err(|e| fail("bad_config", e))?;
     let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(std::path::PathBuf::from);
-    let store = trust::Store::new(Some(super::providers::krowk_dir()?.join(trust::FILE)), home);
+    let store = trust::Store::new(Some(super::providers::gruntas_dir()?.join(trust::FILE)), home);
     let trusted_store = store.clone();
     let announced_store = store.clone();
     // config.json's rules and hooks are read again for every turn: the
@@ -86,7 +86,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
             sessions_dir: sessions_dir.clone(),
             cwd: cwd.to_path_buf(),
             registry: Registry::resolve(&instances, &env),
-            krowk_version: super::VERSION.into(),
+            gruntas_version: super::VERSION.into(),
             pricer: prompt::pricer(&env),
             catalog: prompt::catalog(&env),
             credentials: credentials.clone(),
@@ -115,7 +115,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     let introduce_flags = ctx.f.clone();
     let introductions = gruntas_harness::sync::introduce::Introductions::new(Box::new(move || own_ctx(&introduce_flags, |ctx| super::pairing::introducer(ctx)).map_err(|e| (e.code(), gruntas_harness::sync::announce::words(&e)))));
     let auto = gruntas_harness::sync::auto::Supervisor::spawn(auto_sync(ctx, &socket, log::sessions_dir(ctx.io.env)?, bridged.clone(), announced_store, mode_for, introductions.clone()), turns_rx);
-    let served = server::run(server::Options { socket, idle, krowk_version: super::VERSION.into(), websocket, turns: Some(turns_tx), bridged: Some(bridged), introductions: Some(introductions), ..Default::default() }, factory).map_err(|e| fail("host_failed", e));
+    let served = server::run(server::Options { socket, idle, gruntas_version: super::VERSION.into(), websocket, turns: Some(turns_tx), bridged: Some(bridged), introductions: Some(introductions), ..Default::default() }, factory).map_err(|e| fail("host_failed", e));
     // However the daemon ended — idle, `gruntas host stop`, a signal — each
     // bridge ends its stream and gives its lease back before the process
     // exits, rather than leaving it to lapse. The daemon's runtime is gone,
@@ -167,7 +167,7 @@ fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, 
         socket: socket.to_path_buf(),
         sessions,
         version: super::VERSION.into(),
-        krowk_home: gruntas_api::home::dir(ctx.io.env).ok(),
+        gruntas_home: gruntas_api::home::dir(ctx.io.env).ok(),
         // A config that does not read is an Err, which is off.
         policy: Box::new(move || auto::policy(&env, Some(&prompt::config_json().map_err(|e| e.fix())?))),
         ready: Box::new(move || own_ctx(&f, |ctx| super::synced::ready(ctx)).map_err(|e| format!("{} ({})", e.fix(), e.code()))),
@@ -250,7 +250,7 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
     let service = service::path(service::Platform::here(), ctx.io.env).ok().filter(|p| p.is_file());
     let status: Option<HostStatus> = daemon::status(ctx.io.env, super::VERSION).map_err(engine)?;
     let data = match &status {
-        Some(s) => json!({ "running": true, "socket": s.socket, "pid": s.pid, "version": s.krowk_version, "stale": s.krowk_version != super::VERSION, "uptimeMs": s.uptime_ms, "clients": s.clients.saturating_sub(1), "idleExitMs": s.idle_exit_ms, "websocket": s.websocket, "queuedBytes": s.queued_bytes, "caughtUp": s.caught_up, "sessions": s.sessions, "service": service }),
+        Some(s) => json!({ "running": true, "socket": s.socket, "pid": s.pid, "version": s.gruntas_version, "stale": s.gruntas_version != super::VERSION, "uptimeMs": s.uptime_ms, "clients": s.clients.saturating_sub(1), "idleExitMs": s.idle_exit_ms, "websocket": s.websocket, "queuedBytes": s.queued_bytes, "caughtUp": s.caught_up, "sessions": s.sessions, "service": service }),
         None => json!({ "running": false, "socket": socket, "service": service }),
     };
     if ctx.format != Format::Human {
@@ -265,9 +265,9 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
         }
         Some(s) => {
             let running = s.sessions.iter().filter(|x| x.running).count();
-            let _ = writeln!(out, "running  pid {}, gruntas {}, up {}", s.pid, s.krowk_version, uptime(s.uptime_ms));
-            if s.krowk_version != super::VERSION {
-                let _ = writeln!(out, "! It runs gruntas {}, and this is {} — `kill {}` once its sessions are done, and the next gruntas starts this one", s.krowk_version, super::VERSION, s.pid);
+            let _ = writeln!(out, "running  pid {}, gruntas {}, up {}", s.pid, s.gruntas_version, uptime(s.uptime_ms));
+            if s.gruntas_version != super::VERSION {
+                let _ = writeln!(out, "! It runs gruntas {}, and this is {} — `kill {}` once its sessions are done, and the next gruntas starts this one", s.gruntas_version, super::VERSION, s.pid);
             }
             let _ = writeln!(out, "socket   {}", s.socket);
             if let Some(ws) = &s.websocket {

@@ -20,7 +20,7 @@ pub const MESSAGE_CAP: usize = 4 * 1024 * 1024;
 /// A host as the images' sending needs to know it.
 pub struct Peer<'a> {
     pub name: &'a str,
-    pub krowk_version: &'a str,
+    pub gruntas_version: &'a str,
     /// The protocol version it announced, when it did.
     pub protocol: Option<u32>,
 }
@@ -60,7 +60,7 @@ where
         // Headroom for the rest of the message.
         return match total > MESSAGE_CAP - 64 * 1024 {
             false => Ok(cmd),
-            true => Err(EngineError::new(IMAGE_NOT_SENT, format!("{} runs gruntas {}, which takes a prompt's images only in one message, and these come to {:.1} MB; update gruntas there or send fewer images", host.name, host.krowk_version, total as f64 / (1024.0 * 1024.0)))),
+            true => Err(EngineError::new(IMAGE_NOT_SENT, format!("{} runs gruntas {}, which takes a prompt's images only in one message, and these come to {:.1} MB; update gruntas there or send fewer images", host.name, host.gruntas_version, total as f64 / (1024.0 * 1024.0)))),
         };
     }
     let n = images.len();

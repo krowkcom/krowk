@@ -651,7 +651,7 @@ mod tests {
 
     #[test]
     fn wt5_same_bytes_compares_contents() {
-        let base = std::env::temp_dir().join(format!("krowk-seed-bytes-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("gruntas-seed-bytes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         let big: Vec<u8> = (0..20_000u32).map(|i| i as u8).collect();
@@ -718,11 +718,11 @@ mod tests {
     #[test]
     fn wt5_without_reflink_nothing_is_copied() {
         let shm = Path::new("/dev/shm");
-        if !has_git() || !shm.is_dir() || std::fs::write(shm.join(format!("krowk-probe-{}", std::process::id())), b"").is_err() {
+        if !has_git() || !shm.is_dir() || std::fs::write(shm.join(format!("gruntas-probe-{}", std::process::id())), b"").is_err() {
             eprintln!("git or a writable /dev/shm is missing: skipping");
             return;
         }
-        let _ = std::fs::remove_file(shm.join(format!("krowk-probe-{}", std::process::id())));
+        let _ = std::fs::remove_file(shm.join(format!("gruntas-probe-{}", std::process::id())));
         let (base, main, root) = repo_in(shm, "seed-tmpfs");
         std::fs::write(main.join(".gitignore"), "/target\n").unwrap();
         git_ok(&main, &["add", "."]);
@@ -754,7 +754,7 @@ mod tests {
     /// A copy that fails leaves nothing of itself.
     #[test]
     fn wt5_a_failed_copy_removes_what_it_made() {
-        let base = std::env::temp_dir().join(format!("krowk-seed-fail-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("gruntas-seed-fail-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("from/sub")).unwrap();
         std::fs::write(base.join("from/a"), "a").unwrap();

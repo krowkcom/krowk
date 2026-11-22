@@ -20,7 +20,7 @@ const TOKEN: &str = "krowk_sk_sync_take_00000000000000000000";
 
 #[test]
 fn r_inst_5_take_refuses_with_a_fix_when_the_sessions_instance_is_missing_and_the_session_stays() {
-    let root = std::env::temp_dir().join(format!("krowk-sync-take-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("gruntas-sync-take-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     let registry = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();

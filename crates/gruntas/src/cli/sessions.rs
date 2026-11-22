@@ -1944,7 +1944,7 @@ mod tests {
 
     #[test]
     fn a_second_lock_on_the_same_store_is_refused_as_held() {
-        let dir = std::env::temp_dir().join(format!("krowk-lock-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gruntas-lock-{}", std::process::id()));
         let store = dir.join("gruntas.db").display().to_string();
         let first = lock_store(&store).unwrap();
         let second = lock_store(&store).unwrap_err();
@@ -1995,7 +1995,7 @@ mod tests {
 
     #[test]
     fn a_lost_or_corrupt_cache_is_fetched_whole_whatever_its_sidecar_says() {
-        let dir = std::env::temp_dir().join(format!("krowk-sync-lost-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gruntas-sync-lost-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let cache_home = dir.join("home").display().to_string();
         let env = move |k: &str| if k == "GRUNTAS_HOME" { cache_home.clone() } else { String::new() };
@@ -2017,7 +2017,7 @@ mod tests {
 
     #[test]
     fn sync_refreshes_a_stale_price_cache_and_leaves_a_fresh_one_alone() {
-        let dir = std::env::temp_dir().join(format!("krowk-sync-prices-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gruntas-sync-prices-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let cache_home = dir.join("home").display().to_string();
         let env = move |k: &str| if k == "GRUNTAS_HOME" { cache_home.clone() } else { String::new() };

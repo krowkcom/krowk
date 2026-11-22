@@ -43,10 +43,14 @@ fn err(s: impl Into<String>) -> Error {
     Error(s.into())
 }
 
+/// The label a hello's epoch is derived under; historical, kept byte for
+/// byte (the gruntas crate's `historical_names` test).
+pub const HELLO_LABEL: &[u8] = b"krowk/relay-hello/v1";
+
 /// The epoch a viewer's hello is sealed under: derived from its link, the
 /// one value both ends know before either has spoken.
 pub fn hello_epoch(link: u64) -> [u8; 16] {
-    e2e::id(b"krowk/relay-hello/v1", &link.to_be_bytes())
+    e2e::id(HELLO_LABEL, &link.to_be_bytes())
 }
 
 /// A sealed envelope's header: `enc` 1, the session, no flags.

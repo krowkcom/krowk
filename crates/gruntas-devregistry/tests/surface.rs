@@ -91,7 +91,7 @@ fn the_card_page_carries_the_open_graph_tags() {
         format!(r#"<meta property="og:image" content="{file_url}">"#),
         r#"<meta property="og:title" content="shot.png">"#.to_owned(),
         format!(r#"<meta property="og:url" content="{card}">"#),
-        r#"<meta property="og:description" content="10 B · krowk">"#.to_owned(),
+        r#"<meta property="og:description" content="10 B · gruntas">"#.to_owned(),
     ] {
         assert!(page.text().contains(&want), "card is missing {want}:\n{}", page.text());
     }

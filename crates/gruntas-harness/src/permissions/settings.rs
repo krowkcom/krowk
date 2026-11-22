@@ -66,7 +66,7 @@ pub struct Config {
     /// gruntas's home: remembered grants live there, and no file
     /// tool writes into it — its config, trust list and grants decide what
     /// gruntas allows.
-    pub krowk_dir: Option<PathBuf>,
+    pub gruntas_dir: Option<PathBuf>,
     /// Which repositories are trusted; none trusts none.
     pub trusted: Option<Trusted>,
     /// A client is attached that answers approval requests (a viewer). A
@@ -81,7 +81,7 @@ pub struct Config {
 
 impl std::fmt::Debug for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Config").field("user_path", &self.user_path).field("home", &self.home).field("claude_dir", &self.claude_dir).field("krowk_dir", &self.krowk_dir).field("approvals", &self.approvals).finish()
+        f.debug_struct("Config").field("user_path", &self.user_path).field("home", &self.home).field("claude_dir", &self.claude_dir).field("gruntas_dir", &self.gruntas_dir).field("approvals", &self.approvals).finish()
     }
 }
 
@@ -93,7 +93,7 @@ impl Config {
 
     /// The remembered-grants file.
     pub fn grants_file(&self) -> Option<PathBuf> {
-        self.krowk_dir.as_ref().map(|d| d.join(GRANTS_FILE))
+        self.gruntas_dir.as_ref().map(|d| d.join(GRANTS_FILE))
     }
 }
 
@@ -409,7 +409,7 @@ pub fn load(cfg: &Config, cwd: &Path) -> Result<Loaded, String> {
 /// Whether a repository has settings that only trust would apply: the
 /// trust question's reason.
 pub fn widens(cfg: &Config, cwd: &Path) -> bool {
-    let cfg = Config { trusted: None, user: None, claude_dir: None, krowk_dir: None, ..cfg.clone() };
+    let cfg = Config { trusted: None, user: None, claude_dir: None, gruntas_dir: None, ..cfg.clone() };
     // A `.mcp.json` names commands gruntas's bridge would start: trust turns
     // them on, so it is asked about too (R-TOOL-3).
     load(&cfg, cwd).map(|l| l.widens).unwrap_or(false) || crate::mcp::project_has_servers(&crate::trust::root(cwd))

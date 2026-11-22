@@ -717,7 +717,7 @@ pub(super) fn take(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if let Some(home) = &home {
         handoff::place_transcript(&bundle, home, &applied.cwd).map_err(|e| undo(fail("handoff_failed", e)))?;
         // The worktree is this repository's, which a backend may run in.
-        let trusted = gruntas_harness::trust::Store::new(Some(super::providers::krowk_dir().map_err(undo)?.join(gruntas_harness::trust::FILE)), Some(ctx.env("HOME")).filter(|h| !h.is_empty()).map(Into::into));
+        let trusted = gruntas_harness::trust::Store::new(Some(super::providers::gruntas_dir().map_err(undo)?.join(gruntas_harness::trust::FILE)), Some(ctx.env("HOME")).filter(|h| !h.is_empty()).map(Into::into));
         let _ = trusted.trust(&gruntas_harness::trust::root(&applied.cwd));
     }
     // The log as the host left it, checkpoint and all.
@@ -757,7 +757,7 @@ fn ready_here(ctx: &Ctx, session: &str, events: &[serde_json::Value], cwd: &std:
         return Err(fail(&e.code, format!("{} — {stays}", e.message)));
     }
     let Some(b) = &inst.backend else { return Ok(None) };
-    let store = trust::Store::new(Some(super::providers::krowk_dir()?.join(trust::FILE)), Some(ctx.env("HOME")).filter(|h| !h.is_empty()).map(Into::into));
+    let store = trust::Store::new(Some(super::providers::gruntas_dir()?.join(trust::FILE)), Some(ctx.env("HOME")).filter(|h| !h.is_empty()).map(Into::into));
     let root = trust::root(cwd);
     if !store.trusts(&root) {
         return Err(fail("untrusted_directory", format!("{} is not a repository you have trusted, and the session runs on {}, which runs what a repository configures — {stays}; run `gruntas trust` there, then take it again", root.display(), inst.vendor)));
@@ -1027,10 +1027,10 @@ mod tests {
     fn r_host_3_an_announced_host_is_shown_in_a_few_lines() {
         use gruntas_client::presence::{AnnouncedInstance, Announcement};
         let inst = |name: &str, ready: bool, models: &[&str]| AnnouncedInstance { name: name.into(), kind: "k".into(), ready, state: if ready { "ready" } else { "key_not_set" }.into(), fix: (!ready).then(|| "set OPENAI_API_KEY".into()), models: models.iter().map(|m| m.to_string()).collect(), limit: None };
-        let announcement = Announcement { device: "d".into(), name: "a".into(), os: "linux".into(), version: "0.31.0".into(), online_since_ms: 0, instances: vec![inst("anthropic", true, &["claude-sonnet-4-5", "claude-opus-4-1"]), inst("codex", true, &[]), inst("openai", false, &[])], directories: vec!["/home/ann/code/krowk".into(), "/Users/ann".into(), "/srv/x".into(), "/root/y".into()], sessions: Vec::new(), capacity: None, repositories: Vec::new(), accepting: false };
+        let announcement = Announcement { device: "d".into(), name: "a".into(), os: "linux".into(), version: "0.31.0".into(), online_since_ms: 0, instances: vec![inst("anthropic", true, &["claude-sonnet-4-5", "claude-opus-4-1"]), inst("codex", true, &[]), inst("openai", false, &[])], directories: vec!["/home/ann/code/gruntas".into(), "/Users/ann".into(), "/srv/x".into(), "/root/y".into()], sessions: Vec::new(), capacity: None, repositories: Vec::new(), accepting: false };
         let mut a = gruntas_harness::sync::hosts::Announced { online: true, updated_at: "2026-10-25T10:00:00Z".into(), announcement };
         let now: jiff::Timestamp = "2026-10-25T10:12:30Z".parse().unwrap();
-        assert_eq!(super::announced_lines(&a, now), ["online · gruntas 0.31.0", "ready: anthropic (claude-sonnet-4-5, …), codex", "not ready: openai — set OPENAI_API_KEY", "directories: ~/code/krowk, ~, /srv/x, …"]);
+        assert_eq!(super::announced_lines(&a, now), ["online · gruntas 0.31.0", "ready: anthropic (claude-sonnet-4-5, …), codex", "not ready: openai — set OPENAI_API_KEY", "directories: ~/code/gruntas, ~, /srv/x, …"]);
         a.online = false;
         assert_eq!(super::announced_lines(&a, now)[0], "offline · last seen 12m ago");
         assert_eq!(super::home_as_tilde("/root/y"), "~/y");

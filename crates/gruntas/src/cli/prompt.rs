@@ -63,7 +63,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     // backend's. Headless, nobody answers an approval: what would be asked
     // is refused with what would allow it.
     let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(std::path::PathBuf::from);
-    let store = trust::Store::new(Some(super::providers::krowk_dir()?.join(trust::FILE)), home.clone());
+    let store = trust::Store::new(Some(super::providers::gruntas_dir()?.join(trust::FILE)), home.clone());
     let flag_trust = ctx.f.trust;
     let session_cwd = resume.as_ref().and_then(|id| log::read_events(&sessions_dir.join(id).join(log::EVENTS_FILE)).ok()).and_then(|events| {
         events.first().and_then(|e| match &e.body {
@@ -117,7 +117,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     }
     // Everything that can still refuse the run is asked first: a worktree
     // made before a refusal would be left behind.
-    let (credentials, krowk_dir) = (super::providers::credentials_path()?, super::providers::krowk_dir()?);
+    let (credentials, gruntas_dir) = (super::providers::credentials_path()?, super::providers::gruntas_dir()?);
     // WT6: `--worktree` makes the session's worktree now, from this
     // directory's repository, with the settings it would have run with
     // here; the session starts in it. So does `worktrees.default`, for a
@@ -149,11 +149,11 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
         sessions_dir,
         cwd,
         registry,
-        krowk_version: super::VERSION.into(),
+        gruntas_version: super::VERSION.into(),
         pricer: pricer(ctx.io.env),
         catalog: catalog(ctx.io.env),
         credentials,
-        trust: trust_gate(ctx.f.trust, super::interactive(ctx) && std::io::stdin().is_terminal() && ctx.io.err_tty, krowk_dir, home, vendor, trust_as),
+        trust: trust_gate(ctx.f.trust, super::interactive(ctx) && std::io::stdin().is_terminal() && ctx.io.err_tty, gruntas_dir, home, vendor, trust_as),
         publisher: Some(publisher(ctx)),
         permissions,
         agents: agents_config(ctx.io.env),
@@ -330,7 +330,7 @@ pub(super) fn permissions_config(ctx: &Ctx, config: &serde_json::Value, trusted:
         reread: false,
         home,
         claude_dir,
-        krowk_dir: super::providers::krowk_dir().ok(),
+        gruntas_dir: super::providers::gruntas_dir().ok(),
         trusted: Some(trusted),
         approvals,
         sandbox: None,

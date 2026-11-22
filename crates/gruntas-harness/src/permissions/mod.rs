@@ -110,12 +110,12 @@ impl Policy {
         let protected: Vec<PathBuf> = cfg.claude_home().into_iter().collect();
         // The home in use and the default one (a GRUNTAS_HOME elsewhere does
         // not open `~/.gruntas`), each with its migration staging directory
-        // and lock (`gruntas_api::home::siblings`), and gruntas's home, which
-        // holds the same keys once copied — as named and, when they exist,
+        // and lock (`gruntas_api::home::siblings`), and the old `~/.krowk`,
+        // which holds the same keys once copied — as named and, when they exist,
         // as they lead (`Scope::secret`).
         let default = cfg.home.as_ref().map(|h| gruntas_api::home::lexical(h).join(".gruntas"));
-        let gruntas = default.as_deref().map(gruntas_api::migrate::krowk_home);
-        let secrets = cfg.krowk_dir.iter().chain(default.iter()).chain(gruntas.iter()).flat_map(|d| gruntas_api::home::siblings(d)).flat_map(|d| [d.canonicalize().ok(), Some(d)]).flatten().collect();
+        let krowk = default.as_deref().map(gruntas_api::migrate::krowk_home);
+        let secrets = cfg.gruntas_dir.iter().chain(default.iter()).chain(krowk.iter()).flat_map(|d| gruntas_api::home::siblings(d)).flat_map(|d| [d.canonicalize().ok(), Some(d)]).flatten().collect();
         Ok(Policy { loaded, cwd: cwd.to_path_buf(), home: cfg.home.clone(), read_dirs: Vec::new(), protected, secrets, sandbox: cfg.sandbox, walk: Default::default(), rules_cwd: None })
     }
 

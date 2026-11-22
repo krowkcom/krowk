@@ -3,7 +3,7 @@
 @env GRUNTAS_TOKEN=krowk_sk_test
 @file a.txt hello
 @env GITHUB_ACTIONS=true
-@env GITHUB_REPOSITORY=krowkcom/golden
+@env GITHUB_REPOSITORY=gruntas/golden
 @env GITHUB_SHA=0123456789abcdef0123456789abcdef01234567
 @env GITHUB_REF=refs/pull/42/merge
 @env GITHUB_REF_NAME=42/merge

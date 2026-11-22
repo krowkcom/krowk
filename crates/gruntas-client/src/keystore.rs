@@ -376,7 +376,7 @@ impl Keystore {
 
     /// This device's key, made and stored now when it has none — what a new
     /// device shows the id of while it waits to be approved. Under the
-    /// account slot's lock, so two krowks agree on one device key.
+    /// account slot's lock, so two gruntas processes agree on one device key.
     pub fn device_key(&self) -> Result<DeviceKey, String> {
         let _lock = self.storage.lock(Slot::Account)?;
         Ok(self.device_or_create()?.0)

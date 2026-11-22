@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 fn root(name: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("krowk-kit-{name}-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("gruntas-kit-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     root.canonicalize().unwrap()

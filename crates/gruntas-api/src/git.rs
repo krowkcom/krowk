@@ -49,7 +49,7 @@ fn no_hooks() -> std::io::Result<PathBuf> {
 
 /// `<home>/no-hooks` when it is gruntas's own and empty. Else — no home, a
 /// home on a read-only disk, one with something in its `no-hooks` — the
-/// same held to `tmp/krowk-no-hooks-<uid>`, one name per user so processes
+/// same held to `tmp/gruntas-no-hooks-<uid>`, one name per user so processes
 /// without a home share it rather than leave one each. When that is
 /// refused too (another user's, something in it), a directory this
 /// process made itself under a new name, so nothing can be waiting in it;
@@ -112,7 +112,7 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("krowk-git-{name}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("gruntas-git-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -123,7 +123,7 @@ mod tests {
     /// asked.
     #[test]
     #[cfg(unix)]
-    fn a_repositorys_hooks_never_run_from_krowks_git() {
+    fn a_repositorys_hooks_never_run_from_gruntas_git() {
         use std::os::unix::fs::PermissionsExt;
         let d = scratch("hooks");
         if !Command::new("git").args(["init", "-q"]).current_dir(&d).status().is_ok_and(|s| s.success()) {

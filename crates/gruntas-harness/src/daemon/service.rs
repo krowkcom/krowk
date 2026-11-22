@@ -165,7 +165,7 @@ mod tests {
     fn env(k: &str) -> String {
         match k {
             "HOME" => "/home/ada".into(),
-            "GRUNTAS_HOME" => "/srv/krowk 100%".into(),
+            "GRUNTAS_HOME" => "/srv/gruntas 100%".into(),
             _ => String::new(),
         }
     }
@@ -173,11 +173,11 @@ mod tests {
     #[test]
     fn r_host_2_a_systemd_user_unit_runs_the_daemon_with_no_idle_exit() {
         assert_eq!(path(Platform::Systemd, &env).unwrap(), Path::new("/home/ada/.config/systemd/user/gruntas-host.service"));
-        let unit = render(Platform::Systemd, Path::new("/opt/my krowk/krowk"), Path::new("/x.log"), &env);
-        assert!(unit.contains("\nExecStart=\"/opt/my krowk/krowk\" host serve\n"), "{unit}");
+        let unit = render(Platform::Systemd, Path::new("/opt/my gruntas/gruntas"), Path::new("/x.log"), &env);
+        assert!(unit.contains("\nExecStart=\"/opt/my gruntas/gruntas\" host serve\n"), "{unit}");
         assert!(unit.contains("\nEnvironment=\"GRUNTAS_HOST_IDLE=0\"\n"), "{unit}");
         // A `%` is a specifier to systemd: doubled, it is a `%`.
-        assert!(unit.contains("\nEnvironment=\"GRUNTAS_HOME=/srv/krowk 100%%\"\n"), "{unit}");
+        assert!(unit.contains("\nEnvironment=\"GRUNTAS_HOME=/srv/gruntas 100%%\"\n"), "{unit}");
         assert!(unit.contains("\nWantedBy=default.target\n"), "{unit}");
         assert_eq!(commands(Platform::Systemd, true, Path::new("/f"), 501)[1], ["systemctl", "--user", "enable", "--now", "gruntas-host.service"]);
         let xdg = |k: &str| if k == "XDG_CONFIG_HOME" { "/cfg".into() } else { env(k) };
@@ -188,9 +188,9 @@ mod tests {
     fn r_host_2_a_launchd_agent_runs_the_daemon_with_no_idle_exit() {
         let file = path(Platform::Launchd, &env).unwrap();
         assert_eq!(file, Path::new("/home/ada/Library/LaunchAgents/com.gruntas.host.plist"));
-        let plist = render(Platform::Launchd, Path::new("/opt/k&k/krowk"), Path::new("/home/ada/.gruntas/host.log"), &env);
+        let plist = render(Platform::Launchd, Path::new("/opt/k&k/gruntas"), Path::new("/home/ada/.gruntas/host.log"), &env);
         assert!(plist.contains("<string>com.gruntas.host</string>"), "{plist}");
-        assert!(plist.contains("<string>/opt/k&amp;k/krowk</string>\n\t\t<string>host</string>\n\t\t<string>serve</string>"), "{plist}");
+        assert!(plist.contains("<string>/opt/k&amp;k/gruntas</string>\n\t\t<string>host</string>\n\t\t<string>serve</string>"), "{plist}");
         assert!(plist.contains("<key>GRUNTAS_HOST_IDLE</key>\n\t\t<string>0</string>"), "{plist}");
         assert!(plist.contains("<key>StandardErrorPath</key>\n\t<string>/home/ada/.gruntas/host.log</string>"), "{plist}");
         assert_eq!(commands(Platform::Launchd, true, &file, 501), [["launchctl", "bootstrap", "gui/501", file.to_str().unwrap()]]);

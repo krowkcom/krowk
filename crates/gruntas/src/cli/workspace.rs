@@ -146,7 +146,7 @@ fn effective_global(ctx: &Ctx, key: &str) -> Result<(String, String), Error> {
     let raw = config.as_object().cloned().unwrap_or_default();
     let cwd = std::env::current_dir().unwrap_or_default();
     let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(std::path::PathBuf::from);
-    let store = trust::Store::new(Some(super::providers::krowk_dir()?.join(trust::FILE)), home);
+    let store = trust::Store::new(Some(super::providers::gruntas_dir()?.join(trust::FILE)), home);
     let permissions = super::prompt::permissions_config(ctx, &config, Arc::new(move |root: &std::path::Path| store.trusts(root)), false);
     let loaded = permissions::settings::load(&permissions, &cwd).map_err(super::prompt::bad_settings)?;
     if key == "rollover" {

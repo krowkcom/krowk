@@ -1,6 +1,6 @@
 //! The gruntas registry's wire: its records, its failure shape, and the local
-//! credentials a call is made with. The contract is owned by krowk-canon and
-//! served by krowk-registry; this is one of its three implementations.
+//! credentials a call is made with. The contract is owned by canon and
+//! served by the registry; this is one of its three implementations.
 
 pub mod client;
 pub mod creds;
@@ -23,6 +23,13 @@ pub use types::*;
 pub const DEFAULT_BASE_URL: &str = "https://api.krowk.com/v1";
 /// Where the local stand-in registry listens, and what --dev points at.
 pub const DEV_BASE_URL: &str = "http://localhost:8787/v1";
+
+// Historical: the registry mints its tokens with these prefixes, so they keep
+// the old name (the gruntas crate's `historical_names` test pins them).
+/// What every API key starts with.
+pub const API_KEY_PREFIX: &str = "krowk_sk_";
+/// What every claim token, handed back by an anonymous upload, starts with.
+pub const CLAIM_TOKEN_PREFIX: &str = "krowk_claim_";
 
 /// Which registry to talk to: --dev, then GRUNTAS_API_URL, then GRUNTAS_DEV.
 pub fn base_url_for(dev: bool, env: creds::Env) -> String {
@@ -48,9 +55,9 @@ pub fn relay_env(base_url: &str, env: creds::Env) -> &'static str {
     relay_env_for(cfg!(debug_assertions), &env("GRUNTAS_ENV"), base_url)
 }
 
-fn relay_env_for(debug: bool, krowk_env: &str, base_url: &str) -> &'static str {
+fn relay_env_for(debug: bool, env_name: &str, base_url: &str) -> &'static str {
     let production_registry = base_url.trim_end_matches('/') == DEFAULT_BASE_URL;
-    if debug || krowk_env.trim().eq_ignore_ascii_case("development") || !production_registry {
+    if debug || env_name.trim().eq_ignore_ascii_case("development") || !production_registry {
         "development"
     } else {
         "production"

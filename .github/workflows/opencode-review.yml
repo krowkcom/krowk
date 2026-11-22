@@ -73,7 +73,7 @@ jobs:
 
             What actually matters here:
             - **Correctness over style.** Wrong behaviour, bad edge cases, broken contracts.
-            - **Errors carry the next action.** Failures become a krowk error with a `fix`
+            - **Errors carry the next action.** Failures become a gruntas error with a `fix`
               line naming what to do; never `unwrap()`/`expect()` on something a user's input or
               disk can make fail, never `let _ =` on a failure that matters.
             - **Resource lifetime.** Files, sockets, locks and temp files released on every path,

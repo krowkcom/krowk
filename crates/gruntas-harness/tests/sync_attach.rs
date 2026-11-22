@@ -384,7 +384,7 @@ impl World {
                     sessions_dir: log::sessions_dir(&env).unwrap(),
                     cwd: cwd.to_path_buf(),
                     registry: Registry::resolve(&instances, &env),
-                    krowk_version: "test".into(),
+                    gruntas_version: "test".into(),
                     pricer: Arc::new(|_, _, _| None),
                     catalog: Arc::new(|_, _| None),
                     credentials: credentials.clone(),
@@ -395,7 +395,7 @@ impl World {
                     session: Default::default(),
                 })
             });
-            let _ = server::run(server::Options { socket, idle: None, krowk_version: "test".into(), turns, bridged, lateness: Some(late), ..Default::default() }, factory);
+            let _ = server::run(server::Options { socket, idle: None, gruntas_version: "test".into(), turns, bridged, lateness: Some(late), ..Default::default() }, factory);
         }).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while std::os::unix::net::UnixStream::connect(daemon::socket(&wait).unwrap()).is_err() {
@@ -2956,7 +2956,7 @@ async fn r_sub_12_a_viewer_stops_one_claude_agent() {
 /// each child is rebuilt from them, its prompt first. What moves a session
 /// moves them with it.
 #[tokio::test]
-async fn r_sub_6_claude_codes_agents_ride_the_parents_chunks_as_krowks_own_children_do() {
+async fn r_sub_6_claude_codes_agents_ride_the_parents_chunks_as_gruntas_own_children_do() {
     let w = World::new("claude-kids");
     let a = w.device("machine-a");
     // A first turn to sync from, then the recording's turn after `init`,
@@ -3184,7 +3184,7 @@ impl World {
             socket: daemon::socket(&env).unwrap(),
             sessions: log::sessions_dir(&env).unwrap(),
             version: "test".into(),
-            krowk_home: Some(self.root.join(home).join(".gruntas")),
+            gruntas_home: Some(self.root.join(home).join(".gruntas")),
             build,
             // The switch and the idle window as the environment says them.
             policy: Box::new(move || {
@@ -3391,7 +3391,7 @@ async fn r_sync_3_a_child_session_and_an_opted_out_directory_are_never_built() {
         parent_id: None,
         session_id: kid.into(),
         time_ms: 1,
-        body: gruntas_harness::protocol::LogBody::SessionStarted { cwd: w.repo().display().to_string(), krowk_version: "test".into(), protocol_version: 1, parent_session_id: Some(parent.into()), agent: None },
+        body: gruntas_harness::protocol::LogBody::SessionStarted { cwd: w.repo().display().to_string(), gruntas_version: "test".into(), protocol_version: 1, parent_session_id: Some(parent.into()), agent: None },
     };
     std::fs::write(dir.join(log::EVENTS_FILE), format!("{}\n", serde_json::to_string(&started).unwrap())).unwrap();
     auto.turns.send(server::TurnEvent { session: kid.into(), running: true }).unwrap();

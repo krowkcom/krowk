@@ -26,7 +26,7 @@ const MARKER: &str = "the session machine A ran, read on machine B";
 
 #[test]
 fn r_sync_1_resume_of_a_session_only_another_machine_holds_attaches_it_through_sync() {
-    let root = std::env::temp_dir().join(format!("krowk-sync-resume-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("gruntas-sync-resume-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     let registry = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();

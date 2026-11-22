@@ -8,7 +8,7 @@ anybody shelling out.
 ```json
 {
   "mcpServers": {
-    "krowk": {
+    "gruntas": {
       "command": "npx",
       "args": ["-y", "@gruntas/mcp"],
       "env": { "GRUNTAS_TOKEN": "krowk_sk_..." }
@@ -40,7 +40,7 @@ cargo install --locked --git https://github.com/gruntas/gruntas gruntas --bin gr
 ```
 
 ```json
-{ "mcpServers": { "krowk": { "command": "gruntas-mcp" } } }
+{ "mcpServers": { "gruntas": { "command": "gruntas-mcp" } } }
 ```
 
 ## Documentation

@@ -1,6 +1,6 @@
 #!/bin/bash
 # A stand-in for OpenAI's `codex` binary, so no test needs a real login. It
-# speaks what krowk drives: `login`, `login status` and `logout` against a
+# speaks what gruntas drives: `login`, `login status` and `logout` against a
 # marker file in CODEX_HOME (never Codex's own login file), and `app-server`
 # — JSON-RPC over stdio, one object per line — replaying a recorded
 # scenario turn by turn. The messages are the ones a real `codex app-server`
@@ -11,8 +11,8 @@
 # like the rest.
 #
 # Written for the bash macOS ships (3.2): no associative arrays, no
-# fractional `read -t`. It reads krowk's lines by their leading `{"id":N,
-# "method":"…"`, which is how krowk writes them.
+# fractional `read -t`. It reads gruntas's lines by their leading `{"id":N,
+# "method":"…"`, which is how gruntas writes them.
 #
 # Environment:
 #   FAKE_CODEX_SCENARIO  the scenario file (below); a plain answer without one
@@ -37,14 +37,14 @@
 # plays the next turn (counted in CODEX_HOME, so across processes). Each
 # line of a turn:
 #   a JSON line        printed, with {{THREAD}}, {{TURN}}, {{MODEL}}, {{CWD}} filled in
-#   @ask <request>     sent as a server request; waits for krowk's answer
+#   @ask <request>     sent as a server request; waits for gruntas's answer
 #   @tool-result <id>  a dynamicToolCall item/completed for <id>, carrying
 #                      the text of the last answer
-#   @await-interrupt   waits for krowk's turn/interrupt, and answers it
+#   @await-interrupt   waits for gruntas's turn/interrupt, and answers it
 #                      (every turn/interrupt is logged as `interrupt`, then
 #                      `interrupt-of <threadId> <turnId>`)
-#   @await-steer       waits for krowk's turn/steer, and takes it
-#   @refuse-steer      waits for krowk's turn/steer, and refuses it (the turn is ending)
+#   @await-steer       waits for gruntas's turn/steer, and takes it
+#   @refuse-steer      waits for gruntas's turn/steer, and refuses it (the turn is ending)
 #   @sleep <seconds>   waits
 #   @pause             waits FAKE_CODEX_PAUSE seconds when that is set: a
 #                      moment a test can look at the turn mid-way
@@ -52,7 +52,7 @@
 #   @exit-once <code>  the same, the first time only (a marker in CODEX_HOME)
 #   @grandchild        starts a background `sleep`, as a command Codex ran
 #                      would, and logs its pid
-#   @hook-bash <json>  runs the paste guard hook krowk passed on a shell call
+#   @hook-bash <json>  runs the paste guard hook gruntas passed on a shell call
 #                      of that command (a JSON string), as Codex would, and
 #                      logs its answer
 # The turn ends with the scenario's own turn/completed line.
@@ -119,7 +119,7 @@ say() {
   printf '%s\n' "$1"
 }
 
-# The id and method of a request krowk sent, or empty.
+# The id and method of a request gruntas sent, or empty.
 req_id() { printf '%s' "$1" | sed -n 's/^{"id":\([0-9]*\),"method":.*/\1/p'; }
 req_method() { printf '%s' "$1" | sed -n 's/^{"id":[0-9]*,"method":"\([^"]*\)".*/\1/p'; }
 field() { printf '%s' "$1" | sed -n "s/.*\"$2\":\"\\([^\"]*\\)\".*/\\1/p" | head -n 1; }
@@ -166,7 +166,7 @@ thread_result() {
     "$THREAD" "$THREAD" "$MODEL" "$path" "$CWD" "$MODEL" "$CWD" "$approval" "$reviewer" "$kind"
 }
 
-# A request krowk sent while the scenario waits on something else: steering
+# A request gruntas sent while the scenario waits on something else: steering
 # and interrupts are taken as a running turn takes them.
 side_request() {
   local line="$1" id method
@@ -187,7 +187,7 @@ side_request() {
   esac
 }
 
-# Reads krowk's lines until one names `$1` (a method, or `answer` for the
+# Reads gruntas's lines until one names `$1` (a method, or `answer` for the
 # answer to server request `$2`); side requests are served meanwhile.
 await() {
   local want="$1" srv="${2:-}" line
@@ -240,7 +240,7 @@ play_turn() {
       ;;
     "@tool-result "*)
       local item="${line#@tool-result }" text
-      # krowk's answer is {"id":…,"result":{"contentItems":[{…,"text":"…"}],"success":…}}:
+      # gruntas's answer is {"id":…,"result":{"contentItems":[{…,"text":"…"}],"success":…}}:
       # the text is what lies between its "text":" and the "}], that closes it.
       text="${LAST#*\"text\":\"}"
       text="${text%%\"\}\],\"success\"*}"
@@ -298,7 +298,7 @@ play_turn() {
   done <"$file"
 }
 
-# krowk's stdin, kept on fd 3 while a scenario file is read on stdin.
+# gruntas's stdin, kept on fd 3 while a scenario file is read on stdin.
 exec 3<&0
 TURNS=0
 while IFS= read -r line <&3; do
@@ -307,7 +307,7 @@ while IFS= read -r line <&3; do
   method="$(req_method "$line")"
   case "$method" in
   initialize)
-    say "{\"id\":$id,\"result\":{\"userAgent\":\"krowk/0.154.0 (fake)\",\"codexHome\":\"$HOME_DIR\",\"platformFamily\":\"unix\",\"platformOs\":\"linux\"}}"
+    say "{\"id\":$id,\"result\":{\"userAgent\":\"gruntas/0.154.0 (fake)\",\"codexHome\":\"$HOME_DIR\",\"platformFamily\":\"unix\",\"platformOs\":\"linux\"}}"
     ;;
   account/read)
     say "{\"id\":$id,\"result\":$(account)}"

@@ -103,8 +103,8 @@ pub fn run_on_daemon(env: &dyn Fn(&str) -> String, cwd: &std::path::Path, versio
         // would be asked, as they do in-process.
         match crate::daemon::ensure(env, cwd, version, false, spawn).await {
             Ok(client) => {
-                if client.krowk_version != version {
-                    let _ = writeln!(std::io::stderr(), "! the host daemon (pid {}) runs gruntas {}, and this is {version} — its turns run on the old binary until it exits; `kill {}` once its sessions are done", client.pid, client.krowk_version, client.pid);
+                if client.gruntas_version != version {
+                    let _ = writeln!(std::io::stderr(), "! the host daemon (pid {}) runs gruntas {}, and this is {version} — its turns run on the old binary until it exits; `kill {}` once its sessions are done", client.pid, client.gruntas_version, client.pid);
                 }
                 drive(&client, opts, stdout).await
             }
@@ -148,7 +148,7 @@ impl Transport for crate::daemon::client::Client {
     async fn shutdown(&self) {}
 
     fn remote(&self) -> Option<(String, u32)> {
-        Some((self.krowk_version.clone(), self.protocol_version))
+        Some((self.gruntas_version.clone(), self.protocol_version))
     }
 }
 
@@ -168,7 +168,7 @@ async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> 
         // part of the stream.
         let cmd = match &remote {
             Some((version, protocol)) => {
-                let peer = crate::upload::Peer { name: "the host daemon", krowk_version: version, protocol: Some(*protocol) };
+                let peer = crate::upload::Peer { name: "the host daemon", gruntas_version: version, protocol: Some(*protocol) };
                 let (notes, _) = mpsc::channel(1);
                 crate::upload::upload_images(cmd, &peer, &notes, |c, o| host.execute(c, o)).await?
             }

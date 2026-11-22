@@ -25,7 +25,7 @@ use crate::e2e::{self, DeviceKey, SigningKey};
 use sha2::Digest as _;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
-const INFO: &[u8] = b"krowk/recovery-device/v1";
+pub const INFO: &[u8] = b"krowk/recovery-device/v1";
 
 /// A recovery kit's 128 bits. Wiped when dropped; never printed.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]

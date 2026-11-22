@@ -654,7 +654,7 @@ mod tests {
 
     #[test]
     fn r_inst_4_a_transcript_is_copied_to_the_same_place_under_the_other_home() {
-        let root = std::env::temp_dir().join(format!("krowk-carry-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-carry-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (a, b) = (root.join("work"), root.join("personal"));
         let file = a.join("projects/-repo/s1.jsonl");
@@ -683,7 +683,7 @@ mod tests {
 
     #[test]
     fn r_inst_4_carry_copies_only_the_vendors_own_transcript() {
-        let root = std::env::temp_dir().join(format!("krowk-carry-refuse-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-carry-refuse-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (a, b) = (root.join("work"), root.join("personal"));
         std::fs::create_dir_all(a.join("projects/-repo")).unwrap();

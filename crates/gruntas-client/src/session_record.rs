@@ -24,7 +24,7 @@ use crate::device_chain::Chain;
 use crate::e2e::{self, DeviceId, Error, SigningKey};
 use crate::user_key::UserKey;
 
-const LABEL: &[u8] = b"krowk/session-record/v1";
+pub const LABEL: &[u8] = b"krowk/session-record/v1";
 /// An Ed25519 signature.
 pub const SIGNATURE: usize = 64;
 /// The seal of a private session: its key is wrapped under its owner's

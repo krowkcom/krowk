@@ -52,11 +52,11 @@ type Compiled = jaq_core::compile::Filter<jaq_core::Native<data::JustLut<Val>>>;
 const COMPAT_DEFS: &str = r#"
 def env: {};
 def tostream: path(def r: (.[]?|r), .; r) as $p | getpath($p) | reduce path(.[]?) as $q ([$p, .]; [$p+$q]);
-def __krowk_csv: if type != "array" then error("\(type) (\(tojson)) cannot be csv-formatted, only an array can be")
+def __gruntas_csv: if type != "array" then error("\(type) (\(tojson)) cannot be csv-formatted, only an array can be")
   else map(if type == "string" then "\"" + gsub("\""; "\"\"") + "\""
     elif type == "null" then "" elif type == "array" or type == "object" then error("\(type) (\(tojson)) is not valid in a csv row")
     else tojson end) | join(",") end;
-def __krowk_tsv: if type != "array" then error("\(type) (\(tojson)) cannot be tsv-formatted, only an array can be")
+def __gruntas_tsv: if type != "array" then error("\(type) (\(tojson)) cannot be tsv-formatted, only an array can be")
   else map(if type == "string" then gsub("\\\\"; "\\\\") | gsub("\t"; "\\t") | gsub("\n"; "\\n") | gsub("\r"; "\\r")
     elif type == "null" then "" elif type == "array" or type == "object" then error("\(type) (\(tojson)) is not valid in a tsv row")
     else tojson end) | join("\t") end;
@@ -76,8 +76,8 @@ fn with_formats(expr: &str) -> String {
 
 fn format_def(word: &str) -> Option<&'static str> {
     match word {
-        "csv" => Some("__krowk_csv"),
-        "tsv" => Some("__krowk_tsv"),
+        "csv" => Some("__gruntas_csv"),
+        "tsv" => Some("__gruntas_tsv"),
         _ => None,
     }
 }

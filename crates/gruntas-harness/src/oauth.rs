@@ -119,7 +119,7 @@ impl Store {
 
     /// The one way the file changes: under the store's lock, read, edit,
     /// and written back (by rename) when the edit says it changed something
-    /// — so a login, a refresh and a stored key in two krowks never
+    /// — so a login, a refresh and a stored key in two gruntas processes never
     /// interleave their read and their write.
     fn modify<R>(&self, edit: impl FnOnce(&mut File) -> (R, bool)) -> Result<R, EngineError> {
         let _lock = self.lock_blocking()?;

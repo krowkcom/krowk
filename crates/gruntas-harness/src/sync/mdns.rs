@@ -21,14 +21,19 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::{Duration, Instant};
 
-/// The service a host's direct listener is advertised under.
+/// The service a host's direct listener is advertised under. Historical,
+/// like `TAG_LABEL`: hosts and viewers of every version find each other by
+/// it (the gruntas crate's `historical_names` test pins both).
 pub const SERVICE: &str = "_krowk._tcp.local.";
+
+/// What a session's instance name is hashed under.
+pub const TAG_LABEL: &[u8] = b"krowk mdns v1";
 
 /// A session's instance name: the first 16 bytes of
 /// `SHA-256("krowk mdns v1" || id)`, in hex.
 pub fn tag(session: [u8; 16]) -> String {
     let mut h = Sha256::new();
-    h.update(b"krowk mdns v1");
+    h.update(TAG_LABEL);
     h.update(session);
     h.finalize()[..16].iter().map(|b| format!("{b:02x}")).collect()
 }

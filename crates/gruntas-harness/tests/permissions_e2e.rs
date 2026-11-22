@@ -26,7 +26,7 @@ struct Home {
 impl Home {
     /// A home whose one instance, `claude`, is the fake playing `scenario`.
     fn new(name: &str, scenario: &str) -> Home {
-        let root = std::env::temp_dir().join(format!("krowk-perm-e2e-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-perm-e2e-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
@@ -52,13 +52,13 @@ impl Home {
             sessions_dir: log::sessions_dir(&self.env()).unwrap(),
             cwd: self.repo(),
             registry: Registry::resolve(&self.instances, &self.env()),
-            krowk_version: "test".into(),
+            gruntas_version: "test".into(),
             pricer: Arc::new(|_, _, _| None),
             catalog: Arc::new(|_, _| None),
             credentials: self.root.join("home/.gruntas/credentials.json"),
             trust: gruntas_harness::trust::allow_all(),
             publisher: None,
-            permissions: Config { home: Some(self.root.join("home")), krowk_dir: Some(self.root.join("home/.gruntas")), ..permissions },
+            permissions: Config { home: Some(self.root.join("home")), gruntas_dir: Some(self.root.join("home/.gruntas")), ..permissions },
             agents: gruntas_harness::agents::AgentsConfig::none(),
             session: Default::default(),
         })

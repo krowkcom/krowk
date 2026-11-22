@@ -35,7 +35,7 @@ impl Gruntas {
 #[test]
 fn r_bill_4_whoami_shows_the_plan_and_dates_only_to_who_manages_billing() {
     let registry = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), gruntas_devregistry::Config::default()).unwrap();
-    let home = std::env::temp_dir().join(format!("krowk-whoami-plan-{}", std::process::id()));
+    let home = std::env::temp_dir().join(format!("gruntas-whoami-plan-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
     let gruntas = Gruntas { home: home.clone(), api: format!("{}/v1", registry.url()) };

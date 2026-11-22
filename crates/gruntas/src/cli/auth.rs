@@ -57,7 +57,7 @@ pub(crate) fn login(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     // A key typed without its flag is caught by name — and not quoted back,
     // since it is already in a shell history.
     if let Some(first) = args.first() {
-        if first.starts_with("krowk_sk_") {
+        if first.starts_with(gruntas_api::API_KEY_PREFIX) {
             return Err(fail(
                 "token_not_a_positional",
                 "a key has to go behind the flag: `gruntas login --token krowk_sk_...` — passed as a bare argument it is ignored",

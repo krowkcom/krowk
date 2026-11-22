@@ -22,7 +22,7 @@ use gruntas_client::user_key::{UserKey, UserKeyId};
 use serde_json::{json, Value};
 
 const T: u64 = 1_790_000_000;
-const GENERATOR: &str = "crates/gruntas-client/tests/device_chain_corpus.rs (krowk-cli)";
+const GENERATOR: &str = "crates/gruntas-client/tests/device_chain_corpus.rs (gruntas)";
 const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/device_chain_corpus.json");
 
 struct K {

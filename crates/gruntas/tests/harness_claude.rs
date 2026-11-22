@@ -25,7 +25,7 @@ struct Sandbox {
 
 impl Sandbox {
     fn new(name: &str) -> Sandbox {
-        let root = std::env::temp_dir().join(format!("krowk-claude-cli-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-claude-cli-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
@@ -165,7 +165,7 @@ fn add_two_accounts(b: &Sandbox) {
 }
 
 #[test]
-fn r_back_1_a_tool_using_claude_turn_is_in_the_log_and_in_krowk_sessions() {
+fn r_back_1_a_tool_using_claude_turn_is_in_the_log_and_in_gruntas_sessions() {
     let b = Sandbox::new("tool");
     b.json(&["providers", "add", "claude", "--json"], &[]);
     // The native instance's key and base URL are exported, as on a machine

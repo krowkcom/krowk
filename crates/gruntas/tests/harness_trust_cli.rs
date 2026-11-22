@@ -14,7 +14,7 @@ struct Sandbox {
 
 impl Sandbox {
     fn new(name: &str) -> Sandbox {
-        let root = std::env::temp_dir().join(format!("krowk-trust-cli-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-trust-cli-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for d in ["home", "data", "repo", "other"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
@@ -33,7 +33,7 @@ impl Sandbox {
         self.root.join("repo")
     }
 
-    fn krowk_in(&self, dir: &Path, args: &[&str]) -> Output {
+    fn gruntas_in(&self, dir: &Path, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_gruntas"))
             .args(args)
             .env_clear()
@@ -50,7 +50,7 @@ impl Sandbox {
     }
 
     fn gruntas(&self, args: &[&str]) -> Output {
-        self.krowk_in(&self.repo(), args)
+        self.gruntas_in(&self.repo(), args)
     }
 
     fn json(&self, args: &[&str]) -> Value {
@@ -139,18 +139,18 @@ fn trust_refuses_root_and_the_home_directory_with_the_stores_message() {
 
 /// A gruntas worktree is trusted as its main repository.
 #[test]
-fn trust_of_a_krowk_worktree_records_the_main_repository() {
+fn trust_of_a_gruntas_worktree_records_the_main_repository() {
     let b = Sandbox::new("worktree");
     let made = b.json(&["worktrees", "add", "--json"]);
     let wt = PathBuf::from(made["data"]["path"].as_str().unwrap());
     assert!(wt.is_dir());
-    let granted = b.krowk_in(&wt, &["trust", "--json"]);
+    let granted = b.gruntas_in(&wt, &["trust", "--json"]);
     assert!(granted.status.success(), "{}", text(&granted));
     let v: Value = serde_json::from_slice(&granted.stdout).unwrap();
     assert_eq!(v["data"], json!({"directory": b.repo().display().to_string(), "trusted": true}), "{v}");
     assert_eq!(b.listed(), json!([b.repo().display().to_string()]));
     // By path from elsewhere, and revoked the same way.
-    let revoked = b.krowk_in(&b.root.join("other"), &["trust", "--revoke", wt.to_str().unwrap(), "--json"]);
+    let revoked = b.gruntas_in(&b.root.join("other"), &["trust", "--revoke", wt.to_str().unwrap(), "--json"]);
     assert!(revoked.status.success(), "{}", text(&revoked));
     assert_eq!(b.listed(), json!([]));
 }

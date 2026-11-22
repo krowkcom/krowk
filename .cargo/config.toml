@@ -1,6 +1,6 @@
 # The SQLite that `sessions` compiles in, without the extras libsqlite3-sys
 # bundles by default: full-text search, R*Tree, dbstat, STAT4, column
-# metadata and extension loading. krowk.db uses none of them; dropping them
+# metadata and extension loading. gruntas.db uses none of them; dropping them
 # saves ~270 KB and takes extension loading off the attack surface. A later
 # -U cancels the crate's own -D, so this only ever removes.
 [env]

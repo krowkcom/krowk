@@ -62,7 +62,7 @@ pub async fn join(j: Join<'_>) -> Result<(Ws, Value), String> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     let dial = handshake::dial(j.relay, j.session, j.env, j.ticket);
     let mut req = dial.url.into_client_request().map_err(|e| format!("{} is not a relay URL: {e}", j.relay.trim_end_matches('/')))?;
-    req.headers_mut().insert("x-krowk-ticket", dial.ticket.parse().map_err(|_| "the relay ticket is not a header value")?);
+    req.headers_mut().insert(gruntas_client::relay_ticket::HEADER, dial.ticket.parse().map_err(|_| "the relay ticket is not a header value")?);
     let mut joining = handshake::Joining::new(j.relay, j.session, j.env, j.device, j.role, j.extra)?;
     // `wss://`, the hosted relay, is dialed through the harness's own rustls
     // configuration; `ws://` (a local relay, a direct path) needs none.
@@ -737,7 +737,7 @@ mod tests {
     #[test]
     fn a_dropped_image_goes_ahead_of_its_prompt_one_put_at_a_time_and_a_refused_one_stops_the_send() {
         use super::viewer::Update;
-        let dir = std::env::temp_dir().join(format!("krowk-attach-img-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gruntas-attach-img-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let paths: Vec<_> = (0..2u8)
             .map(|k| {

@@ -470,7 +470,7 @@ mod tests {
 
     #[test]
     fn kept_images_read_back_and_a_log_cannot_point_out_of_the_directory() {
-        let root = std::env::temp_dir().join(format!("krowk-images-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-images-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let dir = root.as_path();
         let other = [PNG, b"x"].concat();
@@ -499,7 +499,7 @@ mod tests {
 
     #[test]
     fn a_put_image_stores_one_file_twice_and_a_prompt_names_it_by_hash() {
-        let dir = std::env::temp_dir().join(format!("krowk-put-{}", gruntas_store::new_id()));
+        let dir = std::env::temp_dir().join(format!("gruntas-put-{}", gruntas_store::new_id()));
         let session = gruntas_store::new_id();
         std::fs::create_dir_all(dir.join(&session)).unwrap();
         let (sha, data) = (sha256(PNG), base64::engine::general_purpose::STANDARD.encode(PNG));
@@ -520,7 +520,7 @@ mod tests {
 
     #[test]
     fn a_call_sends_the_newest_images_that_fit_and_names_the_rest() {
-        let root = std::env::temp_dir().join(format!("krowk-images-sent-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-images-sent-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let dir = root.as_path();
         let inputs: Vec<ImageInput> = (1..=SENT_IMAGES as u32 + 2).map(|n| input(n, "image/png", &[PNG, &n.to_be_bytes()].concat())).collect();

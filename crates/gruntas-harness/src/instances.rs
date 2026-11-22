@@ -1248,7 +1248,7 @@ mod tests {
             "openai:work": {"kind": "openai-api", "apiKeyEnv": "WORK_KEY", "baseUrl": "https://gw.example/v1/", "effort": "high"},
             "local": {"kind": "openai-compatible", "baseUrl": "http://127.0.0.1:11434/v1"},
             "vivgrid": {"kind": "openai-compatible", "baseUrl": "https://api.vivgrid.com/v1", "apiKeyEnv": "WORK_KEY", "provider": "vivgrid"},
-            "grok:team": {"kind": "xai-oauth", "clientId": "krowk-test", "issuer": "http://127.0.0.1:7/"},
+            "grok:team": {"kind": "xai-oauth", "clientId": "gruntas-test", "issuer": "http://127.0.0.1:7/"},
             "pinned": {"kind": "openai-api", "wireApi": "chat-completions"},
         }}))
         .unwrap();
@@ -1265,7 +1265,7 @@ mod tests {
         assert_eq!((l.auth.clone(), l.provider.as_str(), l.missing_key()), (Auth::Keyless, "openai-compatible", None));
         assert_eq!(reg.get("vivgrid").unwrap().provider, "vivgrid");
         let g = reg.get("grok:team").unwrap();
-        assert_eq!(g.auth, Auth::OAuth { issuer: "http://127.0.0.1:7".into(), client_id: Some("krowk-test".into()), scope: "openid offline_access".into() });
+        assert_eq!(g.auth, Auth::OAuth { issuer: "http://127.0.0.1:7".into(), client_id: Some("gruntas-test".into()), scope: "openid offline_access".into() });
         assert_eq!(g.missing_key(), None, "an OAuth instance's credential is the login's to check");
         assert_eq!(reg.get("supergrok").unwrap().auth, Auth::OAuth { issuer: XAI_ISSUER.into(), client_id: None, scope: "openid offline_access".into() });
         // The catalog picks the wire API among the ones the instance speaks,

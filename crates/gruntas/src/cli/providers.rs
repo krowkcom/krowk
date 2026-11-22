@@ -31,7 +31,7 @@ use std::path::PathBuf;
 /// gruntas's home, for the harness: without one there is none, and the
 /// harness runs nothing rather than read keys, trust or commands from
 /// anywhere else.
-pub(super) fn krowk_dir() -> Result<PathBuf, Error> {
+pub(super) fn gruntas_dir() -> Result<PathBuf, Error> {
     gruntas_api::home::get()
 }
 

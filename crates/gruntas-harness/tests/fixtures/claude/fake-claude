@@ -1,12 +1,12 @@
 #!/bin/bash
 # A stand-in for Claude Code's `claude` binary, so no test needs a real
-# login. It speaks what krowk drives: `auth login|status|logout` against a
+# login. It speaks what gruntas drives: `auth login|status|logout` against a
 # marker file in CLAUDE_CONFIG_DIR (never a credential), and `-p` with
 # stream-json in and out, replaying a recorded scenario turn by turn.
 #
 # Written for the bash macOS ships (3.2): no associative arrays, no
-# fractional `read -t`. It reads krowk's lines by their leading `"type"`,
-# which is how krowk writes them.
+# fractional `read -t`. It reads gruntas's lines by their leading `"type"`,
+# which is how gruntas writes them.
 #
 # Environment:
 #   FAKE_CLAUDE_SCENARIO  the scenario file (below); a plain answer without one
@@ -24,20 +24,20 @@
 #                         and the agent runs on
 #
 # A scenario is turns separated by lines holding `---`. Each user line from
-# krowk plays the next turn: `system/init` first, then each line of the turn:
+# gruntas plays the next turn: `system/init` first, then each line of the turn:
 #   a JSON line        printed, with {{SESSION}}, {{MODEL}} and {{CWD}} filled in
-#   @ask <request>     sent as a control_request; waits for krowk's answer
+#   @ask <request>     sent as a control_request; waits for gruntas's answer
 #   @tool_result <id>  a tool_result for <id> built from the last answer: the
 #                      denial's message, a hook's deny reason, or the MCP result's text
-#   @await-interrupt   waits for krowk's interrupt, and acknowledges it; a
+#   @await-interrupt   waits for gruntas's interrupt, and acknowledges it; a
 #                      `user` line read meanwhile is queued, and cancelled
 #                      by an interrupt that asks (`cancel_queued`)
-#   @await-stop        waits for krowk's `stop_task`, and answers it as
+#   @await-stop        waits for gruntas's `stop_task`, and answers it as
 #                      recorded: the agent `killed`, then `stopped`, then
 #                      `success` (or refused, with FAKE_CLAUDE_STOP_TASK)
-#   @await-steer       waits for a `user` line from krowk, as steering
+#   @await-steer       waits for a `user` line from gruntas, as steering
 #                      written mid-turn
-#   @queue             waits for a `user` line from krowk and queues it,
+#   @queue             waits for a `user` line from gruntas and queues it,
 #                      unread, for an interrupt that asks to cancel it
 #   @replay            prints that line back, as `--replay-user-messages`
 #                      does once the model reads it
@@ -64,7 +64,7 @@
 # With `--replay-user-messages` the line that starts a turn is printed back
 # after `init`. The turn ends with the scenario's own `result` line. A section whose first
 # line is `@by-itself` plays as soon as the one before it ends, with no
-# user line from krowk: what Claude Code does between turns, while a
+# user line from gruntas: what Claude Code does between turns, while a
 # background agent runs and when it begins a turn to answer it.
 # A section whose first line is `@when <text>` is out of that order: it
 # plays, every time, for a user line holding <text> (the first such section
@@ -211,7 +211,7 @@ request_id() {
   [[ $1 =~ $re ]] && printf '%s' "${BASH_REMATCH[1]}"
 }
 
-# A control request from krowk, whenever it arrives.
+# A control request from gruntas, whenever it arrives.
 control() {
   local line="$1" id
   id="$(request_id "$line")"
@@ -264,7 +264,7 @@ readline() {
   log "in $LINE"
 }
 
-# Sends a control request and waits for krowk's answer to it.
+# Sends a control request and waits for gruntas's answer to it.
 ask() {
   ASKED=$((ASKED + 1))
   local id="fake_$ASKED"
@@ -357,7 +357,7 @@ queue_steer() {
   done
 }
 
-# A line of krowk's printed back, as `--replay-user-messages` does: as
+# A line of gruntas's printed back, as `--replay-user-messages` does: as
 # written, no placeholders filled. Its closing `}` is cut by length:
 # bash 3.2 takes minutes over `${1%\}}`, or a `//` substitution, on a
 # prompt carrying megabytes of images.

@@ -1,6 +1,6 @@
 # Performance and size budgets
 
-Every performance and size number krowk promises lives in one file,
+Every performance and size number gruntas promises lives in one file,
 [`budgets.toml`](budgets.toml), beside this one. `make bench` builds the two
 release binaries — the agent build (no features) and the full build
 (`--features harness`) — measures each enforced budget, prints a table, and
@@ -29,7 +29,7 @@ budget lean.size (R-PKG-2) broken: Agent build (no features): release binary siz
   budgets are a table keyed by target (`x86_64-linux`, `aarch64-macos`, …).
   Only the pinned runner's target has a number; `make bench` elsewhere prints
   its size and marks it skipped.
-- **Idle is read from Linux /proc.** `krowk -p` is started against a local
+- **Idle is read from Linux /proc.** `gruntas -p` is started against a local
   provider that takes the request and never answers, and once the request has
   arrived its CPU ticks (`/proc/<pid>/stat`) and context switches (every
   thread's `/proc/<pid>/task/*/status`) are read, then read again 10 seconds

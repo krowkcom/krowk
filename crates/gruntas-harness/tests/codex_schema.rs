@@ -42,7 +42,7 @@ fn check(codex: &Path, dir: &Path) -> (i32, String) {
 
 #[test]
 fn r_back_3_the_schema_staleness_check_fails_on_a_deliberately_edited_pinned_schema() {
-    let base = std::env::temp_dir().join(format!("krowk-codex-schema-{}", std::process::id()));
+    let base = std::env::temp_dir().join(format!("gruntas-codex-schema-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(base.join("pin")).unwrap();
     let version = std::fs::read_to_string(pinned().join("VERSION")).unwrap().trim().to_string();

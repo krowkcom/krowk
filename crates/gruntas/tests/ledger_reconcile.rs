@@ -130,7 +130,7 @@ fn transcript(home: &Path, answer: &Value) {
 }
 
 fn scratch() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("krowk-ledger-it-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("gruntas-ledger-it-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let home = dir.join("home");
     std::fs::create_dir_all(&home).unwrap();

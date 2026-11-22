@@ -17,7 +17,7 @@ struct Sandbox {
 
 impl Sandbox {
     fn new(name: &str) -> Sandbox {
-        let root = std::env::temp_dir().join(format!("krowk-config-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-config-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();

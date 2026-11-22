@@ -403,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn the_krowk_block_goes_through() {
+    fn the_gruntas_block_goes_through() {
         let body = format!("Before and after:\n\n{}\n\n{}", image_block("Cart before", CARD), block("Build log", CARD2));
         assert!(!refused(&format!("gh pr comment 12 --body '{body}'")));
         assert!(!refused(&format!("gh issue create -t Bug -b \"{}\"", block("Trace", CARD))));
@@ -438,7 +438,7 @@ mod tests {
 
     #[test]
     fn a_body_file_is_read_when_it_can_be() {
-        let dir = std::env::temp_dir().join(format!("krowk-paste-guard-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gruntas-paste-guard-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("bare.md"), format!("Result: {CARD}\n")).unwrap();
         std::fs::write(dir.join("block.md"), format!("Result:\n{}\n", block("Result", CARD))).unwrap();
@@ -469,7 +469,7 @@ mod tests {
 
     #[test]
     fn a_body_file_written_on_the_same_line_is_judged_by_what_is_written() {
-        let dir = std::env::temp_dir().join(format!("krowk-paste-guard-rewrite-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gruntas-paste-guard-rewrite-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         // What an earlier, refused attempt left behind.
         std::fs::write(dir.join("body.md"), format!("see {CARD}\n")).unwrap();
@@ -532,7 +532,7 @@ mod tests {
 
     #[test]
     fn a_body_file_is_matched_however_its_path_is_spelled() {
-        let dir = std::env::temp_dir().join(format!("krowk-paste-guard-spelling-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gruntas-paste-guard-spelling-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("body.md"), format!("see {CARD}\n")).unwrap();
         let ok = block("Cart", CARD);

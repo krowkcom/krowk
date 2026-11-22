@@ -53,6 +53,13 @@ pub struct Metadata {
     remote_slug: String,
 }
 
+/// The metadata key a caption is recorded under, on the artifact. Like the
+/// field names on `Metadata`, historical: the registry stores them (the
+/// `historical_names` test pins each).
+pub const CAPTION_KEY: &str = "krowk.caption";
+/// The key the evidence engine is recorded under.
+pub const ENGINE_KEY: &str = "krowk.engine";
+
 /// A link the work is about: the issue, the spec, the discussion.
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 pub struct Link {
@@ -451,7 +458,7 @@ mod tests {
     /// detection runs none of it, and reads the directory it is pointed at.
     #[test]
     fn detection_runs_nothing_from_the_repositorys_config_and_reads_the_directory_named() {
-        let d = std::env::temp_dir().join(format!("krowk-runctx-fsmonitor-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("gruntas-runctx-fsmonitor-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let git = |args: &[&str]| Command::new("git").args(args).current_dir(&d).status().is_ok_and(|s| s.success());

@@ -598,7 +598,7 @@ mod tests {
 
     #[test]
     fn r_budget_1_a_backend_alias_is_priced_by_the_model_that_answered_and_its_reported_total_counts() {
-        let dir = std::env::temp_dir().join(format!("krowk-budget-alias-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gruntas-budget-alias-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let (_, root) = log::SessionLog::create(&dir, Path::new("/repo"), "t").unwrap();
         // Prices the snapshot id only, as models.dev does: `sonnet` is Claude
@@ -622,7 +622,7 @@ mod tests {
 
     #[test]
     fn r_budget_1_a_subagent_is_priced_by_the_model_it_ran_on() {
-        let dir = std::env::temp_dir().join(format!("krowk-budget-subagent-model-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gruntas-budget-subagent-model-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         // Sonnet a dollar per thousand output tokens, Haiku a tenth of that.
         let pricer: Pricer = Arc::new(|_, m: &str, u: &Usage| match m {
@@ -663,7 +663,7 @@ mod tests {
     #[test]
     fn r_sub_4_the_tree_is_counted_as_its_logs_grow_and_without_a_limit_not_read_at_all() {
         use std::io::Write;
-        let dir = std::env::temp_dir().join(format!("krowk-budget-meter-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gruntas-budget-meter-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let parent = write_session(&dir, None, 100);
         let child = write_session(&dir, Some(&parent), 200);
@@ -693,7 +693,7 @@ mod tests {
 
     #[test]
     fn r_budget_1_a_subagents_spend_counts_toward_its_parents_budget() {
-        let dir = std::env::temp_dir().join(format!("krowk-budget-tree-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gruntas-budget-tree-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let parent = write_session(&dir, None, 100);
         let child = write_session(&dir, Some(&parent), 200);

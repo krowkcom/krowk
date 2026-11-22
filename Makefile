@@ -2,7 +2,7 @@
 # A checkout and a release should not disagree about what version this is.
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo dev)
 
-.PHONY: build test test-build test-run test-doc lint lint-lean lint-sessions lint-harness check check-build check-run quick-check signoff install dev mock clean dist release-check golden golden-build golden-device golden-full golden-run golden-update bin/devregistry schema codex-schema codex-schema-update lean-deps bench
+.PHONY: build test test-build test-run test-doc lint lint-lean lint-sessions lint-harness check check-build check-run quick-check signoff install dev mock clean dist release-check golden golden-build golden-device golden-full golden-run golden-update bin/devregistry schema codex-schema codex-schema-update lean-deps name-sweep bench
 
 build: ## Build target/release/gruntas (the full build) and gruntas-mcp
 	GRUNTAS_VERSION=$(VERSION) cargo build --release -p gruntas --features harness
@@ -24,7 +24,7 @@ test-run:
 	$(NEXTEST)
 
 test-doc:
-	GRUNTAS_HOME=$(CURDIR)/target/krowk-test-home cargo test --doc --workspace --exclude gruntas-golden --features gruntas/harness
+	GRUNTAS_HOME=$(CURDIR)/target/gruntas-test-home cargo test --doc --workspace --exclude gruntas-golden --features gruntas/harness
 
 # Both builds: the agent build (no sessions) is the one a container compiles
 # from source, and a cfg that only one of them sees is a lint only one catches.
@@ -63,7 +63,7 @@ check: ## Everything CI runs
 	$(MAKE) -j$(CHECK_JOBS) $(OUTPUT_SYNC) check-build
 	$(MAKE) check-run
 
-check-build: lint lean-deps test-build test-doc golden-build
+check-build: lint lean-deps name-sweep test-build test-doc golden-build
 
 check-run: golden-run test-run
 
@@ -91,6 +91,10 @@ signoff: ## Run `make check` here and sign off on the commit
 lean-deps: ## Hold the agent build to its dependency list
 	scripts/lean_deps_check.sh
 
+# R-REN-13: every use of the old name is on scripts/name_sweep.allow, with why.
+name-sweep: ## Fail on the old product name outside its allowlist
+	scripts/name_sweep.sh
+
 # R-PERF-7: every number in crates/gruntas-bench/budgets.toml, measured on the
 # release profile and failed on the first one broken. The same table CI prints
 # in the job summary. Both builds are stamped with one version so a size is
@@ -102,11 +106,11 @@ BENCH_VERSION := 0.0.0-bench
 
 bench: ## Hold the release builds to the performance and size budgets
 	GRUNTAS_VERSION=$(BENCH_VERSION) cargo build --release --locked -p gruntas --bin gruntas
-	mkdir -p $(BENCH_DIR) && rm -f $(BENCH_DIR)/krowk-lean && cp target/release/gruntas $(BENCH_DIR)/krowk-lean
+	mkdir -p $(BENCH_DIR) && rm -f $(BENCH_DIR)/gruntas-lean && cp target/release/gruntas $(BENCH_DIR)/gruntas-lean
 	GRUNTAS_VERSION=$(BENCH_VERSION) cargo build --release --locked -p gruntas --bin gruntas --features harness
-	rm -f $(BENCH_DIR)/krowk-full && cp target/release/gruntas $(BENCH_DIR)/krowk-full
+	rm -f $(BENCH_DIR)/gruntas-full && cp target/release/gruntas $(BENCH_DIR)/gruntas-full
 	cargo run --profile bench-tool --locked -p gruntas-bench -- --budgets crates/gruntas-bench/budgets.toml \
-		--lean $(BENCH_DIR)/krowk-lean --full $(BENCH_DIR)/krowk-full --work $(BENCH_DIR)/work $(BENCH_FLAGS)
+		--lean $(BENCH_DIR)/gruntas-lean --full $(BENCH_DIR)/gruntas-full --work $(BENCH_DIR)/work $(BENCH_FLAGS)
 	# R-LAG-2/3/9's load with the flood unpaced, which only an optimized
 	# daemon is held to (tests/daemon_ws.rs says why).
 	cargo test --release --locked -p gruntas-harness --test daemon_ws r_lag_2_r_lag_3
@@ -121,7 +125,7 @@ bench: ## Hold the release builds to the performance and size budgets
 schema: ## Regenerate the harness protocol's JSON Schema after a type change
 	GRUNTAS_SCHEMA_UPDATE=1 cargo test -p gruntas-harness --test schema
 
-# R-BACK-3: the schema of the `codex app-server` protocol krowk drives, pinned
+# R-BACK-3: the schema of the `codex app-server` protocol gruntas drives, pinned
 # for the Codex version in crates/gruntas-harness/schema/codex/VERSION. Needs
 # that Codex installed (npm install -g @openai/codex@<version>), so it is CI's
 # own job rather than part of `check`; `codex-schema-update` moves the pin to

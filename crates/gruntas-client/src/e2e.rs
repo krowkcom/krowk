@@ -63,11 +63,34 @@ pub const WRAPPED_SESSION_KEY: usize = 2 + NONCE + KEY + TAG;
 /// A wrapped session key's version: 2 since it is sealed under the user
 /// key, which a version-1 blob (under the account key) never was.
 pub const SESSION_KEY_V2: u8 = 2;
-const SESSION_KEY_AAD: &[u8] = b"krowk/session-key/v2";
+pub const SESSION_KEY_AAD: &[u8] = b"krowk/session-key/v2";
 /// A rotated session's wrapped key ring: every epoch's key, oldest first,
 /// sealed as one under the user key (`wrap_session_keys`).
 pub const SESSION_KEY_V3: u8 = 3;
-const SESSION_KEYS_AAD: &[u8] = b"krowk/session-keys/v3";
+pub const SESSION_KEYS_AAD: &[u8] = b"krowk/session-keys/v3";
+/// Historical: the domain-separation labels below, like the two above and
+/// `RELAY_JOIN_LABEL`, keep the old name byte for byte. Sealed data,
+/// signatures and other devices depend on them; the gruntas crate's
+/// `historical_names` test pins each.
+pub const LABEL_DEVICE_ID_V1: &[u8] = b"krowk/device-id/v1";
+pub const LABEL_ACCOUNT_KEY_ID_V1: &[u8] = b"krowk/account-key-id/v1";
+pub const LABEL_ACCOUNT_KEY_V1: &[u8] = b"krowk/account-key/v1";
+pub const LABEL_SESSION_INDEX_V1: &[u8] = b"krowk/session-index/v1";
+pub const LABEL_VINTAGE_KEY_V2: &[u8] = b"krowk/vintage-key/v2";
+pub const LABEL_VINTAGE_V2: &[u8] = b"krowk/vintage/v2";
+pub const LABEL_PRESENCE_V1: &[u8] = b"krowk/presence/v1";
+pub const LABEL_HOST_COMMAND_V1: &[u8] = b"krowk/host-command/v1";
+pub const LABEL_HOST_ANSWER_V1: &[u8] = b"krowk/host-answer/v1";
+pub const LABEL_PRESENCE_V1_KEY: &[u8] = b"krowk/presence/v1-key";
+pub const LABEL_HOST_COMMAND_V1_KEY: &[u8] = b"krowk/host-command/v1-key";
+pub const LABEL_HOST_ANSWER_V1_KEY: &[u8] = b"krowk/host-answer/v1-key";
+pub const LABEL_TRANSPORT_V1: &[u8] = b"krowk/transport/v1";
+pub const LABEL_IMAGE_NAME_V1: &[u8] = b"krowk/image-name/v1";
+pub const LABEL_IMAGE_V1: &[u8] = b"krowk/image/v1";
+pub const LABEL_CHUNK_EPOCH_V1: &[u8] = b"krowk/chunk-epoch/v1";
+pub const LABEL_CHUNK_V2: &[u8] = b"krowk/chunk/v2";
+pub const LABEL_CHUNK_V1: &[u8] = b"krowk/chunk/v1";
+pub const LABEL_FRAME_V1: &[u8] = b"krowk/frame/v1";
 /// The most key epochs one session's ring holds: a rotation per device
 /// removal the session lives through.
 pub const MAX_SESSION_KEY_EPOCHS: usize = 64;
@@ -186,7 +209,7 @@ pub struct DevicePublic(pub [u8; 32]);
 
 impl DevicePublic {
     pub fn id(&self) -> DeviceId {
-        DeviceId(id(b"krowk/device-id/v1", &self.0))
+        DeviceId(id(LABEL_DEVICE_ID_V1, &self.0))
     }
 }
 
@@ -264,7 +287,7 @@ impl AccountKey {
     }
 
     pub fn id(&self) -> KeyId {
-        KeyId(id(b"krowk/account-key-id/v1", &self.0))
+        KeyId(id(LABEL_ACCOUNT_KEY_ID_V1, &self.0))
     }
 }
 
@@ -351,7 +374,7 @@ impl From<SessionKey> for SessionKeys {
 /// (by id), this device — so a blob moved to another device, or passed off
 /// as another account's, does not open.
 fn account_info(key: KeyId, device: DeviceId) -> Vec<u8> {
-    [&b"krowk/account-key/v1"[..], &key.0, &device.0].concat()
+    [LABEL_ACCOUNT_KEY_V1, &key.0, &device.0].concat()
 }
 
 /// The account key wrapped to one device: `version | suite | enc | sealed
@@ -404,7 +427,7 @@ pub const INDEX_V1: u8 = 1;
 pub fn seal_session_index(key: &SessionKey, session: &[u8; 16], plaintext: &[u8]) -> Vec<u8> {
     let head = [INDEX_V1, SUITE_XCHACHA20_POLY1305];
     let nonce: [u8; NONCE] = random();
-    let aad = [&b"krowk/session-index/v1"[..], &head, session].concat();
+    let aad = [LABEL_SESSION_INDEX_V1, &head, session].concat();
     let sealed = cipher(&key.0).encrypt(&XNonce::from(nonce), Payload { msg: plaintext, aad: &aad }).expect("an index is far below XChaCha's limit");
     [&head[..], &nonce, &sealed].concat()
 }
@@ -418,7 +441,7 @@ pub fn open_session_index(blob: &[u8], session: &[u8; 16], key: &SessionKey) -> 
         });
     }
     let nonce: [u8; NONCE] = blob[2..2 + NONCE].try_into().expect("24 bytes");
-    let aad = [&b"krowk/session-index/v1"[..], &blob[..2], session].concat();
+    let aad = [LABEL_SESSION_INDEX_V1, &blob[..2], session].concat();
     cipher(&key.0).decrypt(&XNonce::from(nonce), Payload { msg: &blob[2 + NONCE..], aad: &aad }).map_err(|_| refused())
 }
 
@@ -450,10 +473,10 @@ pub fn seal_vintage(keys: &UserKeys, current_generation: u32, week: &str, plaint
     let generation = user.generation().to_be_bytes();
     let key: zeroize::Zeroizing<[u8; KEY]> = zeroize::Zeroizing::new(random());
     let key_nonce: [u8; NONCE] = random();
-    let key_aad = [&b"krowk/vintage-key/v2"[..], &head, &generation, &user.id().0, week.as_bytes()].concat();
+    let key_aad = [LABEL_VINTAGE_KEY_V2, &head, &generation, &user.id().0, week.as_bytes()].concat();
     let wrapped = cipher(user.as_bytes()).encrypt(&XNonce::from(key_nonce), Payload { msg: &key[..], aad: &key_aad }).expect("sealing 32 bytes cannot fail");
     let nonce: [u8; NONCE] = random();
-    let aad = [&b"krowk/vintage/v2"[..], &head, &generation, &user.id().0, week.as_bytes()].concat();
+    let aad = [LABEL_VINTAGE_V2, &head, &generation, &user.id().0, week.as_bytes()].concat();
     let sealed = cipher(&key).encrypt(&XNonce::from(nonce), Payload { msg: plaintext, aad: &aad }).expect("a vintage is far below XChaCha's limit");
     Ok([&head[..], &generation, &key_nonce, &wrapped, &nonce, &sealed].concat())
 }
@@ -484,11 +507,11 @@ fn open_vintage_v2(blob: &[u8], week: &str, keys: &UserKeys) -> Result<Vec<u8>, 
     }
     let user = keys.open(generation)?;
     let key_nonce: [u8; NONCE] = blob[6..6 + NONCE].try_into().expect("24 bytes");
-    let key_aad = [&b"krowk/vintage-key/v2"[..], &blob[..2], &blob[2..6], &user.id().0, week.as_bytes()].concat();
+    let key_aad = [LABEL_VINTAGE_KEY_V2, &blob[..2], &blob[2..6], &user.id().0, week.as_bytes()].concat();
     let key = zeroize::Zeroizing::new(cipher(user.as_bytes()).decrypt(&XNonce::from(key_nonce), Payload { msg: &blob[6 + NONCE..body], aad: &key_aad }).map_err(|_| refused())?);
     let key: zeroize::Zeroizing<[u8; KEY]> = zeroize::Zeroizing::new(key[..].try_into().map_err(|_| refused())?);
     let nonce: [u8; NONCE] = blob[body..body + NONCE].try_into().expect("24 bytes");
-    let aad = [&b"krowk/vintage/v2"[..], &blob[..2], &blob[2..6], &user.id().0, week.as_bytes()].concat();
+    let aad = [LABEL_VINTAGE_V2, &blob[..2], &blob[2..6], &user.id().0, week.as_bytes()].concat();
     cipher(&key).decrypt(&XNonce::from(nonce), Payload { msg: &blob[body + NONCE..], aad: &aad }).map_err(|_| refused())
 }
 
@@ -511,17 +534,17 @@ pub enum Label {
 impl Label {
     fn body(self) -> &'static [u8] {
         match self {
-            Label::Presence => b"krowk/presence/v1",
-            Label::HostCommand => b"krowk/host-command/v1",
-            Label::HostAnswer => b"krowk/host-answer/v1",
+            Label::Presence => LABEL_PRESENCE_V1,
+            Label::HostCommand => LABEL_HOST_COMMAND_V1,
+            Label::HostAnswer => LABEL_HOST_ANSWER_V1,
         }
     }
 
     fn key(self) -> &'static [u8] {
         match self {
-            Label::Presence => b"krowk/presence/v1-key",
-            Label::HostCommand => b"krowk/host-command/v1-key",
-            Label::HostAnswer => b"krowk/host-answer/v1-key",
+            Label::Presence => LABEL_PRESENCE_V1_KEY,
+            Label::HostCommand => LABEL_HOST_COMMAND_V1_KEY,
+            Label::HostAnswer => LABEL_HOST_ANSWER_V1_KEY,
         }
     }
 }
@@ -616,7 +639,7 @@ pub const TRANSPORT_V1: u8 = 1;
 pub fn seal_transport(key: &[u8; KEY], session: &[u8; 16], plaintext: &[u8]) -> Vec<u8> {
     let head = [TRANSPORT_V1, SUITE_XCHACHA20_POLY1305];
     let nonce: [u8; NONCE] = random();
-    let aad = [&b"krowk/transport/v1"[..], &head, session].concat();
+    let aad = [LABEL_TRANSPORT_V1, &head, session].concat();
     let sealed = cipher(key).encrypt(&XNonce::from(nonce), Payload { msg: plaintext, aad: &aad }).expect("a bundle is far below XChaCha's limit");
     [&head[..], &nonce, &sealed].concat()
 }
@@ -630,7 +653,7 @@ pub fn open_transport(blob: &[u8], session: &[u8; 16], key: &[u8; KEY]) -> Resul
         });
     }
     let nonce: [u8; NONCE] = blob[2..2 + NONCE].try_into().expect("24 bytes");
-    let aad = [&b"krowk/transport/v1"[..], &blob[..2], session].concat();
+    let aad = [LABEL_TRANSPORT_V1, &blob[..2], session].concat();
     cipher(key).decrypt(&XNonce::from(nonce), Payload { msg: &blob[2 + NONCE..], aad: &aad }).map_err(|_| refused())
 }
 
@@ -654,7 +677,7 @@ pub fn image_name(keys: &SessionKeys, sha256: &[u8; 32]) -> String {
     use hmac::Mac as _;
     let first = keys.at(0).expect("a session has a key");
     let mut name_key = zeroize::Zeroizing::new([0u8; KEY]);
-    hkdf::Hkdf::<Sha256>::new(None, &first.0).expand(b"krowk/image-name/v1", &mut name_key[..]).expect("32 bytes is a valid HKDF length");
+    hkdf::Hkdf::<Sha256>::new(None, &first.0).expand(LABEL_IMAGE_NAME_V1, &mut name_key[..]).expect("32 bytes is a valid HKDF length");
     let mut m = hmac::Hmac::<Sha256>::new_from_slice(&name_key[..]).expect("HMAC takes any key length");
     m.update(sha256);
     base64url(&m.finalize().into_bytes())
@@ -674,7 +697,7 @@ fn base64url(b: &[u8]) -> String {
 }
 
 fn image_aad(head: &[u8], session: &[u8; 16], sha256: &[u8; 32]) -> Vec<u8> {
-    [&b"krowk/image/v1"[..], head, session, sha256].concat()
+    [LABEL_IMAGE_V1, head, session, sha256].concat()
 }
 
 /// An image sealed for the registry to hold (crypto.md → image objects):
@@ -739,7 +762,7 @@ pub const NO_PREVIOUS_CHUNK: [u8; 32] = [0; 32];
 /// holds the key agrees on it without storing it, and a chunk sealed under
 /// another session's key never has this chain's associated data.
 fn chunk_epoch(key: &SessionKey) -> [u8; 16] {
-    id(b"krowk/chunk-epoch/v1", &key.0)
+    id(LABEL_CHUNK_EPOCH_V1, &key.0)
 }
 
 /// The digest a chunk is chained by: SHA-256 of the whole sealed blob.
@@ -748,7 +771,7 @@ pub fn chunk_digest(blob: &[u8]) -> [u8; 32] {
 }
 
 fn chunk_aad(head: &[u8], session: &[u8; 16], epoch: &[u8; 16], previous: &[u8; 32]) -> Vec<u8> {
-    let label: &[u8] = if head[0] == CHUNK_V2 { b"krowk/chunk/v2" } else { b"krowk/chunk/v1" };
+    let label: &[u8] = if head[0] == CHUNK_V2 { LABEL_CHUNK_V2 } else { LABEL_CHUNK_V1 };
     [label, head, session, epoch, previous].concat()
 }
 
@@ -1080,7 +1103,7 @@ pub const SEALED_OVERHEAD: usize = 8 + NONCE + TAG;
 /// message's place in it, so the associated data of every message sealed
 /// under one session key is unique.
 fn frame_aad(header: &[u8; HEADER], session: &[u8; 16], direction: Direction, epoch: &[u8; 16], counter: u64) -> Vec<u8> {
-    [&b"krowk/frame/v1"[..], header, session, &[direction as u8], epoch, &counter.to_be_bytes()].concat()
+    [LABEL_FRAME_V1, header, session, &[direction as u8], epoch, &counter.to_be_bytes()].concat()
 }
 
 fn check_header(header: &[u8; HEADER]) -> Result<(), Error> {

@@ -24,7 +24,7 @@ struct Sandbox {
 
 impl Sandbox {
     fn new(name: &str) -> Sandbox {
-        let root = std::env::temp_dir().join(format!("krowk-codex-cli-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-codex-cli-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("home/.codex")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
@@ -222,7 +222,7 @@ fn r_back_6_a_codex_turn_is_not_started_headless_in_an_untrusted_repository() {
 }
 
 #[test]
-fn the_paste_guard_codex_runs_is_this_krowk_and_refuses_a_bare_card_link() {
+fn the_paste_guard_codex_runs_is_this_gruntas_and_refuses_a_bare_card_link() {
     let b = Sandbox::new("paste-guard");
     b.json(&["providers", "add", "codex", "--name", "team", "--json"], &[]);
     let out = b.json(&["-p", "post it", "--model", "codex:team/gpt-5.5", "--trust", "--permission-mode", "unhinged", "--output-format", "json"], &[("FAKE_CODEX_SCENARIO", &scenario("paste_guard.jsonl"))]);
@@ -329,6 +329,6 @@ fn r_back_3_a_second_ctrl_c_leaves_at_once_and_kills_codexs_process_group() {
     let status = child.wait().unwrap();
     assert_eq!(status.code(), Some(130), "{status}");
     assert!(started.elapsed() < std::time::Duration::from_secs(5), "it waited {:?}", started.elapsed());
-    assert!(gone(server), "codex app-server ({server}) outlived krowk");
-    assert!(gone(grandchild), "what Codex started ({grandchild}) outlived krowk");
+    assert!(gone(server), "codex app-server ({server}) outlived gruntas");
+    assert!(gone(grandchild), "what Codex started ({grandchild}) outlived gruntas");
 }

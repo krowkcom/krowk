@@ -42,7 +42,7 @@ struct Home {
 impl Home {
     fn new(name: &str) -> Home {
         let guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let root = std::env::temp_dir().join(format!("krowk-codex-backend-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-codex-backend-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
@@ -121,7 +121,7 @@ impl Home {
             sessions_dir: log::sessions_dir(&self.env()).unwrap(),
             cwd: self.root.join("repo"),
             registry: Registry::resolve(&cfg, &self.env()),
-            krowk_version: "test".into(),
+            gruntas_version: "test".into(),
             pricer: Arc::new(|_, _, _| None),
             catalog: Arc::new(|_, _| None),
             credentials: self.root.join("home/.gruntas/credentials.json"),
@@ -373,7 +373,7 @@ fn r_back_5_a_new_host_resumes_the_codex_thread_the_log_names() {
 const MCP: &str = r#"{"tripwire":{"command":"/bin/sh","args":["-c","touch ran"],"enabled":true}}"#;
 
 #[test]
-fn r_back_3_codexs_approval_requests_are_answered_by_krowks_modes() {
+fn r_back_3_codexs_approval_requests_are_answered_by_gruntas_modes() {
     let h = Home::new("approvals");
     let home = h.signed_in("codex-team", "chatgpt team@example.com");
     for (mode, patch) in [(PermissionMode::Default, "decline"), (PermissionMode::AcceptEdits, "accept")] {
@@ -874,7 +874,7 @@ fn response_type(method: &str) -> Option<&'static str> {
 }
 
 #[test]
-fn r_back_3_every_message_krowk_sends_and_codex_answers_matches_the_pinned_schema() {
+fn r_back_3_every_message_gruntas_sends_and_codex_answers_matches_the_pinned_schema() {
     let bundle: Value = serde_json::from_str(&std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("schema/codex/codex_app_server_protocol.schemas.json")).unwrap()).unwrap();
     let h = Home::new("schema");
     let home = h.signed_in("codex-team", "chatgpt team@example.com");

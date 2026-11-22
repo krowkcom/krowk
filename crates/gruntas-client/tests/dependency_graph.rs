@@ -62,7 +62,7 @@ fn metadata() -> Value {
 }
 
 #[test]
-fn r_client_1_krowk_client_links_no_harness_tokio_or_reqwest() {
+fn r_client_1_gruntas_client_links_no_harness_tokio_or_reqwest() {
     let m = metadata();
     // The forbidden crates are in the workspace's graph, so their absence
     // from gruntas-client's means something.
@@ -79,7 +79,7 @@ fn r_client_1_krowk_client_links_no_harness_tokio_or_reqwest() {
 /// dependency, and gruntas-harness on one target — and a dev-dependency on
 /// tokio, which no client links, not counted.
 #[test]
-fn r_client_1_the_dependency_graph_test_fails_when_krowk_client_gains_one() {
+fn r_client_1_the_dependency_graph_test_fails_when_gruntas_client_gains_one() {
     let mut m = metadata();
     let id = |m: &Value, name: &str| m["packages"].as_array().unwrap().iter().find(|p| p["name"] == name).unwrap()["id"].as_str().unwrap().to_string();
     let (client, api, tokio, reqwest, harness) = (id(&m, ROOT), id(&m, "gruntas-api"), id(&m, "tokio"), id(&m, "reqwest"), id(&m, "gruntas-harness"));

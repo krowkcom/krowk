@@ -2034,7 +2034,7 @@ mod tests {
     #[test]
     fn config_json_keeps_its_mode_but_nobody_else_may_write_it() {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("krowk-write-config-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gruntas-write-config-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("config.json");
         let mode = || std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;

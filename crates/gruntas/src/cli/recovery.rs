@@ -415,7 +415,7 @@ fn bridged(ctx: &Ctx) -> (Option<usize>, Option<String>) {
         Ok(Some(s)) => match s.bridged {
             Some(b) => (Some(b.len()), None),
             // A daemon from before automatic sync, or one without it.
-            None => (Some(0), Some(format!("the host daemon runs gruntas {}, which does not sync by itself", s.krowk_version))),
+            None => (Some(0), Some(format!("the host daemon runs gruntas {}, which does not sync by itself", s.gruntas_version))),
         },
         Err(e) => (None, Some(format!("the host daemon could not be asked: {}", e.message))),
     }

@@ -867,7 +867,7 @@ mod tests {
 
     /// A scratch directory of its own for `name`, empty.
     fn scratch(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("krowk-alloc-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-alloc-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         root
@@ -1190,7 +1190,7 @@ mod tests {
     /// so `claude --resume <id>` there finds it.
     #[test]
     fn r_hand_5_the_claude_transcript_moves_to_where_resume_finds_it() {
-        let root = std::env::temp_dir().join(format!("krowk-handoff-r5-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-handoff-r5-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let (repo, src_home, dst_home) = (root.join("repo"), root.join("a-claude"), root.join("b-claude"));
         std::fs::create_dir_all(&repo).unwrap();

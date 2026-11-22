@@ -921,7 +921,7 @@ async fn handshake(stream: Metered, relay: &Rc<Relay>, pending: u64, kill: &toki
         // The ticket rides the upgrade (`X-Krowk-Ticket`), never the URL.
         // Exactly one, or it is no ticket at all: two are refused, not
         // read by which comes first.
-        let all: Vec<_> = req.headers().get_all("x-krowk-ticket").iter().collect();
+        let all: Vec<_> = req.headers().get_all(gruntas_client::relay_ticket::HEADER).iter().collect();
         let ticket = match all.as_slice() {
             [] => None,
             [one] => Some(one.to_str().map(str::to_string).unwrap_or_else(|_| "\u{0}".into())),

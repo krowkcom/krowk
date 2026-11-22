@@ -27,7 +27,7 @@ impl Sandbox {
     /// A home, a trusted repository, and the fake `claude` first on PATH,
     /// signed in to the default account and playing `scenario`.
     fn new(name: &str, scenario: &str) -> Sandbox {
-        let root = std::env::temp_dir().join(format!("krowk-budget-publish-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-budget-publish-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for d in ["home/.claude", "home/.gruntas", "repo/.git", "bin"] {
             std::fs::create_dir_all(root.join(d)).unwrap();

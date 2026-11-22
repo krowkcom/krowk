@@ -10,12 +10,10 @@ use gruntas_api::slug::{parse_slug, KIND_ARTIFACT, KIND_RUN};
 use gruntas_api::{creds, fail, Artifact, Client, Error, VISIBILITY_PRIVATE};
 use serde_json::{json, Value};
 
-/// What every claim token is minted with, so a second positional either looks
-/// like one or is a mistake worth naming.
-const CLAIM_TOKEN_PREFIX: &str = "krowk_claim_";
-
-/// The metadata key a caption is recorded under, on the artifact.
-const CAPTION_KEY: &str = "krowk.caption";
+// A second positional either looks like a claim token (CLAIM_TOKEN_PREFIX)
+// or is a mistake worth naming.
+use gruntas_api::CLAIM_TOKEN_PREFIX;
+use crate::runctx::CAPTION_KEY;
 
 /// The one place a client gets built: --dev, GRUNTAS_API_URL, GRUNTAS_DEV for
 /// where; GRUNTAS_TOKEN, then --workspace, GRUNTAS_WORKSPACE, the repo config,
@@ -71,7 +69,7 @@ pub(crate) fn metadata_for(ctx: &Ctx) -> Metadata {
             references: f.references.clone(),
             session: f.session.clone(),
             title: f.title.clone(),
-            client: format!("krowk-cli/{VERSION}"),
+            client: format!("gruntas-cli/{VERSION}"),
         },
     )
 }

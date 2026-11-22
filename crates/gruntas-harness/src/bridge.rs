@@ -41,7 +41,7 @@ pub struct BridgeEnv<'a> {
     pub cwd: &'a Path,
     /// The backend running the session, e.g. `claude-code`.
     pub backend: &'a str,
-    pub krowk_version: &'a str,
+    pub gruntas_version: &'a str,
     /// The turn's permissions: `publish` is judged by them, whatever a
     /// vendor's own settings allowed.
     pub gate: &'a crate::permissions::Gate,
@@ -195,14 +195,14 @@ fn session_info(env: &BridgeEnv<'_>, input: &Value) -> (String, bool) {
         return (format!("invalid input for session_info: {e}"), true);
     }
     let out = format!(
-        "gruntas session: {}\nturn: {}\ninstance: {}\nmodel: {}\nbackend: {}\nworking directory: {}\nkrowk: {}\nresume with: gruntas -p --resume {} \"…\"",
+        "gruntas session: {}\nturn: {}\ninstance: {}\nmodel: {}\nbackend: {}\nworking directory: {}\ngruntas: {}\nresume with: gruntas -p --resume {} \"…\"",
         env.session_id,
         env.turn_id,
         env.model.instance,
         env.model.model,
         env.backend,
         env.cwd.display(),
-        env.krowk_version,
+        env.gruntas_version,
         env.session_id,
     );
     (out, false)
@@ -224,7 +224,7 @@ pub async fn handle(msg: &Value, env: &BridgeEnv<'_>) -> Value {
         "initialize" => Ok(json!({
             "protocolVersion": params.get("protocolVersion").and_then(Value::as_str).unwrap_or(MCP_VERSION),
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": SERVER, "version": env.krowk_version},
+            "serverInfo": {"name": SERVER, "version": env.gruntas_version},
         })),
         "tools/list" => Ok(json!({
             "tools": EXPOSED.iter().map(|t| json!({"name": t.name, "description": t.description, "inputSchema": (t.input_schema)()})).chain(mcp_listed(env)).collect::<Vec<_>>(),
@@ -269,7 +269,7 @@ mod tests {
     fn r_back_1_the_bridge_lists_and_runs_session_info_and_refuses_what_it_lacks() {
         let model = ModelRef { instance: "claude:work".into(), model: "haiku".into() };
         let gate = crate::permissions::Gate::modes_only(Path::new("/repo"), crate::protocol::PermissionMode::Default);
-        let env = BridgeEnv { session_id: "s-1", turn_id: "t-1", model: &model, cwd: Path::new("/repo"), backend: "claude-code", krowk_version: "test", gate: &gate, cancel: None, evidence: None, mcp: None, approved: None, tool_use_id: None, images: None };
+        let env = BridgeEnv { session_id: "s-1", turn_id: "t-1", model: &model, cwd: Path::new("/repo"), backend: "claude-code", gruntas_version: "test", gate: &gate, cancel: None, evidence: None, mcp: None, approved: None, tool_use_id: None, images: None };
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
         let handle = |msg: &Value| rt.block_on(handle(msg, &env));
         let init = handle(&json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-11-25"}}));
@@ -302,7 +302,7 @@ mod tests {
         let ev = Evidence::new(publisher, "s-1", None, Default::default());
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         let accept = crate::permissions::Gate::modes_only(Path::new("/repo"), crate::protocol::PermissionMode::AcceptEdits);
-        let env = BridgeEnv { session_id: "s-1", turn_id: "t-1", model: &model, cwd: Path::new("/repo"), backend: "claude-code", krowk_version: "test", gate: &accept, cancel: None, evidence: Some((&ev, &tx)), mcp: None, approved: None, tool_use_id: None, images: None };
+        let env = BridgeEnv { session_id: "s-1", turn_id: "t-1", model: &model, cwd: Path::new("/repo"), backend: "claude-code", gruntas_version: "test", gate: &accept, cancel: None, evidence: Some((&ev, &tx)), mcp: None, approved: None, tool_use_id: None, images: None };
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
         let list = rt.block_on(handle(&json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}), &env));
         assert_eq!(list["result"]["tools"][1]["name"], "publish");

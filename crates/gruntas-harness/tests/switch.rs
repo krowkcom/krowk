@@ -76,7 +76,7 @@ impl World {
     }
 
     fn backends(name: &str, guard: std::sync::MutexGuard<'static, ()>) -> World {
-        let root = std::env::temp_dir().join(format!("krowk-switch-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-switch-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
@@ -155,7 +155,7 @@ impl World {
             sessions_dir: log::sessions_dir(&self.env()).unwrap(),
             cwd: self.root.join("repo"),
             registry: Registry::resolve(&cfg, &self.env()),
-            krowk_version: "test".into(),
+            gruntas_version: "test".into(),
             pricer: Arc::new(|_, _, _| None),
             catalog: Arc::new(|_, _| None),
             credentials: self.root.join("home/.gruntas/credentials.json"),

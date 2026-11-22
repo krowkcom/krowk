@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 fn home(name: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("krowk-machines-{name}-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("gruntas-machines-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join(".gruntas")).unwrap();
     root.canonicalize().unwrap()

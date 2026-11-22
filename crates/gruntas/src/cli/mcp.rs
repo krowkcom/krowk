@@ -28,7 +28,7 @@ fn name_arg(verb: &str, args: &[String]) -> Result<String, Error> {
 fn server_url(ctx: &Ctx, name: &str) -> Result<String, Error> {
     let config = prompt::config_json()?;
     let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(std::path::PathBuf::from);
-    let store = gruntas_harness::trust::Store::new(Some(providers::krowk_dir()?.join(gruntas_harness::trust::FILE)), home);
+    let store = gruntas_harness::trust::Store::new(Some(providers::gruntas_dir()?.join(gruntas_harness::trust::FILE)), home);
     let cfg = prompt::permissions_config(ctx, &config, Arc::new(move |root: &std::path::Path| store.trusts(root)), false);
     let cwd = std::env::current_dir().map_err(|e| fail("cwd_unavailable", e.to_string()))?;
     let (servers, _) = gruntas_harness::mcp::discover(&cfg, &cwd);
@@ -82,7 +82,7 @@ const RULE: &str = "a name may hold only letters, digits, - and _, with no __ an
 
 fn permissions(ctx: &Ctx, config: &Value) -> gruntas_harness::permissions::Config {
     let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(std::path::PathBuf::from);
-    let store = trust::Store::new(providers::krowk_dir().ok().map(|d| d.join(trust::FILE)), home);
+    let store = trust::Store::new(providers::gruntas_dir().ok().map(|d| d.join(trust::FILE)), home);
     prompt::permissions_config(ctx, config, Arc::new(move |root: &std::path::Path| store.trusts(root)), false)
 }
 
@@ -186,7 +186,7 @@ pub(super) fn remove(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         return Err(match elsewhere {
             Some(source) => {
                 let file = if source == ".mcp.json" { trust::root(&cwd).join(".mcp.json").display().to_string() } else { source };
-                fail("not_krowks", format!("{name} is not in gruntas's config.json; it comes from {file}, which gruntas does not edit — remove it there"))
+                fail("not_gruntas", format!("{name} is not in gruntas's config.json; it comes from {file}, which gruntas does not edit — remove it there"))
             }
             None => fail("not_found", format!("no MCP server named {name} — `gruntas mcp list` shows them")),
         });

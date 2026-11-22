@@ -27,7 +27,7 @@ impl Sandbox {
     /// A home, a repository, and the fake `claude` first on PATH —
     /// signed in to the default account (`~/.claude`) when `signed_in`.
     fn new(name: &str, signed_in: bool) -> Sandbox {
-        let root = std::env::temp_dir().join(format!("krowk-routing-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("gruntas-routing-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for d in ["home/.claude", "repo/.git", "bin"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
@@ -221,7 +221,7 @@ fn with_a_keyed_account_and_a_subscription_a_bare_id_is_refused_as_ambiguous_unt
 /// R-NAT-3: `-p` runs on a Codex account, on a ChatGPT subscription or an
 /// API key, as it does on Claude Code.
 #[test]
-fn r_nat_3_krowk_p_runs_on_a_codex_subscription_and_a_codex_account_on_a_key() {
+fn r_nat_3_gruntas_p_runs_on_a_codex_subscription_and_a_codex_account_on_a_key() {
     let b = Sandbox::new("codex", false);
     let home = b.account("openai");
     // How the fake tells a key's account from a ChatGPT login.

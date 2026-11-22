@@ -533,7 +533,7 @@ mod tests {
     impl Tmp {
         fn new() -> Tmp {
             static N: AtomicUsize = AtomicUsize::new(0);
-            let p = std::env::temp_dir().join(format!("krowkcursor{}x{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+            let p = std::env::temp_dir().join(format!("gruntascursor{}x{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
             let _ = std::fs::remove_dir_all(&p);
             std::fs::create_dir_all(&p).unwrap();
             assert!(!p.to_string_lossy().contains('-'), "temp dir {p:?} holds a dash; the slug would not decode");

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# The JSON Schema of `codex app-server`, pinned (R-BACK-3). krowk drives
+# The JSON Schema of `codex app-server`, pinned (R-BACK-3). gruntas drives
 # Codex over this protocol, so the schema the pinned Codex generates is
 # checked in beside the code that speaks it — crates/gruntas-harness/schema/codex/,
 # with the Codex version it came from in VERSION — and the backend's tests
 # validate every message against it. Experimental methods and fields are
-# included: krowk opts into them for dynamic tools.
+# included: gruntas opts into them for dynamic tools.
 #
 #   scripts/codex_schema.sh --check   fail when the pinned copy is stale
 #                                     against the pinned Codex (CI runs this)
@@ -57,7 +57,7 @@ if [ "$mode" = --update ]; then
   exit 0
 fi
 if ! cmp -s "$tmp/out/$bundle" "$dir/$bundle"; then
-  echo "codex_schema: $dir/$bundle is stale against Codex $have — regenerate it with scripts/codex_schema.sh --update, and check what changed in the protocol krowk speaks:" >&2
+  echo "codex_schema: $dir/$bundle is stale against Codex $have — regenerate it with scripts/codex_schema.sh --update, and check what changed in the protocol gruntas speaks:" >&2
   diff -u "$dir/$bundle" "$tmp/out/$bundle" | head -40 >&2 || true
   exit 1
 fi

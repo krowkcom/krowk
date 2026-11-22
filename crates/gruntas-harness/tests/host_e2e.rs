@@ -56,7 +56,7 @@ impl Home {
             sessions_dir: log::sessions_dir(&self.env()).unwrap(),
             cwd: self.repo(),
             registry: Registry::resolve(&self.instances, &self.env()),
-            krowk_version: "test".into(),
+            gruntas_version: "test".into(),
             // Sonnet's list prices, per million tokens.
             pricer: Arc::new(|_, model, u: &Usage| {
                 (model == "claude-sonnet-4-6").then(|| {
@@ -127,7 +127,7 @@ fn reads_the_readme() -> String {
 /// and hangs from the one before, and the log projects into gruntas.db, a
 /// rebuild from the JSONL alone giving the same rows.
 #[test]
-fn a_session_streams_its_items_resumes_and_projects_its_log_into_krowk_db() {
+fn a_session_streams_its_items_resumes_and_projects_its_log_into_gruntas_db() {
     let home = Home::fake("session-fake", Some(&reads_the_readme()));
     let (lines, first) = home.run_on("read README.md and summarise it in one line", None, "claude/sonnet", None);
     assert_eq!(first.status, TurnStatus::Completed, "{:?}", first.error);

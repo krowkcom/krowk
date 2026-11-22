@@ -37,7 +37,7 @@ fn setup(name: &str, profile: Profile) -> (PathBuf, PathBuf, Scope) {
 /// there, so a fake home under it would be invisible for that reason alone
 /// and a "hidden" check on it would prove nothing.
 fn scratch(name: &str) -> PathBuf {
-    let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp").join(format!("krowk-sbx-{name}-{}", std::process::id()));
+    let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp").join(format!("gruntas-sbx-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d.canonicalize().unwrap()
@@ -122,7 +122,7 @@ fn r_perm_3_a_sandboxed_command_writes_the_workspace_and_nothing_outside_it() {
     assert_eq!(bash(&ws, &scope, "echo in > inside.txt && cat inside.txt"), ("in\n".into(), false));
     // Outside the workspace, somewhere real and visible: this crate's own
     // directory, read-only inside the sandbox.
-    let here = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(".krowk-sandbox-escape-{}", std::process::id()));
+    let here = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(".gruntas-sandbox-escape-{}", std::process::id()));
     let (out, err) = bash(&ws, &scope, &format!("echo out > '{}'", here.display()));
     let escaped = here.exists();
     let _ = std::fs::remove_file(&here);
@@ -436,7 +436,7 @@ impl Repo {
 /// under the root, led to from a real common git directory and back, on a
 /// `gruntas/<8 hex>` branch — and every other one keeps today's plan.
 #[test]
-fn wt4_only_a_worktree_krowk_made_is_opened_to_a_commit() {
+fn wt4_only_a_worktree_gruntas_made_is_opened_to_a_commit() {
     let r = Repo::new("wt4-managed");
     let root = r.home.join(".local/share/gruntas/worktrees");
     let common = r.main.join(".git");
@@ -498,8 +498,8 @@ fn wt4_only_a_worktree_krowk_made_is_opened_to_a_commit() {
 /// Worktrees WT4: an agent in a worktree gruntas made commits from inside
 /// the sandbox, as the person, and the commit is the repository's.
 #[test]
-fn wt4_a_sandboxed_agent_commits_in_a_krowk_worktree() {
-    if !enforced("wt4_a_sandboxed_agent_commits_in_a_krowk_worktree") {
+fn wt4_a_sandboxed_agent_commits_in_a_gruntas_worktree() {
+    if !enforced("wt4_a_sandboxed_agent_commits_in_a_gruntas_worktree") {
         return;
     }
     let r = Repo::new("wt4-commit");
@@ -518,8 +518,8 @@ fn wt4_a_sandboxed_agent_commits_in_a_krowk_worktree() {
 /// Worktrees WT4: what a commit does not need stays read-only from the
 /// same sandbox — each write tried on its own.
 #[test]
-fn wt4_a_krowk_worktree_cannot_touch_what_runs_or_what_another_checkout_is_on() {
-    if !enforced("wt4_a_krowk_worktree_cannot_touch_what_runs_or_what_another_checkout_is_on") {
+fn wt4_a_gruntas_worktree_cannot_touch_what_runs_or_what_another_checkout_is_on() {
+    if !enforced("wt4_a_gruntas_worktree_cannot_touch_what_runs_or_what_another_checkout_is_on") {
         return;
     }
     let r = Repo::new("wt4-fences");
@@ -631,8 +631,8 @@ fn no_link_outlives_a_call(r: &Repo, scope: &Scope) {
 /// Worktrees WT4: the person's own linked worktree, outside gruntas's root,
 /// keeps a read-only `.git` and its repository out of reach, as before.
 #[test]
-fn wt4_a_linked_worktree_outside_krowks_root_keeps_todays_fences() {
-    if !enforced("wt4_a_linked_worktree_outside_krowks_root_keeps_todays_fences") {
+fn wt4_a_linked_worktree_outside_gruntas_root_keeps_todays_fences() {
+    if !enforced("wt4_a_linked_worktree_outside_gruntas_root_keeps_todays_fences") {
         return;
     }
     let r = Repo::new("wt4-own");
