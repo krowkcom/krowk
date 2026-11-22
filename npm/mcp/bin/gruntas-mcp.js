@@ -9,7 +9,7 @@
 // MCP speaks over stdio, so the passthrough below has to be exactly that:
 // inherited file descriptors, nothing in this process reading or writing them.
 //
-// This file is duplicated in npm/krowk/bin/krowk.js. Two published packages each
+// This file is duplicated in npm/cli/bin/gruntas.js. Two published packages each
 // have to stand alone, and a shared module would mean a third package or a
 // codegen step to save sixty lines. npm/build.mjs checks both copies name the
 // same platforms, which is the drift that would actually bite.
@@ -20,14 +20,14 @@ const path = require("node:path");
 
 // Keyed by `${process.platform}-${process.arch}`, so the lookup is the identity.
 const PACKAGES = {
-  "darwin-arm64": "@krowk/cli-darwin-arm64",
-  "darwin-x64": "@krowk/cli-darwin-x64",
-  "linux-arm64": "@krowk/cli-linux-arm64",
-  "linux-x64": "@krowk/cli-linux-x64",
-  "win32-x64": "@krowk/cli-win32-x64",
+  "darwin-arm64": "@gruntas/cli-darwin-arm64",
+  "darwin-x64": "@gruntas/cli-darwin-x64",
+  "linux-arm64": "@gruntas/cli-linux-arm64",
+  "linux-x64": "@gruntas/cli-linux-x64",
+  "win32-x64": "@gruntas/cli-win32-x64",
 };
 
-const BINARY = "krowk-mcp";
+const BINARY = "gruntas-mcp";
 
 // fail prints the reason and the next action, then stops. Nothing readable
 // reaches an MCP client from here — stdout is the protocol — so the whole
@@ -48,7 +48,7 @@ function locate() {
       "Built for: " + Object.keys(PACKAGES).sort().join(", ") + ".",
       "Everywhere else, build it yourself with Rust (rustup.rs):",
       "",
-      "  cargo install --locked --git https://github.com/krowkcom/krowk krowk --bin krowk-mcp",
+      "  cargo install --locked --git https://github.com/gruntas/gruntas gruntas --bin gruntas-mcp",
     ]);
   }
 
@@ -63,11 +63,11 @@ function locate() {
       "--no-optional, --omit=optional and --ignore-optional. A lockfile",
       "written on another platform does the same thing.",
       "",
-      "  npm install @krowk/mcp --include=optional",
+      "  npm install @gruntas/mcp --include=optional",
       "",
       "Or take the binary straight from the release, no Node involved:",
       "",
-      "  https://github.com/krowkcom/krowk/releases/latest",
+      "  https://github.com/gruntas/gruntas/releases/latest",
     ]);
   }
 
@@ -95,7 +95,7 @@ if (result.error) {
   ]);
 }
 
-// Re-raise the signal that killed the child, so `krowk-mcp` dies the way the
+// Re-raise the signal that killed the child, so `gruntas-mcp` dies the way the
 // binary did and a client waiting on the exit status reads the same thing.
 if (result.signal) {
   process.kill(process.pid, result.signal);

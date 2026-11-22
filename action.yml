@@ -64,7 +64,7 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Install krowk
+    - name: Install gruntas
       shell: bash
       env:
         GRUNTAS_VERSION: ${{ inputs.version }}
@@ -98,13 +98,13 @@ runs:
           if [ -n "${GITHUB_ACTION_REPOSITORY:-}" ]; then
             GRUNTAS_REPO="$GITHUB_ACTION_REPOSITORY"
           elif [ -d "${GITHUB_ACTION_PATH:?}/crates/gruntas" ]; then
-            GRUNTAS_REPO="${GITHUB_REPOSITORY:-krowkcom/krowk}"
+            GRUNTAS_REPO="${GITHUB_REPOSITORY:-gruntas/gruntas}"
           else
-            GRUNTAS_REPO="krowkcom/krowk"
+            GRUNTAS_REPO="gruntas/gruntas"
           fi
         fi
         export GRUNTAS_REPO
-        export GRUNTAS_BIN_DIR="$RUNNER_TEMP/krowk-bin"
+        export GRUNTAS_BIN_DIR="$RUNNER_TEMP/gruntas-bin"
         mkdir -p "$GRUNTAS_BIN_DIR"
         # Already on PATH before the installer runs, so its setup_path leaves
         # the runner's dotfiles alone — a self-hosted runner keeps its .bashrc.
@@ -129,9 +129,9 @@ runs:
             v[0-9]*.*) ;;
             v[0-9]*)
               want="${GITHUB_ACTION_REF#v}"
-              got=$(krowk --version)
+              got=$(gruntas --version)
               if [ "${got%%.*}" != "$want" ]; then
-                echo "::error::krowk@${GITHUB_ACTION_REF} resolved to the latest release, ${got}, which is not on the ${want}.x line. Pin a release tag to stay on ${want}.x, or move the action to @v${got%%.*}." >&2
+                echo "::error::gruntas@${GITHUB_ACTION_REF} resolved to the latest release, ${got}, which is not on the ${want}.x line. Pin a release tag to stay on ${want}.x, or move the action to @v${got%%.*}." >&2
                 exit 1
               fi
               ;;
@@ -209,7 +209,7 @@ runs:
         [ -n "$INPUT_TITLE" ] && args+=(--title "$INPUT_TITLE")
         [ -n "$INPUT_PULL_REQUEST" ] && args+=(--pull-request "$INPUT_PULL_REQUEST")
 
-        out=$(krowk "${args[@]}")
+        out=$(gruntas "${args[@]}")
 
         # Multi-line values go through the heredoc form of GITHUB_OUTPUT. The
         # delimiter is random so no artifact caption can terminate it early.

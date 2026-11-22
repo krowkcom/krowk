@@ -76,7 +76,7 @@ fn r_sync_1_resume_of_a_session_only_another_machine_holds_attaches_it_through_s
     api.release_lease(&id, &lease.token).unwrap();
 
     // Machine B, on its own key.
-    let mut child = Command::new(env!("CARGO_BIN_EXE_krowk"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_gruntas"))
         .args(["--resume", &id])
         .env_clear()
         .env("PATH", "/usr/bin:/bin")

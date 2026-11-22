@@ -14,7 +14,7 @@ struct Gruntas {
 
 impl Gruntas {
     fn whoami(&self, token: &str, json: bool) -> String {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_krowk"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_gruntas"));
         cmd.arg("whoami")
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())

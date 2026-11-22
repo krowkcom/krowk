@@ -280,7 +280,7 @@ fn r_back_2_a_whole_claude_workflow_never_opens_claudes_credentials_or_a_keychai
     wire.reset();
 
     let krowk = |args: &[&str], scenario: Option<&str>| {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
         c.args(args)
             .env_clear()
             .env("PATH", format!("{}:{}", root.join("bin").display(), std::env::var("PATH").unwrap_or_default()))

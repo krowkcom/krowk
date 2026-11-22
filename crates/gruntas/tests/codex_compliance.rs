@@ -201,7 +201,7 @@ fn r_back_3_a_whole_codex_workflow_never_opens_codexs_login_file() {
     wire.reset();
 
     let krowk = |args: &[&str]| {
-        let out = Command::new(env!("CARGO_BIN_EXE_krowk"))
+        let out = Command::new(env!("CARGO_BIN_EXE_gruntas"))
             .args(args)
             .env_clear()
             .env("PATH", format!("{}:{}", root.join("bin").display(), std::env::var("PATH").unwrap_or_default()))

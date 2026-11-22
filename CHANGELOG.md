@@ -38,6 +38,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
   names. JSON output that names a variable (`token_source`, the API URL's
   source) names the new one. With always-on set, run
   `krowk machines always-on on` again so the service file sets the new names.
+- **Releases, npm packages and the installer are gruntas.** Release archives
+  are `gruntas_<version>_<os>_<arch>` and `gruntas-lean_…`, holding `gruntas`
+  and `gruntas-mcp`; npm packages are `@gruntas/cli` and `@gruntas/mcp`
+  (MCP registry name `io.github.gruntas/gruntas`); releases come from
+  `gruntas/gruntas`, and `gruntas upgrade` and the installer only accept
+  ones its release workflow signed. The installer replaces the `krowk`
+  skill it installed before with a `gruntas` one, leaving any `krowk` skill
+  it did not write alone. A krowk binary cannot upgrade itself into
+  gruntas: install gruntas fresh.
 
 ### Changed
 

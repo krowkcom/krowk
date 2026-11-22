@@ -58,12 +58,12 @@ if (!token && !dryRun) {
   notice(
     "NPM_TOKEN is not set — skipping npm publish for " + manifest.version + ". " +
       "The GitHub release is unaffected. Set the NPM_TOKEN repo secret with " +
-      "publish rights on the @krowk scope, then re-run this workflow.",
+      "publish rights on the @gruntas scope, then re-run this workflow.",
   );
   process.exit(0);
 }
 
-// A prerelease under `latest` would hand every `npx @krowk/cli` an rc. Park it on
+// A prerelease under `latest` would hand every `npx @gruntas/cli` an rc. Park it on
 // `next` and leave `latest` where it was.
 const tag = manifest.prerelease ? "next" : "latest";
 

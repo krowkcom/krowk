@@ -22,7 +22,7 @@ fn root(name: &str) -> PathBuf {
 /// krowk with `home` as HOME and nothing else of this machine's, and a
 /// registry nobody answers at.
 fn command(home: &Path, args: &[&str]) -> Command {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
+    let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
     c.args(args)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")

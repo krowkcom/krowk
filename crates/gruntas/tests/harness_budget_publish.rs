@@ -42,7 +42,7 @@ impl Sandbox {
     }
 
     fn krowk(&self, args: &[&str]) -> Output {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
         c.args(args)
             .env_clear()
             .env("PATH", format!("{}:{}", self.root.join("bin").display(), std::env::var("PATH").unwrap_or_default()))

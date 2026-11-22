@@ -59,7 +59,7 @@ struct Machine {
 
 impl Machine {
     fn krowk(&self, args: &[&str]) -> (bool, Value, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_krowk"))
+        let out = Command::new(env!("CARGO_BIN_EXE_gruntas"))
             .args(args)
             .arg("--json")
             .env_clear()

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # install_test.sh — run scripts/install.sh against a release that exists.
 #
-# No krowk release has been published yet, so the installer cannot be tried the
+# No gruntas release has been published yet, so the installer cannot be tried the
 # way a user will try it. What it *can* be tried against is a release that
 # exists on this machine: a local HTTP server stands in for GitHub and
 # GRUNTAS_INSTALL_BASE_URL points the installer at it. That exercises the archive
@@ -26,6 +26,8 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 REPO_ROOT=$(pwd)
+# The skill the release carries, as the repository holds it.
+SKILL_SRC=skills/krowk/SKILL.md
 
 host_os=$(uname -s | tr '[:upper:]' '[:lower:]')
 case "$(uname -m)" in
@@ -69,7 +71,7 @@ fi
 # scripts/dist.sh, which writes the release, rather than reproduced from
 # memory: this is the one place the installer and the release have to agree,
 # so a change to either that the other does not follow should break here. The
-# name is the one install.sh builds (krowk_<version>_<goos>_<goarch>.<ext>).
+# name is the one install.sh builds (gruntas_<version>_<goos>_<goarch>.<ext>).
 echo
 echo "Holding the installer to scripts/dist.sh"
 for flavour in full lean; do
@@ -78,9 +80,9 @@ for flavour in full lean; do
       || fail "scripts/dist.sh names its $flavour archive for $p in a way scripts/install.sh does not build"
   done
 done
-[[ "$(scripts/dist.sh archive-name linux amd64 1.2.3)" == "krowk_1.2.3_linux_amd64.tar.gz" \
-   && "$(archive_for 1.2.3 linux_amd64 lean)" == "krowk-lean_1.2.3_linux_amd64.tar.gz" ]] \
-  || fail "the full build no longer carries the name every earlier release used, or the lean one lost its own"
+[[ "$(scripts/dist.sh archive-name linux amd64 1.2.3)" == "gruntas_1.2.3_linux_amd64.tar.gz" \
+   && "$(archive_for 1.2.3 linux_amd64 lean)" == "gruntas-lean_1.2.3_linux_amd64.tar.gz" ]] \
+  || fail "the full build no longer carries the gruntas name, or the lean one lost its own"
 grep -q 'checksums.txt' scripts/dist.sh \
   || fail "scripts/dist.sh no longer writes checksums.txt, which scripts/install.sh downloads"
 pass "the archive and checksum names still match what the installer builds"
@@ -190,7 +192,7 @@ mkdir -p "$RELEASE"
 # tampering test below writes a byte into the archive it serves.
 dist_archive=""
 if [[ -f dist/checksums.txt ]]; then
-  for candidate in dist/krowk_*_"${host_os}"_"${host_arch}".tar.gz; do
+  for candidate in dist/gruntas_*_"${host_os}"_"${host_arch}".tar.gz; do
     if [[ -f "$candidate" ]]; then
       dist_archive="$candidate"
       break
@@ -198,11 +200,11 @@ if [[ -f dist/checksums.txt ]]; then
   done
 fi
 
-# Both builds' krowk, unpacked, to tell which one an install put down.
+# Both builds' gruntas, unpacked, to tell which one an install put down.
 mkdir -p "$WORK/full" "$WORK/lean"
 if [[ -n "$dist_archive" ]]; then
   ARCHIVE=$(basename "$dist_archive")
-  VERSION=${ARCHIVE#krowk_}
+  VERSION=${ARCHIVE#gruntas_}
   VERSION=${VERSION%"_${host_os}_${host_arch}.tar.gz"}
   LEAN_ARCHIVE=$(archive_for "$VERSION" "${host_os}_${host_arch}" lean)
   [[ -f "dist/$LEAN_ARCHIVE" ]] || fail "dist/ holds $ARCHIVE but not $LEAN_ARCHIVE: the release builds both"
@@ -216,25 +218,25 @@ else
   # No release here to install, so the host's binaries are built and archived
   # the way scripts/dist.sh archives them, into this run's own directory: the
   # repository's dist/ is neither read nor written. The lean build first, and
-  # copied out before the full build overwrites target/release/krowk.
-  cargo build --release --locked -p gruntas --bin krowk --bin krowk-mcp >"$WORK/cargo.log" 2>&1 \
+  # copied out before the full build overwrites target/release/gruntas.
+  cargo build --release --locked -p gruntas --bin gruntas --bin gruntas-mcp >"$WORK/cargo.log" 2>&1 \
     || { cat "$WORK/cargo.log"; fail "cargo could not build the lean build"; }
-  cp target/release/krowk target/release/krowk-mcp "$WORK/lean/"
-  cargo build --release --locked -p gruntas --bin krowk --features harness >"$WORK/cargo.log" 2>&1 \
+  cp target/release/gruntas target/release/gruntas-mcp "$WORK/lean/"
+  cargo build --release --locked -p gruntas --bin gruntas --features harness >"$WORK/cargo.log" 2>&1 \
     || { cat "$WORK/cargo.log"; fail "cargo could not build the full build"; }
-  cp target/release/krowk "$WORK/full/"
-  cp "$WORK/lean/krowk-mcp" "$WORK/full/"
+  cp target/release/gruntas "$WORK/full/"
+  cp "$WORK/lean/gruntas-mcp" "$WORK/full/"
   SOURCE="cargo build"
   VERSION="9.9.9"
   ARCHIVE=$(archive_for "$VERSION" "${host_os}_${host_arch}" full)
   LEAN_ARCHIVE=$(archive_for "$VERSION" "${host_os}_${host_arch}" lean)
-  tar -czf "$RELEASE/$ARCHIVE" -C "$WORK/full" krowk krowk-mcp
-  tar -czf "$RELEASE/$LEAN_ARCHIVE" -C "$WORK/lean" krowk krowk-mcp
+  tar -czf "$RELEASE/$ARCHIVE" -C "$WORK/full" gruntas gruntas-mcp
+  tar -czf "$RELEASE/$LEAN_ARCHIVE" -C "$WORK/lean" gruntas gruntas-mcp
   (cd "$RELEASE" && "${SHA256_CMD[@]}" "$ARCHIVE" "$LEAN_ARCHIVE" >checksums.txt)
 fi
-if cmp -s "$WORK/full/krowk" "$WORK/lean/krowk"; then fail "the full and lean archives hold the same krowk"; fi
+if cmp -s "$WORK/full/gruntas" "$WORK/lean/gruntas"; then fail "the full and lean archives hold the same gruntas"; fi
 
-cp skills/krowk/SKILL.md "$RELEASE/SKILL.md"
+cp "$SKILL_SRC" "$RELEASE/SKILL.md"
 # Only the stub cosign below reads it.
 echo '{}' >"$RELEASE/checksums.txt.sigstore.json"
 pass "serving $ARCHIVE, $LEAN_ARCHIVE + checksums.txt, from $SOURCE"
@@ -260,7 +262,7 @@ echo "Installing"
 BIN="$WORK/bin"
 CLAUDE="$WORK/claude"
 mkdir -p "$CLAUDE/skills"
-# The shared directory krowk and Codex read: the skill goes there as well.
+# The shared directory gruntas and Codex read: the skill goes there as well.
 SHARED="$WORK/home/.agents/skills"
 mkdir -p "$SHARED"
 
@@ -272,18 +274,18 @@ env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
   bash "$REPO_ROOT/scripts/install.sh" >"$WORK/install.log" 2>&1 \
   || { cat "$WORK/install.log"; fail "the installer exited non-zero"; }
 
-[[ -x "$BIN/krowk" ]]     || fail "krowk was not installed"
-[[ -x "$BIN/krowk-mcp" ]] || fail "krowk-mcp was not installed"
+[[ -x "$BIN/gruntas" ]]     || fail "gruntas was not installed"
+[[ -x "$BIN/gruntas-mcp" ]] || fail "gruntas-mcp was not installed"
 pass "both binaries landed in $BIN"
 
-cmp -s "$BIN/krowk" "$WORK/full/krowk" || { cat "$WORK/install.log"; fail "R-PKG-3: a workstation install did not get the full build"; }
+cmp -s "$BIN/gruntas" "$WORK/full/gruntas" || { cat "$WORK/install.log"; fail "R-PKG-3: a workstation install did not get the full build"; }
 grep -q "(full build)" "$WORK/install.log" || fail "the installer did not say which build it installed"
 pass "R-PKG-3: a workstation install gets the full build"
-grep -q "sign in and connect a model" "$WORK/install.log" || { cat "$WORK/install.log"; fail "a full install did not say bare krowk sets the machine up"; }
-pass "a full install says bare krowk sets the machine up"
+grep -q "sign in and connect a model" "$WORK/install.log" || { cat "$WORK/install.log"; fail "a full install did not say bare gruntas sets the machine up"; }
+pass "a full install says bare gruntas sets the machine up"
 
-"$BIN/krowk" --version >/dev/null || fail "the installed krowk does not run"
-pass "the installed krowk runs"
+"$BIN/gruntas" --version >/dev/null || fail "the installed gruntas does not run"
+pass "the installed gruntas runs"
 
 grep -q "Checksum matches" "$WORK/install.log" || fail "the installer did not report verifying the checksum"
 pass "the checksum was verified"
@@ -299,64 +301,64 @@ else
   pass "R-OSS-3: a release from before signing is said to be checked by its checksum alone"
 fi
 
-[[ -f "$CLAUDE/skills/krowk/SKILL.md" ]] || fail "the agent skill was not written"
-diff -q skills/krowk/SKILL.md "$CLAUDE/skills/krowk/SKILL.md" >/dev/null \
+[[ -f "$CLAUDE/skills/gruntas/SKILL.md" ]] || fail "the agent skill was not written"
+diff -q "$SKILL_SRC" "$CLAUDE/skills/gruntas/SKILL.md" >/dev/null \
   || fail "the installed skill differs from the one in the repository"
 pass "the agent skill was written to CLAUDE_CONFIG_DIR"
 
-diff -q skills/krowk/SKILL.md "$SHARED/krowk/SKILL.md" >/dev/null \
+diff -q "$SKILL_SRC" "$SHARED/gruntas/SKILL.md" >/dev/null \
   || fail "the agent skill was not written to ~/.agents/skills"
-[[ -f "$SHARED/krowk/.managed-by-krowk-cli" ]] \
-  || fail "the installer did not mark ~/.agents/skills/krowk as its own"
-grep -qF "krowk skill installed: $CLAUDE/skills/krowk, ~/.agents/skills/krowk" "$WORK/install.log" \
+[[ -f "$SHARED/gruntas/.managed-by-gruntas-cli" ]] \
+  || fail "the installer did not mark ~/.agents/skills/gruntas as its own"
+grep -qF "gruntas skill installed: $CLAUDE/skills/gruntas, ~/.agents/skills/gruntas" "$WORK/install.log" \
   || { cat "$WORK/install.log"; fail "one line did not name every directory the skill went to"; }
 pass "the agent skill was written to ~/.agents/skills too, and one line names both"
 
-[[ -f "$CLAUDE/skills/krowk/.managed-by-krowk-cli" ]] \
+[[ -f "$CLAUDE/skills/gruntas/.managed-by-gruntas-cli" ]] \
   || fail "the installer did not mark the skill directory as its own"
 # The installer's own constant, from sourcing it above: the sentence is
 # asserted against the definition rather than against a copy of it here.
-[[ "$(cat "$CLAUDE/skills/krowk/.managed-by-krowk-cli")" == "$MANAGED_MARKER_CONTENT" ]] \
-  || fail "the ownership marker says something other than the sentence krowk writes"
-[[ "$(cat "$CLAUDE/skills/krowk/.installed-version")" == "$VERSION" ]] \
-  || fail "the version stamp says $(cat "$CLAUDE/skills/krowk/.installed-version"), want $VERSION"
+[[ "$(cat "$CLAUDE/skills/gruntas/.managed-by-gruntas-cli")" == "$MANAGED_MARKER_CONTENT" ]] \
+  || fail "the ownership marker says something other than the sentence gruntas writes"
+[[ "$(cat "$CLAUDE/skills/gruntas/.installed-version")" == "$VERSION" ]] \
+  || fail "the version stamp says $(cat "$CLAUDE/skills/gruntas/.installed-version"), want $VERSION"
 pass "the skill directory carries the ownership marker and the version stamp"
 
 # The whole point of the marker: a skill directory somebody else wrote is not
-# krowk's to overwrite, and one krowk wrote is.
+# gruntas's to overwrite, and one gruntas wrote is.
 echo
 echo "Ownership of the skill directory"
 MINE="$WORK/claude-mine"
-mkdir -p "$MINE/skills/krowk"
-printf '# my own skill\n' >"$MINE/skills/krowk/SKILL.md"
+mkdir -p "$MINE/skills/gruntas"
+printf '# my own skill\n' >"$MINE/skills/gruntas/SKILL.md"
 # Something the pre-marker installer never wrote, which is what makes this
 # somebody's own directory rather than an old install to adopt.
-printf 'mine\n' >"$MINE/skills/krowk/notes.md"
+printf 'mine\n' >"$MINE/skills/gruntas/notes.md"
 env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
   CLAUDE_CONFIG_DIR="$MINE" \
   GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
   bash "$REPO_ROOT/scripts/install.sh" >"$WORK/unowned.log" 2>&1 \
   || { cat "$WORK/unowned.log"; fail "the installer exited non-zero over a skill directory it does not own"; }
 
-[[ "$(cat "$MINE/skills/krowk/SKILL.md")" == "# my own skill" ]] \
+[[ "$(cat "$MINE/skills/gruntas/SKILL.md")" == "# my own skill" ]] \
   || fail "the installer overwrote a skill directory it did not write"
-[[ ! -e "$MINE/skills/krowk/.managed-by-krowk-cli" ]] \
+[[ ! -e "$MINE/skills/gruntas/.managed-by-gruntas-cli" ]] \
   || fail "the installer claimed a skill directory it did not write"
-grep -q "was not written by krowk" "$WORK/unowned.log" \
+grep -q "was not written by gruntas" "$WORK/unowned.log" \
   || { cat "$WORK/unowned.log"; fail "the installer did not say why it left the skill directory alone"; }
-pass "a populated skill directory krowk did not write is left untouched, and said so"
+pass "a populated skill directory gruntas did not write is left untouched, and said so"
 
 # And the one it did write is refreshed in place, marker and all.
-printf '# stale\n' >"$CLAUDE/skills/krowk/SKILL.md"
+printf '# stale\n' >"$CLAUDE/skills/gruntas/SKILL.md"
 env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
   CLAUDE_CONFIG_DIR="$CLAUDE" \
   GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
   bash "$REPO_ROOT/scripts/install.sh" >"$WORK/refresh.log" 2>&1 \
   || { cat "$WORK/refresh.log"; fail "the installer exited non-zero refreshing its own skill directory"; }
 
-diff -q skills/krowk/SKILL.md "$CLAUDE/skills/krowk/SKILL.md" >/dev/null \
+diff -q "$SKILL_SRC" "$CLAUDE/skills/gruntas/SKILL.md" >/dev/null \
   || fail "the installer did not refresh a skill directory it wrote"
-[[ -f "$CLAUDE/skills/krowk/.managed-by-krowk-cli" ]] \
+[[ -f "$CLAUDE/skills/gruntas/.managed-by-gruntas-cli" ]] \
   || fail "the refresh dropped the ownership marker"
 pass "a marked skill directory is refreshed in place"
 
@@ -364,7 +366,7 @@ pass "a marked skill directory is refreshed in place"
 # installer never inspected, so it is not one to write through.
 LINKED="$WORK/claude-linked"
 mkdir -p "$LINKED/skills" "$WORK/link-target"
-ln -s "$WORK/link-target" "$LINKED/skills/krowk"
+ln -s "$WORK/link-target" "$LINKED/skills/gruntas"
 env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
   CLAUDE_CONFIG_DIR="$LINKED" \
   GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
@@ -376,13 +378,13 @@ grep -q "is a symlink" "$WORK/linked.log" \
   || { cat "$WORK/linked.log"; fail "the installer did not say it refused a symlinked skill directory"; }
 pass "a symlinked skill directory is left alone"
 
-# Inside a directory krowk does own, a symlink in a managed file's name is
+# Inside a directory gruntas does own, a symlink in a managed file's name is
 # refused rather than followed — the same answer internal/harness gives, and
 # for the same reason: its target was never inspected, so whatever it points at
 # is somebody else's file.
 printf 'do not touch\n' >"$WORK/victim"
-rm -f "$CLAUDE/skills/krowk/.installed-version"
-ln -s "$WORK/victim" "$CLAUDE/skills/krowk/.installed-version"
+rm -f "$CLAUDE/skills/gruntas/.installed-version"
+ln -s "$WORK/victim" "$CLAUDE/skills/gruntas/.installed-version"
 env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
   CLAUDE_CONFIG_DIR="$CLAUDE" \
   GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
@@ -392,9 +394,9 @@ env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
   || fail "the installer wrote through a symlinked version stamp"
 grep -q "is a symlink" "$WORK/victim.log" \
   || { cat "$WORK/victim.log"; fail "the installer did not say it refused the symlinked version stamp"; }
-diff -q skills/krowk/SKILL.md "$CLAUDE/skills/krowk/SKILL.md" >/dev/null \
+diff -q "$SKILL_SRC" "$CLAUDE/skills/gruntas/SKILL.md" >/dev/null \
   || fail "the refused stamp took the skill down with it"
-rm -f "$CLAUDE/skills/krowk/.installed-version"
+rm -f "$CLAUDE/skills/gruntas/.installed-version"
 pass "a symlink in a managed file's name is refused, and its target untouched"
 
 # A directory that cannot be listed is refused rather than assumed empty.
@@ -402,9 +404,9 @@ if [[ "$(id -u)" == "0" ]]; then
   echo "  – running as root, where an unreadable directory is still readable; skipped"
 else
   BLIND="$WORK/claude-blind"
-  mkdir -p "$BLIND/skills/krowk"
-  printf '# mine\n' >"$BLIND/skills/krowk/SKILL.md"
-  chmod 300 "$BLIND/skills/krowk"
+  mkdir -p "$BLIND/skills/gruntas"
+  printf '# mine\n' >"$BLIND/skills/gruntas/SKILL.md"
+  chmod 300 "$BLIND/skills/gruntas"
   env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
     CLAUDE_CONFIG_DIR="$BLIND" \
     GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
@@ -412,8 +414,8 @@ else
     || { cat "$WORK/blind.log"; fail "the installer exited non-zero over an unreadable skill directory"; }
   grep -q "cannot be read" "$WORK/blind.log" \
     || { cat "$WORK/blind.log"; fail "the installer did not refuse an unreadable skill directory"; }
-  chmod 700 "$BLIND/skills/krowk"
-  [[ "$(cat "$BLIND/skills/krowk/SKILL.md")" == "# mine" ]] \
+  chmod 700 "$BLIND/skills/gruntas"
+  [[ "$(cat "$BLIND/skills/gruntas/SKILL.md")" == "# mine" ]] \
     || fail "the installer wrote into a directory it could not read"
   pass "a skill directory that cannot be listed is left alone"
 fi
@@ -422,20 +424,57 @@ fi
 # a SKILL.md and nothing else. That file was overwritten by every run of the
 # old installer anyway, so adopting it takes nothing from anyone.
 OLD="$WORK/claude-old"
-mkdir -p "$OLD/skills/krowk"
-printf '# an older krowk wrote this\n' >"$OLD/skills/krowk/SKILL.md"
+mkdir -p "$OLD/skills/gruntas"
+printf '# an older krowk wrote this\n' >"$OLD/skills/gruntas/SKILL.md"
 env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
   CLAUDE_CONFIG_DIR="$OLD" \
   GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
   bash "$REPO_ROOT/scripts/install.sh" >"$WORK/old.log" 2>&1 \
   || { cat "$WORK/old.log"; fail "the installer exited non-zero upgrading a pre-marker skill"; }
-[[ -f "$OLD/skills/krowk/.managed-by-krowk-cli" ]] \
+[[ -f "$OLD/skills/gruntas/.managed-by-gruntas-cli" ]] \
   || { cat "$WORK/old.log"; fail "a pre-marker skill directory was not adopted"; }
-diff -q skills/krowk/SKILL.md "$OLD/skills/krowk/SKILL.md" >/dev/null \
+diff -q "$SKILL_SRC" "$OLD/skills/gruntas/SKILL.md" >/dev/null \
   || fail "the adopted skill was not refreshed"
 pass "a skill directory a pre-marker krowk wrote is adopted and refreshed"
 
-# A permissive umask must not leave the skill directory world-writable: krowk's
+# The rename: the skill the krowk installer wrote, in skills/krowk under its
+# marker, gives way to skills/gruntas. One it did not write stays, untouched.
+RENAMED="$WORK/claude-renamed"
+mkdir -p "$RENAMED/skills/krowk"
+printf '# krowk\n' >"$RENAMED/skills/krowk/SKILL.md"
+printf '%s\n' "$OLD_MANAGED_MARKER_CONTENT" >"$RENAMED/skills/krowk/.managed-by-krowk-cli"
+printf '0.18.0\n' >"$RENAMED/skills/krowk/.installed-version"
+env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
+  CLAUDE_CONFIG_DIR="$RENAMED" \
+  GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
+  bash "$REPO_ROOT/scripts/install.sh" >"$WORK/renamed.log" 2>&1 \
+  || { cat "$WORK/renamed.log"; fail "the installer exited non-zero replacing the krowk skill"; }
+[[ ! -e "$RENAMED/skills/krowk" ]] || { cat "$WORK/renamed.log"; fail "the krowk skill the old installer wrote was not removed"; }
+diff -q "$SKILL_SRC" "$RENAMED/skills/gruntas/SKILL.md" >/dev/null && [[ -f "$RENAMED/skills/gruntas/.managed-by-gruntas-cli" ]] \
+  || { cat "$WORK/renamed.log"; fail "the gruntas skill did not take the krowk one's place"; }
+grep -q "Removed the old krowk skill" "$WORK/renamed.log" || fail "the installer did not say it removed the krowk skill"
+pass "a managed krowk skill is replaced by the gruntas one"
+
+for shape in unmarked extra; do
+  KEPT="$WORK/claude-kept-$shape"
+  mkdir -p "$KEPT/skills/krowk"
+  printf '# mine\n' >"$KEPT/skills/krowk/SKILL.md"
+  if [[ "$shape" == extra ]]; then
+    printf '%s\n' "$OLD_MANAGED_MARKER_CONTENT" >"$KEPT/skills/krowk/.managed-by-krowk-cli"
+    printf 'mine\n' >"$KEPT/skills/krowk/notes.md"
+  fi
+  env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
+    CLAUDE_CONFIG_DIR="$KEPT" \
+    GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
+    bash "$REPO_ROOT/scripts/install.sh" >"$WORK/kept.log" 2>&1 \
+    || { cat "$WORK/kept.log"; fail "the installer exited non-zero beside a krowk skill it did not write ($shape)"; }
+  [[ "$(cat "$KEPT/skills/krowk/SKILL.md")" == "# mine" ]] \
+    || fail "a krowk skill the old installer did not write ($shape) was touched"
+  [[ -f "$KEPT/skills/gruntas/SKILL.md" ]] || fail "the gruntas skill was not written beside a kept krowk one ($shape)"
+done
+pass "an unmanaged krowk skill, or one holding files of its own, is left alone"
+
+# A permissive umask must not leave the skill directory world-writable: gruntas's
 # marker would then be vouching for a directory any local user can rewrite.
 LOOSE="$WORK/claude-loose"
 mkdir -p "$LOOSE/skills"
@@ -445,26 +484,26 @@ mkdir -p "$LOOSE/skills"
     GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
     bash "$REPO_ROOT/scripts/install.sh" >"$WORK/umask.log" 2>&1 ) \
   || { cat "$WORK/umask.log"; fail "the installer exited non-zero under umask 000"; }
-[[ -z "$(find "$LOOSE/skills/krowk" -maxdepth 0 -perm /022)" ]] \
-  || fail "the skill directory krowk created under umask 000 is writable by others"
-pass "a skill directory krowk creates is not writable by others, whatever the umask says"
+[[ -z "$(find "$LOOSE/skills/gruntas" -maxdepth 0 -perm /022)" ]] \
+  || fail "the skill directory gruntas created under umask 000 is writable by others"
+pass "a skill directory gruntas creates is not writable by others, whatever the umask says"
 
 # A marker much larger than a marker is not a marker, however it begins. The
 # padding is newlines on purpose: those are what a naive read strips before
 # measuring, which would let this pass.
 BIG="$WORK/claude-big"
-mkdir -p "$BIG/skills/krowk"
+mkdir -p "$BIG/skills/gruntas"
 { printf '%s\n' "$MANAGED_MARKER_CONTENT"; for _ in $(seq 1 1000); do printf '\n'; done; } \
-  >"$BIG/skills/krowk/.managed-by-krowk-cli"
-printf '# mine\n' >"$BIG/skills/krowk/SKILL.md"
+  >"$BIG/skills/gruntas/.managed-by-gruntas-cli"
+printf '# mine\n' >"$BIG/skills/gruntas/SKILL.md"
 env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
   CLAUDE_CONFIG_DIR="$BIG" \
   GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
   bash "$REPO_ROOT/scripts/install.sh" >"$WORK/big.log" 2>&1 \
   || { cat "$WORK/big.log"; fail "the installer exited non-zero over an oversized marker"; }
-grep -q "carries a marker krowk did not write" "$WORK/big.log" \
+grep -q "carries a marker gruntas did not write" "$WORK/big.log" \
   || { cat "$WORK/big.log"; fail "the installer accepted a marker far larger than a marker"; }
-[[ "$(cat "$BIG/skills/krowk/SKILL.md")" == "# mine" ]] \
+[[ "$(cat "$BIG/skills/gruntas/SKILL.md")" == "# mine" ]] \
   || fail "the installer wrote into a directory whose marker it refused"
 pass "a marker padded past the read bound is refused"
 
@@ -474,17 +513,17 @@ if ! command -v mkfifo >/dev/null 2>&1; then
   echo "  – mkfifo not available, so a non-regular file cannot be staged; skipped"
 else
   FIFO="$WORK/claude-fifo"
-  mkdir -p "$FIFO/skills/krowk"
-  printf '%s\n' "$MANAGED_MARKER_CONTENT" >"$FIFO/skills/krowk/.managed-by-krowk-cli"
-  mkfifo "$FIFO/skills/krowk/SKILL.md"
+  mkdir -p "$FIFO/skills/gruntas"
+  printf '%s\n' "$MANAGED_MARKER_CONTENT" >"$FIFO/skills/gruntas/.managed-by-gruntas-cli"
+  mkfifo "$FIFO/skills/gruntas/SKILL.md"
   env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
     CLAUDE_CONFIG_DIR="$FIFO" \
     GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
     bash "$REPO_ROOT/scripts/install.sh" >"$WORK/fifo.log" 2>&1 \
     || { cat "$WORK/fifo.log"; fail "the installer exited non-zero over a FIFO in the skill's name"; }
-  grep -q "not a regular file krowk wrote" "$WORK/fifo.log" \
+  grep -q "not a regular file gruntas wrote" "$WORK/fifo.log" \
     || { cat "$WORK/fifo.log"; fail "the installer did not refuse a FIFO in the skill's name"; }
-  [[ -p "$FIFO/skills/krowk/SKILL.md" ]] \
+  [[ -p "$FIFO/skills/gruntas/SKILL.md" ]] \
     || fail "the installer replaced a FIFO it should have left alone"
   pass "a FIFO in a managed file's name is refused"
 fi
@@ -492,14 +531,14 @@ fi
 # A directory in a managed file's name: `mv` would move the new file inside it
 # and report success, leaving the skill at a path nobody named.
 DIRNAME="$WORK/claude-dirname"
-mkdir -p "$DIRNAME/skills/krowk/SKILL.md"
-printf '%s\n' "$MANAGED_MARKER_CONTENT" >"$DIRNAME/skills/krowk/.managed-by-krowk-cli"
+mkdir -p "$DIRNAME/skills/gruntas/SKILL.md"
+printf '%s\n' "$MANAGED_MARKER_CONTENT" >"$DIRNAME/skills/gruntas/.managed-by-gruntas-cli"
 env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
   CLAUDE_CONFIG_DIR="$DIRNAME" \
   GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
   bash "$REPO_ROOT/scripts/install.sh" >"$WORK/dirname.log" 2>&1 \
   || { cat "$WORK/dirname.log"; fail "the installer exited non-zero over a directory in SKILL.md's name"; }
-[[ -z "$(ls -A "$DIRNAME/skills/krowk/SKILL.md")" ]] \
+[[ -z "$(ls -A "$DIRNAME/skills/gruntas/SKILL.md")" ]] \
   || fail "the installer moved the skill inside a directory named SKILL.md"
 grep -q "is a directory" "$WORK/dirname.log" \
   || { cat "$WORK/dirname.log"; fail "the installer did not say it refused a directory in the skill file's name"; }
@@ -507,19 +546,19 @@ pass "a directory in a managed file's name is refused, with nothing moved into i
 
 # Nothing this installer writes may be left behind on a refusal: a stranded
 # temporary file would make the next run's adoption check refuse the directory.
-stranded=("$DIRNAME/skills/krowk"/.krowk-*)
+stranded=("$DIRNAME/skills/gruntas"/.gruntas-*)
 [[ ! -e "${stranded[0]}" ]] \
   || fail "a temporary file was stranded in the skill directory: ${stranded[0]}"
 pass "no temporary file was left behind"
 
-# A skill directory belonging to somebody else is not krowk's to manage,
+# A skill directory belonging to somebody else is not gruntas's to manage,
 # whatever its mode allows. Only root can stage that.
 if [[ "$(id -u)" != "0" ]]; then
   echo "  – not root, so a directory owned by another user cannot be staged; skipped"
 else
   OTHER="$WORK/claude-other"
-  mkdir -p "$OTHER/skills/krowk"
-  chown 65534:65534 "$OTHER/skills/krowk"
+  mkdir -p "$OTHER/skills/gruntas"
+  chown 65534:65534 "$OTHER/skills/gruntas"
   env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
     CLAUDE_CONFIG_DIR="$OTHER" \
     GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
@@ -527,12 +566,12 @@ else
     || { cat "$WORK/other.log"; fail "the installer exited non-zero over a directory owned by another user"; }
   grep -q "belongs to another user" "$WORK/other.log" \
     || { cat "$WORK/other.log"; fail "the installer did not refuse a directory owned by another user"; }
-  [[ -z "$(ls -A "$OTHER/skills/krowk")" ]] \
+  [[ -z "$(ls -A "$OTHER/skills/gruntas")" ]] \
     || fail "the installer wrote into a directory owned by another user"
   pass "a skill directory owned by another user is left alone"
 fi
 
-grep -q "krowk push screenshot.png" "$WORK/install.log" || fail "the next steps were not printed"
+grep -q "gruntas push screenshot.png" "$WORK/install.log" || fail "the next steps were not printed"
 pass "the next steps were printed"
 
 # NO_COLOR was set above, so nothing may have emitted an escape sequence.
@@ -557,7 +596,7 @@ while IFS='|' read -r envs args want; do
     GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BUILD_BIN" $envs \
     bash "$REPO_ROOT/scripts/install.sh" $args >"$WORK/build.log" 2>&1 \
     || { cat "$WORK/build.log"; fail "the installer exited non-zero with [$envs] [$args]"; }
-  cmp -s "$BUILD_BIN/krowk" "$WORK/$want/krowk" \
+  cmp -s "$BUILD_BIN/gruntas" "$WORK/$want/gruntas" \
     || { cat "$WORK/build.log"; fail "[$envs] [$args] installed the wrong build; want $want"; }
   pass "${envs:-no CI, no container}${args:+ $args}: the $want build"
 done <<CASES
@@ -581,7 +620,7 @@ grep -q "Pass --full, or set GRUNTAS_LEAN=0" "$WORK/build.log" \
   || { cat "$WORK/build.log"; fail "a lean install did not say how to get the full build"; }
 pass "a lean install says why, and how to get the full build instead"
 
-if "$BUILD_BIN/krowk" sessions >"$WORK/lean-sessions.log" 2>&1; then fail "the lean build ran krowk sessions"; fi
+if "$BUILD_BIN/gruntas" sessions >"$WORK/lean-sessions.log" 2>&1; then fail "the lean build ran gruntas sessions"; fi
 grep -q "not_in_build" "$WORK/lean-sessions.log" || { cat "$WORK/lean-sessions.log"; fail "the lean build did not say what it leaves out"; }
 pass "the lean build is the agent build: no session store"
 
@@ -594,12 +633,12 @@ grep -q "no terminal, so no person" "$WORK/notty.log" || { cat "$WORK/notty.log"
 pass "no controlling terminal (a Dockerfile RUN under BuildKit): the lean build, and why"
 
 # A release from before the lean build: one archive, one checksum, and a
-# krowk with no agent in it — stood in for by the lean binaries under the
+# gruntas with no agent in it — stood in for by the lean binaries under the
 # old name. A lean install of it must install that, not 404 on
-# krowk-lean_…, and must not advertise an agent the binary does not have.
+# gruntas-lean_…, and must not advertise an agent the binary does not have.
 OLD_REL="$RELEASE/old"
 mkdir -p "$OLD_REL"
-tar -czf "$OLD_REL/$ARCHIVE" -C "$WORK/lean" krowk krowk-mcp
+tar -czf "$OLD_REL/$ARCHIVE" -C "$WORK/lean" gruntas gruntas-mcp
 cp "$RELEASE/SKILL.md" "$OLD_REL/"
 (cd "$OLD_REL" && "${SHA256_CMD[@]}" "$ARCHIVE" >checksums.txt)
 rm -rf "$BUILD_BIN"
@@ -607,9 +646,9 @@ env -i PATH="$PATH" HOME="$WORK/home" NO_COLOR=1 GRUNTAS_SKIP_SKILL=1 CI=true \
   GRUNTAS_INSTALL_BASE_URL="$BASE/old" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BUILD_BIN" \
   bash "$REPO_ROOT/scripts/install.sh" --lean >"$WORK/old-release.log" 2>&1 \
   || { cat "$WORK/old-release.log"; fail "a lean install of a release that predates the lean build failed"; }
-cmp -s "$BUILD_BIN/krowk" "$WORK/lean/krowk" || fail "a release without a lean build installed something other than its one build"
+cmp -s "$BUILD_BIN/gruntas" "$WORK/lean/gruntas" || fail "a release without a lean build installed something other than its one build"
 grep -q "predates the lean build" "$WORK/old-release.log" || { cat "$WORK/old-release.log"; fail "the fallback to an old release's one build was not said"; }
-if grep -q "Open krowk's agent" "$WORK/old-release.log"; then cat "$WORK/old-release.log"; fail "the next steps advertised an agent the installed krowk does not have"; fi
+if grep -q "Open gruntas's agent" "$WORK/old-release.log"; then cat "$WORK/old-release.log"; fail "the next steps advertised an agent the installed gruntas does not have"; fi
 pass "a release that predates the lean build installs its one build, and says so"
 
 if env -i PATH="$PATH" HOME="$WORK/home" NO_COLOR=1 GRUNTAS_LEAN=maybe \
@@ -652,17 +691,17 @@ for says in ok refused; do
   else
     [[ "$says" == refused ]] || { cat "$WORK/cosign-$says.log"; fail "R-OSS-3: the installer failed on a signature cosign verified"; }
   fi
-  { grep -qx -- "https://github.com/krowkcom/krowk/.github/workflows/release.yml@refs/tags/v$VERSION" "$WORK/cosign-$says.args" \
+  { grep -qx -- "https://github.com/gruntas/gruntas/.github/workflows/release.yml@refs/tags/v$VERSION" "$WORK/cosign-$says.args" \
     && grep -qx -- "https://token.actions.githubusercontent.com" "$WORK/cosign-$says.args" \
     && grep -qx -- "--bundle" "$WORK/cosign-$says.args" \
-    && grep -A1 -x -- "--certificate-github-workflow-repository" "$WORK/cosign-$says.args" | grep -qx "krowkcom/krowk" \
+    && grep -A1 -x -- "--certificate-github-workflow-repository" "$WORK/cosign-$says.args" | grep -qx "gruntas/gruntas" \
     && grep -A1 -x -- "--certificate-github-workflow-trigger" "$WORK/cosign-$says.args" | grep -qx "push"; } \
     || { cat "$WORK/cosign-$says.args"; fail "R-OSS-3: cosign was not asked for the release workflow's identity at v$VERSION"; }
   if [[ "$says" == ok ]]; then
-    { grep -q "Signature verified" "$WORK/cosign-ok.log" && [[ -x "$BIN/krowk" ]]; } || { cat "$WORK/cosign-ok.log"; fail "R-OSS-3: a verified signature was not said"; }
+    { grep -q "Signature verified" "$WORK/cosign-ok.log" && [[ -x "$BIN/gruntas" ]]; } || { cat "$WORK/cosign-ok.log"; fail "R-OSS-3: a verified signature was not said"; }
     pass "R-OSS-3: with cosign, the signature is checked as the release workflow at the version's tag"
   else
-    { [[ ! -e "$BIN/krowk" ]] && grep -q "not signed by" "$WORK/cosign-refused.log"; } || { cat "$WORK/cosign-refused.log"; fail "R-OSS-3: a refused signature did not stop the install"; }
+    { [[ ! -e "$BIN/gruntas" ]] && grep -q "not signed by" "$WORK/cosign-refused.log"; } || { cat "$WORK/cosign-refused.log"; fail "R-OSS-3: a refused signature did not stop the install"; }
     pass "R-OSS-3: a signature cosign refuses stops the install, and installs nothing"
   fi
 done
@@ -684,7 +723,7 @@ if env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 GRUNTAS_REQU
   bash "$REPO_ROOT/scripts/install.sh" >"$WORK/strict-nocosign.log" 2>&1; then
   fail "R-OSS-3: GRUNTAS_REQUIRE_SIGNATURE=1 installed without cosign"
 fi
-{ [[ ! -e "$BIN/krowk" ]] && grep -q "install cosign" "$WORK/strict-nocosign.log"; } || { cat "$WORK/strict-nocosign.log"; fail "R-OSS-3: GRUNTAS_REQUIRE_SIGNATURE=1 without cosign did not say to install it"; }
+{ [[ ! -e "$BIN/gruntas" ]] && grep -q "install cosign" "$WORK/strict-nocosign.log"; } || { cat "$WORK/strict-nocosign.log"; fail "R-OSS-3: GRUNTAS_REQUIRE_SIGNATURE=1 without cosign did not say to install it"; }
 pass "R-OSS-3: GRUNTAS_REQUIRE_SIGNATURE=1 refuses without cosign"
 else
   echo "  - R-OSS-3: the cosign checks need a signed release; $VERSION predates signing (a local run checks them on its own)"
@@ -707,7 +746,7 @@ if env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
   bash "$REPO_ROOT/scripts/install.sh" >"$WORK/bad.log" 2>&1; then
   fail "the installer accepted an archive whose checksum does not match"
 fi
-if [[ -e "$BIN/krowk" ]]; then fail "the installer left a binary behind after a checksum failure"; fi
+if [[ -e "$BIN/gruntas" ]]; then fail "the installer left a binary behind after a checksum failure"; fi
 grep -q "not the file the release signed for" "$WORK/bad.log" \
   || { cat "$WORK/bad.log"; fail "the installer failed for some other reason than the checksum"; }
 pass "a mismatched checksum stops the install, and installs nothing"
@@ -722,18 +761,18 @@ fi
 pass "a version that is not one is refused"
 
 echo
-echo "Another krowk earlier on PATH"
+echo "Another gruntas earlier on PATH"
 old="$WORK/shadow/old" new="$WORK/shadow/new"
 mkdir -p "$old" "$new"
-printf '#!/bin/sh\necho 0.0.1\n' >"$old/krowk"
-printf '#!/bin/sh\necho 9.9.9\n' >"$new/krowk"
-chmod +x "$old/krowk" "$new/krowk"
+printf '#!/bin/sh\necho 0.0.1\n' >"$old/gruntas"
+printf '#!/bin/sh\necho 9.9.9\n' >"$new/gruntas"
+chmod +x "$old/gruntas" "$new/gruntas"
 said=$(BIN_DIR="$new" PATH="$old:$new:$PATH" warn_shadowed linux_amd64)
-[[ "$said" == *"Another krowk comes first on your PATH: $old/krowk (0.0.1)"* && "$said" == *"put $new before $old"* ]] \
-  || fail "a krowk earlier on PATH was not named: $said"
-[[ -z "$(BIN_DIR="$new" PATH="$new:$old:$PATH" warn_shadowed linux_amd64)" ]] || fail "the installed krowk, first on PATH, was taken for another"
+[[ "$said" == *"Another gruntas comes first on your PATH: $old/gruntas (0.0.1)"* && "$said" == *"put $new before $old"* ]] \
+  || fail "a gruntas earlier on PATH was not named: $said"
+[[ -z "$(BIN_DIR="$new" PATH="$new:$old:$PATH" warn_shadowed linux_amd64)" ]] || fail "the installed gruntas, first on PATH, was taken for another"
 [[ -z "$(BIN_DIR="$new" PATH="$old:$PATH" warn_shadowed linux_amd64)" ]] || fail "warned while BIN_DIR is not on PATH, which the profile line puts first"
-pass "a krowk that shadows the one installed is named, with the fix"
+pass "a gruntas that shadows the one installed is named, with the fix"
 
 echo
 echo "All checks passed."

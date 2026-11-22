@@ -4,7 +4,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "not_upgradable",
-    "fix": "this build came from source (version 0.0.0-golden) — upgrade with `git pull && make install`, or `cargo install --locked --git https://github.com/krowkcom/krowk --features sessions krowk`",
+    "fix": "this build came from source (version 0.0.0-golden) — upgrade with `git pull && make install`, or `cargo install --locked --git https://github.com/gruntas/gruntas --features harness gruntas`",
     "retryable": false
   }
 }

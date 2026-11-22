@@ -1,5 +1,5 @@
 //! The release's own signature on `checksums.txt`, checked before
-//! `krowk upgrade` trusts a line of it (R-OSS-3). The release workflow signs
+//! `gruntas upgrade` trusts a line of it (R-OSS-3). The release workflow signs
 //! it with cosign, keyless: GitHub's OIDC token names the workflow at its tag,
 //! Fulcio certifies a one-use key for that name, and Rekor logs the signature.
 //! What lands beside it is `checksums.txt.sigstore.json`, a Sigstore bundle,
@@ -12,7 +12,8 @@
 //!   time is the log's, not now;
 //! - its SAN is the release workflow at `refs/tags/v<version>`, the version
 //!   being installed, its OIDC issuer is GitHub Actions', its source
-//!   repository krowkcom/krowk and its trigger a push;
+//!   repository gruntas/gruntas (the one the SAN names) and its trigger a
+//!   push;
 //! - its key signed these exact bytes;
 //! - Rekor logged that signature with that certificate for this digest: its
 //!   signed entry timestamp (which also vouches for the time above) and the
@@ -21,12 +22,12 @@
 //! What cosign also does and this does not: the certificate's SCT (Fulcio's
 //! issuance in the CT log) and the RFC 3161 timestamp are not checked, and a
 //! bundle logged only in Rekor v2 (no signed entry timestamp) is refused as
-//! one this krowk cannot check, rather than half-checked.
+//! one this gruntas cannot check, rather than half-checked.
 //!
 //! The roots are Sigstore's `trusted_root.json`, embedded as its TUF
 //! repository publishes it (sigstore/root-signing, `targets/trusted_root.json`).
 //! When Sigstore rotates a key, the file is replaced with the new one in a
-//! release; a krowk built before a rotation cannot check a release signed
+//! release; a gruntas built before a rotation cannot check a release signed
 //! after it, says so, and points at the installer and SECURITY.md.
 
 use base64::Engine;
@@ -35,9 +36,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 const TRUSTED_ROOT: &str = include_str!("trusted_root.json");
-/// The workflow that signs releases; the SAN names it at the release's tag.
-const REPOSITORY: &str = "https://github.com/krowkcom/krowk";
-const WORKFLOW: &str = "https://github.com/krowkcom/krowk/.github/workflows/release.yml";
+/// The repository whose release workflow signs releases; the SAN names the
+/// workflow at the release's tag.
+const REPOSITORY: &str = "https://github.com/gruntas/gruntas";
+const WORKFLOW: &str = "/.github/workflows/release.yml@refs/tags/v";
 const ISSUER: &str = "https://token.actions.githubusercontent.com";
 /// What started the signing run: a tag pushed. A `workflow_dispatch` or
 /// `workflow_call` added to release.yml later does not widen who may sign.
@@ -56,7 +58,13 @@ const GITHUB_TRIGGER_V1: &[u8] = &[0x2b, 0x06, 0x01, 0x04, 0x01, 0x83, 0xbf, 0x3
 /// The identity a release's signature must carry: the release workflow at
 /// that release's tag.
 pub(super) fn identity(version: &str) -> String {
-    format!("{WORKFLOW}@refs/tags/v{version}")
+    identity_in(REPOSITORY, version)
+}
+
+/// The same in `repository`: releases made before the rename were signed in
+/// krowkcom/krowk.
+fn identity_in(repository: &str, version: &str) -> String {
+    format!("{repository}{WORKFLOW}{version}")
 }
 
 /// Checks `bundle` (a `.sigstore.json`) signs `message` as `identity`;
@@ -70,7 +78,7 @@ fn verify_with(root: &Value, message: &[u8], bundle: &[u8], identity: &str) -> R
     let bundle: Value = serde_json::from_slice(bundle).map_err(|e| format!("the signature bundle is not JSON: {e}"))?;
     let media = str_at(&bundle, "/mediaType")?;
     if !matches!(media, "application/vnd.dev.sigstore.bundle.v0.3+json" | "application/vnd.dev.sigstore.bundle+json;version=0.3") {
-        return Err(format!("the signature bundle is a kind this krowk does not read ({media})"));
+        return Err(format!("the signature bundle is a kind this gruntas does not read ({media})"));
     }
     let cert = b64(str_at(&bundle, "/verificationMaterial/certificate/rawBytes")?)?;
     let signature = b64(str_at(&bundle, "/messageSignature/signature")?)?;
@@ -127,7 +135,7 @@ impl<'a> Signer<'a> {
 }
 
 /// The release workflow at this tag, and nothing wider: one SAN, GitHub's
-/// issuer, this repository, a push.
+/// issuer, the repository the SAN names, a push.
 fn check_signer(s: &Signer, identity: &str) -> Result<(), String> {
     if s.uris != [identity] {
         return Err(format!("the signature is by {}, not by {identity}", s.uris.join(", ")));
@@ -135,8 +143,9 @@ fn check_signer(s: &Signer, identity: &str) -> Result<(), String> {
     if s.issuer != Some(ISSUER.as_bytes()) {
         return Err(format!("the signing identity was not issued by {ISSUER}"));
     }
-    if s.repository != Some(REPOSITORY.as_bytes()) {
-        return Err(format!("the signing run was not in {REPOSITORY}"));
+    let repository = identity.split_once("/.github/workflows/").map_or(identity, |(r, _)| r);
+    if s.repository != Some(repository.as_bytes()) {
+        return Err(format!("the signing run was not in {repository}"));
     }
     if s.trigger != Some(TRIGGER.as_bytes()) || s.trigger_v1.is_some_and(|t| t != TRIGGER.as_bytes()) {
         return Err(format!("the signing run was not started by a {TRIGGER} of the tag"));
@@ -150,7 +159,7 @@ fn check_signer(s: &Signer, identity: &str) -> Result<(), String> {
 /// The time it was logged, which the promise vouches for.
 fn check_entry(root: &Value, entry: &Value, digest: &[u8], signature: &[u8], cert: &[u8]) -> Result<u64, String> {
     if str_at(entry, "/kindVersion/kind")? != "hashedrekord" || str_at(entry, "/kindVersion/version")? != "0.0.1" {
-        return Err("the transparency-log entry is a kind this krowk cannot check (Rekor v1's hashedrekord 0.0.1 only): verify it by hand as SECURITY.md says".into());
+        return Err("the transparency-log entry is a kind this gruntas cannot check (Rekor v1's hashedrekord 0.0.1 only): verify it by hand as SECURITY.md says".into());
     }
     let log_id = b64(str_at(entry, "/logId/keyId")?)?;
     let time: u64 = number(entry, "/integratedTime")?;
@@ -233,7 +242,7 @@ fn rekor_key(root: &Value, log_id: &[u8], time: u64) -> Result<(Vec<u8>, String)
             _ => Err("the embedded Rekor key is unreadable".into()),
         };
     }
-    Err("the signature was logged in a transparency log this krowk does not know: verify it by hand as SECURITY.md says".into())
+    Err("the signature was logged in a transparency log this gruntas does not know: verify it by hand as SECURITY.md says".into())
 }
 
 /// Fulcio's roots and intermediates valid at `time`, from every certificate
@@ -254,7 +263,7 @@ fn fulcio(root: &Value, time: u64) -> Result<Chains, String> {
         }
     }
     if anchors.is_empty() {
-        return Err("no Fulcio root this krowk knows was valid when the release was signed: verify it by hand as SECURITY.md says".into());
+        return Err("no Fulcio root this gruntas knows was valid when the release was signed: verify it by hand as SECURITY.md says".into());
     }
     Ok((anchors, intermediates))
 }
@@ -374,6 +383,12 @@ mod tests {
     const SUMS: &[u8] = include_bytes!("../../../tests/fixtures/release-v0.13.0/checksums.txt");
     const BUNDLE: &str = include_str!("../../../tests/fixtures/release-v0.13.0/checksums.txt.sigstore.json");
 
+    /// The recorded release is krowk 0.13.0, signed before the rename, in the
+    /// old repository.
+    fn old(version: &str) -> String {
+        identity_in("https://github.com/krowkcom/krowk", version)
+    }
+
     /// The recorded bundle with one field replaced.
     fn tampered(path: &str, to: Value) -> Vec<u8> {
         let mut b: Value = serde_json::from_str(BUNDLE).unwrap();
@@ -383,23 +398,30 @@ mod tests {
 
     #[test]
     fn r_oss_3_a_real_release_signature_verifies_as_the_release_workflow_at_its_tag() {
-        assert_eq!(verify(SUMS, BUNDLE.as_bytes(), &identity("0.13.0")), Ok(()));
+        assert_eq!(verify(SUMS, BUNDLE.as_bytes(), &old("0.13.0")), Ok(()));
     }
 
     #[test]
     fn r_oss_3_a_checksum_changed_after_signing_is_refused() {
         let mut sums = SUMS.to_vec();
         sums[0] = if sums[0] == b'0' { b'1' } else { b'0' };
-        let err = verify(&sums, BUNDLE.as_bytes(), &identity("0.13.0")).unwrap_err();
+        let err = verify(&sums, BUNDLE.as_bytes(), &old("0.13.0")).unwrap_err();
         assert!(err.contains("different bytes"), "{err}");
     }
 
     #[test]
     fn r_oss_3_a_signature_for_another_tag_or_workflow_is_refused() {
-        let err = verify(SUMS, BUNDLE.as_bytes(), &identity("0.13.1")).unwrap_err();
+        let err = verify(SUMS, BUNDLE.as_bytes(), &old("0.13.1")).unwrap_err();
         assert!(err.contains("not by https://github.com/krowkcom/krowk/.github/workflows/release.yml@refs/tags/v0.13.1"), "{err}");
         let err = verify(SUMS, BUNDLE.as_bytes(), "https://github.com/someone/krowk/.github/workflows/release.yml@refs/tags/v0.13.0").unwrap_err();
         assert!(err.contains("not by"), "{err}");
+    }
+
+    #[test]
+    fn a_release_is_checked_against_the_gruntas_release_workflow() {
+        assert_eq!(identity("1.2.3"), "https://github.com/gruntas/gruntas/.github/workflows/release.yml@refs/tags/v1.2.3");
+        let err = verify(SUMS, BUNDLE.as_bytes(), &identity("0.13.0")).unwrap_err();
+        assert!(err.contains("not by https://github.com/gruntas/gruntas/"), "the krowk release is not a gruntas one: {err}");
     }
 
     #[test]
@@ -408,7 +430,7 @@ mod tests {
         // the entry. The digest still matches, so only the key check stops it.
         let b: Value = serde_json::from_str(BUNDLE).unwrap();
         let other = b.pointer("/verificationMaterial/tlogEntries/0/inclusionPromise/signedEntryTimestamp").unwrap().clone();
-        let err = verify(SUMS, &tampered("/messageSignature/signature", other), &identity("0.13.0")).unwrap_err();
+        let err = verify(SUMS, &tampered("/messageSignature/signature", other), &old("0.13.0")).unwrap_err();
         assert!(err.contains("different signature"), "the log holds the real one: {err}");
     }
 
@@ -420,12 +442,12 @@ mod tests {
         let root: Value = serde_json::from_str(TRUSTED_ROOT).unwrap();
         let mut no_fulcio = root.clone();
         no_fulcio["certificateAuthorities"] = serde_json::json!([]);
-        let err = verify_with(&no_fulcio, SUMS, BUNDLE.as_bytes(), &identity("0.13.0")).unwrap_err();
+        let err = verify_with(&no_fulcio, SUMS, BUNDLE.as_bytes(), &old("0.13.0")).unwrap_err();
         assert!(err.contains("no Fulcio root"), "{err}");
         let mut other_root = root.clone();
         let leaf = bundle_cert();
         other_root["certificateAuthorities"][1]["certChain"]["certificates"] = serde_json::json!([{ "rawBytes": leaf }]);
-        let err = verify_with(&other_root, SUMS, BUNDLE.as_bytes(), &identity("0.13.0")).unwrap_err();
+        let err = verify_with(&other_root, SUMS, BUNDLE.as_bytes(), &old("0.13.0")).unwrap_err();
         assert!(err.contains("not one Sigstore's Fulcio issued"), "{err}");
     }
 
@@ -441,28 +463,28 @@ mod tests {
         let entry = b.pointer(path).unwrap();
         // A forged time, to bring the ten-minute certificate back into its
         // validity: the signed entry timestamp no longer verifies.
-        let err = verify(SUMS, &tampered(&format!("{path}/integratedTime"), "1791389999".into()), &identity("0.13.0")).unwrap_err();
+        let err = verify(SUMS, &tampered(&format!("{path}/integratedTime"), "1791389999".into()), &old("0.13.0")).unwrap_err();
         assert!(err.contains("signed entry timestamp"), "{err}");
         let mut hashes = entry.pointer("/inclusionProof/hashes").unwrap().clone();
         hashes[0] = hashes[1].clone();
-        let err = verify(SUMS, &tampered(&format!("{path}/inclusionProof/hashes"), hashes), &identity("0.13.0")).unwrap_err();
+        let err = verify(SUMS, &tampered(&format!("{path}/inclusionProof/hashes"), hashes), &old("0.13.0")).unwrap_err();
         assert!(err.contains("inclusion proof"), "{err}");
         let note = entry.pointer("/inclusionProof/checkpoint/envelope").unwrap().as_str().unwrap();
         let forged = note.replacen("wNI9ajBEAiAXlFise4", "wNI9ajBEAiAXlFise5", 1);
-        let err = verify(SUMS, &tampered(&format!("{path}/inclusionProof/checkpoint/envelope"), forged.into()), &identity("0.13.0")).unwrap_err();
+        let err = verify(SUMS, &tampered(&format!("{path}/inclusionProof/checkpoint/envelope"), forged.into()), &old("0.13.0")).unwrap_err();
         assert!(err.contains("checkpoint signature"), "{err}");
         for origin in ["rekor.sigstore.dev  - 1193050959916656506", "log2025-1.rekor.sigstore.dev - 1", "rekor.sigstore.dev - ", "rekor.sigstore.dev - 11x"] {
             let forged = note.replacen("rekor.sigstore.dev - 1193050959916656506", origin, 1);
-            let err = verify(SUMS, &tampered(&format!("{path}/inclusionProof/checkpoint/envelope"), forged.into()), &identity("0.13.0")).unwrap_err();
+            let err = verify(SUMS, &tampered(&format!("{path}/inclusionProof/checkpoint/envelope"), forged.into()), &old("0.13.0")).unwrap_err();
             assert!(err.contains("not rekor.sigstore.dev's"), "{origin}: {err}");
         }
         let mut short = entry.pointer("/inclusionProof/hashes").unwrap().clone();
         short[0] = base64::engine::general_purpose::STANDARD.encode([0u8; 31]).into();
-        let err = verify(SUMS, &tampered(&format!("{path}/inclusionProof/hashes"), short), &identity("0.13.0")).unwrap_err();
+        let err = verify(SUMS, &tampered(&format!("{path}/inclusionProof/hashes"), short), &old("0.13.0")).unwrap_err();
         assert!(err.contains("not 32 bytes"), "{err}");
-        let err = verify(SUMS, &tampered(&format!("{path}/kindVersion/version"), "0.0.2".into()), &identity("0.13.0")).unwrap_err();
+        let err = verify(SUMS, &tampered(&format!("{path}/kindVersion/version"), "0.0.2".into()), &old("0.13.0")).unwrap_err();
         assert!(err.contains("by hand"), "a kind it cannot check is refused, and the way round named: {err}");
-        let err = verify(SUMS, &tampered("/verificationMaterial/tlogEntries", serde_json::json!([])), &identity("0.13.0")).unwrap_err();
+        let err = verify(SUMS, &tampered("/verificationMaterial/tlogEntries", serde_json::json!([])), &old("0.13.0")).unwrap_err();
         assert!(err.contains("0 transparency-log entries"), "{err}");
     }
 
@@ -471,7 +493,7 @@ mod tests {
         let cert = b64(&bundle_cert()).unwrap();
         let der = CertificateDer::from(cert.as_slice());
         let leaf = webpki::EndEntityCert::try_from(&der).unwrap();
-        let id = identity("0.13.0");
+        let id = old("0.13.0");
         assert_eq!(check_signer(&Signer::of(&leaf, &cert), &id), Ok(()), "the recorded release's certificate names all of it");
         let refused = |change: &dyn Fn(&mut Signer), says: &str| {
             let mut s = Signer::of(&leaf, &cert);
@@ -490,11 +512,11 @@ mod tests {
 
     /// The release workflow runs this on the bundle it has just signed,
     /// before anything is published (release.yml: "Check the signature as
-    /// krowk upgrade will"): a change in what cosign writes fails the
-    /// release, not every krowk's next upgrade.
+    /// gruntas upgrade will"): a change in what cosign writes fails the
+    /// release, not every gruntas's next upgrade.
     #[test]
     #[ignore = "needs GRUNTAS_RELEASE_DIR and GRUNTAS_RELEASE_VERSION, which the release workflow sets"]
-    fn r_oss_3_the_release_being_published_verifies_as_krowk_upgrade_will_check_it() {
+    fn r_oss_3_the_release_being_published_verifies_as_gruntas_upgrade_will_check_it() {
         let dir = std::path::PathBuf::from(std::env::var("GRUNTAS_RELEASE_DIR").expect("GRUNTAS_RELEASE_DIR"));
         let version = std::env::var("GRUNTAS_RELEASE_VERSION").expect("GRUNTAS_RELEASE_VERSION");
         let sums = std::fs::read(dir.join("checksums.txt")).unwrap();

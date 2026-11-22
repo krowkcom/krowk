@@ -138,7 +138,7 @@ fn scratch() -> PathBuf {
 }
 
 fn krowk(home: &Path, args: &[&str]) -> Value {
-    let out = Command::new(env!("CARGO_BIN_EXE_krowk"))
+    let out = Command::new(env!("CARGO_BIN_EXE_gruntas"))
         .args(args)
         .arg("--json")
         .env_clear()

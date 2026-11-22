@@ -22,7 +22,7 @@ impl Sandbox {
     }
 
     fn krowk(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_krowk"))
+        Command::new(env!("CARGO_BIN_EXE_gruntas"))
             .args(args)
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())

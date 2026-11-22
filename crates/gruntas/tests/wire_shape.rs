@@ -219,7 +219,7 @@ struct Gruntas {
 
 impl Gruntas {
     fn run(&self, args: &[&str], keyed: bool) -> (bool, String) {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_krowk"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_gruntas"));
         cmd.args(args)
             .arg("--json")
             .env_clear()

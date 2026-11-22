@@ -57,7 +57,7 @@ impl Sandbox {
     /// krowk with only the sandbox's binaries and the system's on PATH — never
     /// a real `claude` or `codex` of the machine running the tests.
     fn krowk(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
         c.args(args)
             .env_clear()
             .env("PATH", format!("{}:/usr/bin:/bin", self.root.join("bin").display()))

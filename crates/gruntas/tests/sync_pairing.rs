@@ -44,7 +44,7 @@ fn now() -> u64 {
 /// krowk with `home` as HOME and nothing else of this machine's, with the
 /// debug build's stand-in for the person at the terminal on.
 fn krowk(home: &Path, api: &str, token: &str, args: &[&str]) -> Command {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
+    let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
     c.args(args)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
