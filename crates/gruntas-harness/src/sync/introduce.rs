@@ -165,7 +165,7 @@ impl Introductions {
             r.id.clone()
         };
         let this = self.clone();
-        let spawned = std::thread::Builder::new().name("krowk-introduce".into()).spawn(move || this.run(&id));
+        let spawned = std::thread::Builder::new().name("gruntas-introduce".into()).spawn(move || this.run(&id));
         if let Err(e) = spawned {
             eprintln!("krowk: a new machine asked for a pairing, and no thread could answer it: {e}");
             self.lock().busy = false;

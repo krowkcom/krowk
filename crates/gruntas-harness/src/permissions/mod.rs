@@ -17,7 +17,7 @@
 //! 2. What needs no permission (krowk's own bridged tools) runs.
 //! 3. **Plan mode refuses** everything that is not reading: edits,
 //!    commands, MCP tools.
-//! 4. **A file tool reaching into `.git`, `.claude`, `.codex`, `.krowk` or
+//! 4. **A file tool reaching into `.git`, `.claude`, `.codex`, `.gruntas` or
 //!    a directory krowk keeps its own settings in is asked about**, unless
 //!    permissions are bypassed — never allowed by a rule or a remembered
 //!    grant, since what is written there decides what runs next (git's

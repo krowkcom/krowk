@@ -150,10 +150,10 @@ fn r_perm_3_git_hooks_and_settings_are_read_only_inside_the_sandbox() {
         let r = scope.edit_path(target);
         assert!(r.as_ref().is_err_and(|e| e.contains("sandbox")), "{target}: {r:?}");
     }
-    // Nor made where there was none: a `.codex` or `.krowk` the command
+    // Nor made where there was none: a `.codex` or `.gruntas` the command
     // creates is gone when it returns, and the call says so.
-    let (out, err) = bash(&ws, &scope, "mkdir -p .krowk .codex && echo '{\"hooks\":{}}' > .krowk/config.json && ln -s /tmp .codex/x");
-    assert!(err && out.contains("the sandbox removed") && !ws.join(".krowk").exists() && !ws.join(".codex").exists(), "{out}");
+    let (out, err) = bash(&ws, &scope, "mkdir -p .gruntas .codex && echo '{\"hooks\":{}}' > .gruntas/config.json && ln -s /tmp .codex/x");
+    assert!(err && out.contains("the sandbox removed") && !ws.join(".gruntas").exists() && !ws.join(".codex").exists(), "{out}");
     // Nor one hidden from the workspace search by setting its directory's
     // time back: the search keys on the change time, which cannot be.
     std::fs::create_dir_all(ws.join("stale")).unwrap();
@@ -378,8 +378,8 @@ fn git(dir: &Path, args: &[&str]) -> String {
 
 /// A repository with `main` checked out, in a fake home the sandbox hides,
 /// whose own config names who commits; two worktrees krowk made for agents
-/// under that home's worktrees root (`.local/share/krowk/worktrees/
-/// <repo-id>/<hex>`, branches `krowk/abcd1234` and `krowk/feedbeef`); and
+/// under that home's worktrees root (`.local/share/gruntas/worktrees/
+/// <repo-id>/<hex>`, branches `gruntas/abcd1234` and `gruntas/feedbeef`); and
 /// the person's own linked worktree, `own`, beside the repository. The
 /// environment names only the fake home, which has no `.gitconfig`.
 struct Repo {
@@ -402,10 +402,10 @@ impl Repo {
         std::fs::write(main.join("a.txt"), "a\n").unwrap();
         git(&main, &["add", "-A"]);
         git(&main, &["commit", "-q", "-m", "first"]);
-        let root = home.join(".local/share/krowk/worktrees/0123456789abcdef");
+        let root = home.join(".local/share/gruntas/worktrees/0123456789abcdef");
         let wt = root.join("abcd1234");
-        git(&main, &["worktree", "add", "-q", "--no-track", "-b", "krowk/abcd1234", &wt.to_string_lossy(), "main"]);
-        git(&main, &["worktree", "add", "-q", "--no-track", "-b", "krowk/feedbeef", &root.join("feedbeef").to_string_lossy(), "main"]);
+        git(&main, &["worktree", "add", "-q", "--no-track", "-b", "gruntas/abcd1234", &wt.to_string_lossy(), "main"]);
+        git(&main, &["worktree", "add", "-q", "--no-track", "-b", "gruntas/feedbeef", &root.join("feedbeef").to_string_lossy(), "main"]);
         let own = home.join("src/own");
         git(&main, &["worktree", "add", "-q", "-b", "feature", &own.to_string_lossy(), "main"]);
         Repo { base, home, main, wt, own }
@@ -434,25 +434,25 @@ impl Repo {
 
 /// Worktrees WT4: a worktree is krowk's only when it is what krowk makes —
 /// under the root, led to from a real common git directory and back, on a
-/// `krowk/<8 hex>` branch — and every other one keeps today's plan.
+/// `gruntas/<8 hex>` branch — and every other one keeps today's plan.
 #[test]
 fn wt4_only_a_worktree_krowk_made_is_opened_to_a_commit() {
     let r = Repo::new("wt4-managed");
-    let root = r.home.join(".local/share/krowk/worktrees");
+    let root = r.home.join(".local/share/gruntas/worktrees");
     let common = r.main.join(".git");
     let w = crate::sandbox::managed_worktree(&r.wt, &root).expect("krowk's worktree");
     assert_eq!((w.common.clone(), w.admin.clone(), w.hex.as_str()), (common.clone(), common.join("worktrees/abcd1234"), "abcd1234"));
     let plan = r.plan(&r.wt);
-    assert_eq!(plan.git, [(common.clone(), false), (common.join("objects"), true), (common.join("refs/heads/krowk"), true), (common.join("logs/refs/heads/krowk"), true), (common.join("worktrees/abcd1234"), true)]);
-    for p in ["config", "hooks", "info", "HEAD", "packed-refs", "worktrees/own", "worktrees/feedbeef", "refs/heads/krowk/feedbeef", "worktrees/abcd1234/commondir"] {
+    assert_eq!(plan.git, [(common.clone(), false), (common.join("objects"), true), (common.join("refs/heads/gruntas"), true), (common.join("logs/refs/heads/gruntas"), true), (common.join("worktrees/abcd1234"), true)]);
+    for p in ["config", "hooks", "info", "HEAD", "packed-refs", "worktrees/own", "worktrees/feedbeef", "refs/heads/gruntas/feedbeef", "worktrees/abcd1234/commondir"] {
         assert!(plan.read_only.contains(&common.join(p)), "{p}: {:?}", plan.read_only);
     }
-    assert!(!plan.read_only.contains(&common.join("refs/heads/krowk/abcd1234")), "its own branch is its to move");
+    assert!(!plan.read_only.contains(&common.join("refs/heads/gruntas/abcd1234")), "its own branch is its to move");
     assert_eq!(plan.identity, Some(("Wt Four".into(), "wt4@example.com".into())), "as git resolves it in the worktree");
     let args = plan.bwrap_args();
     let at = |x: &str, v: &Path| args.windows(3).position(|w| w[0] == x && w[1] == v.to_string_lossy()).unwrap_or_else(|| panic!("{x} {}", v.display()));
-    assert!(at("--bind", &r.wt) < at("--ro-bind-try", &common) && at("--ro-bind-try", &common) < at("--bind-try", &common.join("refs/heads/krowk")), "the common directory read-only first");
-    assert!(at("--bind-try", &common.join("refs/heads/krowk")) < at("--ro-bind-try", &common.join("refs/heads/krowk/feedbeef")), "the read-only ones win");
+    assert!(at("--bind", &r.wt) < at("--ro-bind-try", &common) && at("--ro-bind-try", &common) < at("--bind-try", &common.join("refs/heads/gruntas")), "the common directory read-only first");
+    assert!(at("--bind-try", &common.join("refs/heads/gruntas")) < at("--ro-bind-try", &common.join("refs/heads/gruntas/feedbeef")), "the read-only ones win");
     for v in ["GIT_AUTHOR_NAME", "GIT_COMMITTER_EMAIL"] {
         assert!(args.windows(2).any(|w| w[0] == "--setenv" && w[1] == v), "{v}");
     }
@@ -471,11 +471,11 @@ fn wt4_only_a_worktree_krowk_made_is_opened_to_a_commit() {
     assert_eq!(crate::sandbox::managed_worktree(&root.join("0123456789abcdef"), &root), None);
     assert_eq!(crate::sandbox::managed_worktree(&r.wt, &r.base.join("elsewhere")), None);
     let head = common.join("worktrees/abcd1234/HEAD");
-    for other in ["ref: refs/heads/feature2\n", "ref: refs/heads/krowk/ABCD1234\n", "ref: refs/heads/krowk/abcd12345\n", "ref: refs/heads/krowk/../main\n"] {
+    for other in ["ref: refs/heads/feature2\n", "ref: refs/heads/gruntas/ABCD1234\n", "ref: refs/heads/gruntas/abcd12345\n", "ref: refs/heads/gruntas/../main\n"] {
         std::fs::write(&head, other).unwrap();
         assert_eq!(crate::sandbox::managed_worktree(&r.wt, &root), None, "{other}");
     }
-    std::fs::write(&head, "ref: refs/heads/krowk/abcd1234\n").unwrap();
+    std::fs::write(&head, "ref: refs/heads/gruntas/abcd1234\n").unwrap();
     // A gitdir file leading to an admin directory that does not lead back.
     let fake = r.base.join("fake/.git/worktrees/abcd1234");
     std::fs::create_dir_all(&fake).unwrap();
@@ -483,7 +483,7 @@ fn wt4_only_a_worktree_krowk_made_is_opened_to_a_commit() {
         std::fs::create_dir_all(r.base.join("fake/.git").join(d)).unwrap();
     }
     std::fs::write(r.base.join("fake/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
-    std::fs::write(fake.join("HEAD"), "ref: refs/heads/krowk/abcd1234\n").unwrap();
+    std::fs::write(fake.join("HEAD"), "ref: refs/heads/gruntas/abcd1234\n").unwrap();
     std::fs::write(fake.join("commondir"), "../..\n").unwrap();
     std::fs::write(fake.join("gitdir"), format!("{}\n", r.base.join("other/.git").display())).unwrap();
     let wt_git = std::fs::read_to_string(r.wt.join(".git")).unwrap();
@@ -506,12 +506,12 @@ fn wt4_a_sandboxed_agent_commits_in_a_krowk_worktree() {
     let scope = r.scope(&r.wt);
     let (out, err) = bash(&r.wt, &scope, "echo new > new.txt && git add -A && git commit -q -m x && git status --porcelain");
     assert!(!err, "{out}");
-    assert_eq!(git(&r.main, &["log", "-1", "--format=%s %an <%ae> %cn <%ce>", "krowk/abcd1234"]), "x Wt Four <wt4@example.com> Wt Four <wt4@example.com>");
-    assert_eq!(git(&r.main, &["show", "krowk/abcd1234:new.txt"]), "new");
+    assert_eq!(git(&r.main, &["log", "-1", "--format=%s %an <%ae> %cn <%ce>", "gruntas/abcd1234"]), "x Wt Four <wt4@example.com> Wt Four <wt4@example.com>");
+    assert_eq!(git(&r.main, &["show", "gruntas/abcd1234:new.txt"]), "new");
     assert_eq!(git(&r.main, &["log", "-1", "--format=%s", "main"]), "first", "main did not move");
-    // A branch of its own under `krowk/` it may make.
-    let (out, err) = bash(&r.wt, &scope, "git branch krowk/abcd1234-2");
-    assert!(!err && git(&r.main, &["rev-parse", "krowk/abcd1234-2"]) == git(&r.main, &["rev-parse", "krowk/abcd1234"]), "{out}");
+    // A branch of its own under `gruntas/` it may make.
+    let (out, err) = bash(&r.wt, &scope, "git branch gruntas/abcd1234-2");
+    assert!(!err && git(&r.main, &["rev-parse", "gruntas/abcd1234-2"]) == git(&r.main, &["rev-parse", "gruntas/abcd1234"]), "{out}");
     let _ = std::fs::remove_dir_all(&r.base);
 }
 
@@ -533,7 +533,7 @@ fn wt4_a_krowk_worktree_cannot_touch_what_runs_or_what_another_checkout_is_on() 
     let (out, err) = bash(&r.wt, &scope, "echo b > b.txt && git add -A && git commit -q -m b");
     assert!(!err, "{out}");
     let main_was = git(&r.main, &["rev-parse", "main"]);
-    let ours = git(&r.main, &["rev-parse", "krowk/abcd1234"]);
+    let ours = git(&r.main, &["rev-parse", "gruntas/abcd1234"]);
     let read = |p: &Path| std::fs::read(p).ok();
     let rofs = "Read-only file system";
 
@@ -548,7 +548,7 @@ fn wt4_a_krowk_worktree_cannot_touch_what_runs_or_what_another_checkout_is_on() 
     assert!(err && out.contains(rofs) && !c.join("info/attributes").exists(), "<common>/info/attributes: {out}");
 
     let head = read(&c.join("HEAD"));
-    let (out, err) = bash(&r.wt, &scope, &format!("echo 'ref: refs/heads/krowk/abcd1234' > '{}'", c.join("HEAD").display()));
+    let (out, err) = bash(&r.wt, &scope, &format!("echo 'ref: refs/heads/gruntas/abcd1234' > '{}'", c.join("HEAD").display()));
     assert!(err && out.contains(rofs) && read(&c.join("HEAD")) == head, "<common>/HEAD: {out}");
 
     let (out, err) = bash(&r.wt, &scope, "git update-ref refs/heads/main HEAD");
@@ -568,15 +568,15 @@ fn wt4_a_krowk_worktree_cannot_touch_what_runs_or_what_another_checkout_is_on() 
     let (out, err) = bash(&r.wt, &scope, &format!("echo '{ours} refs/replace/{main_was}' >> '{}'", c.join("packed-refs").display()));
     assert!(err && out.contains(rofs) && read(&c.join("packed-refs")) == packed && git(&r.main, &["log", "-1", "--format=%s", "main"]) == "first", "packed-refs: {out}");
 
-    // A tag is a ref outside `krowk/`: the accepted cost.
+    // A tag is a ref outside `gruntas/`: the accepted cost.
     let (out, err) = bash(&r.wt, &scope, "git tag t");
     assert!(err && !c.join("refs/tags/t").exists(), "git tag: {out}");
 
-    let feedbeef = git(&r.main, &["rev-parse", "krowk/feedbeef"]);
-    let (out, err) = bash(&r.wt, &scope, "git update-ref refs/heads/krowk/feedbeef HEAD");
-    assert!(err && git(&r.main, &["rev-parse", "krowk/feedbeef"]) == feedbeef, "another agent's branch: {out}");
-    let (out, err) = bash(&r.wt, &scope, &format!("echo {ours} > '{}'", c.join("refs/heads/krowk/feedbeef").display()));
-    assert!(err && out.contains(rofs) && git(&r.main, &["rev-parse", "krowk/feedbeef"]) == feedbeef, "another agent's branch, written: {out}");
+    let feedbeef = git(&r.main, &["rev-parse", "gruntas/feedbeef"]);
+    let (out, err) = bash(&r.wt, &scope, "git update-ref refs/heads/gruntas/feedbeef HEAD");
+    assert!(err && git(&r.main, &["rev-parse", "gruntas/feedbeef"]) == feedbeef, "another agent's branch: {out}");
+    let (out, err) = bash(&r.wt, &scope, &format!("echo {ours} > '{}'", c.join("refs/heads/gruntas/feedbeef").display()));
+    assert!(err && out.contains(rofs) && git(&r.main, &["rev-parse", "gruntas/feedbeef"]) == feedbeef, "another agent's branch, written: {out}");
 
     let other = c.join("worktrees/own/HEAD");
     let other_was = read(&other);
@@ -596,7 +596,7 @@ fn wt4_a_krowk_worktree_cannot_touch_what_runs_or_what_another_checkout_is_on() 
     no_link_outlives_a_call(&r, &scope);
     // And git still works there after all of it.
     let (out, err) = bash(&r.wt, &scope, "git commit -q --allow-empty -m c");
-    assert!(!err && git(&r.main, &["log", "-1", "--format=%s", "krowk/abcd1234"]) == "c", "{out}");
+    assert!(!err && git(&r.main, &["log", "-1", "--format=%s", "gruntas/abcd1234"]) == "c", "{out}");
     let _ = std::fs::remove_dir_all(&r.base);
 }
 
@@ -615,15 +615,15 @@ fn no_link_outlives_a_call(r: &Repo, scope: &Scope) {
     // there: each one planted is gone after the call, which says so.
     let victim = r.base.join("victim");
     std::fs::write(&victim, "mine\n").unwrap();
-    for at in [c.join("worktrees/abcd1234/logs/HEAD"), c.join("logs/refs/heads/krowk/abcd1234"), c.join("refs/heads/krowk/evil"), c.join("objects/ee"), c.join("objects/pack/evil.pack")] {
+    for at in [c.join("worktrees/abcd1234/logs/HEAD"), c.join("logs/refs/heads/gruntas/abcd1234"), c.join("refs/heads/gruntas/evil"), c.join("objects/ee"), c.join("objects/pack/evil.pack")] {
         let (out, err) = bash(&r.wt, scope, &format!("rm -f '{0}' && ln -s '{1}' '{0}'", at.display(), victim.display()));
         assert!(err && out.contains("the sandbox removed") && std::fs::symlink_metadata(&at).is_err(), "{}: {out}", at.display());
     }
     // One a crashed call left is gone before the next binds anything, and
     // does not stop it.
-    std::os::unix::fs::symlink(&victim, c.join("refs/heads/krowk/left")).unwrap();
+    std::os::unix::fs::symlink(&victim, c.join("refs/heads/gruntas/left")).unwrap();
     let (out, err) = bash(&r.wt, scope, "git log -1 --format=%s");
-    assert!(!err && out.starts_with("b") && std::fs::symlink_metadata(c.join("refs/heads/krowk/left")).is_err(), "{out}");
+    assert!(!err && out.starts_with("b") && std::fs::symlink_metadata(c.join("refs/heads/gruntas/left")).is_err(), "{out}");
     git(&r.main, &["commit", "-q", "--allow-empty", "-m", "the person's"]);
     assert_eq!(std::fs::read_to_string(&victim).unwrap(), "mine\n");
 }

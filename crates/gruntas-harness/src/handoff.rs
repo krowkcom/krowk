@@ -479,7 +479,7 @@ fn make_private_dirs(root: &Path, dir: &Path) -> std::io::Result<()> {
 /// A file copied through a temporary file beside the target and renamed
 /// into place, `0600`: never half a transcript for the vendor to read.
 fn copy_file(from: &Path, to: &Path) -> std::io::Result<()> {
-    let tmp = to.with_extension(format!("krowk-{}.tmp", std::process::id()));
+    let tmp = to.with_extension(format!("gruntas-{}.tmp", std::process::id()));
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
     #[cfg(unix)]

@@ -80,7 +80,7 @@ let the human move it.",
 /// purpose, and the cost of refusing is an error message.
 const SECRET_NAMES: &[&str] = &[
     ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".env", ".netrc", ".npmrc", ".pypirc", ".git-credentials",
-    "credentials.json", ".krowk", "id_rsa", "id_ed25519", "id_ecdsa",
+    "credentials.json", ".gruntas", ".krowk", "id_rsa", "id_ed25519", "id_ecdsa",
 ];
 
 /// krowk's home, wherever `GRUNTAS_HOME` put it, the default `~/.krowk`, and

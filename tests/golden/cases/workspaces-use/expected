@@ -74,7 +74,7 @@ stdout:
     {
       "action": "pin this repository",
       "cmd": "krowk config set workspace <workspace>",
-      "description": "writes .krowk/config.json at the repository root, so every command run inside it uses that workspace's key whoever runs it — <workspace> is a name from this list"
+      "description": "writes .gruntas/config.json at the repository root, so every command run inside it uses that workspace's key whoever runs it — <workspace> is a name from this list"
     }
   ]
 }
@@ -133,7 +133,7 @@ stdout:
     {
       "action": "pin this repository",
       "cmd": "krowk config set workspace <workspace>",
-      "description": "writes .krowk/config.json at the repository root, so every command run inside it uses that workspace's key whoever runs it — <workspace> is a name from this list"
+      "description": "writes .gruntas/config.json at the repository root, so every command run inside it uses that workspace's key whoever runs it — <workspace> is a name from this list"
     }
   ]
 }
@@ -273,9 +273,9 @@ stdout:
   "data": {
     "key": "workspace",
     "value": "<ws_2>",
-    "path": "<scratch>/work/.krowk/config.json"
+    "path": "<scratch>/work/.gruntas/config.json"
   },
-  "summary": "workspace = <ws_2> in <scratch>/work/.krowk/config.json",
+  "summary": "workspace = <ws_2> in <scratch>/work/.gruntas/config.json",
   "breadcrumbs": [
     {
       "action": "check the effective configuration",

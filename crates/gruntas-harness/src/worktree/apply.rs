@@ -1,5 +1,5 @@
 //! Applying a worktree's changes back (WT13): a subagent's worktree leaves
-//! its work on a `krowk/<hex>` branch its parent cannot use — the parent's
+//! its work on a `gruntas/<hex>` branch its parent cannot use — the parent's
 //! sandbox keeps `.git` read-only, so it cannot merge — and a `--worktree`
 //! session's person has the same gap. krowk, outside any sandbox, brings
 //! the changes into a working tree as uncommitted changes:
@@ -8,7 +8,7 @@
 //!   --all` finds, commits and uncommitted edits alike, new and deleted
 //!   files too, written as one commit on top of the worktree's HEAD
 //!   through a copy of its index (never its own), kept as
-//!   `refs/krowk/snapshots/<hex>`, which `manage::prune` expires after
+//!   `refs/gruntas/snapshots/<hex>`, which `manage::prune` expires after
 //!   `manage::SNAPSHOT_DAYS`.
 //! - **Applied whole or not at all**: the diff from the worktree's base to
 //!   that commit, binary files included and renames as a deletion and an
@@ -24,7 +24,7 @@
 //!   worktree's repository (`Error::OtherRepository`), whose base the diff
 //!   is from.
 //! - **Fenced files left to a person**: a change inside a `.git`,
-//!   `.claude`, `.codex` or `.krowk` directory
+//!   `.claude`, `.codex` or `.gruntas` directory
 //!   (`crate::permissions::scope::fenced_dir`, the predicate the file tools are fenced
 //!   by) names what runs, or what is allowed, in the target. The file tools
 //!   change those only with a person's say, so applying a subagent's back
@@ -175,7 +175,7 @@ fn top_level(dir: &Path) -> Result<PathBuf, Error> {
 }
 
 /// The final state of `wt` as a commit on top of its HEAD, kept as
-/// `refs/krowk/snapshots/<hex>`: built in a scratch index in its
+/// `refs/gruntas/snapshots/<hex>`: built in a scratch index in its
 /// repository's directory, a copy of its own (which is not touched), as
 /// `super::working_state` builds a parent's.
 fn snapshot(wt: &Worktree) -> Result<String, Error> {
@@ -288,7 +288,7 @@ mod tests {
         assert_eq!(std::fs::read(main.join(".git/index")).unwrap(), index, "the index file untouched");
         assert_eq!(git_ok(&main, &["status", "--porcelain"]), "M a.txt\nA  staged.txt\n?? new.txt", "a.txt modified, unstaged (the output trimmed)");
         assert!(!w.path.exists());
-        assert_eq!(git_ok(&main, &["branch", "--list", "krowk/*"]), "");
+        assert_eq!(git_ok(&main, &["branch", "--list", "gruntas/*"]), "");
         let snapshot = format!("{SNAPSHOTS}{}", w.hex);
         assert_eq!(git_ok(&main, &["show", &format!("{snapshot}:new.txt")]), "uncommitted");
         let _ = std::fs::remove_dir_all(&base);
@@ -323,7 +323,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(main.join("a.txt")).unwrap(), "first\n");
         assert_eq!(std::fs::read_to_string(main.join("one.txt")).unwrap() + &std::fs::read_to_string(main.join("two.txt")).unwrap(), "one\ntwo\n");
         assert_eq!(std::fs::read_to_string(w.path.join("a.txt")).unwrap(), "second\n");
-        assert_eq!(git_ok(&main, &["branch", "--list", "--format=%(refname:short)", "krowk/*"]), w.branch(), "only the conflicting one's branch is left");
+        assert_eq!(git_ok(&main, &["branch", "--list", "--format=%(refname:short)", "gruntas/*"]), w.branch(), "only the conflicting one's branch is left");
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -376,7 +376,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// A subagent's change inside `.krowk` or `.claude` is not applied: the
+    /// A subagent's change inside `.gruntas` or `.claude` is not applied: the
     /// worktree is kept, nothing lands, and the note names the files and
     /// the command a person runs. That person's `krowk worktrees apply`
     /// applies them.
@@ -388,22 +388,22 @@ mod tests {
         }
         let (base, main, root) = repo("wt13-protected");
         let w = create(&main, &root, "s1").unwrap();
-        std::fs::create_dir_all(w.path.join(".krowk")).unwrap();
+        std::fs::create_dir_all(w.path.join(".gruntas")).unwrap();
         std::fs::create_dir_all(w.path.join("sub/.Claude")).unwrap();
-        std::fs::write(w.path.join(".krowk/config.json"), "{}\n").unwrap();
+        std::fs::write(w.path.join(".gruntas/config.json"), "{}\n").unwrap();
         std::fs::write(w.path.join("sub/.Claude/settings.json"), "{}\n").unwrap();
         std::fs::write(w.path.join("a.txt"), "child\n").unwrap();
         let kept = finish_into(&w, &main).unwrap().unwrap();
-        assert_eq!(kept, Applied::Protected(vec![".krowk/config.json".into(), "sub/.Claude/settings.json".into()]));
+        assert_eq!(kept, Applied::Protected(vec![".gruntas/config.json".into(), "sub/.Claude/settings.json".into()]));
         assert_eq!(
             kept.note(&w).unwrap(),
-            format!("Changes not applied (they touch protected files: .krowk/config.json, sub/.Claude/settings.json). Worktree: {}, branch {} — a person can apply them with `krowk worktrees apply {}`", w.path.display(), w.branch(), w.hex)
+            format!("Changes not applied (they touch protected files: .gruntas/config.json, sub/.Claude/settings.json). Worktree: {}, branch {} — a person can apply them with `krowk worktrees apply {}`", w.path.display(), w.branch(), w.hex)
         );
         assert_eq!(std::fs::read_to_string(main.join("a.txt")).unwrap(), "a\n", "nothing applied");
-        assert!(!main.join(".krowk").exists() && w.path.is_dir());
+        assert!(!main.join(".gruntas").exists() && w.path.is_dir());
         let (_, applied) = manage::apply(&root, &w.hex, None).unwrap();
-        assert_eq!(applied, Applied::Applied(vec![".krowk/config.json".into(), "a.txt".into(), "sub/.Claude/settings.json".into()]));
-        assert_eq!(std::fs::read_to_string(main.join(".krowk/config.json")).unwrap(), "{}\n");
+        assert_eq!(applied, Applied::Applied(vec![".gruntas/config.json".into(), "a.txt".into(), "sub/.Claude/settings.json".into()]));
+        assert_eq!(std::fs::read_to_string(main.join(".gruntas/config.json")).unwrap(), "{}\n");
         assert!(!w.path.exists());
         let _ = std::fs::remove_dir_all(&base);
     }

@@ -224,7 +224,7 @@ fn r_perm_1_the_fenced_directories_are_asked_about_and_no_rule_opens_them() {
     let d = repo("fence");
     let p = policy(&d, &[(Kind::Allow, "Edit"), (Kind::Allow, "Write(.claude/**)")]);
     for m in [PermissionMode::Default, PermissionMode::AcceptEdits] {
-        for f in [".claude/settings.json", ".git/hooks/pre-commit", ".krowk/config.json", "sub/.CODEX/config.toml"] {
+        for f in [".claude/settings.json", ".git/hooks/pre-commit", ".gruntas/config.json", "sub/.CODEX/config.toml"] {
             match gate(&p, m).verdict(&edit(d.join(f))) {
                 Verdict::Ask { reason, remember } => assert!(reason.contains("with a person's say") && remember.is_empty(), "{f}: never remembered: {reason}"),
                 v => panic!("{f} in {m:?}: {v:?}"),
@@ -244,12 +244,14 @@ fn r_perm_1_rules_load_from_every_source_and_a_broken_file_stops_the_turn() {
     let home = d.join("home");
     std::fs::create_dir_all(home.join(".claude")).unwrap();
     std::fs::write(home.join(".claude/settings.json"), json!({"permissions": {"allow": ["Bash(git status)"]}}).to_string()).unwrap();
+    std::fs::create_dir_all(d.join(".gruntas")).unwrap();
+    std::fs::write(d.join(".gruntas/config.json"), json!({"workspace": "w", "permissions": {"deny": ["WebFetch"]}}).to_string()).unwrap();
     std::fs::create_dir_all(d.join(".krowk")).unwrap();
-    std::fs::write(d.join(".krowk/config.json"), json!({"workspace": "w", "permissions": {"deny": ["WebFetch"]}}).to_string()).unwrap();
+    std::fs::write(d.join(".krowk/config.json"), json!({"permissions": {"deny": ["Bash(ls)"]}}).to_string()).unwrap();
     let cfg = Config { home: Some(home.clone()), user: Some(json!({"permissions": {"ask": ["Bash(git push:*)"]}})), ..Config::default() };
     let p = Policy::load(&cfg, &d).unwrap();
     let texts: Vec<(Kind, &str)> = p.loaded.rules.iter().map(|(k, r)| (*k, r.text.as_str())).collect();
-    assert_eq!(texts, [(Kind::Ask, "Bash(git push:*)"), (Kind::Allow, "Bash(git status)"), (Kind::Deny, "WebFetch")], "krowk's user config, Claude's user settings, the project's");
+    assert_eq!(texts, [(Kind::Ask, "Bash(git push:*)"), (Kind::Allow, "Bash(git status)"), (Kind::Deny, "WebFetch")], "krowk's user config, Claude's user settings, the project's, not its old .krowk");
     assert_eq!(p.deny_list(), ["WebFetch"]);
     std::fs::create_dir_all(d.join(".claude")).unwrap();
     std::fs::write(d.join(".claude/settings.local.json"), "{ not json").unwrap();
@@ -762,23 +764,23 @@ fn wt3_the_repositorys_rules_hold_in_a_worktree_where_they_hold_in_the_checkout(
 }
 
 /// Worktrees WT8: a repository's `worktrees` is read from its
-/// `.krowk/config.json` trusted or not, its `setup` is a reason to ask for
+/// `.gruntas/config.json` trusted or not, its `setup` is a reason to ask for
 /// trust, and a bad one stops the turn with the file's name.
 #[test]
 fn wt8_a_repositorys_worktree_setup_is_read_and_asks_for_trust() {
     let d = repo("wt8-setup");
     let untrusted = Policy::load(&Config::default(), &d).unwrap();
     assert!(untrusted.loaded.worktrees.is_none() && !untrusted.loaded.widens);
-    std::fs::create_dir_all(d.join(".krowk")).unwrap();
-    std::fs::write(d.join(".krowk/config.json"), json!({"worktrees": {"setup": "npm ci", "setupTimeout": 60}}).to_string()).unwrap();
+    std::fs::create_dir_all(d.join(".gruntas")).unwrap();
+    std::fs::write(d.join(".gruntas/config.json"), json!({"worktrees": {"setup": "npm ci", "setupTimeout": 60}}).to_string()).unwrap();
     let untrusted = Policy::load(&Config::default(), &d.join("src")).unwrap();
     assert_eq!(untrusted.loaded.worktrees.as_ref().and_then(|w| w.setup()), Some("npm ci"));
     assert!(untrusted.loaded.widens && !untrusted.loaded.trusted, "a command the repository names is asked about");
     let trusted = Policy::load(&Config { trusted: Some(Arc::new(|_: &Path| true)), ..Config::default() }, &d).unwrap();
     assert!(trusted.loaded.trusted && trusted.loaded.worktrees.is_some());
-    std::fs::write(d.join(".krowk/config.json"), json!({"worktrees": {"setupTimeout": 0}}).to_string()).unwrap();
+    std::fs::write(d.join(".gruntas/config.json"), json!({"worktrees": {"setupTimeout": 0}}).to_string()).unwrap();
     let e = Policy::load(&Config::default(), &d).unwrap_err();
-    assert!(e.contains(".krowk/config.json") && e.contains("setupTimeout must be at least 1"), "{e}");
+    assert!(e.contains(".gruntas/config.json") && e.contains("setupTimeout must be at least 1"), "{e}");
 }
 
 /// R-PERM-1: a repository's `.claude/settings.json` is read before the

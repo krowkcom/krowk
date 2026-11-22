@@ -75,7 +75,7 @@ fn pick(home: Option<&Path>, tmp: &Path, fresh: &mut Option<PathBuf>) -> std::io
 #[cfg(unix)]
 fn shared(tmp: &Path) -> Option<PathBuf> {
     // SAFETY: getuid has no preconditions and cannot fail.
-    Some(tmp.join(format!("krowk-no-hooks-{}", unsafe { libc::getuid() })))
+    Some(tmp.join(format!("gruntas-no-hooks-{}", unsafe { libc::getuid() })))
 }
 
 #[cfg(not(unix))]
@@ -97,7 +97,7 @@ fn made(tmp: &Path) -> std::io::Result<PathBuf> {
     std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
     for attempt in 0..100u32 {
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
-        let d = tmp.join(format!("krowk-no-hooks-{}-{}", std::process::id(), nanos.wrapping_add(attempt.wrapping_mul(7919))));
+        let d = tmp.join(format!("gruntas-no-hooks-{}-{}", std::process::id(), nanos.wrapping_add(attempt.wrapping_mul(7919))));
         match b.create(&d) {
             Ok(()) => return Ok(d),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,

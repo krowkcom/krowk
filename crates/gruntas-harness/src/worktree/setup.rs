@@ -4,7 +4,7 @@
 //! is not told finds out by failing. `worktrees.setup` names that step,
 //! a shell command, run in the new worktree before the agent's first turn.
 //!
-//! - **Whose command**: the repository's own, in its `.krowk/config.json`,
+//! - **Whose command**: the repository's own, in its `.gruntas/config.json`,
 //!   only once the person trusts the repository (`crate::trust`, the
 //!   question that also turns its hooks on), and then it is the one that
 //!   runs; the person's, in krowk's `config.json`, otherwise. An untrusted
@@ -25,7 +25,7 @@
 //!   started in two worktrees at once do not fight over a port.
 //! - **A build slot** (`crate::builds`) when the command is a heavy one,
 //!   waited for within the timeout.
-//! - **Its output** goes to `<admin dir>/krowk-setup.log`, the worktree's
+//! - **Its output** goes to `<admin dir>/gruntas-setup.log`, the worktree's
 //!   own directory in the repository's git directory, written by krowk
 //!   once the command is over — and so once nothing it started is left
 //!   to plant a link there (the sandbox's pid namespace is gone) — and
@@ -48,7 +48,7 @@ use std::time::{Duration, Instant};
 /// `setupTimeout` when the config has none: seconds.
 pub const DEFAULT_TIMEOUT: u64 = 600;
 /// The setup command's output, in the worktree's admin directory.
-pub const LOG_FILE: &str = "krowk-setup.log";
+pub const LOG_FILE: &str = "gruntas-setup.log";
 /// How much of the output the log keeps: the end of it.
 const LOG_CAP: usize = 1 << 20;
 /// What of the output a note quotes: its last lines, and at most so many
@@ -102,10 +102,10 @@ pub(super) fn setup(p: &Prepare<'_>) -> Option<String> {
     let mut notes = Vec::new();
     let own = p.project.filter(|w| w.setup().is_some());
     let (config, from) = match own {
-        Some(own) if p.trusted => (own, "the repository's .krowk/config.json"),
+        Some(own) if p.trusted => (own, "the repository's .gruntas/config.json"),
         _ => {
             if own.is_some() {
-                notes.push("the repository's worktrees.setup command (in its .krowk/config.json) did not run: the person has not trusted this repository, and krowk runs a repository's own commands only in one they trust. Set up what your task needs yourself.".to_string());
+                notes.push("the repository's worktrees.setup command (in its .gruntas/config.json) did not run: the person has not trusted this repository, and krowk runs a repository's own commands only in one they trust. Set up what your task needs yourself.".to_string());
             }
             (p.config, "krowk's config.json")
         }
@@ -331,7 +331,7 @@ fn exit(status: std::process::ExitStatus) -> Ended {
     Ended::Exited(status.code().unwrap_or(-1))
 }
 
-/// Writes `text` to the worktree's `krowk-setup.log`, in its admin
+/// Writes `text` to the worktree's `gruntas-setup.log`, in its admin
 /// directory: a file the command may have put there first is replaced,
 /// and the file is made new, never opened through a link. Where it is.
 fn write_log(wt: &super::Worktree, text: &str) -> Result<PathBuf, String> {
@@ -434,7 +434,7 @@ mod tests {
         let notes = prepare(&Prepare { project: Some(&project), ..Prepare::new(&w, &WorktreesConfig::default()) });
         assert!(!w.path.join("from-project").exists());
         assert_eq!(notes.len(), 1);
-        assert!(notes[0].contains("worktrees.setup command (in its .krowk/config.json) did not run") && notes[0].contains("not trusted"), "{notes:?}");
+        assert!(notes[0].contains("worktrees.setup command (in its .gruntas/config.json) did not run") && notes[0].contains("not trusted"), "{notes:?}");
         // The person's own, with no sandbox to run it in: not for an
         // untrusted repository.
         let user = setup_config("touch from-user", None);
@@ -563,7 +563,7 @@ mod tests {
         assert_eq!(r, Err(super::super::Error::Interrupted));
         assert!(started.elapsed() < Duration::from_secs(5), "stopped promptly: {:?}", started.elapsed());
         assert!(!w.path.exists());
-        assert_eq!(git_ok(&main, &["branch", "--list", "krowk/*"]), "");
+        assert_eq!(git_ok(&main, &["branch", "--list", "gruntas/*"]), "");
         assert!(!git_ok(&main, &["worktree", "list"]).contains(&w.hex));
         // Not interrupted: readied as ever.
         let w = create(&main, &root, "s2").unwrap();

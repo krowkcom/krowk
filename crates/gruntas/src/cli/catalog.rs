@@ -231,7 +231,7 @@ The stored keys, one per workspace. A key belongs to one workspace, and the
 credentials file holds one key per workspace: logging in against a second
 workspace adds a key rather than replacing the first. Which key a command uses
 is decided in order by --workspace, GRUNTAS_WORKSPACE, the repository's
-.krowk/config.json, the global config, and finally whichever key logged in
+.gruntas/config.json, the global config, and finally whichever key logged in
 last. `krowk config set workspace <name>` pins a repository to a workspace, so
 every command run inside it — by anyone, agent or person — lands there
 without saying so. Where the files live: `krowk help environment`.";
@@ -757,12 +757,12 @@ fn worktrees_command() -> Command {
                 ..cmd("add", "krowk worktrees add [--from REF]", "Make one for an agent to work in, and print its directory")
             },
             Command {
-                args: vec![arg("worktree", "Its 8 hex digits, its branch krowk/<hex>, or its directory", true)],
-                flags: vec![flag("force", BOOL, "Remove it though it has changes; uncommitted ones are saved as refs/krowk/snapshots/<hex>")],
+                args: vec![arg("worktree", "Its 8 hex digits, its branch gruntas/<hex>, or its directory", true)],
+                flags: vec![flag("force", BOOL, "Remove it though it has changes; uncommitted ones are saved as refs/gruntas/snapshots/<hex>")],
                 ..cmd("remove", "krowk worktrees remove <hex|path> [--force]", "Remove one, its branch kept; not while its session runs")
             },
             Command {
-                args: vec![arg("worktree", "Its 8 hex digits, its branch krowk/<hex>, or its directory", true)],
+                args: vec![arg("worktree", "Its 8 hex digits, its branch gruntas/<hex>, or its directory", true)],
                 flags: vec![flag("to", STRING, "The checkout its changes go to (default: the repository's main checkout)")],
                 ..cmd("apply", "krowk worktrees apply <hex|path> [--to DIR]", "Bring one's changes into a checkout, uncommitted")
             },
@@ -997,7 +997,7 @@ fn prompt_flags() -> Vec<Flag> {
         flag(
             "worktree",
             BOOL,
-            "With -p: start the session in a new git worktree of this repository, on a branch krowk/<hex> — removed at the end if nothing changed, kept and named if something did",
+            "With -p: start the session in a new git worktree of this repository, on a branch gruntas/<hex> — removed at the end if nothing changed, kept and named if something did",
         ),
         with_default(
             flag(
@@ -1025,7 +1025,7 @@ fn prompt_flags() -> Vec<Flag> {
         flag(
             "rollover",
             STRING,
-            "With -p: what happens when the session's instance hits its rate or usage limit — auto (continue on the next instance), offer (ask, the default) or off (fail with no offer). Replaces the value the session recorded; the repository's .krowk/config.json (when trusted) and the global config set the default",
+            "With -p: what happens when the session's instance hits its rate or usage limit — auto (continue on the next instance), offer (ask, the default) or off (fail with no offer). Replaces the value the session recorded; the repository's .gruntas/config.json (when trusted) and the global config set the default",
         ),
         repeatable(
             "image",
@@ -1180,7 +1180,7 @@ which keeps them in your shell history.
 
 Once sync is set up, every session that runs a turn in the host daemon is
 synced by itself. `sync.auto: false` in ~/.krowk/config.json turns that off,
-and `sync.exclude` or a `.krowk/no-sync` file keeps a directory off sync. A
+and `sync.exclude` or a `.gruntas/no-sync` file keeps a directory off sync. A
 session idle for `sync.idleMinutes` (10), with no other device watching it,
 stops syncing until its next prompt here, or until another device opens it
 while the host daemon runs and has stayed online (`krowk machines always-on on`
@@ -1194,7 +1194,7 @@ confirm the new machine by name before anything is added. A wrong code ends
 it: run `add` again for a new one. Needs a Pro workspace.",
         #[cfg(feature = "harness")]
         "worktrees add" => "\
-The worktree is of the repository you are in, on a new branch krowk/<hex>,
+The worktree is of the repository you are in, on a new branch gruntas/<hex>,
 started from your files as they are, uncommitted changes included, or at
 --from, which is not fetched first. It is readied as a `krowk --worktree`
 session's is: submodules, seeds, .worktreeinclude, worktrees.setup. A --from on
@@ -1205,8 +1205,8 @@ command can take minutes, and nothing prints until it ends. Nothing removes
 the worktree by itself: `krowk worktrees apply` or `remove` does.",
         #[cfg(feature = "harness")]
         "worktrees remove" => "\
-Its branch krowk/<hex> is kept. Forced, uncommitted changes are saved as
-refs/krowk/snapshots/<hex>, and a HEAD off that branch as <hex>-head; the
+Its branch gruntas/<hex> is kept. Forced, uncommitted changes are saved as
+refs/gruntas/snapshots/<hex>, and a HEAD off that branch as <hex>-head; the
 answer prints the commands that bring it back. Ignored files (build output,
 .worktreeinclude copies) are not changes: they are deleted with it.",
         #[cfg(feature = "harness")]
@@ -1214,10 +1214,10 @@ answer prints the commands that bring it back. Ignored files (build output,
 Its commits and uncommitted changes land in the checkout's working tree as
 uncommitted changes, new, deleted and binary files too; the checkout's index
 and HEAD are not touched. Applied, the worktree and its branch are removed,
-its final state kept as refs/krowk/snapshots/<hex> for 30 days. When a file
+its final state kept as refs/gruntas/snapshots/<hex> for 30 days. When a file
 does not apply cleanly nothing changes, both are kept, and the files are
 named. A worktree that changed submodules is not applied. The checkout must
-be one of the same repository. Files in .git, .claude, .codex and .krowk
+be one of the same repository. Files in .git, .claude, .codex and .gruntas
 directories, which an agent's changes leave to you, are applied.",
         #[cfg(feature = "harness")]
         "host" => "\

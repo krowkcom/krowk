@@ -138,7 +138,7 @@ mod tests {
         assert!(why.contains("krowk worktrees prune"), "{why}");
         assert!(!root.exists(), "nothing under the root");
         assert_eq!(git_ok(&main, &["worktree", "list", "--porcelain"]).lines().filter(|l| l.starts_with("worktree ")).count(), 1);
-        assert_eq!(git_ok(&main, &["branch", "--list", "krowk/*"]), "");
+        assert_eq!(git_ok(&main, &["branch", "--list", "gruntas/*"]), "");
         let _ = std::fs::remove_dir_all(&base);
     }
 

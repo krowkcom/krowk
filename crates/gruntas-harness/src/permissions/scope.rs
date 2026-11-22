@@ -53,7 +53,7 @@ pub struct Scope {
     /// approved this call.
     pub open: bool,
     /// More directories no edit may reach unless they are open, beside
-    /// `.git`, `.claude`, `.codex` and `.krowk`: krowk's own config
+    /// `.git`, `.claude`, `.codex` and `.gruntas`: krowk's own config
     /// directory, Claude Code's, a backend instance's (`CLAUDE_CONFIG_DIR`,
     /// `CODEX_HOME`), whose settings and hooks decide what runs next.
     pub protected: Vec<PathBuf>,
@@ -84,7 +84,7 @@ const MAX_LINKS: usize = 40;
 
 /// The directories the file tools keep out of, whichever repository they
 /// are in.
-const FENCED: [&str; 4] = [".git", ".claude", ".codex", ".krowk"];
+const FENCED: [&str; 4] = [".git", ".claude", ".codex", ".gruntas"];
 
 /// The fenced directory (`FENCED`) one of `path`'s components names, if
 /// any: what the file tools change only with a person's say, and what
@@ -133,7 +133,7 @@ impl Scope {
     }
 
     /// The reason `p` may not be changed without a person's say, if it may
-    /// not: inside a `.git`, `.claude`, `.codex` or `.krowk` directory, as
+    /// not: inside a `.git`, `.claude`, `.codex` or `.gruntas` directory, as
     /// spelled or as it leads, or inside a `protected` one. git runs what
     /// its config names (`core.fsmonitor`, hooks), Claude Code what its
     /// settings, hooks and agents name, Codex what its project config, rules
@@ -173,7 +173,7 @@ impl Scope {
     /// Whether `p` is, or is inside, one of `secrets` — by where it leads
     /// (`..` taken out by its words, and every symlink followed), against
     /// the secret as named and as it leads, regardless of case: a search
-    /// through `.krowk/../.krowk` or a symlinked alias skips it too.
+    /// through `.gruntas/../.gruntas` or a symlinked alias skips it too.
     pub fn secret(&self, p: &Path) -> bool {
         if self.secrets.is_empty() {
             return false;

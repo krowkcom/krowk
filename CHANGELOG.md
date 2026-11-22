@@ -47,6 +47,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
   skill it installed before with a `gruntas` one, leaving any `krowk` skill
   it did not write alone. A krowk binary cannot upgrade itself into
   gruntas: install gruntas fresh.
+- **A repository's config moves to `.gruntas/`, and worktrees to
+  `~/.local/share/gruntas/worktrees`.** `.gruntas/config.json`, `agents/`
+  and `no-sync` replace their `.krowk/` counterparts, which are no longer
+  read or fenced: rename the directory (`git mv .krowk .gruntas`). New
+  worktrees are on `gruntas/<hex>` branches; worktrees made before stay
+  where they are and are no longer listed, applied or removed by the CLI
+  (`git worktree remove` clears them), and removed ones' snapshots are kept
+  under `refs/gruntas/snapshots/`. The host's runtime directory is
+  `$XDG_RUNTIME_DIR/gruntas`, so stop a host daemon the old binary started
+  before upgrading.
 
 ### Changed
 

@@ -21,7 +21,7 @@
 //!    two land, the third is reported as a conflict, then applied by
 //!    `krowk worktrees apply`'s path (`manage::apply`) once the clone's
 //!    line is put back.
-//! 6. What is left: `git worktree list`, `krowk/` branches, and worktrees
+//! 6. What is left: `git worktree list`, `gruntas/` branches, and worktrees
 //!    under the root.
 //!
 //! Exits 1 when any step failed or anything is left.
@@ -96,7 +96,7 @@ fn main() {
     }
 
     let left = leftovers(&repo, &root);
-    if let Ok(kept) = git(&repo, &["for-each-ref", "--format=%(refname)", "refs/krowk/snapshots/"]) {
+    if let Ok(kept) = git(&repo, &["for-each-ref", "--format=%(refname)", "refs/gruntas/snapshots/"]) {
         println!("snapshot refs kept as the way back, as designed: {}", kept.lines().count());
     }
     print_table(&times, &methods, &checked, &builds, left.len());
@@ -270,8 +270,8 @@ fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 /// Everything a worktree leaves that should be gone: git's worktrees other
-/// than the clone, `krowk/` branches, what `krowk worktrees` lists, and a
-/// worktree's files under the root. Not the `refs/krowk/snapshots/<hex>`
+/// than the clone, `gruntas/` branches, what `krowk worktrees` lists, and a
+/// worktree's files under the root. Not the `refs/gruntas/snapshots/<hex>`
 /// an applied worktree leaves as the way back: kept on purpose, for 30
 /// days (`krowk worktrees prune`).
 fn leftovers(repo: &Path, root: &Path) -> Vec<String> {
@@ -280,7 +280,7 @@ fn leftovers(repo: &Path, root: &Path) -> Vec<String> {
         Ok(list) => left.extend(list.lines().filter_map(|l| l.strip_prefix("worktree ")).skip(1).map(|p| format!("git worktree {p}"))),
         Err(e) => left.push(e),
     }
-    match git(repo, &["for-each-ref", "--format=%(refname)", "refs/heads/krowk/"]) {
+    match git(repo, &["for-each-ref", "--format=%(refname)", "refs/heads/gruntas/"]) {
         Ok(refs) => left.extend(refs.lines().map(|r| format!("branch {r}"))),
         Err(e) => left.push(e),
     }

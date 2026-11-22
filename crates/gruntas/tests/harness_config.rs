@@ -85,7 +85,7 @@ fn r_cut_6_default_mode_is_set_nested_in_the_global_config_and_read_back() {
     assert_eq!(wrote["data"]["value"], "unhinged");
     assert_eq!(b.read_global(), json!({"tui": {"statusBar": false}, "permissions": {"allow": ["Bash(ls)"], "defaultMode": "unhinged"}}), "nested, and the tui.* key is untouched");
     assert_eq!(b.get("defaultMode"), ("unhinged".into(), "global".into()));
-    assert!(!b.root.join("repo/.krowk/config.json").exists(), "never the repo's");
+    assert!(!b.root.join("repo/.gruntas/config.json").exists(), "never the repo's");
 }
 
 #[test]
@@ -112,8 +112,8 @@ fn r_cut_7_rollover_source_is_repo_when_trusted_else_global_else_default() {
     assert_eq!(b.read_global()["rollover"], "auto");
     assert_eq!(b.get("rollover"), ("auto".into(), "global".into()));
 
-    std::fs::create_dir_all(b.root.join("repo/.krowk")).unwrap();
-    std::fs::write(b.root.join("repo/.krowk/config.json"), json!({"rollover": "off"}).to_string()).unwrap();
+    std::fs::create_dir_all(b.root.join("repo/.gruntas")).unwrap();
+    std::fs::write(b.root.join("repo/.gruntas/config.json"), json!({"rollover": "off"}).to_string()).unwrap();
     assert_eq!(b.get("rollover"), ("auto".into(), "global".into()), "an untrusted repo's value is not believed");
 
     b.trust_repo();

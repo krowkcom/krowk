@@ -4,7 +4,7 @@ stdout:
   "ok": true,
   "data": {
     "global_path": "(no home directory)",
-    "repo_path": "<scratch>/work/.krowk/config.json"
+    "repo_path": "<scratch>/work/.gruntas/config.json"
   },
   "summary": "no configuration set — uploads use the stored default key",
   "breadcrumbs": [
@@ -38,7 +38,7 @@ stdout:
   "ok": true,
   "data": {
     "global_path": "(no home directory)",
-    "repo_path": "<scratch>/work/.krowk/config.json"
+    "repo_path": "<scratch>/work/.gruntas/config.json"
   },
   "summary": "no configuration set — uploads use the stored default key",
   "breadcrumbs": [

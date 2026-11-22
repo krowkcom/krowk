@@ -1053,7 +1053,7 @@ fn r_sync_1_a_machine_without_sync_makes_no_sync_call() {
 /// R-SYNC-3 (ticket 95), failing closed in the daemon itself: on a machine
 /// with sync set up, a turn in the host daemon syncs nothing when
 /// config.json turns automatic sync off, or when the session's directory
-/// opts out with `.krowk/no-sync` — the registry never hears of the
+/// opts out with `.gruntas/no-sync` — the registry never hears of the
 /// session, and host.log says why.
 #[test]
 fn r_sync_3_the_daemon_syncs_nothing_the_policy_leaves_out() {
@@ -1061,8 +1061,8 @@ fn r_sync_3_the_daemon_syncs_nothing_the_policy_leaves_out() {
     let off = w.machine("a");
     std::fs::write(off.home.join(".krowk/config.json"), r#"{"sync": {"auto": false}}"#).unwrap();
     let marked = w.machine("b");
-    std::fs::create_dir_all(marked.repo.join(".krowk")).unwrap();
-    std::fs::write(marked.repo.join(".krowk/no-sync"), "").unwrap();
+    std::fs::create_dir_all(marked.repo.join(".gruntas")).unwrap();
+    std::fs::write(marked.repo.join(".gruntas/no-sync"), "").unwrap();
     for (m, why) in [(&off, "automatic sync is off (sync.auto in config.json)"), (&marked, "opts")] {
         let made = m.command(&["-p", "--daemon", "hello", "--model", "claude/sonnet"]).stdin(Stdio::null()).output().unwrap();
         assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
@@ -1077,7 +1077,7 @@ fn r_sync_3_the_daemon_syncs_nothing_the_policy_leaves_out() {
             std::thread::sleep(Duration::from_millis(50));
         };
         if why == "opts" {
-            assert!(log.contains(&format!("session {session} is not synced automatically")) && log.contains(".krowk/no-sync"), "{log}");
+            assert!(log.contains(&format!("session {session} is not synced automatically")) && log.contains(".gruntas/no-sync"), "{log}");
         }
         assert_eq!(m.api.show_sync_session(&session).unwrap_err().status, 404, "the registry never heard of {session}");
     }
@@ -1587,7 +1587,7 @@ impl Drop for Mcp {
 
 /// Every build slot of `m` held, as a machine running CI holds them.
 fn all_build_slots(m: &Machine) -> Vec<gruntas_harness::slots::Slot> {
-    let pool = gruntas_harness::slots::Pool::new(m.run.join("krowk"), "build-slots", 64);
+    let pool = gruntas_harness::slots::Pool::new(m.run.join("gruntas"), "build-slots", 64);
     std::iter::from_fn(|| pool.try_take().unwrap()).collect()
 }
 

@@ -14,7 +14,7 @@
 //!   `gruntas_api::home::worktrees_root` (outside krowk's home, which the
 //!   sandbox hides), the repo-id the first 16 hex digits of the sha256 of
 //!   the canonical common git directory, `<hex>` 8 random hex digits. The
-//!   branch is `krowk/<hex>`, which is what the sandbox lets a commit move
+//!   branch is `gruntas/<hex>`, which is what the sandbox lets a commit move
 //!   (`crate::sandbox::managed_worktree`).
 //! - **Base** (WT14): the working state of the directory it is made from,
 //!   so a child started mid-edit sees the parent's edits. A clean checkout
@@ -29,9 +29,9 @@
 //!   write files in the common directory (`config`, `worktrees/`), and two
 //!   at once fail on its `config.lock`. So every change here holds `lock`:
 //!   a mutex for this process's threads, and `File::lock` on
-//!   `<common>/krowk-worktree.lock` for every other krowk.
+//!   `<common>/gruntas-worktree.lock` for every other krowk.
 //! - **Locked while it runs**, and one `krowk worktrees add` made until it
-//!   is applied or removed: `git worktree lock --reason krowk:<owner>`,
+//!   is applied or removed: `git worktree lock --reason gruntas:<owner>`,
 //!   the owner being the session that works in it, so `git worktree prune`
 //!   leaves it alone and a listing can say whose it is.
 //! - **Every git through `gruntas_api::git`**: hooks off, so `worktree add`
@@ -81,11 +81,11 @@ use std::process::Command;
 use std::sync::{Condvar, Mutex};
 
 /// What a krowk worktree's branch is named under.
-pub const BRANCH_PREFIX: &str = "krowk/";
+pub const BRANCH_PREFIX: &str = "gruntas/";
 /// The file in the common directory every krowk locks to change worktrees.
-pub const LOCK_FILE: &str = "krowk-worktree.lock";
+pub const LOCK_FILE: &str = "gruntas-worktree.lock";
 /// What a krowk worktree's lock reason starts with; the owner follows.
-pub const LOCK_REASON: &str = "krowk:";
+pub const LOCK_REASON: &str = "gruntas:";
 
 /// One worktree krowk made.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,7 +106,7 @@ pub struct Worktree {
 }
 
 impl Worktree {
-    /// `krowk/<hex>`.
+    /// `gruntas/<hex>`.
     pub fn branch(&self) -> String {
         format!("{BRANCH_PREFIX}{}", self.hex)
     }
@@ -174,7 +174,7 @@ pub struct Prepare<'a> {
     /// The person's `worktrees` config.
     pub config: &'a WorktreesConfig,
     /// The repository's own `worktrees` config, from its
-    /// `.krowk/config.json` (`permissions::settings::Loaded::worktrees`).
+    /// `.gruntas/config.json` (`permissions::settings::Loaded::worktrees`).
     pub project: Option<&'a WorktreesConfig>,
     /// Whether the person trusts the repository the worktree is of: the
     /// parent session's decision, as for its hooks.
@@ -1035,7 +1035,7 @@ impl Drop for Busy {
 /// The per-repository lock every change to krowk's worktrees of the
 /// repository whose common directory is `common` holds, waited for: this
 /// process's threads queue on a mutex, and every krowk process on
-/// `File::lock` of `<common>/krowk-worktree.lock`, which the OS frees when a
+/// `File::lock` of `<common>/gruntas-worktree.lock`, which the OS frees when a
 /// holder dies. Both, so a thread never depends on how an OS scopes a file
 /// lock within one process.
 pub fn lock(common: &Path) -> Result<RepoLock, Error> {
@@ -1143,11 +1143,13 @@ mod tests {
         let common = main.join(".git").canonicalize().unwrap();
         let list = git_ok(&main, &["worktree", "list", "--porcelain"]);
         assert_eq!(list.matches(&format!("locked {LOCK_REASON}owner-")).count(), 8, "each locked for its owner: {list}");
+        assert!(list.contains("locked gruntas:owner-") && common.join("gruntas-worktree.lock").is_file(), "gruntas names its lock: {list}");
         for w in &made {
             assert_eq!((w.base.as_str(), &w.common, w.main.canonicalize().unwrap(), w.repo_id.len()), (head.as_str(), &common, main.canonicalize().unwrap(), 16));
             assert_eq!(w.path, root.join(&w.repo_id).join(&w.hex));
             assert!(w.path.join("a.txt").is_file());
             assert_eq!(git_ok(&w.path, &["rev-parse", "--abbrev-ref", "HEAD"]), w.branch());
+            assert_eq!(w.branch(), format!("gruntas/{}", w.hex));
             let managed = crate::sandbox::managed_worktree(&w.path, &root).expect("the sandbox's krowk worktree");
             assert_eq!(managed.hex, w.hex);
         }
@@ -1155,7 +1157,7 @@ mod tests {
             assert_eq!(finish(w).unwrap(), Finished::Removed);
         }
         assert_eq!(git_ok(&main, &["worktree", "list", "--porcelain"]).lines().filter(|l| l.starts_with("worktree ")).count(), 1);
-        assert_eq!(git_ok(&main, &["branch", "--list", "krowk/*"]), "");
+        assert_eq!(git_ok(&main, &["branch", "--list", "gruntas/*"]), "");
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -1174,14 +1176,14 @@ mod tests {
         std::fs::create_dir_all(w.path.join("target")).unwrap();
         assert_eq!(finish(&w).unwrap(), Finished::Removed);
         assert!(!w.path.exists());
-        assert_eq!(git_ok(&main, &["branch", "--list", "krowk/*"]), "");
+        assert_eq!(git_ok(&main, &["branch", "--list", "gruntas/*"]), "");
         assert!(!git_ok(&main, &["worktree", "list"]).contains(&w.hex));
 
         let w = create(&main, &root, "s2").unwrap();
         std::fs::write(w.path.join("a.txt"), "changed\n").unwrap();
         let kept = finish(&w).unwrap();
         assert_eq!(kept, Finished::Kept { commits: 0, dirty: true });
-        assert_eq!(kept.note(&w).unwrap(), format!("Worktree: {} (branch krowk/{}, 0 commits, uncommitted changes: yes)", w.path.display(), w.hex));
+        assert_eq!(kept.note(&w).unwrap(), format!("Worktree: {} (branch gruntas/{}, 0 commits, uncommitted changes: yes)", w.path.display(), w.hex));
         assert!(w.path.join("a.txt").is_file());
         assert_eq!(git_ok(&main, &["branch", "--list", "--format=%(refname:short)", &w.branch()]), w.branch());
         let list = git_ok(&main, &["worktree", "list", "--porcelain"]);
@@ -1394,7 +1396,7 @@ mod tests {
         let modules: Vec<_> = std::fs::read_dir(w.common.join("modules")).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert_eq!(modules, ["mid"], "the main checkout's own, nothing more");
         assert_eq!(git_ok(&main, &["worktree", "list", "--porcelain"]).lines().filter(|l| l.starts_with("worktree ")).count(), 1);
-        assert_eq!(git_ok(&main, &["branch", "--list", "krowk/*"]), "");
+        assert_eq!(git_ok(&main, &["branch", "--list", "gruntas/*"]), "");
 
         assert_eq!(std::fs::read(main.join(".git/config")).unwrap(), config);
 

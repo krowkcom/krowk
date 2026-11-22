@@ -192,7 +192,7 @@ fn config_file(ctx: &Ctx) -> Result<std::path::PathBuf, Error> {
     config::repo_path("").ok_or_else(|| {
         fail(
             "not_in_a_repository",
-            "the repo config lives at <git-root>/.krowk/config.json and there is no git root here — run it inside the \
+            "the repo config lives at <git-root>/.gruntas/config.json and there is no git root here — run it inside the \
              repository, or pass --global for the machine-wide file",
         )
     })

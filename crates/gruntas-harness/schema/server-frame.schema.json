@@ -2027,7 +2027,7 @@
           "type": "string"
         },
         "branch": {
-          "description": "`krowk/<8 hex>`.",
+          "description": "`gruntas/<8 hex>`.",
           "type": "string"
         },
         "commits": {

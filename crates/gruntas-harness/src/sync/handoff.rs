@@ -56,7 +56,7 @@ pub const JOB_TOO_BIG: &str = "This task carries more than 64 MiB of unpushed wo
 
 /// What a job fails with when its unpushed commits change a fenced
 /// directory or a submodule, which no other machine is handed.
-pub const JOB_FENCED: &str = "This task's unpushed commits change .git, .claude, .codex, .krowk or a submodule, which krowk never hands to another machine. Push them, or run it on this machine.";
+pub const JOB_FENCED: &str = "This task's unpushed commits change .git, .claude, .codex, .gruntas or a submodule, which krowk never hands to another machine. Push them, or run it on this machine.";
 
 /// What a handoff carries beside the log.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -252,7 +252,7 @@ pub fn pack(cwd: &Path, session: &str, since_ms: i64, transcript: Option<(&str, 
 /// repository at HEAD, its uncommitted changes, every untracked file `pack`
 /// would take, the commits no remote has, and `prompt`, for the transport
 /// stored under `session`. Left out: any change inside a `.git`,
-/// `.claude`, `.codex` or `.krowk` directory (`crate::permissions::scope::fenced_dir`,
+/// `.claude`, `.codex` or `.gruntas` directory (`crate::permissions::scope::fenced_dir`,
 /// as a local return fences them) and any change to a submodule, which
 /// would name what runs, or what is allowed, on the target. The unpushed
 /// commits are held to the same fence: when the commits on the way to
@@ -480,7 +480,7 @@ fn pack_result_within(worktree: &Path, snapshot: &str, session: &str, cap: u64) 
     if !own {
         return Err(RESULT_CONFIG.to_string());
     }
-    let index = gitdir.join(format!("krowk-result-index-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos())));
+    let index = gitdir.join(format!("gruntas-result-index-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos())));
     // Every filter the config names, switched off: an empty command is none.
     let mut off: Vec<String> = Vec::new();
     for entry in config(&["--get-regexp", r"^filter\."])?.split(|b| *b == 0).filter(|e| !e.is_empty()) {
@@ -953,7 +953,7 @@ mod tests {
     fn alloc_04_a_job_never_carries_fenced_paths_and_a_target_refuses_one_that_does() {
         let root = scratch("job-fenced");
         let a = origin_and_clone(&root, "a");
-        for dir in [".claude", ".codex", ".krowk"] {
+        for dir in [".claude", ".codex", ".gruntas"] {
             std::fs::create_dir_all(a.join(dir)).unwrap();
             std::fs::write(a.join(dir).join("settings.json"), "{}").unwrap();
         }
@@ -969,7 +969,7 @@ mod tests {
         // An unpushed commit that changes a fenced path: the supervisor
         // fails at once, and a job carrying one anyway is refused.
         git(&a, &["checkout", "-q", "-b", "local"]);
-        git(&a, &["add", "-f", ".krowk/settings.json"]);
+        git(&a, &["add", "-f", ".gruntas/settings.json"]);
         git(&a, &["commit", "-q", "-m", "fenced"]);
         assert_eq!(pack_job(&a, "0190f3c2-0000-7000-8000-000000000001", "p").unwrap_err(), JOB_FENCED);
         git(&a, &["bundle", "create", "-q", "../planted.bundle", "local", "^origin/main"]);
@@ -1103,7 +1103,7 @@ mod tests {
         git(&child.join("inner"), &["commit", "-q", "--allow-empty", "-m", "x"]);
         let err = pack_result(&child, &snapshot, "0190f3c2-0000-7000-8000-000000000002").unwrap_err();
         assert!(err.contains("submodule"), "{err}");
-        let left: Vec<_> = std::fs::read_dir(child.join(".git")).unwrap().filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().starts_with("krowk-result-index")).collect();
+        let left: Vec<_> = std::fs::read_dir(child.join(".git")).unwrap().filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().starts_with("gruntas-result-index")).collect();
         assert!(left.is_empty(), "{left:?}");
         let _ = std::fs::remove_dir_all(&root);
     }

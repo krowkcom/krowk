@@ -3367,7 +3367,7 @@ async fn r_sync_3_one_bridges_panic_leaves_the_others() {
 }
 
 /// R-SYNC-3: a subagent's session rides its parent's bridge and a session
-/// in a directory with `.krowk/no-sync` stays on the machine — neither gets
+/// in a directory with `.gruntas/no-sync` stays on the machine — neither gets
 /// a `build` call. A plain session's turn after them is bridged.
 #[tokio::test]
 async fn r_sync_3_a_child_session_and_an_opted_out_directory_are_never_built() {
@@ -3377,8 +3377,8 @@ async fn r_sync_3_a_child_session_and_an_opted_out_directory_are_never_built() {
 
     // A turn in a directory that opts out.
     let private = w.root.join("private");
-    std::fs::create_dir_all(private.join(".krowk")).unwrap();
-    std::fs::write(private.join(".krowk/no-sync"), "").unwrap();
+    std::fs::create_dir_all(private.join(".gruntas")).unwrap();
+    std::fs::write(private.join(".gruntas/no-sync"), "").unwrap();
     let there = Arc::new(Client::connect(&daemon::socket(&w.env()).unwrap(), &private, "test", true).await.ok().expect("the daemon answers"));
     let out = prompted(&w, &there, None, "say hello").await;
 
@@ -3451,7 +3451,7 @@ async fn checked(auto: &Auto, n: usize) {
     tokio::time::sleep(Duration::from_millis(500)).await;
 }
 
-/// R-SYNC-3, R-SYNC-1: a session in a repository with `.krowk/no-sync` runs
+/// R-SYNC-3, R-SYNC-1: a session in a repository with `.gruntas/no-sync` runs
 /// whole turns and never leaves the machine — A's registry proxy hands on no
 /// request naming it, A opens no relay connection, and the registry has
 /// never heard of it.
@@ -3459,8 +3459,8 @@ async fn checked(auto: &Auto, n: usize) {
 async fn r_sync_3_an_opted_out_session_reaches_neither_the_registry_nor_the_relay() {
     let w = World::new("auto-private");
     let a = w.device("machine-a");
-    std::fs::create_dir_all(w.repo().join(".krowk")).unwrap();
-    std::fs::write(w.repo().join(".krowk/no-sync"), "").unwrap();
+    std::fs::create_dir_all(w.repo().join(".gruntas")).unwrap();
+    std::fs::write(w.repo().join(".gruntas/no-sync"), "").unwrap();
     let mut auto = w.auto(&a, false);
     let d = w.daemon().await;
     let session = prompted(&w, &d, None, "say hello").await;
@@ -3519,7 +3519,7 @@ async fn r_sync_3_an_idle_bridge_lets_go_and_the_next_prompt_takes_it_up_again()
 }
 
 /// R-SYNC-3: a session bridged, then its repository opted out with
-/// `.krowk/no-sync`: its next turn stops the bridge and gives the lease
+/// `.gruntas/no-sync`: its next turn stops the bridge and gives the lease
 /// back, and while the opt-out stands no turn bridges it again.
 #[tokio::test]
 async fn r_sync_3_a_directory_opted_out_while_bridged_stops_and_releases() {
@@ -3529,8 +3529,8 @@ async fn r_sync_3_a_directory_opted_out_while_bridged_stops_and_releases() {
     let d = w.daemon().await;
     let session = prompted(&w, &d, None, "say hello").await;
     w.synced(&session).await;
-    std::fs::create_dir_all(w.repo().join(".krowk")).unwrap();
-    std::fs::write(w.repo().join(".krowk/no-sync"), "").unwrap();
+    std::fs::create_dir_all(w.repo().join(".gruntas")).unwrap();
+    std::fs::write(w.repo().join(".gruntas/no-sync"), "").unwrap();
     let sent = Instant::now();
     prompted(&w, &d, Some(&session), "say it again").await;
     let gone = let_go(&w, &auto, &session, sent + Duration::from_secs(10)).await;
@@ -3653,7 +3653,7 @@ async fn r_hand_4_a_prompt_from_b_takes_a_session_let_go_up_again_and_is_answere
 
 /// R-SYNC-3 (ticket 116): a viewer never syncs a session the policy
 /// refuses. A session let go as idle, then opted out with
-/// `.krowk/no-sync`: B opening it and prompting has the supervisor read the
+/// `.gruntas/no-sync`: B opening it and prompting has the supervisor read the
 /// policy again, which refuses it — it is never built again nor leased,
 /// its parked link is let go so B sees no host, and B's prompt never runs.
 #[tokio::test]
@@ -3666,8 +3666,8 @@ async fn r_sync_3_a_session_opted_out_once_let_go_is_never_brought_back_by_a_vie
     let ended = Instant::now();
     w.synced(&session).await;
     let_go(&w, &auto, &session, ended + Duration::from_secs(5)).await;
-    std::fs::create_dir_all(w.repo().join(".krowk")).unwrap();
-    std::fs::write(w.repo().join(".krowk/no-sync"), "").unwrap();
+    std::fs::create_dir_all(w.repo().join(".gruntas")).unwrap();
+    std::fs::write(w.repo().join(".gruntas/no-sync"), "").unwrap();
 
     let checks = auto.checks.load(Ordering::SeqCst);
     let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();

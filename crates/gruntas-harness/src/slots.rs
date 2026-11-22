@@ -12,8 +12,8 @@
 //!
 //! The runtime directory is the one the host daemon's socket lives under
 //! (canon `engineering/harness.md` → Where it listens):
-//! `$XDG_RUNTIME_DIR/krowk`, else `$TMPDIR/krowk-<uid>`, else
-//! `/tmp/krowk-<uid>`; on Windows `%LOCALAPPDATA%\krowk\run`. Made `0700`
+//! `$XDG_RUNTIME_DIR/gruntas`, else `$TMPDIR/gruntas-<uid>`, else
+//! `/tmp/gruntas-<uid>`; on Windows `%LOCALAPPDATA%\gruntas\run`. Made `0700`
 //! and refused when a symlink or another user's, as krowk's home is
 //! (`gruntas_api::home::own`). Slots are the user's, machine-wide: unlike the
 //! daemon's directory they are not keyed by krowk's home, since two homes
@@ -34,19 +34,19 @@ pub const RETRY: Duration = Duration::from_millis(250);
 pub fn runtime_dir(env: &dyn Fn(&str) -> String) -> PathBuf {
     let absolute = |k: &str| Some(env(k)).filter(|v| !v.is_empty() && Path::new(v).is_absolute()).map(PathBuf::from);
     if let Some(run) = absolute("XDG_RUNTIME_DIR") {
-        return run.join("krowk");
+        return run.join("gruntas");
     }
     #[cfg(unix)]
     {
         let base = absolute("TMPDIR").unwrap_or_else(|| PathBuf::from("/tmp"));
         // SAFETY: getuid has no preconditions and cannot fail.
-        base.join(format!("krowk-{}", unsafe { libc::getuid() }))
+        base.join(format!("gruntas-{}", unsafe { libc::getuid() }))
     }
     #[cfg(not(unix))]
     {
         match absolute("LOCALAPPDATA") {
-            Some(local) => local.join("krowk").join("run"),
-            None => std::env::temp_dir().join("krowk-run"),
+            Some(local) => local.join("gruntas").join("run"),
+            None => std::env::temp_dir().join("gruntas-run"),
         }
     }
 }
@@ -176,11 +176,11 @@ mod tests {
     #[test]
     fn the_runtime_dir_is_the_daemons_without_the_home() {
         let env = |pairs: &'static [(&'static str, &'static str)]| move |k: &str| pairs.iter().find(|(n, _)| *n == k).map_or_else(String::new, |(_, v)| v.to_string());
-        assert_eq!(runtime_dir(&env(&[("XDG_RUNTIME_DIR", "/run/user/1000"), ("TMPDIR", "/var/tmp")])), PathBuf::from("/run/user/1000/krowk"));
+        assert_eq!(runtime_dir(&env(&[("XDG_RUNTIME_DIR", "/run/user/1000"), ("TMPDIR", "/var/tmp")])), PathBuf::from("/run/user/1000/gruntas"));
         // SAFETY: getuid has no preconditions and cannot fail.
         let uid = unsafe { libc::getuid() };
-        assert_eq!(runtime_dir(&env(&[("TMPDIR", "/var/folders/x")])), PathBuf::from(format!("/var/folders/x/krowk-{uid}")));
-        assert_eq!(runtime_dir(&env(&[("XDG_RUNTIME_DIR", "relative"), ("TMPDIR", "also")])), PathBuf::from(format!("/tmp/krowk-{uid}")), "only absolute paths count");
+        assert_eq!(runtime_dir(&env(&[("TMPDIR", "/var/folders/x")])), PathBuf::from(format!("/var/folders/x/gruntas-{uid}")));
+        assert_eq!(runtime_dir(&env(&[("XDG_RUNTIME_DIR", "relative"), ("TMPDIR", "also")])), PathBuf::from(format!("/tmp/gruntas-{uid}")), "only absolute paths count");
     }
 
     /// Slice 02 (R-ALLOC-1): the occupancy a machine announces is the
@@ -225,7 +225,7 @@ mod tests {
     fn a_runtime_dir_whose_parents_are_missing_is_made() {
         // As `%LOCALAPPDATA%\krowk\run` is on a first run: `krowk` not there yet.
         let d = dir("parents");
-        let pool = Pool::new(d.join("local").join("krowk").join("run"), "build-slots", 1);
+        let pool = Pool::new(d.join("local").join("gruntas").join("run"), "build-slots", 1);
         assert_eq!(pool.try_take().unwrap().expect("a free slot").index(), 0);
         assert!(pool.dir().is_dir());
         let _ = std::fs::remove_dir_all(d);

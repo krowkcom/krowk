@@ -271,7 +271,7 @@ fn reseed(t: &Paths, common: &Path, main: &Path, name: &str) -> bool {
     if !ignored {
         return false;
     }
-    let aside = t.dir.join(format!(".krowk-old-{name}-{}", random_hex()));
+    let aside = t.dir.join(format!(".gruntas-old-{name}-{}", random_hex()));
     if ours.is_some() && std::fs::rename(&to, &aside).is_err() {
         return false;
     }
@@ -407,7 +407,7 @@ fn snapshot_steps(held: &mut Option<RepoLock>, hold: &mut Option<super::manage::
     // The template's index holds `base`'s tree with the stat data of the
     // files the snapshot shares, so the refresh hashes almost nothing.
     // Copied beside the worktree's while the template cannot change.
-    let part = index.with_extension(format!("krowk-{}", wt.hex));
+    let part = index.with_extension(format!("gruntas-{}", wt.hex));
     let copied = super::copy_index(&t.index, &part).is_ok().then_some(part);
     drop(shared);
     *held = Some(lock(&wt.common)?);
@@ -747,7 +747,7 @@ mod tests {
         let d = git_ok(&main, &["rev-parse", "HEAD"]);
         let t = ready(&dir, &common, &main, &d).unwrap();
         assert_eq!(std::fs::read_to_string(t.path.join("target/debug/deps/next")).unwrap(), "rebuilt\n");
-        assert!(std::fs::read_dir(&t.path).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().starts_with(".krowk-old")));
+        assert!(std::fs::read_dir(&t.path).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().starts_with(".gruntas-old")));
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -766,14 +766,14 @@ mod tests {
 
     /// What krowk and git hold of worktrees in `dir` and `common`: the
     /// entries of `dir` that are not files, the admin directories, the
-    /// `krowk/` branches.
+    /// `gruntas/` branches.
     fn leftovers(dir: &Path, common: &Path, main: &Path) -> (Vec<String>, Vec<String>, String) {
         let names = |d: &Path| -> Vec<String> {
             let mut v: Vec<String> = std::fs::read_dir(d).map(|r| r.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
             v.sort();
             v
         };
-        (names(dir), names(&common.join("worktrees")), git_ok(main, &["branch", "--list", "krowk/*"]))
+        (names(dir), names(&common.join("worktrees")), git_ok(main, &["branch", "--list", "gruntas/*"]))
     }
 
     /// (btrfs) A worktree made from the template: clean, at its base, with
@@ -799,7 +799,7 @@ mod tests {
         assert_eq!(git_ok(&w.path, &["rev-parse", "--abbrev-ref", "HEAD"]), w.branch());
         assert_eq!(std::fs::read_to_string(w.path.join("target/debug/deps/out")).unwrap(), "built\n");
         assert_eq!(std::fs::read_dir(dir.join(SCRATCH_DIR)).unwrap().count(), 0, "scratch is empty");
-        assert!(git_ok(&main, &["worktree", "list", "--porcelain"]).contains(&format!("worktree {}\nHEAD {head}\nbranch refs/heads/{}\nlocked krowk:s1", w.path.display(), w.branch())));
+        assert!(git_ok(&main, &["worktree", "list", "--porcelain"]).contains(&format!("worktree {}\nHEAD {head}\nbranch refs/heads/{}\nlocked gruntas:s1", w.path.display(), w.branch())));
 
         std::fs::write(w.path.join("a.txt"), "changed\n").unwrap();
         git_ok(&w.path, &["commit", "-q", "-am", "in the worktree"]);
@@ -1039,7 +1039,7 @@ mod tests {
             return;
         };
         assert!(!dir.join(SEEDING_FILE).exists(), "gone once seeded");
-        std::fs::rename(t.path.join("target"), t.path.join(".krowk-old-target-0badf00d")).unwrap();
+        std::fs::rename(t.path.join("target"), t.path.join(".gruntas-old-target-0badf00d")).unwrap();
         std::fs::create_dir_all(t.path.join("target/debug")).unwrap();
         std::fs::write(dir.join(SEEDING_FILE), "").unwrap();
         let t = ready(&dir, &common, &main, &head).unwrap();

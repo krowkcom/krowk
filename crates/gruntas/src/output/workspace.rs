@@ -88,7 +88,7 @@ fn crumbs(ws: &Workspaces) -> Vec<Breadcrumb> {
         crumb(
             "pin this repository",
             "krowk config set workspace <workspace>",
-            "writes .krowk/config.json at the repository root, so every command run inside it uses that workspace's key \
+            "writes .gruntas/config.json at the repository root, so every command run inside it uses that workspace's key \
              whoever runs it — <workspace> is a name from this list",
         ),
     ]

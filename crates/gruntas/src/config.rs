@@ -1,5 +1,5 @@
 //! Which workspace a command uses, layered: the global config, the repo's
-//! .krowk/config.json, GRUNTAS_WORKSPACE, then --workspace. Each layer that
+//! .gruntas/config.json, GRUNTAS_WORKSPACE, then --workspace. Each layer that
 //! names one is somebody's deliberate ask, so a malformed file is an error
 //! rather than a layer quietly skipped.
 
@@ -75,11 +75,11 @@ pub fn global_text() -> String {
     global_path().map(|p| p.display().to_string()).unwrap_or_else(|_| "(no home directory)".into())
 }
 
-/// <git-root>/.krowk/config.json, when `dir` is inside a checkout. The root is
+/// <git-root>/.gruntas/config.json, when `dir` is inside a checkout. The root is
 /// the nearest ancestor holding a .git, directory or file.
 pub fn repo_path(dir: &str) -> Option<PathBuf> {
     let start = if dir.is_empty() { std::env::current_dir().ok()? } else { std::path::absolute(dir).ok()? };
-    start.ancestors().find(|d| d.join(".git").symlink_metadata().is_ok()).map(|root| root.join(".krowk").join("config.json"))
+    start.ancestors().find(|d| d.join(".git").symlink_metadata().is_ok()).map(|root| root.join(".gruntas").join("config.json"))
 }
 
 /// The keys that only ever live in the global config, never a repo's.

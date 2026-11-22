@@ -148,12 +148,13 @@ fn r_back_3_codex_config_and_the_instances_home_are_kept_like_git() {
 fn r_sub_5_krowk_agent_definitions_are_kept_like_git() {
     let d = dir("krowk-guard");
     let scope = Scope::within(&d);
-    for path in [".krowk/agents/evil.md", ".KROWK/agents/evil.md", "sub/.krowk./agents/x.md", ".claude/agents/evil.md"] {
+    for path in [".gruntas/agents/evil.md", ".GRUNTAS/agents/evil.md", "sub/.gruntas./agents/x.md", ".claude/agents/evil.md"] {
         let r = scope.edit_path(path);
         assert!(r.as_ref().is_err_and(|e| e.contains("inside a .")), "{path}: {r:?}");
         assert!(matches!(scope.reach(&d.join(path), true), Reach::Fenced(_)), "{path}");
     }
-    assert!(bypassed(&d).edit_path(".krowk/agents/ok.md").is_ok());
+    assert!(bypassed(&d).edit_path(".gruntas/agents/ok.md").is_ok());
+    assert!(scope.edit_path(".krowk/agents/x.md").is_ok(), "an old .krowk is no fenced directory");
     let _ = std::fs::remove_dir_all(d);
 }
 
