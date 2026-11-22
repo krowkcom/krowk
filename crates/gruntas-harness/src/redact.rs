@@ -16,7 +16,7 @@ pub fn redacted(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let (mut copied, mut i) = (0, 0);
     while i < bytes.len() {
-        let boundary = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+        let boundary = starts_word(bytes, i);
         if boundary
             && bytes[i].is_ascii()
             && let Some((kind, end)) = secret_at(text, i)
@@ -33,6 +33,18 @@ pub fn redacted(text: &str) -> String {
     }
     out.push_str(&text[copied..]);
     out
+}
+
+/// Whether a token may start at `at`: not inside a word, but also not hidden
+/// by the JSON escape before it (`\n`, `\t`, `\u003d` end in a letter or digit).
+fn starts_word(bytes: &[u8], at: usize) -> bool {
+    let Some(prev) = at.checked_sub(1).map(|p| bytes[p]) else { return true };
+    if !(prev.is_ascii_alphanumeric() || prev == b'_') {
+        return true;
+    }
+    let escaped_letter = prev.is_ascii_alphabetic() && at >= 2 && bytes[at - 2] == b'\\';
+    let unicode_escape = at >= 6 && bytes[at - 6] == b'\\' && bytes[at - 5] == b'u' && bytes[at - 4..at].iter().all(u8::is_ascii_hexdigit);
+    escaped_letter || unicode_escape
 }
 
 /// The kind and end of the secret starting at `at`, if one does.
@@ -68,15 +80,17 @@ fn secret_at(text: &str, at: usize) -> Option<(&'static str, usize)> {
 /// A PEM private-key block: through its END line, or to the end of the text
 /// when it is cut off (a transcript line may have been truncated).
 fn private_key(rest: &str) -> Option<usize> {
-    let header_end = rest.find("-----\n").or_else(|| rest.find("-----"))?;
-    let header = &rest[..header_end];
-    if !header.ends_with("PRIVATE KEY") {
+    const BEGIN: usize = "-----BEGIN ".len();
+    let header_end = BEGIN + rest[BEGIN..].find("-----")?;
+    if !rest[BEGIN..header_end].ends_with("PRIVATE KEY") {
         return None;
     }
-    match rest.find("-----END ").and_then(|e| rest[e + 9..].find("-----").map(|c| e + 9 + c + 5)) {
-        Some(end) => Some(end),
-        None => Some(rest.len()),
-    }
+    let after = header_end + 5;
+    let end = rest[after..].find("-----END ").and_then(|e| {
+        let label = after + e + 9;
+        rest[label..].find("-----").map(|c| label + c + 5)
+    });
+    Some(end.unwrap_or(rest.len()))
 }
 
 /// `eyJ<header>.eyJ<payload>.<signature>`: three base64url parts, the first
@@ -168,6 +182,25 @@ mod tests {
         assert_eq!(redacted(text), "before\n[redacted: private key]\nafter");
         let rsa = "-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----";
         assert_eq!(redacted(rsa), "[redacted: private key]");
+    }
+
+    #[test]
+    fn a_private_key_in_json_or_crlf_or_one_line_goes_too() {
+        for text in [
+            "-----BEGIN PRIVATE KEY-----\\nMIIE\\n-----END PRIVATE KEY-----",
+            "-----BEGIN PRIVATE KEY-----\r\nMIIE\r\n-----END PRIVATE KEY-----",
+            "-----BEGIN EC PRIVATE KEY----- MIIE abc -----END EC PRIVATE KEY-----",
+        ] {
+            assert_eq!(redacted(&format!("k={text}!")), "k=[redacted: private key]!", "{text}");
+        }
+    }
+
+    #[test]
+    fn a_secret_after_a_json_escape_is_still_found() {
+        let gh = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+        assert_eq!(redacted(&format!("done.\\n{gh}")), "done.\\n[redacted: github token]");
+        assert_eq!(redacted(&format!("key\\u003d{gh}")), "key\\u003d[redacted: github token]");
+        assert_eq!(redacted(&format!("word{gh}")), format!("word{gh}"));
     }
 
     #[test]
