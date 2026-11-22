@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# install.sh — put krowk and krowk-mcp on this machine.
+# install.sh — put gruntas and gruntas-mcp on this machine.
 #
 #   curl -fsSL https://krowk.com/install | bash
 #
 # Both binaries come down together because scripts/dist.sh ships them in one
-# archive: an agent container that wants krowk usually wants krowk-mcp too, and
+# archive: an agent container that wants gruntas usually wants gruntas-mcp too, and
 # one download is one thing to get wrong.
 #
-# Which krowk comes down depends on who is installing it (R-PKG-3). A person
-# gets the full build: krowk's own agent (bare `krowk` opens it), its session
+# Which gruntas comes down depends on who is installing it (R-PKG-3). A person
+# gets the full build: gruntas's own agent (bare `gruntas` opens it), its session
 # store, everything. CI and containers get the lean build, the one agent
 # containers run: a few megabytes, no SQLite, nothing to fail on. CI is read
 # from the variables CI systems set (CI, GITHUB_ACTIONS, GITLAB_CI, …) and a
@@ -58,7 +58,7 @@ set -euo pipefail
 
 # GRUNTAS_REPO is how the GitHub Action names the repository it was taken from;
 # anyone else gets the canonical one.
-REPO="${GRUNTAS_REPO:-krowkcom/krowk}"
+REPO="${GRUNTAS_REPO:-gruntas/gruntas}"
 BIN_DIR="${GRUNTAS_BIN_DIR:-}"
 VERSION="${GRUNTAS_VERSION:-}"
 REQUIRE_SIGNATURE="${GRUNTAS_REQUIRE_SIGNATURE:-}"
@@ -69,7 +69,7 @@ TTY_DEVICE="${GRUNTAS_INSTALL_TTY:-/dev/tty}"
 # what this machine is, before anything is downloaded.
 BUILD=""
 BUILD_REASON=""
-# yes once the installed krowk is found to carry the agent (`krowk -p`).
+# yes once the installed gruntas is found to carry the agent (`gruntas -p`).
 HAS_AGENT=""
 CURL_SCHANNEL_FALLBACK_FLAG=""
 # Both of these are files rather than variables, and main fills them in. See
@@ -80,9 +80,9 @@ CURL_FALLBACK_NOTED_FILE=""
 # resolve_sha256 fills it once, before anything is downloaded.
 SHA256_CMD=()
 
-# The binaries this installs. krowk is first because it is the one that gets
+# The binaries this installs. gruntas is first because it is the one that gets
 # checked afterwards, and the one the next steps talk about.
-BINARIES=(krowk krowk-mcp)
+BINARIES=(gruntas gruntas-mcp)
 
 # Color helpers — NO_COLOR is honoured (https://no-color.org), and so is a stdout
 # that is not a terminal, which is the usual case under `curl | bash` in CI.
@@ -152,20 +152,20 @@ detect_platform() {
     darwin) os="darwin" ;;
     linux) os="linux" ;;
     mingw*|msys*|cygwin*) os="windows" ;;
-    *) error "krowk has no build for $os. Linux, macOS and Windows are what the release carries; from source: cargo install --locked --git https://github.com/${REPO} --features harness krowk" ;;
+    *) error "gruntas has no build for $os. Linux, macOS and Windows are what the release carries; from source: cargo install --locked --git https://github.com/${REPO} --features harness gruntas" ;;
   esac
 
   arch=$(uname -m)
   case "$arch" in
     x86_64|amd64) arch="amd64" ;;
     aarch64|arm64) arch="arm64" ;;
-    *) error "krowk has no build for $arch. amd64 and arm64 are what the release carries; from source: cargo install --locked --git https://github.com/${REPO} --features harness krowk" ;;
+    *) error "gruntas has no build for $arch. amd64 and arm64 are what the release carries; from source: cargo install --locked --git https://github.com/${REPO} --features harness gruntas" ;;
   esac
 
   # Windows ARM is deliberately not built. Say so, rather than offering a
   # download that was never uploaded.
   if [[ "$os" == "windows" && "$arch" == "arm64" ]]; then
-    error "No Windows ARM build is published. Install inside WSL2, or build from source: cargo install --locked --git https://github.com/${REPO} --features harness krowk"
+    error "No Windows ARM build is published. Install inside WSL2, or build from source: cargo install --locked --git https://github.com/${REPO} --features harness gruntas"
   fi
 
   echo "${os}_${arch}"
@@ -259,7 +259,7 @@ latest_version() {
   fi
 
   if api_json=$(curl_run -fsSL -H 'Accept: application/vnd.github+json' \
-    -H 'User-Agent: krowk-installer' \
+    -H 'User-Agent: gruntas-installer' \
     "https://api.github.com/repos/${REPO}/releases/latest"); then
     if [[ $api_json =~ \"tag_name\"[[:space:]]*:[[:space:]]*\"v?([^\"]+)\" ]]; then
       version="${BASH_REMATCH[1]}"
@@ -272,7 +272,7 @@ latest_version() {
 
   local why
   why=$(curl_reason)
-  error "Could not find the latest release of ${REPO}. ${why:+curl said: ${why}. }Name one with GRUNTAS_VERSION, or install from source: cargo install --locked --git https://github.com/${REPO} --features harness krowk"
+  error "Could not find the latest release of ${REPO}. ${why:+curl said: ${why}. }Name one with GRUNTAS_VERSION, or install from source: cargo install --locked --git https://github.com/${REPO} --features harness gruntas"
 }
 
 release_base_url() {
@@ -348,9 +348,9 @@ verify_signature() {
   identity="https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/v${version}"
   if ! signed_since "$version"; then
     if truthy "$REQUIRE_SIGNATURE"; then
-      error "krowk ${version} predates signed releases, and GRUNTAS_REQUIRE_SIGNATURE=${REQUIRE_SIGNATURE} asks for a signature. Nothing is installed: install 0.12.0 or later."
+      error "gruntas ${version} predates signed releases, and GRUNTAS_REQUIRE_SIGNATURE=${REQUIRE_SIGNATURE} asks for a signature. Nothing is installed: install 0.12.0 or later."
     fi
-    note "krowk ${version} predates signed releases, so only its checksum is checked."
+    note "gruntas ${version} predates signed releases, so only its checksum is checked."
     return
   fi
   if ! command -v cosign >/dev/null 2>&1; then
@@ -367,7 +367,7 @@ verify_signature() {
   fi
   if ! curl_run -fsSL "${base_url}/checksums.txt.sigstore.json" -o "${tmp_dir}/checksums.txt.sigstore.json"; then
     why=$(curl_reason)
-    error "checksums.txt.sigstore.json would not download from ${base_url}${why:+ (${why})}, and krowk ${version} was released signed. Nothing is installed."
+    error "checksums.txt.sigstore.json would not download from ${base_url}${why:+ (${why})}, and gruntas ${version} was released signed. Nothing is installed."
   fi
   if ! cosign verify-blob "${tmp_dir}/checksums.txt" --bundle "${tmp_dir}/checksums.txt.sigstore.json" \
     --certificate-identity "$identity" \
@@ -468,12 +468,12 @@ choose_build() {
   BUILD_REASON=""
 }
 
-# archive_for is the name scripts/dist.sh gives the archive: krowk_… for the
-# full build, krowk-lean_… for the lean one.
+# archive_for is the name scripts/dist.sh gives the archive: gruntas_… for the
+# full build, gruntas-lean_… for the lean one.
 archive_for() {
-  local version="$1" platform="$2" build="$3" ext="tar.gz" name="krowk"
+  local version="$1" platform="$2" build="$3" ext="tar.gz" name="gruntas"
   [[ "$platform" == windows_* ]] && ext="zip"
-  [[ "$build" == lean ]] && name="krowk-lean"
+  [[ "$build" == lean ]] && name="gruntas-lean"
   echo "${name}_${version}_${platform}.${ext}"
 }
 
@@ -491,21 +491,21 @@ download_binaries() {
   fetch_checksums "$base_url" "$tmp_dir"
   archive=$(archive_for "$version" "$platform" "$BUILD")
   # A release cut before the lean build existed has only the one archive.
-  # Asking it for krowk-lean_… would 404 every CI install of a pinned old
+  # Asking it for gruntas-lean_… would 404 every CI install of a pinned old
   # version, so that release's only build is installed, and said so.
   if [[ "$BUILD" == lean && -z "$(checksum_for "$tmp_dir" "$archive")" ]]; then
     local full
     full=$(archive_for "$version" "$platform" full)
     if [[ -n "$(checksum_for "$tmp_dir" "$full")" ]]; then
       BUILD=full
-      BUILD_REASON="krowk ${version} predates the lean build, so its one build is installed"
+      BUILD_REASON="gruntas ${version} predates the lean build, so its one build is installed"
       archive="$full"
     fi
   fi
 
-  step "Downloading krowk ${version} (${BUILD} build) for ${platform//_/ }, from ${REPO}"
+  step "Downloading gruntas ${version} (${BUILD} build) for ${platform//_/ }, from ${REPO}"
   if [[ "$BUILD" == lean ]]; then
-    note "The lean build: ${BUILD_REASON}. Pass --full, or set GRUNTAS_LEAN=0, for krowk's own agent."
+    note "The lean build: ${BUILD_REASON}. Pass --full, or set GRUNTAS_LEAN=0, for gruntas's own agent."
   elif [[ -n "$BUILD_REASON" ]]; then
     note "The full build: ${BUILD_REASON}."
   fi
@@ -573,7 +573,7 @@ setup_path() {
 
   {
     echo ""
-    echo "# Added by the krowk installer"
+    echo "# Added by the gruntas installer"
     echo "$export_line"
   } >>"$shell_rc"
   info "Added $BIN_DIR to PATH in $shell_rc"
@@ -587,13 +587,13 @@ verify_install() {
   local platform="$1" suffix="" installed err_file
   [[ "$platform" == windows_* ]] && suffix=".exe"
 
-  err_file=$(mktemp "${TMPDIR:-/tmp}/krowk-verify.XXXXXX")
-  if installed=$("${BIN_DIR}/krowk${suffix}" --version 2>"$err_file"); then
+  err_file=$(mktemp "${TMPDIR:-/tmp}/gruntas-verify.XXXXXX")
+  if installed=$("${BIN_DIR}/gruntas${suffix}" --version 2>"$err_file"); then
     rm -f "$err_file"
-    info "krowk ${installed} works"
+    info "gruntas ${installed} works"
     # Asked of the binary itself rather than read off the build asked for: a
     # release from before the agent, or the fallback for one, has none.
-    if "${BIN_DIR}/krowk${suffix}" -p --help >/dev/null 2>&1; then
+    if "${BIN_DIR}/gruntas${suffix}" -p --help >/dev/null 2>&1; then
       HAS_AGENT=yes
     fi
     return 0
@@ -603,7 +603,7 @@ verify_install() {
   why=$(<"$err_file")
   rm -f "$err_file"
 
-  local detail="krowk was installed to ${BIN_DIR} but will not run"
+  local detail="gruntas was installed to ${BIN_DIR} but will not run"
   [[ -n "$why" ]] && detail="${detail}: ${why}"
   if [[ "$platform" == windows_* ]]; then
     detail="$detail
@@ -613,7 +613,7 @@ verify_install() {
   error "$detail"
 }
 
-# warn_shadowed says so when another krowk answers first on PATH: the person
+# warn_shadowed says so when another gruntas answers first on PATH: the person
 # would go on running the old one and take it for the new (seen on a Mac,
 # where ~/.local/bin got the release and an older source build earlier on
 # PATH still answered). Only when BIN_DIR is on PATH already: otherwise the
@@ -622,16 +622,16 @@ warn_shadowed() {
   local platform="$1" suffix="" first other
   [[ "$platform" == windows_* ]] && suffix=".exe"
   path_contains_dir "$BIN_DIR" || return 0
-  first=$(command -v "krowk${suffix}" 2>/dev/null) || return 0
-  [[ "$first" -ef "${BIN_DIR}/krowk${suffix}" ]] && return 0
+  first=$(command -v "gruntas${suffix}" 2>/dev/null) || return 0
+  [[ "$first" -ef "${BIN_DIR}/gruntas${suffix}" ]] && return 0
   other=$("$first" --version 2>/dev/null) || other="a version that would not say"
-  step "Another krowk comes first on your PATH: ${first} (${other})"
-  note "Typing krowk runs that one, not the one just installed. Remove it, or put ${BIN_DIR} before $(dirname "$first") on PATH"
+  step "Another gruntas comes first on your PATH: ${first} (${other})"
+  note "Typing gruntas runs that one, not the one just installed. Remove it, or put ${BIN_DIR} before $(dirname "$first") on PATH"
 }
 
 # skills_dirs lists, one per line, where the agents on this machine look for
 # skills: Claude Code's directory (CLAUDE_CONFIG_DIR wins, since a user who moved
-# their config has said where it lives) and ~/.agents/skills, the shared one krowk
+# their config has said where it lives) and ~/.agents/skills, the shared one gruntas
 # and Codex read. Only directories that already exist count: one that does not
 # says no agent here reads it.
 skills_dirs() {
@@ -642,14 +642,42 @@ skills_dirs() {
   return 0
 }
 
-# The ownership marker and the version stamp krowk writes beside every skill it
+# The ownership marker and the version stamp gruntas writes beside every skill it
 # manages. This script is their only writer: an upgrade re-runs it, and a
 # directory it claimed once is one it recognises and refreshes after.
-MANAGED_MARKER=".managed-by-krowk-cli"
+MANAGED_MARKER=".managed-by-gruntas-cli"
 INSTALLED_VERSION_FILE=".installed-version"
-MANAGED_MARKER_CONTENT="This directory is managed by krowk. Manual edits will be overwritten on upgrade."
+MANAGED_MARKER_CONTENT="This directory is managed by gruntas. Manual edits will be overwritten on upgrade."
 
-# write_managed_file writes one file krowk owns, and never through a symlink.
+# The skill's directory and marker as the installer wrote them before the
+# rename. A krowk directory carrying that marker is this installer's own, and
+# is removed once the gruntas skill is in place (retire_old_skill).
+OLD_SKILL_NAME="krowk"
+OLD_MANAGED_MARKER=".managed-by-krowk-cli"
+OLD_MANAGED_MARKER_CONTENT="This directory is managed by krowk. Manual edits will be overwritten on upgrade."
+
+# marker_says FILE CONTENT says whether a marker file holds CONTENT. Bounded,
+# like every read on the Go side, and compared with the surrounding
+# whitespace stripped: an editor that added a trailing newline has not
+# changed who wrote the marker. The size is measured on the file, not on the
+# string: `$(...)` strips trailing newlines, so a sentence followed by two
+# thousand of them would otherwise measure as short. One byte past the bound
+# is read, so "a sentence" is told apart from "something much larger wearing
+# a marker's name", and the larger thing is refused rather than compared on
+# its first 512 bytes — which is what the Go half does.
+marker_says() {
+  local file="$1" want="$2" marker
+  [[ "$(head -c 513 -- "$file" | wc -c)" -le 512 ]] || return 1
+  marker=$(head -c 512 -- "$file")
+  # Trimmed as a whole string, front and back, which is what Go's
+  # TrimSpace does — a line-oriented strip would leave a leading newline
+  # in place and call two identical markers different.
+  marker="${marker#"${marker%%[![:space:]]*}"}"
+  marker="${marker%"${marker##*[![:space:]]}"}"
+  [[ "$marker" == "$want" ]]
+}
+
+# write_managed_file writes one file gruntas owns, and never through a symlink.
 # The bytes go to a temporary file in the destination's own directory and are
 # then renamed onto the final name: rename(2) replaces whatever is at that name
 # rather than following it, so a link planted in a managed file's name is
@@ -659,8 +687,8 @@ MANAGED_MARKER_CONTENT="This directory is managed by krowk. Manual edits will be
 #
 # The temp file is a sibling on purpose: a rename is only atomic within one
 # filesystem, and $TMPDIR is regularly on another one. Every failure path
-# removes it — a stranded .krowk-XXXXXX left in the skill directory would make
-# the next run's adoption check refuse a directory krowk itself littered.
+# removes it — a stranded .gruntas-XXXXXX left in the skill directory would make
+# the next run's adoption check refuse a directory gruntas itself littered.
 #
 # A directory at the destination is refused rather than replaced, and refused
 # before anything is written: `mv` onto a directory moves the file *into* it and
@@ -678,18 +706,18 @@ write_managed_file() {
     return 1
   fi
   if [[ -d "$path" ]]; then
-    note "${path} is a directory, not a file krowk wrote; leaving it alone."
+    note "${path} is a directory, not a file gruntas wrote; leaving it alone."
     return 1
   fi
   if [[ -e "$path" && ! -f "$path" ]]; then
     # A FIFO, a socket, a device: not a file this installer wrote, and not one
     # a rename should quietly replace.
-    note "${path} is not a regular file krowk wrote; leaving it alone."
+    note "${path} is not a regular file gruntas wrote; leaving it alone."
     return 1
   fi
 
   dir=$(dirname "$path")
-  tmp=$(mktemp "${dir}/.krowk-XXXXXX") || return 1
+  tmp=$(mktemp "${dir}/.gruntas-XXXXXX") || return 1
 
   cat >"$tmp" || { rm -f "$tmp"; return 1; }
   chmod 0644 "$tmp" || { rm -f "$tmp"; return 1; }
@@ -704,7 +732,7 @@ write_managed_file() {
     # rename is the one way mv can succeed and leave the file inside it. Only
     # this call's file is cleared away — anything else in there is not this
     # call's to remove — so the next run does not refuse the whole directory
-    # over krowk's own litter.
+    # over gruntas's own litter.
     if [[ -d "$path" && ! -L "$path" ]]; then
       rm -f "${path}/$(basename "$tmp")"
     fi
@@ -714,7 +742,7 @@ write_managed_file() {
 }
 
 # claim_skill_dir is the gate every skill write goes through: it creates a missing directory,
-# adopts an empty one, accepts one that already carries krowk's marker, and
+# adopts an empty one, accepts one that already carries gruntas's marker, and
 # refuses anything else. A populated directory without the marker is somebody's
 # own skill, and an installer that overwrote it would destroy work nobody asked
 # it to touch — so it says why and leaves it exactly as it found it.
@@ -725,7 +753,7 @@ write_managed_file() {
 # now therefore takes nothing from anybody, while anything else in the directory
 # means somebody put it there and the refusal stands. This is a one-time handoff
 # and it lives here, in the installer, rather than weakening the gate the rest
-# of krowk writes through.
+# of gruntas writes through.
 #
 # The tests are on the directory itself, never through it: -L before -d, because
 # a symlink here points at a directory this script never looked at, and writing
@@ -734,14 +762,14 @@ write_managed_file() {
 # not "there is nothing there". A directory somebody else owns is refused
 # whatever its mode says, because its owner can empty, re-mode or replace it
 # whenever they like and a marker in it would be vouching for nothing. And the
-# marker has to say what krowk's markers say: this is the destructive side, and
+# marker has to say what gruntas's markers say: this is the destructive side, and
 # a name is cheap to forge.
 claim_skill_dir() {
-  local dir="$1" entries name marker marker_bytes
+  local dir="$1" entries name
 
   # Two passes, like the Go gate: the first may find nothing there and try to
   # create it, and if something else won that race the second asks what
-  # actually landed instead of assuming krowk made it. There is no third.
+  # actually landed instead of assuming gruntas made it. There is no third.
   local pass
   for pass in 1 2; do
     if [[ -L "$dir" ]]; then
@@ -752,7 +780,7 @@ claim_skill_dir() {
     if [[ ! -e "$dir" ]]; then
       # mkdir -p on the parents, plain mkdir on the directory itself: mkdir -p
       # accepts an existing directory silently, which would turn "somebody
-      # else created this" into "krowk made this" — the one thing this gate
+      # else created this" into "gruntas made this" — the one thing this gate
       # exists to tell apart.
       if ! mkdir -p "$(dirname "$dir")"; then
         note "Cannot create $(dirname "$dir"), so no skill was written."
@@ -760,7 +788,7 @@ claim_skill_dir() {
       fi
       # -m 0755 rather than the umask's idea of a directory mode, which
       # mkdir -m ignores in both directions: a permissive umask would
-      # otherwise leave this world-writable, with krowk's marker vouching for
+      # otherwise leave this world-writable, with gruntas's marker vouching for
       # a directory any local user can rewrite the skill in, and a restrictive
       # one would leave it at a mode the binary half does not create. The Go
       # gate chmods to the same 0755 after its own mkdir for that reason.
@@ -786,7 +814,7 @@ claim_skill_dir() {
     fi
 
     if [[ ! -O "$dir" ]]; then
-      note "${dir} belongs to another user, so krowk is not the one managing it; leaving it alone."
+      note "${dir} belongs to another user, so gruntas is not the one managing it; leaving it alone."
       return 1
     fi
 
@@ -798,7 +826,7 @@ claim_skill_dir() {
     if [[ -L "${dir}/${MANAGED_MARKER}" ]]; then
       # A link in the marker's name proves nothing: its target was never
       # inspected, and shape is not ownership.
-      note "${dir} carries a symlink where krowk's marker should be; leaving it alone."
+      note "${dir} carries a symlink where gruntas's marker should be; leaving it alone."
       return 1
     elif [[ -f "${dir}/${MANAGED_MARKER}" ]]; then
       # Before the marker is read, let alone believed: a directory anybody may
@@ -810,30 +838,9 @@ claim_skill_dir() {
       # claim itself.
       chmod go-w "$dir" 2>/dev/null || true
 
-      # Bounded, like every read on the Go side, and compared with the
-      # surrounding whitespace stripped: an editor that added a trailing
-      # newline has not changed who wrote the marker.
-      # The size is measured on the file, not on the string: `$(...)` strips
-      # trailing newlines, so a sentence followed by two thousand of them
-      # would otherwise measure as short. One byte past the bound is read, so
-      # "a sentence" is told apart from "something much larger wearing a
-      # marker's name", and the larger thing is refused rather than compared
-      # on its first 512 bytes — which is what the Go half does.
-      marker_bytes=$(head -c 513 -- "${dir}/${MANAGED_MARKER}" | wc -c)
-      if [[ "$marker_bytes" -gt 512 ]]; then
-        note "${dir} carries a marker krowk did not write; leaving it alone."
-        note "Move it aside and re-run this installer to have krowk manage it."
-        return 1
-      fi
-      marker=$(head -c 512 -- "${dir}/${MANAGED_MARKER}")
-      # Trimmed as a whole string, front and back, which is what Go's
-      # TrimSpace does — a line-oriented strip would leave a leading newline
-      # in place and call two identical markers different.
-      marker="${marker#"${marker%%[![:space:]]*}"}"
-      marker="${marker%"${marker##*[![:space:]]}"}"
-      if [[ "$marker" != "${MANAGED_MARKER_CONTENT}" ]]; then
-        note "${dir} carries a marker krowk did not write; leaving it alone."
-        note "Move it aside and re-run this installer to have krowk manage it."
+      if ! marker_says "${dir}/${MANAGED_MARKER}" "$MANAGED_MARKER_CONTENT"; then
+        note "${dir} carries a marker gruntas did not write; leaving it alone."
+        note "Move it aside and re-run this installer to have gruntas manage it."
         return 1
       fi
       return 0
@@ -843,14 +850,14 @@ claim_skill_dir() {
       while IFS= read -r name; do
         [[ -n "$name" ]] || continue
         if [[ "$name" != "SKILL.md" || -L "${dir}/${name}" || ! -f "${dir}/${name}" ]]; then
-          note "${dir} was not written by krowk; leaving it alone."
-          note "Move it aside and re-run this installer to have krowk manage it."
+          note "${dir} was not written by gruntas; leaving it alone."
+          note "Move it aside and re-run this installer to have gruntas manage it."
           return 1
         fi
       done <<<"$entries"
-      # Adopted, so it is krowk's from here — and a directory somebody created
+      # Adopted, so it is gruntas's from here — and a directory somebody created
       # under a permissive umask may be world-writable, which would let any
-      # local user rewrite the skill with krowk's marker vouching for it.
+      # local user rewrite the skill with gruntas's marker vouching for it.
       chmod go-w "$dir" 2>/dev/null || true
     else
       # Empty and unmarked: adopted for the same reason, and closed to the
@@ -865,7 +872,33 @@ claim_skill_dir() {
   return 1
 }
 
-# install_skill is best-effort on purpose. krowk works without it; the skill only
+# retire_old_skill removes the skill directory the krowk installer wrote,
+# once the gruntas one has taken its place. Only a directory that is plainly
+# its own: not a symlink, this user's, carrying the krowk marker word for word,
+# and holding nothing but the three files that installer wrote. Anything else
+# is somebody's, and is left exactly as it is.
+retire_old_skill() {
+  local dir="$1" entries name
+  [[ -d "$dir" && ! -L "$dir" && -O "$dir" ]] || return 0
+  [[ -f "${dir}/${OLD_MANAGED_MARKER}" && ! -L "${dir}/${OLD_MANAGED_MARKER}" ]] || return 0
+  marker_says "${dir}/${OLD_MANAGED_MARKER}" "$OLD_MANAGED_MARKER_CONTENT" || return 0
+  entries=$(ls -A -- "$dir" 2>/dev/null) || return 0
+  while IFS= read -r name; do
+    case "$name" in
+      SKILL.md | "$OLD_MANAGED_MARKER" | "$INSTALLED_VERSION_FILE")
+        [[ -f "${dir}/${name}" && ! -L "${dir}/${name}" ]] || return 0
+        ;;
+      *)
+        note "${dir} holds files the krowk installer never wrote; leaving it alone."
+        return 0
+        ;;
+    esac
+  done <<<"$entries"
+  rm -f -- "${dir}/SKILL.md" "${dir}/${INSTALLED_VERSION_FILE}" "${dir}/${OLD_MANAGED_MARKER}" && rmdir -- "$dir" 2>/dev/null || return 0
+  info "Removed the old krowk skill at $(tilde "$dir")"
+}
+
+# install_skill is best-effort on purpose. gruntas works without it; the skill only
 # teaches an agent which command to reach for. So a machine with no agent config
 # gets a sentence saying where the skill lives, not an error and not a directory
 # created speculatively under someone's home. The skill is fetched once and
@@ -884,7 +917,7 @@ install_skill() {
   if [[ -z "$dirs" ]]; then
     note "No agent skills directory here (~/.claude/skills, ~/.agents/skills), so none was written."
     note "Create one and re-run, or copy"
-    note "https://github.com/${REPO}/blob/main/skills/krowk/SKILL.md yourself."
+    note "https://github.com/${REPO}/blob/main/skills/gruntas/SKILL.md yourself."
     return 0
   fi
 
@@ -893,24 +926,25 @@ install_skill() {
   else
     # From the tag that was installed, so the skill describes the binary that is
     # on this machine rather than whatever main says today.
-    url="https://raw.githubusercontent.com/${REPO}/v${version}/skills/krowk/SKILL.md"
+    url="https://raw.githubusercontent.com/${REPO}/v${version}/skills/gruntas/SKILL.md"
   fi
 
-  tmp=$(mktemp "${TMPDIR:-/tmp}/krowk-skill.XXXXXX")
+  tmp=$(mktemp "${TMPDIR:-/tmp}/gruntas-skill.XXXXXX")
   if ! curl_run -fsSL "$url" -o "$tmp"; then
     rm -f "$tmp"
-    note "Could not fetch the agent skill from ${url} — krowk itself is installed and working."
+    note "Could not fetch the agent skill from ${url} — gruntas itself is installed and working."
     return 0
   fi
 
   while IFS= read -r dir; do
-    if write_skill "${dir}/krowk" "$tmp" "$version"; then
-      written="${written:+${written}, }$(tilde "$dir")/krowk"
+    if write_skill "${dir}/gruntas" "$tmp" "$version"; then
+      written="${written:+${written}, }$(tilde "$dir")/gruntas"
+      retire_old_skill "${dir}/${OLD_SKILL_NAME}"
     fi
   done <<<"$dirs"
   rm -f "$tmp"
   if [[ -n "$written" ]]; then
-    info "krowk skill installed: ${written}"
+    info "gruntas skill installed: ${written}"
   fi
 }
 
@@ -931,7 +965,7 @@ write_skill() {
 
   # The marker goes down first, then the skill, then the version stamp. A run
   # interrupted anywhere in there leaves a directory that is still recognisably
-  # krowk's, so the next run refreshes it instead of refusing it; the stamp is
+  # gruntas's, so the next run refreshes it instead of refusing it; the stamp is
   # last because a version claimed before the file it describes was written
   # would be a lie about what is on disk.
   #
@@ -939,11 +973,11 @@ write_skill() {
   # binaries are already in place and working, and a skill that could not be
   # written is a sentence to print, not a reason to fail an install.
   if ! printf '%s\n' "$MANAGED_MARKER_CONTENT" | write_managed_file "${dest}/${MANAGED_MARKER}"; then
-    note "Could not mark ${dest} as krowk's, so no skill was written — krowk itself is installed and working."
+    note "Could not mark ${dest} as gruntas's, so no skill was written — gruntas itself is installed and working."
     return 1
   fi
   if ! write_managed_file "${dest}/SKILL.md" <"$src"; then
-    note "Could not write ${dest}/SKILL.md — krowk itself is installed and working."
+    note "Could not write ${dest}/SKILL.md — gruntas itself is installed and working."
     return 1
   fi
   if ! printf '%s\n' "$version" | write_managed_file "${dest}/${INSTALLED_VERSION_FILE}"; then
@@ -954,15 +988,15 @@ write_skill() {
 
 next_steps() {
   echo ""
-  echo "  Run krowk:"
+  echo "  Run gruntas:"
   if [[ "$HAS_AGENT" == yes ]]; then
-    echo "    $(bold "krowk")                         Set this machine up: sign in and connect a model"
-    echo "    $(bold "krowk push screenshot.png")     Publish a file to a link, no key needed, lasts a day"
+    echo "    $(bold "gruntas")                         Set this machine up: sign in and connect a model"
+    echo "    $(bold "gruntas push screenshot.png")     Publish a file to a link, no key needed, lasts a day"
   else
-    echo "    $(bold "krowk push screenshot.png")     Publish a file to a link, no key needed, lasts a day"
-    echo "    $(bold "krowk login")                   Sign in, and uploads keep, group and stay yours"
+    echo "    $(bold "gruntas push screenshot.png")     Publish a file to a link, no key needed, lasts a day"
+    echo "    $(bold "gruntas login")                   Sign in, and uploads keep, group and stay yours"
   fi
-  echo "    $(bold "krowk help")                    Everything else, add --json for the surface as data"
+  echo "    $(bold "gruntas help")                    Everything else, add --json for the surface as data"
   echo ""
 }
 
@@ -989,7 +1023,7 @@ main() {
   done
 
   echo ""
-  echo "  $(bold "krowk") — a coding agent harness: one session, any machine, model or agent"
+  echo "  $(bold "gruntas") — a coding agent harness: one session, any machine, model or agent"
   echo ""
 
   command -v curl >/dev/null 2>&1 || error "curl is needed and is not installed"

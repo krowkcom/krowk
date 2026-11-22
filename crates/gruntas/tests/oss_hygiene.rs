@@ -116,7 +116,7 @@ fn r_oss_6_no_vendor_name_in_a_crate_binary_feature_or_package() {
             names.push(format!("npm {}", pkg["name"].as_str().unwrap()));
         }
     }
-    assert!(names.iter().any(|n| n == "binary krowk"), "the walk found krowk's own binary: {names:?}");
+    assert!(names.iter().any(|n| n == "binary gruntas"), "the walk found gruntas's own binary: {names:?}");
     let offending: Vec<String> = names.iter().filter_map(|n| vendor_in(n).map(|v| format!("{n} ({v})"))).collect();
     assert!(offending.is_empty(), "a name krowk ships under carries a vendor's: {offending:?}");
 }
@@ -196,8 +196,8 @@ fn r_oss_3_releases_are_logged_where_krowk_upgrade_can_check_them_and_checked_be
     }
     assert!(job("verifier").contains("cargo test --locked -p gruntas --lib --no-run"), "the verifier is built, unprivileged, from this tag");
     assert!(
-        job("verify").contains("r_oss_3_the_release_being_published_verifies_as_krowk_upgrade_will_check_it"),
-        "the fresh bundle is checked by krowk upgrade's code"
+        job("verify").contains("r_oss_3_the_release_being_published_verifies_as_gruntas_upgrade_will_check_it"),
+        "the fresh bundle is checked by gruntas upgrade's code"
     );
     assert!(job("sign").contains("needs: [check, dist, reproduce]"), "nothing is signed before the rebuild matched");
     assert!(job("verify").contains("needs: [check, verifier, sign]"), "the check reads the bundles sign wrote");

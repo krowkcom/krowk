@@ -1,6 +1,6 @@
-# @krowk/mcp
+# @gruntas/mcp
 
-The krowk MCP server. It gives an agent `krowk_push`, `krowk_list_artifacts`,
+The gruntas MCP server. It gives an agent `krowk_push`, `krowk_list_artifacts`,
 `krowk_get_artifact`, `krowk_claim_artifact`, `krowk_get_run` and
 `krowk_verify_key` over stdio, so output from a task becomes a permalink without
 anybody shelling out.
@@ -10,7 +10,7 @@ anybody shelling out.
   "mcpServers": {
     "krowk": {
       "command": "npx",
-      "args": ["-y", "@krowk/mcp"],
+      "args": ["-y", "@gruntas/mcp"],
       "env": { "GRUNTAS_TOKEN": "krowk_sk_..." }
     }
   }
@@ -24,8 +24,8 @@ publishing something else entirely.
 
 ## What this package is
 
-A launcher. The server itself is a single static Go binary, `krowk-mcp`.
-Installing this package pulls one more package — `@krowk/cli-linux-x64` or
+A launcher. The server itself is a single static Rust binary, `gruntas-mcp`.
+Installing this package pulls one more package — `@gruntas/cli-linux-x64` or
 whichever matches your machine — through the same npm registry as everything
 else. The platform packages carry both binaries, which is why the one this
 server needs is named for the CLI. There
@@ -35,16 +35,16 @@ a proxy, under `npm ci --ignore-scripts`, and off a private mirror.
 If Node is not already in the picture, point the client at the binary instead:
 
 ```bash
-cargo install --locked --git https://github.com/krowkcom/krowk krowk --bin krowk-mcp
-# or grab an archive from https://github.com/krowkcom/krowk/releases/latest
+cargo install --locked --git https://github.com/gruntas/gruntas gruntas --bin gruntas-mcp
+# or grab an archive from https://github.com/gruntas/gruntas/releases/latest
 ```
 
 ```json
-{ "mcpServers": { "krowk": { "command": "krowk-mcp" } } }
+{ "mcpServers": { "krowk": { "command": "gruntas-mcp" } } }
 ```
 
 ## Documentation
 
-Tools, arguments, and the errors they return: <https://github.com/krowkcom/krowk>.
+Tools, arguments, and the errors they return: <https://github.com/gruntas/gruntas>.
 
 MIT.

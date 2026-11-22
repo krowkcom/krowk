@@ -79,7 +79,7 @@ jobs:
           done
 
       # The launcher can only be exercised on the runner's own platform, but
-      # that is the path every `npx @krowk/cli` takes, so it is worth taking.
+      # that is the path every `npx @gruntas/cli` takes, so it is worth taking.
       - name: Run both binaries through the npm launchers
         run: |
           set -eux
@@ -88,12 +88,12 @@ jobs:
           cd "$work"
           npm init -y >/dev/null
           npm install --no-audit --no-fund \
-            "$GITHUB_WORKSPACE/dist/npm-tarballs/krowk-cli-darwin-arm64-$version.tgz" \
-            "$GITHUB_WORKSPACE/dist/npm-tarballs/krowk-cli-$version.tgz" \
-            "$GITHUB_WORKSPACE/dist/npm-tarballs/krowk-mcp-$version.tgz"
-          test "$(./node_modules/.bin/krowk --version)" = "$version"
-          test "$(./node_modules/.bin/krowk-mcp --version)" = "$version"
-          ./node_modules/.bin/krowk --help >/dev/null
+            "$GITHUB_WORKSPACE/dist/npm-tarballs/gruntas-cli-darwin-arm64-$version.tgz" \
+            "$GITHUB_WORKSPACE/dist/npm-tarballs/gruntas-cli-$version.tgz" \
+            "$GITHUB_WORKSPACE/dist/npm-tarballs/gruntas-mcp-$version.tgz"
+          test "$(./node_modules/.bin/gruntas --version)" = "$version"
+          test "$(./node_modules/.bin/gruntas-mcp --version)" = "$version"
+          ./node_modules/.bin/gruntas --help >/dev/null
 
       # Serves the archives and checksums.txt the build above wrote and
       # installs out of them, so what is tested is the release rather than a
@@ -127,18 +127,18 @@ jobs:
           chmod +x dist/${{ matrix.triple }}/* dist/${{ matrix.triple }}-lean/*
           docker run --rm -v "$PWD/dist:/d:ro" -e GRUNTAS_NO_UPDATE_CHECK=1 -e HOME=/tmp/h alpine:3 sh -euxc '
             mkdir -p "$HOME"
-            /d/${{ matrix.triple }}/krowk --version
-            /d/${{ matrix.triple }}/krowk-mcp --version
-            /d/${{ matrix.triple }}/krowk sessions import --from all --json
+            /d/${{ matrix.triple }}/gruntas --version
+            /d/${{ matrix.triple }}/gruntas-mcp --version
+            /d/${{ matrix.triple }}/gruntas sessions import --from all --json
             # Fresh container, no account: doctor reports and exits non-zero
             # for what is unset; what matters here is that it ran and reported.
-            /d/${{ matrix.triple }}/krowk doctor --json > /tmp/doctor.json || true
+            /d/${{ matrix.triple }}/gruntas doctor --json > /tmp/doctor.json || true
             grep -q "\"checks\"" /tmp/doctor.json
-            printf "%s\n" "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}" | /d/${{ matrix.triple }}/krowk-mcp
-            /d/${{ matrix.triple }}-lean/krowk --version
-            /d/${{ matrix.triple }}-lean/krowk doctor --json > /tmp/doctor-lean.json || true
+            printf "%s\n" "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}" | /d/${{ matrix.triple }}/gruntas-mcp
+            /d/${{ matrix.triple }}-lean/gruntas --version
+            /d/${{ matrix.triple }}-lean/gruntas doctor --json > /tmp/doctor-lean.json || true
             grep -q "\"checks\"" /tmp/doctor-lean.json
-            ! /d/${{ matrix.triple }}-lean/krowk sessions --json 2>/tmp/lean.json
+            ! /d/${{ matrix.triple }}-lean/gruntas sessions --json 2>/tmp/lean.json
             grep -q not_in_build /tmp/lean.json
           '
 
@@ -160,15 +160,15 @@ jobs:
         run: |
           set -eux
           bin=dist/x86_64-pc-windows-gnu
-          $bin/krowk.exe --version
-          $bin/krowk-mcp.exe --version
-          $bin/krowk.exe --help >/dev/null
+          $bin/gruntas.exe --version
+          $bin/gruntas-mcp.exe --version
+          $bin/gruntas.exe --help >/dev/null
           set +e
-          $bin/krowk.exe sessions --json 2> err.json
+          $bin/gruntas.exe sessions --json 2> err.json
           code=$?
           set -e
           cat err.json
           test "$code" = 1
           grep -q unsupported_os err.json
-          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"ping"}' | $bin/krowk-mcp.exe
-          dist/x86_64-pc-windows-gnu-lean/krowk.exe --version
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"ping"}' | $bin/gruntas-mcp.exe
+          dist/x86_64-pc-windows-gnu-lean/gruntas.exe --version

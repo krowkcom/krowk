@@ -85,7 +85,7 @@ jobs:
           export RUNNER_TEMP=/tmp/pin GITHUB_PATH=/tmp/pin_path
           mkdir -p /tmp/pin && : > /tmp/pin_path
           bash /tmp/install_step.sh
-          got=$(/tmp/pin/krowk-bin/krowk --version)
+          got=$(/tmp/pin/gruntas-bin/gruntas --version)
           [ "$got" = "0.7.0" ] || { echo "::error::installed $got, want the pinned 0.7.0" >&2; exit 1; }
 
       # A remote `uses: owner/repo@ref`: the runner fetches the whole
@@ -122,7 +122,7 @@ jobs:
           export RUNNER_TEMP=/tmp/major GITHUB_PATH=/tmp/major_path
           mkdir -p /tmp/major && : > /tmp/major_path
           bash /tmp/install_step.sh
-          got=$(/tmp/major/krowk-bin/krowk --version)
+          got=$(/tmp/major/gruntas-bin/gruntas --version)
           case "$got" in
             0.*) echo "@v0 installed $got" ;;
             *) echo "::error::@v0 installed $got, which the guard should have refused" >&2; exit 1 ;;

@@ -6,7 +6,7 @@
 // already pointed at. That is what makes this work behind a proxy, under
 // `npm ci --ignore-scripts`, and off a private mirror.
 //
-// This file is duplicated in npm/mcp/bin/krowk-mcp.js. Two published packages
+// This file is duplicated in npm/mcp/bin/gruntas-mcp.js. Two published packages
 // each have to stand alone, and a shared module would mean a third package or a
 // codegen step to save sixty lines. npm/build.mjs checks both copies name the
 // same platforms, which is the drift that would actually bite.
@@ -17,14 +17,14 @@ const path = require("node:path");
 
 // Keyed by `${process.platform}-${process.arch}`, so the lookup is the identity.
 const PACKAGES = {
-  "darwin-arm64": "@krowk/cli-darwin-arm64",
-  "darwin-x64": "@krowk/cli-darwin-x64",
-  "linux-arm64": "@krowk/cli-linux-arm64",
-  "linux-x64": "@krowk/cli-linux-x64",
-  "win32-x64": "@krowk/cli-win32-x64",
+  "darwin-arm64": "@gruntas/cli-darwin-arm64",
+  "darwin-x64": "@gruntas/cli-darwin-x64",
+  "linux-arm64": "@gruntas/cli-linux-arm64",
+  "linux-x64": "@gruntas/cli-linux-x64",
+  "win32-x64": "@gruntas/cli-win32-x64",
 };
 
-const BINARY = "krowk";
+const BINARY = "gruntas";
 
 // fail prints the reason and the next action, then stops. Every exit from here
 // is a person or an agent who cannot upload, so neither is left guessing.
@@ -44,7 +44,7 @@ function locate() {
       "Built for: " + Object.keys(PACKAGES).sort().join(", ") + ".",
       "Everywhere else, build it yourself with Rust (rustup.rs):",
       "",
-      "  cargo install --locked --git https://github.com/krowkcom/krowk --features harness krowk",
+      "  cargo install --locked --git https://github.com/gruntas/gruntas --features harness gruntas",
     ]);
   }
 
@@ -59,11 +59,11 @@ function locate() {
       "--no-optional, --omit=optional and --ignore-optional. A lockfile",
       "written on another platform does the same thing.",
       "",
-      "  npm install @krowk/cli --include=optional",
+      "  npm install @gruntas/cli --include=optional",
       "",
       "Or take the binary straight from the release, no Node involved:",
       "",
-      "  https://github.com/krowkcom/krowk/releases/latest",
+      "  https://github.com/gruntas/gruntas/releases/latest",
     ]);
   }
 
@@ -91,7 +91,7 @@ if (result.error) {
   ]);
 }
 
-// Re-raise the signal that killed the child, so `krowk` dies the way the binary
+// Re-raise the signal that killed the child, so `gruntas` dies the way the binary
 // did and a caller waiting on the exit status reads the same thing either way.
 if (result.signal) {
   process.kill(process.pid, result.signal);

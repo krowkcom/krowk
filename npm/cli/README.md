@@ -1,4 +1,4 @@
-# @krowk/cli
+# @gruntas/cli
 
 A coding agent harness: one session, on any machine, model or agent. It runs
 Claude, GPT, Grok or any OpenAI-compatible model on your existing subscription
@@ -8,15 +8,15 @@ hooks; and publishes screenshots, diffs and logs as links that unfurl in
 GitHub, Slack, Linear and Basecamp.
 
 ```bash
-npx @krowk/cli connect     # sign in to a provider
-npx @krowk/cli             # open the agent here
-npx @krowk/cli -p "fix the build"
+npx @gruntas/cli connect     # sign in to a provider
+npx @gruntas/cli             # open the agent here
+npx @gruntas/cli -p "fix the build"
 ```
 
 Publishing works on its own too, with no account:
 
 ```bash
-npx @krowk/cli push screenshot.png \
+npx @gruntas/cli push screenshot.png \
   --pull-request="https://github.com/acme/storefront/pull/412"
 ```
 
@@ -27,16 +27,11 @@ npx @krowk/cli push screenshot.png \
 
 ## What this package is
 
-A launcher. krowk itself is a single static Rust binary with no runtime and no
-dependencies — this package carries the full build, the agent included; this package exists because the website says `npx @krowk/cli push`
+A launcher. gruntas itself is a single static Rust binary with no runtime and no
+dependencies — this package carries the full build, the agent included; this package exists because the website says `npx @gruntas/cli push`
 and some people are already in Node.
 
-The binary it installs is still called `krowk`, and npx runs a package's only bin
-whatever that bin is named, so `npx @krowk/cli push` works. The bare `krowk` name
-on npm is not available — npm's typosquat filter rejects it as too similar to the
-existing `growl` package — which is why this ships under the `@krowk` scope.
-
-Installing it pulls one more package — `@krowk/cli-linux-x64` or whichever
+Installing it pulls one more package — `@gruntas/cli-linux-x64` or whichever
 matches your machine — through the same npm registry as everything else. There
 is no postinstall script and no download from a second host, so it works behind
 a proxy, under `npm ci --ignore-scripts`, and off a private mirror.
@@ -45,13 +40,13 @@ If Node is not already in the picture, skip it. The binary is the primary
 channel:
 
 ```bash
-cargo install --locked --git https://github.com/krowkcom/krowk --features harness krowk
-# or grab an archive from https://github.com/krowkcom/krowk/releases/latest
+cargo install --locked --git https://github.com/gruntas/gruntas --features harness gruntas
+# or grab an archive from https://github.com/gruntas/gruntas/releases/latest
 ```
 
 ## Documentation
 
 The agent, commands, flags, output formats, MCP, and what the CLI refuses to
-upload and why: <https://github.com/krowkcom/krowk>.
+upload and why: <https://github.com/gruntas/gruntas>.
 
 MIT.

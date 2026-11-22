@@ -512,11 +512,11 @@ mod tests {
 
     /// The release workflow runs this on the bundle it has just signed,
     /// before anything is published (release.yml: "Check the signature as
-    /// krowk upgrade will"): a change in what cosign writes fails the
-    /// release, not every krowk's next upgrade.
+    /// gruntas upgrade will"): a change in what cosign writes fails the
+    /// release, not every gruntas's next upgrade.
     #[test]
     #[ignore = "needs GRUNTAS_RELEASE_DIR and GRUNTAS_RELEASE_VERSION, which the release workflow sets"]
-    fn r_oss_3_the_release_being_published_verifies_as_krowk_upgrade_will_check_it() {
+    fn r_oss_3_the_release_being_published_verifies_as_gruntas_upgrade_will_check_it() {
         let dir = std::path::PathBuf::from(std::env::var("GRUNTAS_RELEASE_DIR").expect("GRUNTAS_RELEASE_DIR"));
         let version = std::env::var("GRUNTAS_RELEASE_VERSION").expect("GRUNTAS_RELEASE_VERSION");
         let sums = std::fs::read(dir.join("checksums.txt")).unwrap();
