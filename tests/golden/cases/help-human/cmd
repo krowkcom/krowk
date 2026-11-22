@@ -1,13 +1,13 @@
 # The human help, as a person reads it: the overview, every command, the
 # topics, one topic and one command's own page. Held under 52 lines and 80
-# columns by a unit test in crates/krowk/src/cli/help.rs; this build has no
+# columns by a unit test in crates/gruntas/src/cli/help.rs; this build has no
 # agent, so no AGENT group and no -p, --model or --resume.
-@tty krowk --help
-krowk help --format human
-krowk help --all --format human
-krowk help topics --format human
-krowk help exit-codes --format human
-krowk help exit-codes --json
-krowk help push --format human
-krowk help exit codes --format human
-krowk help agents --format human
+@tty gruntas --help
+gruntas help --format human
+gruntas help --all --format human
+gruntas help topics --format human
+gruntas help exit-codes --format human
+gruntas help exit-codes --json
+gruntas help push --format human
+gruntas help exit codes --format human
+gruntas help agents --format human

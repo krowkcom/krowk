@@ -1,7 +1,7 @@
 @registry
 @file a.txt hello
-krowk push a.txt
+gruntas push a.txt
 @let ART .data.artifacts[0].slug
 @let TOKEN .data.artifacts[0].claim_token
-@env KROWK_TOKEN=krowk_sk_freeplan
-krowk claim {ART} {TOKEN}
+@env GRUNTAS_TOKEN=krowk_sk_freeplan
+gruntas claim {ART} {TOKEN}

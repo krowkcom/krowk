@@ -1,0 +1,2183 @@
+//! The Claude Code backend (R-BACK-1): gruntas drives the user's own,
+//! unmodified `claude` binary — the one compliant way to run a turn on a
+//! Claude subscription rather than API tokens — as one long-lived process
+//! per session:
+//!
+//! ```text
+//! claude -p --input-format stream-json --output-format stream-json --verbose
+//!        --include-partial-messages --replay-user-messages --permission-prompt-tool stdio
+//!        --mcp-config '{"mcpServers":{"gruntas":{"type":"sdk","name":"gruntas"}}}' --strict-mcp-config
+//!        --model <model> --permission-mode default|plan
+//!        [--resume <claude session>] [--effort <level>]
+//! ```
+//!
+//! Each prompt is one `user` line on the process's stdin, and its turn is
+//! everything up to the `result` line; the stream in between is translated
+//! into gruntas's events by `stream`, so a backend turn lands in the same log
+//! in the same shape as a native one (R-BACK-5). The process stays up
+//! between turns of the session, kept by the host; a new gruntas process
+//! starts a new one on `--resume` with the Claude session id the log holds.
+//!
+//! **Steering** (R-STEER-1) is written to stdin as it arrives, a `user` line
+//! each, which Claude Code reads at its next model call. With
+//! `--replay-user-messages` it echoes each line it reads (`isReplay`), and
+//! that replay is where the steer is logged. One that arrives as the model
+//! writes its last answer is read in a turn Claude Code begins by itself
+//! after the `result`, which the gruntas turn reads on into, so it does not
+//! complete with steering unread; an interrupt cancels what was not read
+//! (`cancel_queued`), and what its answer names cancelled goes back on the
+//! turn's result — as when that turn has not begun within `STEER_GRACE`,
+//! and gruntas interrupts to stop waiting. Steering is
+//! written only to a binary that announces it can cancel it so
+//! (`interrupt_cancel_queued_v1`); an older one keeps it for the result.
+//!
+//! **The control protocol** rides the same pipes, as `control_request` /
+//! `control_response` lines. It is not publicly documented; the reference is
+//! Anthropic's open-source `claude-agent-sdk-python` (`_internal/query.py`),
+//! and what this build speaks was checked against `claude` 2.1.280:
+//!
+//! | subtype | direction | what gruntas does |
+//! |---|---|---|
+//! | `initialize` | gruntas → claude | first, on every process, registering the paste guard as a `PreToolUse` hook on `Bash`, `EnterWorktree`, `Agent` and `Task` and asking for agents' own text (`forwardSubagentText`); its answer lists the `models`, which is how in-place model switching is detected |
+//! | `can_use_tool` | claude → gruntas | judged by gruntas's permission evaluator (`crate::permissions`), asking the person when a client is attached; `AskUserQuestion` is the person's to answer (`crate::ask`), its answers returned in `updatedInput`; one an agent asks (`agent_id`, else the call's `tool_use_id`) is asked as that agent's child session |
+//! | `hook_callback` | claude → gruntas | the paste guard (`crate::paste_guard`) and the tooling guard (`crate::tooling_guard`): a `gh` post carrying a bare gruntas card link, a worktree made by hand or a paste-site upload is denied, whatever the mode and the person's allow rules |
+//! | `mcp_message` | claude → gruntas | a JSON-RPC message for the `gruntas` MCP server, answered by `crate::bridge` |
+//! | `interrupt` | gruntas → claude | a `Command::Interrupt`; the turn ends at the next `result` and the process lives on |
+//! | `set_model` | gruntas → claude | a turn on another model of the same instance, when `initialize` listed models; otherwise a new process on `--resume` |
+//! | `stop_task` | gruntas → claude | a `Command::Interrupt` of one agent's child session: the agent alone stops (`task_updated` `killed`, `task_notification` `stopped`), then the answer; the parent's turn goes on |
+//!
+//! **Between turns** the process is not silent: an agent the model started
+//! with Claude Code's `Agent` tool (`run_in_background`) runs on, asks
+//! `can_use_tool`, and when it finishes Claude Code begins a turn by itself
+//! to answer it — a `system`/`init` with no prompt, whose `result` carries
+//! `origin`. One task reads stdout for the life of the process, and between
+//! turns an idle loop holds it: it answers what Claude Code asks under the
+//! last turn's permissions (nobody is there to be asked), keeps the list of
+//! agents (`system` `task_started`, `task_updated`, `task_notification`,
+//! `background_tasks_changed`), meters their calls, reports their own
+//! conversations (`children`), and stops at the first
+//! line of a turn Claude Code began, which then waits — `pending`, and
+//! `turn.unprompted` to the host's watchers — until the host runs it as a
+//! turn of the session (`Command::Continue`). A prompt never ends at such a
+//! turn's `result`: the host runs a waiting one first, and one that begins
+//! after the prompt was sent is folded into the prompt's turn.
+//!
+//! Features are detected, never assumed from a version number: the
+//! capabilities `system`/`init` announces (`interrupt_receipt_v1` — an
+//! interrupt is acknowledged, so an unacknowledged one is given up on
+//! sooner) and the `initialize` answer.
+//!
+//! **What gruntas is asked, and what it is not.** Claude Code decides some
+//! tool calls itself before it asks anyone: an allow rule in the user's or
+//! the project's settings (`permissions.allow`), a `PreToolUse` hook that
+//! approves, an agent's own `permissionMode`, and the read-only calls its
+//! mode never asks about. Those run without gruntas's `can_use_tool` — that
+//! is Claude Code behaving as its user configured it, from the same
+//! `.claude/settings.json` files gruntas's own rules read. Every deny rule
+//! gruntas holds is handed to it as `--disallowedTools`, so what Claude Code
+//! would allow by itself still meets them: deny wins here too. What gruntas
+//! also holds is the mode: the process is started `--permission-mode default` (or `plan`),
+//! so a `defaultMode` in settings cannot loosen it, and a turn whose
+//! `system`/`init` reports a mode looser than gruntas's is stopped before it
+//! runs anything. Every call Claude Code does ask about is judged by gruntas's
+//! permission evaluator (`crate::permissions`) under Claude Code's own tool
+//! names, and asked of the person when a client is attached.
+//!
+//! **MCP servers.** Claude Code is started `--strict-mcp-config` with only
+//! gruntas's bridge, so it loads none of the person's servers itself. When the
+//! session has any (`crate::mcp::discover`: the trust gate, Claude Code's
+//! approval lists), the bridge also offers `mcp_search` and `mcp_call`, run
+//! on the session's own connections and sign-ins; a call is judged as
+//! `Mcp(server:tool)` — asked by `can_use_tool`, and judged again by the
+//! bridge, which refuses a call that needed asking and was not. Claude
+//! Code's own agents reach the same tools under gruntas's rules.
+//!
+//! **Compliance** (R-BACK-2) is structural: gruntas starts the binary as the
+//! user installed it, sends it no system prompt and no headers, sets only
+//! `CLAUDE_CONFIG_DIR` and the instance's own environment, and never opens
+//! Claude's credentials — the login is Claude Code's, made with `claude auth
+//! login` and reported by `claude auth status` (`auth`). A compliance test
+//! holds every source file and every run to that.
+
+pub mod auth;
+pub mod children;
+pub mod messages;
+pub mod stream;
+
+use crate::bridge::{self, BridgeEnv};
+use crate::engine::{cancelled, BoxFuture, Engine, EngineError, EngineEvent, Events, Idle, Pending, Steer, Steers, TurnContext, TurnEnd};
+use crate::instances::{Backend, Resolved};
+use crate::permissions::{self, Access, Call, Gate, Verdict};
+use crate::protocol::{BackendAgent, Billing, Effort, Item, ItemKind, ModelRef, PermissionMode, ToolDefinition, WireApi};
+use serde_json::{json, Value};
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use children::Children;
+use stream::{Init, Meter, Translator};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin};
+use tokio::sync::{mpsc, oneshot};
+
+/// The binary a `claude-code` instance runs when its definition names none.
+pub const BINARY: &str = "claude";
+/// The backend's name in the log.
+pub const BACKEND: &str = "claude-code";
+
+/// How long the process has to answer `initialize`: long enough for a cold
+/// start with plugins and hooks, short enough that a binary that is not
+/// Claude Code is named rather than waited on.
+const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(60);
+/// After an interrupt, how long the turn waits for Claude Code's `result`
+/// before the process is stopped; the session continues on `--resume`.
+const INTERRUPT_GRACE: Duration = Duration::from_secs(10);
+/// With `interrupt_receipt_v1`, how long an interrupt may go unacknowledged.
+const RECEIPT_GRACE: Duration = Duration::from_secs(5);
+/// How long a `stop_task` waits to be written — one handed to a process
+/// nothing reads (a turn it began, waiting for the host) is given up on,
+/// and never sent late — and then, once written, for Claude Code's answer.
+const STOP_GRACE: Duration = Duration::from_secs(10);
+/// How long a process that was asked to exit (stdin closed) gets.
+const EXIT_GRACE: Duration = Duration::from_secs(5);
+/// The end of stderr kept for a failure's words.
+const STDERR_TAIL: usize = 4096;
+/// After a `result` with steering written and not yet replayed, how long
+/// Claude Code has to begin the turn that reads it (at once, as recorded)
+/// before gruntas stops waiting: an interrupt cancels it, and what its
+/// answer names cancelled is handed back.
+const STEER_GRACE: Duration = Duration::from_secs(10);
+
+/// What a turn's context record says of the system prompt: it is Claude
+/// Code's, and gruntas neither sees nor changes it.
+pub const SYSTEM_NOTE: &str = "(Claude Code's own system prompt: gruntas sends none and does not see it)";
+
+/// What the prompt item of a turn Claude Code began by itself starts
+/// with: clients show it as gruntas's note, not the person's words.
+pub const UNPROMPTED: &str = "<unprompted>";
+
+/// What a limit's error ends with, unless the session's `rollover` is `off`.
+pub const CONTINUE_HINT: &str = " — continue on another instance with --model, or wait";
+
+/// The prompt item of a turn Claude Code began by itself: why it began.
+pub fn unprompted(reason: &str) -> String {
+    format!("{UNPROMPTED}Claude Code began this turn by itself: {reason}. gruntas sent no prompt.</unprompted>")
+}
+
+/// A turn Claude Code began by itself that ended inside a prompted one: the
+/// note the log holds where it ended, before the prompt's own answer.
+pub fn folded(reason: &str) -> String {
+    format!("{UNPROMPTED}What came before this was a turn Claude Code began by itself: {reason}. The prompt's own answer follows.</unprompted>")
+}
+
+/// Why a turn began by itself, when no agent's end says so.
+const BEGAN: &str = "it did not say why";
+
+/// Why an agent still running ended: its process went.
+const LET_GO: &str = "Claude Code was let go, and the agent stopped with it";
+const RESTARTED: &str = "Claude Code was started again for a turn's settings, and the agent stopped with it";
+const SHUT_DOWN: &str = "Claude Code was shut down with the session, and the agent with it";
+const FAILED: &str = "Claude Code was stopped after its turn failed, and the agent with it";
+const INTERRUPTED: &str = "Claude Code was stopped when the turn was interrupted, and the agent with it";
+const EXITED: &str = "Claude Code exited, and the agent with it";
+
+/// Why the agents of a process `settle` lets go of ended: how its turn did.
+fn stopped_why(outcome: &Result<TurnEnd, EngineError>) -> &'static str {
+    match outcome {
+        Err(_) => FAILED,
+        Ok(TurnEnd::Interrupted) => INTERRUPTED,
+        Ok(TurnEnd::Completed) => EXITED,
+    }
+}
+
+/// The launch settings a process is bound to. A turn that needs others —
+/// plan mode, another effort, or another model where `set_model` is not
+/// available — gets a new process on `--resume`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Launch {
+    pub model: String,
+    pub resume: Option<String>,
+    pub effort: Option<&'static str>,
+    pub plan: bool,
+    /// Every deny rule that applies, in Claude Code's spelling, as
+    /// `--disallowedTools`: what Claude Code would allow by itself still
+    /// meets them, so deny wins on this backend too.
+    pub disallowed: Vec<String>,
+    /// The names of gruntas's MCP servers: the bridge lists its MCP tools once,
+    /// when the process starts, so a changed set needs a new process.
+    pub mcp: Vec<String>,
+}
+
+/// The `--mcp-config` that injects gruntas's tools: one in-process (`sdk`)
+/// server, answered over the control protocol.
+pub fn mcp_config() -> String {
+    json!({"mcpServers": {bridge::SERVER: {"type": "sdk", "name": bridge::SERVER}}}).to_string()
+}
+
+/// The `--settings` every process starts with: no `Co-Authored-By: Claude`
+/// trailer on commits, no Claude Code line on pull requests. `attribution`
+/// is the current key, `includeCoAuthoredBy` the one older versions read;
+/// an instance's own `--settings` in its `args` comes later and wins.
+pub const SETTINGS: &str = r#"{"attribution":{"commit":"","pr":""},"includeCoAuthoredBy":false}"#;
+
+/// The whole argument list, gruntas's own first and the instance's after.
+pub fn args(l: &Launch, extra: &[String]) -> Vec<String> {
+    let mut a: Vec<String> = [
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+        "--replay-user-messages",
+        "--permission-prompt-tool",
+        "stdio",
+        "--mcp-config",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    a.push(mcp_config());
+    a.push("--strict-mcp-config".into());
+    a.extend(["--settings".into(), SETTINGS.into()]);
+    a.extend(["--model".into(), l.model.clone()]);
+    if let Some(r) = &l.resume {
+        a.extend(["--resume".into(), r.clone()]);
+    }
+    if let Some(e) = l.effort {
+        a.extend(["--effort".into(), e.into()]);
+    }
+    // The mode is always named: left out, a `defaultMode` in the user's or
+    // the project's settings (acceptEdits, bypassPermissions) would decide
+    // it. Plan changes what Claude Code does, not only what it may do, so it
+    // is Claude Code's to know; every looser gruntas mode stays gruntas's, and
+    // what Claude Code asks is judged by gruntas's permission evaluator.
+    if !l.disallowed.is_empty() {
+        a.push("--disallowedTools".into());
+        a.extend(l.disallowed.iter().cloned());
+    }
+    a.extend(["--permission-mode".into(), if l.plan { "plan" } else { "default" }.into()]);
+    a.extend(extra.iter().cloned());
+    a
+}
+
+/// gruntas's deny rules, as Claude Code is started with them: none under
+/// unhinged, which no rule of gruntas's holds. The deny rules of Claude Code's
+/// own settings files Claude Code applies itself, before it asks gruntas.
+fn disallowed(gate: &Gate) -> Vec<String> {
+    if gate.mode() == PermissionMode::Unhinged { Vec::new() } else { gate.policy().deny_list() }
+}
+
+/// gruntas's ladder onto Claude Code's `--effort` levels (low … max): below
+/// low is low, since Claude Code has no switch for thinking off.
+pub fn effort_level(e: Effort) -> &'static str {
+    match e {
+        Effort::None | Effort::Minimal | Effort::Low => "low",
+        Effort::Medium => "medium",
+        Effort::High => "high",
+        Effort::Xhigh => "xhigh",
+        Effort::Max => "max",
+    }
+}
+
+/// Where Claude Code keeps a session's transcript: `projects/<cwd with
+/// every character but ASCII letters and digits made a dash>/<id>.jsonl` in
+/// its config directory — else wherever a transcript of that id already is
+/// (a long path is shortened in newer versions).
+pub fn transcript_path(config_dir: &Path, cwd: &str, session_id: &str) -> PathBuf {
+    let projects = config_dir.join("projects");
+    let slug: String = cwd.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let file = format!("{session_id}.jsonl");
+    let direct = projects.join(&slug).join(&file);
+    if direct.exists() {
+        return direct;
+    }
+    std::fs::read_dir(&projects)
+        .ok()
+        .and_then(|dirs| dirs.flatten().map(|d| d.path().join(&file)).find(|p| p.is_file()))
+        .unwrap_or(direct)
+}
+
+/// A tool call Claude Code asks about, as gruntas's permission evaluator
+/// judges it (`crate::permissions`): Claude Code's own tool names are the
+/// names rules are written in. Calls Claude Code allows itself — its
+/// settings' allow rules, its hooks — never reach here (see the module's
+/// notes); what does is judged by `crate::permissions`. gruntas's own bridged
+/// tools need no permission; a tool this build does not know is asked
+/// about.
+pub fn call_of(tool: &str, input: &Value, cwd: &Path) -> Call {
+    let at = |p: &str| {
+        let p = Path::new(p);
+        if p.is_absolute() { p.to_path_buf() } else { cwd.join(p) }
+    };
+    let path = ["file_path", "notebook_path", "path"].iter().find_map(|k| input.get(*k).and_then(Value::as_str)).map(at);
+    // gruntas's own `mcp_call` is the MCP tool it names: judged, and asked
+    // about, as `mcp__server__tool`, so `Mcp(server:tool)` rules hold.
+    let bridged = (tool == format!("mcp__{}__{}", bridge::SERVER, crate::mcp::CALL)).then(|| crate::mcp::target(input).ok()).flatten();
+    if let Some((server, t)) = bridged {
+        return Call { tool: format!("mcp__{server}__{t}"), access: Access::Mcp { server, tool: t }, subject: None };
+    }
+    let access = if tool.starts_with(&format!("mcp__{}__", bridge::SERVER)) {
+        Access::Free
+    } else if let Some(rest) = tool.strip_prefix("mcp__") {
+        let (server, t) = rest.split_once("__").unwrap_or((rest, ""));
+        Access::Mcp { server: server.into(), tool: t.into() }
+    } else {
+        match tool {
+            "Read" | "NotebookRead" => Access::Read(vec![path.unwrap_or_else(|| cwd.to_path_buf())]),
+            "Grep" | "Glob" | "LS" => {
+                // A glob can name where it searches as much as a path can:
+                // an absolute `pattern` (Glob) or `glob` (Grep) is judged by
+                // its fixed part.
+                let key = if tool == "Glob" { "pattern" } else { "glob" };
+                let globbed = input.get(key).and_then(Value::as_str).filter(|g| Path::new(g).is_absolute()).map(|g| PathBuf::from(glob_root(g)));
+                let mut ps = vec![path.unwrap_or_else(|| cwd.to_path_buf())];
+                ps.extend(globbed);
+                Access::Read(ps)
+            }
+            "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => Access::Edit(path.into_iter().collect()),
+            "Bash" => Access::Bash(input.get("command").and_then(Value::as_str).unwrap_or_default().to_string()),
+            "Skill" => Access::Skill(None),
+            "WebFetch" => Access::Fetch(input.get("url").and_then(Value::as_str).unwrap_or_default().to_string()),
+            "TodoWrite" | "ToolSearch" | "Task" | "Agent" | "EnterPlanMode" | "ExitPlanMode" | "BashOutput" | "KillShell" | "KillBash" => Access::Free,
+            _ => Access::Other,
+        }
+    };
+    Call { tool: tool.to_string(), access, subject: input.get("subagent_type").or_else(|| input.get("skill")).and_then(Value::as_str).map(String::from) }
+}
+
+/// The fixed part of an absolute glob: the directories before the first
+/// component that holds a wildcard.
+fn glob_root(g: &str) -> String {
+    let mut root = PathBuf::new();
+    for c in Path::new(g).components() {
+        if c.as_os_str().to_string_lossy().contains(['*', '?', '[', '{']) {
+            break;
+        }
+        root.push(c);
+    }
+    root.display().to_string()
+}
+
+/// How loose a Claude Code permission mode is, against gruntas's: plan asks
+/// before everything, default asks before edits and commands, acceptEdits
+/// only before commands; auto, bypassPermissions and any mode this build
+/// does not know ask before nothing gruntas can count on.
+fn looser_than(claude: &str, gruntas: PermissionMode) -> bool {
+    let rank = match claude {
+        "plan" => 0,
+        "default" | "manual" | "dontAsk" => 1,
+        "acceptEdits" => 2,
+        _ => 3,
+    };
+    let allowed = match gruntas {
+        PermissionMode::Plan => 0,
+        PermissionMode::Default => 1,
+        PermissionMode::AcceptEdits => 2,
+        PermissionMode::BypassPermissions | PermissionMode::Unhinged => 3,
+    };
+    rank > allowed
+}
+
+/// The ambient variables a Claude Code process does not inherit unless its
+/// instance sets them: they are the native `anthropic` instance's key and
+/// base URL, and inherited they would move a subscription account onto an
+/// API key or another server without anyone asking for it. An instance
+/// sets a base URL in its `env` and a key through `apiKeyEnv`, which gruntas
+/// reads and hands the process itself.
+pub const NOT_INHERITED: &[&str] = &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"];
+
+/// What of `NOT_INHERITED` to remove for this instance.
+pub fn cleared(b: &Backend) -> impl Iterator<Item = &'static str> + '_ {
+    NOT_INHERITED.iter().copied().filter(|k| !b.env.contains_key(*k))
+}
+
+/// The environment a Claude Code command gets on top of gruntas's own: the
+/// inherited key and base URL taken away, telemetry off, the config
+/// directory, the instance's `env`, and its key under the name Claude Code
+/// reads.
+///
+/// Telemetry off because Claude Code flushes it on exit: ~0.7 s that every
+/// quit of an interactive client would wait on, against ~30 ms without. An instance that
+/// wants it sets `DISABLE_TELEMETRY` in its `env`, which comes after.
+pub fn environment(b: &Backend) -> (Vec<&'static str>, Vec<(String, String)>) {
+    let mut set: Vec<(String, String)> = vec![("DISABLE_TELEMETRY".into(), "1".into())];
+    if let Some(dir) = &b.config_dir {
+        set.push(("CLAUDE_CONFIG_DIR".into(), dir.display().to_string()));
+    }
+    set.extend(b.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    if let Some((to, key)) = &b.key {
+        set.push((to.clone(), key.clone()));
+    }
+    (cleared(b).collect(), set)
+}
+
+/// The engine for one session on one `claude-code` instance. The host keeps
+/// it between turns, so the process it starts serves the whole session.
+pub struct ClaudeEngine {
+    instance: Resolved,
+    gruntas_version: String,
+    /// The process: a turn's while one runs, the idle loop's between turns.
+    proc: Arc<tokio::sync::Mutex<Option<Proc>>>,
+    /// The idle loop reading the process between turns, and its stop.
+    idle: Mutex<Option<Idling>>,
+    /// Its agents and a turn it began, readable without the process's lock.
+    status: Arc<Status>,
+    /// Where between-turn news goes; none, and nobody is told.
+    tell: Option<Idle>,
+}
+
+struct Idling {
+    stop: oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+/// What the process is doing that no turn is: the agents it runs, and the
+/// turn it began by itself, waiting. And its subagents' calls, metered: the
+/// engine's rather than one process's, so a process replaced — another
+/// launch, a crash — hands what it had not reported yet to the next.
+#[derive(Default)]
+struct Status {
+    agents: Mutex<Vec<Tracked>>,
+    pending: Mutex<Option<Pending>>,
+    meter: Mutex<Meter>,
+    /// The agents' own conversations, as their events (R-SUB-7).
+    children: Mutex<Children>,
+    /// Where a stop of one agent is handed to the running process, read by
+    /// whichever of a turn and the idle loop holds it (R-SUB-10); none
+    /// before the first process.
+    stopper: Mutex<Option<mpsc::UnboundedSender<StopAsk>>>,
+}
+
+/// A stop of one agent, by its task id: told once it is written to
+/// Claude Code (`sent`), then Claude Code's answer (`done`) — its words
+/// when it refused.
+struct StopAsk {
+    task_id: String,
+    sent: oneshot::Sender<()>,
+    done: oneshot::Sender<Result<(), String>>,
+}
+
+#[derive(Debug, Clone)]
+struct Tracked {
+    agent: BackendAgent,
+    /// Run in the background: it outlives the turn that started it.
+    background: bool,
+}
+
+impl Status {
+    fn agents(&self) -> std::sync::MutexGuard<'_, Vec<Tracked>> {
+        self.agents.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn pending(&self) -> std::sync::MutexGuard<'_, Option<Pending>> {
+        self.pending.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn meter(&self) -> std::sync::MutexGuard<'_, Meter> {
+        self.meter.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn children(&self) -> std::sync::MutexGuard<'_, Children> {
+        self.children.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn stopper(&self) -> std::sync::MutexGuard<'_, Option<mpsc::UnboundedSender<StopAsk>>> {
+        self.stopper.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// `clear`, with what it ends told to `tell`: whether anything was.
+    fn clear_telling(&self, why: &str, tell: Option<&Idle>) -> bool {
+        let evs = self.clear(why);
+        let any = !evs.is_empty();
+        if let Some(tell) = tell {
+            for ev in evs {
+                tell(ev);
+            }
+        }
+        any
+    }
+
+    /// The process is gone, and all of it with it: what to report — the
+    /// list, when it had any, empty, and each agent's end, saying `why` —
+    /// or nothing when no agent ran.
+    fn clear(&self, why: &str) -> Vec<EngineEvent> {
+        *self.pending() = None;
+        let mut out = self.children().gone(why);
+        let mut a = self.agents();
+        if !a.is_empty() {
+            a.clear();
+            out.insert(0, EngineEvent::BackendAgents { agents: Vec::new() });
+        }
+        out
+    }
+}
+
+impl ClaudeEngine {
+    pub fn new(instance: Resolved, gruntas_version: &str) -> Result<ClaudeEngine, EngineError> {
+        if instance.backend.is_none() {
+            return Err(EngineError::new("bad_config", format!("{} is not a Claude Code instance", instance.name)));
+        }
+        Ok(ClaudeEngine { instance, gruntas_version: gruntas_version.into(), proc: Arc::new(tokio::sync::Mutex::new(None)), idle: Mutex::new(None), status: Arc::default(), tell: None })
+    }
+
+    /// Reports what happens between turns to `tell`.
+    pub fn watched(mut self, tell: Idle) -> ClaudeEngine {
+        self.tell = Some(tell);
+        self
+    }
+
+    fn backend(&self) -> &Backend {
+        self.instance.backend.as_ref().expect("checked in new")
+    }
+
+    /// Stops the idle loop and waits for it to let go of the process.
+    async fn wake(&self) {
+        let idling = self.idle.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(i) = idling {
+            let _ = i.stop.send(());
+            let _ = i.task.await;
+        }
+    }
+
+    /// Hands the process to the idle loop until the next turn.
+    fn rest(&self) {
+        let (stop, rx) = oneshot::channel();
+        let task = tokio::spawn(idle(self.proc.clone(), rx, self.tell.clone()));
+        *self.idle.lock().unwrap_or_else(|e| e.into_inner()) = Some(Idling { stop, task });
+    }
+}
+
+impl Drop for ClaudeEngine {
+    /// The idle loop holds the process too: it goes, so the process is let
+    /// go with the engine's last handle — and the agents it ran, and a turn
+    /// it began, with it: said, so no client goes on showing them.
+    fn drop(&mut self) {
+        if let Some(i) = self.idle.get_mut().unwrap_or_else(|e| e.into_inner()).take() {
+            i.task.abort();
+        }
+        let waiting = self.status.pending().is_some();
+        let stopped = self.status.clear_telling(LET_GO, self.tell.as_ref());
+        if let Some(tell) = &self.tell {
+            if stopped {
+                tell(EngineEvent::Notice { text: format!("Claude Code on {} was let go, and the background agents it ran stopped with it", self.instance.name) });
+            } else if waiting {
+                tell(EngineEvent::Notice { text: format!("Claude Code on {} was let go before the turn it began by itself ran", self.instance.name) });
+            }
+        }
+    }
+}
+
+impl Engine for ClaudeEngine {
+    fn provider(&self) -> &str {
+        &self.instance.provider
+    }
+
+    fn wire_api(&self) -> WireApi {
+        WireApi::ClaudeCode
+    }
+
+    fn run_turn<'a>(&'a self, mut ctx: TurnContext, events: Events) -> BoxFuture<'a, Result<TurnEnd, EngineError>> {
+        Box::pin(async move {
+            self.wake().await;
+            // Where between turns ends: what the idle loop said is before
+            // this turn's events.
+            if let Some(tell) = &self.tell {
+                tell(EngineEvent::Woke);
+            }
+            let mut slot = self.proc.lock().await;
+            let want = Launch {
+                model: ctx.model.model.clone(),
+                resume: ctx.backend_session.clone(),
+                effort: ctx.effort.map(effort_level),
+                plan: ctx.permission_mode == PermissionMode::Plan,
+                disallowed: disallowed(&ctx.gate),
+                mcp: ctx.compat.mcp.servers().iter().map(|s| s.name.clone()).collect(),
+            };
+            let ask = Answers {
+                session_id: ctx.session_id.clone(),
+                turn_id: ctx.turn_id.clone(),
+                model: ctx.model.clone(),
+                cwd: ctx.cwd.clone(),
+                mode: ctx.permission_mode,
+                gruntas_version: self.gruntas_version.clone(),
+                gate: ctx.gate.protecting(self.backend().home.iter().cloned()),
+                evidence: ctx.evidence.clone(),
+                mcp: ctx.compat.mcp.clone(),
+                approved: Arc::default(),
+                session_dir: ctx.session_dir.clone(),
+                images: Arc::default(),
+            };
+            // Started now, so the server list and a needs-sign-in notice are not left
+            // to the first call; plan mode runs no commands.
+            if ctx.permission_mode != PermissionMode::Plan {
+                ctx.compat.mcp.warm(&|s, t| crate::mcp::denied_by(&ctx.gate, s, t));
+            }
+            let (prompt, images) = match ctx.history.last().map(|h| &h.item) {
+                Some(Item::UserText { text, images }) => (text.clone(), images.clone()),
+                _ => return Err(EngineError::new("empty_prompt", "a backend turn needs the prompt as its last item")),
+            };
+            // A turn Claude Code began runs where it began, whatever the
+            // launch: a new process would not have it.
+            if ctx.unprompted {
+                let Some(p) = slot.as_mut().filter(|p| !p.begun.is_empty()) else {
+                    return Err(EngineError::new("nothing_pending", format!("Claude Code on {} has no turn of its own waiting", self.instance.name)));
+                };
+                let outcome = p.turn(None, &mut ctx, &ask, &events, self.backend(), &self.instance.name).await;
+                ask.approved.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                return self.settle(slot, outcome, ask, &events).await;
+            }
+            // The running process serves this turn when its launch still
+            // fits; a model it can switch to in place is switched to.
+            let mut resumed = false;
+            if let Some(p) = slot.as_mut() {
+                // The mode it is in counts too: a plan turn that approved
+                // ExitPlanMode leaves Claude Code in default, which the next
+                // plan turn must not inherit (nor a default turn an
+                // EnterPlanMode's plan). It is launched in one of two modes,
+                // and serves only a turn that wants the one it is in.
+                let mode_fits = p.mode.is_empty() || (want.plan == (p.mode == "plan") && !looser_than(&p.mode, ctx.permission_mode));
+                let fits = p.alive() && mode_fits && p.launch.plan == want.plan && p.launch.effort == want.effort && p.launch.disallowed == want.disallowed && p.launch.mcp == want.mcp;
+                let switched = fits && (p.launch.model == want.model || (p.set_model && p.set_model(&want.model, &ask).await));
+                if !switched && let Some(old) = slot.take() {
+                    // Its agents, and a turn it began, go with it; the
+                    // thread keeps what they did.
+                    let stopped = self.status.clear(RESTARTED);
+                    if !stopped.is_empty() {
+                        forward(&events, stopped).await;
+                        let _ = events.send(EngineEvent::Notice { text: "Claude Code was started again for this turn's settings, and the background agents it ran stopped".into() }).await;
+                    }
+                    old.shutdown().await;
+                }
+                // Kept: it holds the session's thread as far as it has run.
+                resumed = slot.is_some();
+            }
+            let mut fell_back = None;
+            if slot.is_none() {
+                let resume = want.resume.clone();
+                *slot = Some(match Proc::spawn(self.backend(), &ctx.cwd, want.clone(), &ask, self.status.clone()).await {
+                    Ok(p) => {
+                        resumed = resume.is_some();
+                        p
+                    }
+                    // A thread Claude Code cannot resume — its transcript
+                    // gone, or a copy it would not take — is no reason to
+                    // lose the session: the log has it, and a new thread is
+                    // seeded from it (R-SWITCH-4, R-INST-4).
+                    Err(e) if resume.is_some() && ctx.handoff.is_some() && e.code != "backend_not_found" => {
+                        fell_back = Some(format!("Claude Code on {} could not resume its session {} ({}: {})", self.instance.name, resume.unwrap_or_default(), e.code, e.message));
+                        Proc::spawn(self.backend(), &ctx.cwd, Launch { resume: None, ..want }, &ask, self.status.clone()).await?
+                    }
+                    Err(e) => return Err(e),
+                });
+            }
+            let p = slot.as_mut().expect("spawned above");
+            let _ = events.send(EngineEvent::Account { login: p.login.clone(), models: p.models.clone() }).await;
+            // What the thread did not run goes ahead of the prompt, in the
+            // same user message (R-SWITCH-2); what was sent is reported.
+            let (prompt, handoff) = crate::handoff::Handoff::opening(ctx.handoff.as_ref(), &prompt, resumed, fell_back);
+            if let Some(ev) = handoff {
+                let _ = events.send(ev).await;
+            }
+            let content = user_content(&prompt, &images, &ctx.session_dir).await;
+            let outcome = p.turn(Some(&content), &mut ctx, &ask, &events, self.backend(), &self.instance.name).await;
+            // What was allowed and not run does not carry into a turn Claude Code begins itself.
+            ask.approved.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            self.settle(slot, outcome, ask, &events).await
+        })
+    }
+
+    fn shutdown(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            self.wake().await;
+            if let Some(p) = self.proc.lock().await.take() {
+                p.shutdown().await;
+            }
+            // Asked for, and said: no notice, but each agent still running
+            // ends, so its transcript is closed.
+            self.status.clear_telling(SHUT_DOWN, self.tell.as_ref());
+        })
+    }
+
+    fn pending(&self) -> Option<Pending> {
+        self.status.pending().clone()
+    }
+
+    fn busy(&self) -> bool {
+        self.status.pending().is_some() || !self.status.agents().is_empty()
+    }
+
+    /// `stop_task` (R-SUB-10), handed to whichever of a turn and the idle
+    /// loop reads the process (`stop_answer`).
+    fn stop_task<'a>(&'a self, task_id: &'a str) -> BoxFuture<'a, Result<(), EngineError>> {
+        Box::pin(stop_answer(&self.status, task_id, STOP_GRACE))
+    }
+}
+
+impl ClaudeEngine {
+    /// After a turn: a process that died, or a turn that failed partway, is
+    /// not trusted with the next turn, which starts clean on --resume; one
+    /// that lives on is read between turns, under this turn's permissions.
+    async fn settle(&self, mut slot: tokio::sync::MutexGuard<'_, Option<Proc>>, outcome: Result<TurnEnd, EngineError>, ask: Answers, events: &Events) -> Result<TurnEnd, EngineError> {
+        let Some(p) = slot.as_mut() else { return outcome };
+        if outcome.is_err() || !p.alive() {
+            forward(events, self.status.clear(stopped_why(&outcome))).await;
+            if let Some(old) = slot.take() {
+                old.kill().await;
+            }
+            return outcome;
+        }
+        p.answers = Some(Arc::new(ask));
+        drop(slot);
+        self.rest();
+        outcome
+    }
+}
+
+/// A stop of one agent handed to the running process, answered once
+/// Claude Code answers it — by then it has said the agent was killed,
+/// which ends its child. Not written, or refused, it is `not_stoppable`
+/// with why. Each wait has its own `grace`: to be written, then, from the
+/// write, to be answered. Written and not answered in time, it is taken:
+/// Claude Code may have stopped the agent already with nothing reading
+/// what it said — another agent's question holding the turn — and the
+/// agent's end says how it went, where a refusal would offer to stop it
+/// again.
+async fn stop_answer(status: &Status, task_id: &str, grace: Duration) -> Result<(), EngineError> {
+    let refused = |why: &str| EngineError::new("not_stoppable", format!("Claude Code did not stop that agent: {why}"));
+    let ((sent, written), (done, answer)) = (oneshot::channel(), oneshot::channel());
+    let handed = status.stopper().as_ref().is_some_and(|s| s.send(StopAsk { task_id: task_id.to_string(), sent, done }).is_ok());
+    if !handed {
+        return Err(refused("its process is not running"));
+    }
+    // Gone without a word: not written, and `answer` says why.
+    if tokio::time::timeout(grace, written).await.is_err() {
+        return Err(refused(&format!("nothing read Claude Code to send it the stop within {} seconds, so it was not sent", grace.as_secs())));
+    }
+    match tokio::time::timeout(grace, answer).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(why))) => Err(refused(&why)),
+        Ok(Err(_)) => Err(refused("its process ended before it answered")),
+        Err(_) => Ok(()),
+    }
+}
+
+/// Between turns: the process read until the next turn wants it — what
+/// Claude Code asks answered under the last turn's permissions, its agents
+/// kept and metered — or until Claude Code begins a turn by itself, which
+/// then waits for the host.
+async fn idle(proc: Arc<tokio::sync::Mutex<Option<Proc>>>, mut stop: oneshot::Receiver<()>, tell: Option<Idle>) {
+    let say = |ev: EngineEvent| {
+        if let Some(t) = &tell {
+            t(ev);
+        }
+    };
+    let mut slot = proc.lock().await;
+    let Some(p) = slot.as_mut().filter(|p| p.begun.is_empty()) else { return };
+    loop {
+        let msg = tokio::select! {
+            biased;
+            _ = &mut stop => return,
+            Some(s) = p.stops.recv() => {
+                p.stop_task(s).await;
+                continue;
+            }
+            m = p.out.recv() => m,
+        };
+        let Some(msg) = msg else {
+            // It exited with nobody asking: the next turn starts another.
+            p.exited = true;
+            for ev in p.status.clear(EXITED) {
+                say(ev);
+            }
+            return;
+        };
+        match msg["type"].as_str() {
+            Some("control_request") => {
+                let id = msg["request_id"].as_str().unwrap_or_default();
+                let answer = match p.answers.clone() {
+                    Some(ask) => ask.answer(id, &msg["request"], None).await,
+                    None => json!({"type": "control_response", "response": {"subtype": "error", "request_id": id, "error": "gruntas has no turn to answer this under"}}),
+                };
+                if p.send(&answer).await.is_err() {
+                    return;
+                }
+            }
+            Some("control_response") => {
+                p.stop_answered(&msg);
+            }
+            _ => {
+                if let Some(agents) = p.track(&msg) {
+                    say(EngineEvent::BackendAgents { agents });
+                }
+                for ev in p.status.children().apply(&msg) {
+                    say(ev);
+                }
+                p.idle_line(msg);
+                if !p.begun.is_empty() {
+                    break;
+                }
+            }
+        }
+    }
+    p.armed = false;
+    let reason = p.finished.take().unwrap_or_else(|| BEGAN.into());
+    // The mode it runs in is the one the process is in, which gruntas
+    // accepted: the last turn's, or default once that plan turn's
+    // ExitPlanMode was approved — never looser than asked but for that.
+    let asked = p.answers.as_ref().map(|a| a.mode);
+    let mode = match (p.mode.as_str(), asked) {
+        ("plan", _) => Some(PermissionMode::Plan),
+        ("default", Some(PermissionMode::Plan)) => Some(PermissionMode::Default),
+        _ => asked,
+    };
+    *p.status.pending() = Some(Pending { reason: reason.clone(), mode });
+    say(EngineEvent::Unprompted { reason });
+}
+
+/// The paste guard's callback id (`crate::paste_guard`).
+const PASTE_GUARD: &str = "gruntas_paste_guard";
+
+/// The hooks `initialize` registers: the paste guard and the tooling guard
+/// (`crate::tooling_guard`), before every Bash, `EnterWorktree` and `Agent`
+/// call. A hook runs ahead of Claude Code's own permission decision, so it
+/// sees the calls an allow rule in settings lets through without asking.
+fn hooks() -> Value {
+    json!({"PreToolUse": [{"matcher": "Bash|EnterWorktree|Agent|Task", "hookCallbackIds": [PASTE_GUARD]}]})
+}
+
+/// What a control request is answered with: the turn it arrived in.
+struct Answers {
+    session_id: String,
+    turn_id: String,
+    model: ModelRef,
+    cwd: PathBuf,
+    mode: PermissionMode,
+    gruntas_version: String,
+    /// The turn's permissions, with the instance's config directory kept
+    /// from edits too.
+    gate: Gate,
+    /// Where a bridged `publish` sends files.
+    evidence: Option<crate::evidence::Evidence>,
+    /// The session's MCP servers, which the bridge offers as `mcp_search`
+    /// and `mcp_call`.
+    mcp: Arc<crate::mcp::Mcp>,
+    /// The `mcp_call`s `can_use_tool` allowed, for the bridge to match.
+    approved: Arc<Mutex<Vec<String>>>,
+    /// Where an `mcp_call`'s images are kept, and their references until
+    /// the result is translated.
+    session_dir: PathBuf,
+    images: stream::Kept,
+}
+
+/// Where a question for a person goes while a turn runs: the turn's events,
+/// and its interrupt. Outside a turn (a request gruntas made, such as
+/// `initialize`) nobody is asked.
+type Asking<'a> = Option<(&'a Events, &'a tokio::sync::watch::Receiver<bool>)>;
+
+impl Answers {
+    /// Judges a call, asking a person when the verdict says to and a turn
+    /// is there to ask through.
+    async fn permit(&self, tool: &str, input: &Value, asking: Asking<'_>) -> Result<(), String> {
+        let call = call_of(tool, input, &self.cwd);
+        match asking {
+            Some((events, cancel)) => self.gate.check(&call, tool, input, events, cancel).await.map(drop),
+            None => match self.gate.verdict(&call) {
+                Verdict::Allow(_) => Ok(()),
+                Verdict::Deny(m) => Err(m),
+                Verdict::Ask { reason, .. } => Err(format!("{} needs approval — {reason} — and Claude Code asked outside a turn, where nobody can be asked", permissions::summary(&call))),
+            },
+        }
+    }
+
+    /// `AskUserQuestion`, asked of the person: its input with their
+    /// `answers`, keyed by each question's text and several picks joined
+    /// as Claude Code joins them — or the refusal the model reads. A deny
+    /// rule on it holds.
+    async fn ask_user(&self, input: &Value, asking: Asking<'_>) -> Result<Value, String> {
+        // The session's own: no mode refuses it, plan included.
+        let call = Call { tool: "AskUserQuestion".into(), access: Access::Session, subject: None };
+        if let Verdict::Deny(m) = self.gate.verdict(&call) {
+            return Err(m);
+        }
+        let Some((events, cancel)) = asking else { return Err(permissions::NOBODY_TO_ASK.into()) };
+        let questions = crate::ask::parse(input)?;
+        let answers = self.gate.ask("AskUserQuestion", input, questions.clone(), events, cancel).await?;
+        let said: serde_json::Map<String, Value> = questions.iter().filter_map(|q| answers.iter().find(|a| a.id == q.id).and_then(crate::ask::said).map(|a| (q.id.clone(), Value::String(a)))).collect();
+        if said.is_empty() {
+            return Err(permissions::DECLINED.into());
+        }
+        let mut input = input.clone();
+        input["answers"] = Value::Object(said);
+        Ok(input)
+    }
+
+    /// The answer to one of Claude Code's control requests.
+    async fn answer(&self, request_id: &str, req: &Value, asking: Asking<'_>) -> Value {
+        let subtype = req.get("subtype").and_then(Value::as_str).unwrap_or_default();
+        let success = |response: Value| json!({"type": "control_response", "response": {"subtype": "success", "request_id": request_id, "response": response}});
+        match subtype {
+            "can_use_tool" => {
+                let tool = req.get("tool_name").and_then(Value::as_str).unwrap_or_default();
+                let input = req.get("input").cloned().unwrap_or_else(|| json!({}));
+                if tool == "AskUserQuestion" {
+                    return success(match self.ask_user(&input, asking).await {
+                        Ok(input) => json!({"behavior": "allow", "updatedInput": input}),
+                        Err(message) => json!({"behavior": "deny", "message": message}),
+                    });
+                }
+                match self.permit(tool, &input, asking).await {
+                    Ok(()) => {
+                        // Recorded only when gruntas's rules said Ask, by
+                        // Claude Code's id for the call: what a person was
+                        // asked and allowed, once.
+                        if tool == format!("mcp__{}__{}", bridge::SERVER, crate::mcp::CALL)
+                            && let Some(id) = req.get("tool_use_id").and_then(Value::as_str)
+                            && matches!(self.gate.verdict(&call_of(tool, &input, &self.cwd)), Verdict::Ask { .. })
+                        {
+                            self.approved.lock().unwrap_or_else(|e| e.into_inner()).push(id.to_string());
+                        }
+                        success(json!({"behavior": "allow", "updatedInput": input}))
+                    }
+                    Err(message) => success(json!({"behavior": "deny", "message": message})),
+                }
+            }
+            "mcp_message" if req.get("server_name").and_then(Value::as_str) == Some(bridge::SERVER) => {
+                let env = BridgeEnv {
+                    session_id: &self.session_id,
+                    turn_id: &self.turn_id,
+                    model: &self.model,
+                    cwd: &self.cwd,
+                    backend: BACKEND,
+                    gruntas_version: &self.gruntas_version,
+                    gate: &self.gate,
+                    cancel: asking.map(|(_, c)| c),
+                    evidence: self.evidence.as_ref().zip(asking.map(|(e, _)| e)),
+                    mcp: Some(&self.mcp),
+                    approved: Some(&self.approved),
+                    tool_use_id: req.pointer("/message/params/_meta").and_then(|m| m.get("claudecode/toolUseId")).and_then(Value::as_str),
+                    images: Some((&self.session_dir, &self.images)),
+                };
+                success(json!({"mcp_response": bridge::handle(req.get("message").unwrap_or(&Value::Null), &env).await}))
+            }
+            "hook_callback" if req.get("callback_id").and_then(Value::as_str) == Some(PASTE_GUARD) => success(crate::paste_guard::pre_tool_use(req.get("input").unwrap_or(&Value::Null))),
+            // The paste guard is the only hook registered.
+            "hook_callback" => success(json!({})),
+            other => json!({"type": "control_response", "response": {"subtype": "error", "request_id": request_id, "error": format!("gruntas does not answer the control request {other:?}")}}),
+        }
+    }
+}
+
+/// One running `claude` process.
+struct Proc {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    /// Its stdout, a JSON value a line, from the one task that reads it.
+    out: mpsc::Receiver<Value>,
+    stderr: Arc<Mutex<String>>,
+    binary: String,
+    launch: Launch,
+    /// The models `initialize` listed, and who the instance is signed in as
+    /// (R-ROLL-2).
+    models: Vec<String>,
+    login: Option<String>,
+    /// `initialize` listed models: `set_model` switches in place.
+    set_model: bool,
+    next: u64,
+    exited: bool,
+    /// The process group: Claude Code and whatever it started.
+    pid: Option<u32>,
+    /// The permission mode its last turn reported; empty before one has.
+    mode: String,
+    /// The group was stopped and reaped; nothing is left to signal.
+    group_done: bool,
+    /// Its agents and a turn it began, shared with the engine.
+    status: Arc<Status>,
+    /// The last turn's permissions: what is asked between turns is
+    /// answered under them.
+    answers: Option<Arc<Answers>>,
+    /// A turn Claude Code began by itself: its lines read so far, `init`
+    /// first. Not empty means it waits.
+    begun: Vec<Value>,
+    /// An `init` read between turns before anything had finished — not a
+    /// turn's start by itself — kept in case what follows is one.
+    held_init: Option<Value>,
+    /// Why the turn Claude Code begins next begins: the last background
+    /// agent that finished, in words. Kept apart from `armed`, so a prompt
+    /// in between takes away the leave to start a turn, not the words.
+    finished: Option<String>,
+    /// A background agent finished since the last prompt: an `init` read
+    /// between turns is Claude Code beginning a turn to answer it.
+    armed: bool,
+    /// Background agents `background_tasks_changed` took off the list, for
+    /// the words of their `task_notification`, which comes after it.
+    ended: Vec<BackendAgent>,
+    /// Lines read while gruntas waited on a control request before a turn —
+    /// an agent's end, its calls — for that turn to read first.
+    backlog: VecDeque<Value>,
+    /// A `result` has carried `origin`: this binary says which turn a
+    /// result closes, and none is ever taken on count.
+    origins: bool,
+    /// Steering the running turn wrote to stdin that Claude Code has not
+    /// replayed yet, oldest first.
+    unread: Vec<Sent>,
+    /// Its `init` announced `interrupt_cancel_queued_v1`: an interrupt can
+    /// cancel the steering it has not read, so steering is written to it.
+    cancel_queued: bool,
+    /// The `uuid`s the turn's interrupts answered they cancelled, every
+    /// one's: of `unread`, only those go back. None when none named any.
+    cancelled: Option<Vec<String>>,
+    /// The request ids of the interrupts the turn sent: the give-up's and
+    /// the person's may both be out, and each answer counts.
+    interrupts: Vec<String>,
+    /// Stops of one agent handed to this process (`Status::stopper`), and
+    /// those sent, by request id, waiting for Claude Code's answer.
+    stops: mpsc::UnboundedReceiver<StopAsk>,
+    stopping: std::collections::HashMap<String, oneshot::Sender<Result<(), String>>>,
+}
+
+/// A steer written to Claude Code: the `uuid` its line carried, which a
+/// replay and an interrupt's `cancelled` name it by.
+struct Sent {
+    uuid: String,
+    steer: Steer,
+}
+
+/// How long a stopped process group gets between SIGTERM and SIGKILL.
+const TERM_GRACE: Duration = Duration::from_secs(2);
+/// After Claude Code exits, how long what it already wrote is read.
+const DRAIN_GRACE: Duration = Duration::from_millis(500);
+
+#[cfg(unix)]
+fn signal_group(pid: Option<u32>, sig: i32) {
+    if let Some(pid) = pid.and_then(|p| i32::try_from(p).ok()).filter(|p| *p > 0) {
+        // SAFETY: a signal to the group this process made (process_group(0)).
+        unsafe {
+            libc::kill(-pid, sig);
+        }
+    }
+}
+
+impl Drop for Proc {
+    /// A process let go of without `shutdown` — a host dropped mid-turn — is
+    /// killed with everything it started, never left running.
+    fn drop(&mut self) {
+        if !self.group_done {
+            #[cfg(unix)]
+            signal_group(self.pid, libc::SIGKILL);
+            crate::group::release(self.pid);
+        }
+    }
+}
+
+/// The next line of a turn: what was read before it began, then stdout.
+async fn next_line(queued: &mut VecDeque<Value>, out: &mut mpsc::Receiver<Value>) -> Option<Value> {
+    match queued.pop_front() {
+        Some(v) => Some(v),
+        None => out.recv().await,
+    }
+}
+
+/// Whether a line is of the main conversation, not a subagent's.
+fn main_thread(msg: &Value) -> bool {
+    msg.get("parent_tool_use_id").is_none_or(Value::is_null)
+}
+
+fn tail(s: &str) -> String {
+    let s = s.trim();
+    let cut = s.char_indices().rev().nth(STDERR_TAIL).map(|(i, _)| i).unwrap_or(0);
+    s[cut..].to_string()
+}
+
+/// The prompt as Claude Code is sent it: the text, or with images the
+/// Messages API's blocks, which stream-json passes through, each image
+/// after its `[Image #N]`.
+async fn user_content(text: &str, refs: &[crate::protocol::ImageRef], session_dir: &Path) -> Value {
+    if refs.is_empty() {
+        return json!(text);
+    }
+    let (dir, wanted) = (session_dir.to_path_buf(), refs.to_vec());
+    let loaded = tokio::task::spawn_blocking(move || {
+        let mut l = crate::images::Loaded::default();
+        crate::images::load(&dir, &wanted.iter().collect::<Vec<_>>(), true, &mut l);
+        l
+    })
+    .await
+    .unwrap_or_default();
+    let mut blocks = vec![json!({"type": "text", "text": text})];
+    for (r, label, data) in crate::images::sent(refs, &loaded, &mut Default::default()) {
+        blocks.push(json!({"type": "text", "text": label}));
+        if let Some(data) = data {
+            blocks.push(json!({"type": "image", "source": {"type": "base64", "media_type": r.media_type, "data": data}}));
+        }
+    }
+    Value::Array(blocks)
+}
+
+impl Proc {
+    async fn spawn(b: &Backend, cwd: &Path, launch: Launch, ask: &Answers, status: Arc<Status>) -> Result<Proc, EngineError> {
+        let mut cmd = tokio::process::Command::new(b.path.as_deref().unwrap_or(Path::new(&b.binary)));
+        cmd.args(args(&launch, &b.args)).current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+        let (remove, set) = environment(b);
+        for k in remove {
+            cmd.env_remove(k);
+        }
+        cmd.envs(set);
+        // Its own process group: a Ctrl-C at the terminal is gruntas's to turn
+        // into an interrupt, not a signal that kills Claude Code mid-write.
+        #[cfg(unix)]
+        cmd.process_group(0);
+        let mut child = cmd.spawn().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                EngineError::new("backend_not_found", format!("{} was not found — install Claude Code (https://claude.com/claude-code), or name the binary with `gruntas connect anthropic --method subscription --binary <path>`", b.binary))
+            } else {
+                EngineError::new("backend_failed", format!("{} could not be started: {e}", b.binary))
+            }
+        })?;
+        let pid = child.id();
+        crate::group::register(pid);
+        let stdin = child.stdin.take();
+        // One reader for the life of the process: between turns too, when
+        // Claude Code goes on without gruntas. A line that is not JSON (a
+        // warning a wrapper printed) is skipped; the channel closes at the
+        // end of the stream.
+        let mut lines = BufReader::new(child.stdout.take().expect("piped")).lines();
+        let (tx, out) = mpsc::channel(64);
+        tokio::spawn(async move {
+            while let Ok(Some(l)) = lines.next_line().await {
+                if let Ok(v) = serde_json::from_str::<Value>(&l)
+                    && tx.send(v).await.is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let (stopper, stops) = mpsc::unbounded_channel();
+        *status.stopper() = Some(stopper);
+        let stderr = Arc::new(Mutex::new(String::new()));
+        if let Some(mut err) = child.stderr.take() {
+            let keep = stderr.clone();
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                while let Ok(n) = err.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    let mut s = keep.lock().unwrap_or_else(|e| e.into_inner());
+                    s.push_str(&String::from_utf8_lossy(&buf[..n]));
+                    if s.len() > 4 * STDERR_TAIL {
+                        let t = tail(&s);
+                        *s = t;
+                    }
+                }
+            });
+        }
+        let mut p = Proc {
+            child,
+            stdin,
+            out,
+            stderr,
+            binary: b.binary.clone(),
+            launch,
+            set_model: false,
+            models: Vec::new(),
+            login: None,
+            next: 0,
+            exited: false,
+            pid,
+            group_done: false,
+            mode: String::new(),
+            status,
+            answers: None,
+            begun: Vec::new(),
+            held_init: None,
+            finished: None,
+            armed: false,
+            ended: Vec::new(),
+            backlog: VecDeque::new(),
+            origins: false,
+            unread: Vec::new(),
+            cancel_queued: false,
+            cancelled: None,
+            interrupts: Vec::new(),
+            stops,
+            stopping: Default::default(),
+        };
+        // An agent's own text is forwarded too, not only its tool calls:
+        // its transcript is a child session's (R-SUB-7).
+        let init = p.request(json!({"subtype": "initialize", "hooks": hooks(), "forwardSubagentText": true}), ask, INITIALIZE_TIMEOUT).await?;
+        p.set_model = init.get("models").is_some_and(Value::is_array);
+        p.models = init.get("models").and_then(Value::as_array).map(|m| m.iter().filter_map(|m| m.get("value").and_then(Value::as_str)).map(String::from).collect()).unwrap_or_default();
+        let text = |k: &str| init.pointer(&format!("/account/{k}")).and_then(Value::as_str).unwrap_or_default().to_string();
+        // An answer without the account leaves the instance its own login.
+        p.login = crate::usage::claude_login(&text("email"), &text("organization"));
+        Ok(p)
+    }
+
+    fn alive(&mut self) -> bool {
+        !self.exited && matches!(self.child.try_wait(), Ok(None))
+    }
+
+    fn died(&mut self, while_doing: &str) -> EngineError {
+        self.exited = true;
+        let status = self.child.try_wait().ok().flatten().map(|s| format!(" ({s})")).unwrap_or_default();
+        let said = tail(&self.stderr.lock().unwrap_or_else(|e| e.into_inner()));
+        let said = if said.is_empty() { String::new() } else { format!(": {said}") };
+        EngineError::new("backend_exited", format!("claude exited{status} {while_doing}{said} — the session is kept; continue it with --resume"))
+    }
+
+    async fn send(&mut self, v: &Value) -> Result<(), EngineError> {
+        let mut line = v.to_string();
+        line.push('\n');
+        let Some(stdin) = self.stdin.as_mut() else { return Err(self.died("before gruntas could write to it")) };
+        if stdin.write_all(line.as_bytes()).await.is_err() || stdin.flush().await.is_err() {
+            return Err(self.died("while gruntas was writing to it"));
+        }
+        Ok(())
+    }
+
+    fn request_id(&mut self) -> String {
+        self.next += 1;
+        format!("gruntas_{}", self.next)
+    }
+
+    /// Sends a control request and waits for its answer, answering Claude
+    /// Code's own requests meanwhile — `initialize` is answered only after
+    /// the MCP server has been.
+    async fn request(&mut self, req: Value, ask: &Answers, within: Duration) -> Result<Value, EngineError> {
+        let id = self.request_id();
+        let subtype = req["subtype"].as_str().unwrap_or_default().to_string();
+        self.send(&json!({"type": "control_request", "request_id": id, "request": req})).await?;
+        let wait = async {
+            loop {
+                let Some(msg) = self.out.recv().await else { return Err(self.died(&format!("before it answered {subtype}"))) };
+                match msg["type"].as_str() {
+                    Some("control_request") => {
+                        let answer = ask.answer(msg["request_id"].as_str().unwrap_or_default(), &msg["request"], None).await;
+                        self.send(&answer).await?;
+                    }
+                    Some("control_response") if msg.pointer("/response/request_id").and_then(Value::as_str) == Some(id.as_str()) => {
+                        let r = &msg["response"];
+                        if r["subtype"] == "error" {
+                            return Err(EngineError::new("backend_failed", format!("claude refused {subtype}: {}", r["error"].as_str().unwrap_or("no reason given"))));
+                        }
+                        return Ok(r.get("response").cloned().unwrap_or(Value::Null));
+                    }
+                    Some("control_response") => {
+                        self.stop_answered(&msg);
+                    }
+                    // What goes on while it answers — a turn Claude Code
+                    // began, an agent's lines — is kept for the turn that
+                    // reads it next.
+                    _ if !self.begun.is_empty() => self.begun.push(msg),
+                    _ => self.backlog.push_back(msg),
+                }
+            }
+        };
+        let answered = tokio::time::timeout(within, wait).await;
+        match answered {
+            Ok(r) => r,
+            Err(_) => {
+                self.terminate().await;
+                Err(EngineError::new("backend_unresponsive", format!("{} did not answer {subtype} within {} seconds — is it Claude Code?", self.binary, within.as_secs())))
+            }
+        }
+    }
+
+    /// Switches the model in place; false when Claude Code refused, and the
+    /// caller starts a new process instead.
+    async fn set_model(&mut self, model: &str, ask: &Answers) -> bool {
+        match self.request(json!({"subtype": "set_model", "model": model}), ask, INITIALIZE_TIMEOUT).await {
+            Ok(_) => {
+                self.launch.model = model.into();
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Runs one turn: the prompt in, the stream out, until `result`. With
+    /// no prompt, the turn Claude Code began by itself, from what was read
+    /// of it between turns.
+    async fn turn(&mut self, prompt: Option<&Value>, ctx: &mut TurnContext, ask: &Answers, events: &Events, b: &Backend, instance: &str) -> Result<TurnEnd, EngineError> {
+        let mut t = Translator::default();
+        t.kept = Some(ask.images.clone());
+        t.meter = std::mem::take(&mut *self.status.meter());
+        self.unread.clear();
+        self.cancelled = None;
+        self.interrupts.clear();
+        let r = self.read_turn(prompt, &mut t, ctx, ask, events, b, instance).await;
+        *self.status.meter() = std::mem::take(&mut t.meter);
+        // Steering written and never replayed goes back on the turn's
+        // result, since Claude Code will not read it: an interrupt cancelled
+        // it (steering is written only where one can), a failed turn's
+        // process is let go, and a turn that completed has none left but
+        // what waited for a turn Claude Code never began. An interrupt that
+        // names what it cancelled is taken at its word: the rest was read.
+        let cancelled = self.cancelled.take();
+        let back = std::mem::take(&mut self.unread).into_iter().filter(|s| cancelled.as_ref().is_none_or(|c| c.contains(&s.uuid)));
+        ctx.steers.put_back(back.map(|s| s.steer).collect());
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn read_turn(&mut self, prompt: Option<&Value>, t: &mut Translator, ctx: &mut TurnContext, ask: &Answers, events: &Events, b: &Backend, instance: &str) -> Result<TurnEnd, EngineError> {
+        if let Some(prompt) = prompt {
+            self.send(&json!({"type": "user", "message": {"role": "user", "content": prompt}, "parent_tool_use_id": null, "session_id": ""})).await?;
+        }
+        let (mut queued, mut why, mut owed, mut before) = self.take_begun(prompt.is_some());
+        let mut interrupted = false;
+        // What `init` announced, once it has (`announce`): an interrupt is
+        // acknowledged, and can cancel the steering not read yet, so
+        // steering is written.
+        let mut said: Option<(bool, bool)> = None;
+        let mut receipt: Option<String> = None;
+        let mut deadline: Option<tokio::time::Instant> = None;
+        let mut gone = false;
+        let mut drain: Option<tokio::time::Instant> = None;
+        let mut grace: Option<(tokio::time::Instant, stream::Outcome)> = None;
+        // The `result` the turn ends at once the interrupt that cancels
+        // the steering grace gave up on is answered.
+        let mut given_up: Option<stream::Outcome> = None;
+        let result = loop {
+            let until = crate::engine::sleep_until(deadline);
+            let drained = crate::engine::sleep_until(drain);
+            let graced = crate::engine::sleep_until(grace.as_ref().map(|(at, _)| *at));
+            let arrived = ctx.steers.arrived();
+            let (receipt_required, cancel_queued) = said.unwrap_or((false, self.cancel_queued));
+            tokio::select! {
+                biased;
+                _ = cancelled(&mut ctx.cancel), if !interrupted => {
+                    interrupted = true;
+                    let (id, until) = self.interrupt(receipt_required, cancel_queued).await?;
+                    receipt = Some(id);
+                    deadline = Some(until);
+                }
+                // A stop of one agent (R-SUB-10), sent as it is handed over.
+                Some(s) = self.stops.recv() => self.stop_task(s).await,
+                _ = until => {
+                    // Claude Code did not stop in time: the process goes, the
+                    // turn keeps what it made, the session continues on --resume.
+                    self.terminate().await;
+                    if let Some(o) = given_up.take() {
+                        break o;
+                    }
+                    finish(t, events).await;
+                    return Ok(TurnEnd::Interrupted);
+                }
+                // Claude Code exited — crashed, or was killed — while
+                // something it started still holds its output open: what it
+                // wrote is read for a moment, then the turn ends.
+                _ = self.child.wait(), if !gone => {
+                    gone = true;
+                    drain = Some(tokio::time::Instant::now() + DRAIN_GRACE);
+                }
+                _ = drained => return self.ended_early(t, events, interrupted, (given_up.is_some(), before.take())).await,
+                // Steering, written as it arrives (R-STEER-1): Claude Code
+                // reads it at its next call, and replays it when it does.
+                // The steering grace running out is checked the same way.
+                _ = async { tokio::select! { _ = arrived => {}, _ = graced => {} } }, if !interrupted && given_up.is_none() && cancel_queued => {
+                    self.steer(&ctx.steers, &ctx.session_dir, &mut grace, receipt_required, (&mut receipt, &mut deadline, &mut given_up)).await?;
+                }
+                msg = next_line(&mut queued, &mut self.out) => {
+                    let Some(msg) = msg else { return self.ended_early(t, events, interrupted, (given_up.is_some(), before.take())).await };
+                    match msg["type"].as_str() {
+                        Some("control_request") => self.answer(&msg, ask, events, &ctx.cancel).await?,
+                        Some("control_response") => {
+                            if let Some(o) = self.responded(&msg, &mut receipt, (&mut grace, &mut given_up), &mut deadline) {
+                                break o;
+                            }
+                        }
+                        _ => {
+                            self.conversation(&msg, t, events, &mut grace).await?;
+                            self.announce(t, &mut said, ask, events, b, instance).await?;
+                            if let Some(o) = t.outcome.take()
+                                && let Some(o) = self.goes_on(o, prompt.is_some(), &mut owed, (&mut why, &mut before), (!interrupted && given_up.is_none()).then_some(&mut grace), ctx, events).await?
+                            {
+                                break given_up.take().unwrap_or(o);
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        self.wind_up(before, events).await;
+        if interrupted {
+            return Ok(TurnEnd::Interrupted);
+        }
+        if result.subtype == "success" && !result.is_error {
+            return Ok(TurnEnd::Completed);
+        }
+        Err(failed(&result, t.limit.as_ref(), instance))
+    }
+
+    /// Claude Code went before the turn's `result`: what it said is
+    /// finished, and the turn ends interrupted when it was asked to, else
+    /// failed, saying how it went. Gone after the `result` the turn was
+    /// given up at (`given_up`), before the interrupt was answered, the
+    /// turn completes at that result, and with nothing named cancelled all
+    /// its steering goes back.
+    async fn ended_early(&mut self, t: &mut Translator, events: &Events, interrupted: bool, (given_up, before): (bool, Option<String>)) -> Result<TurnEnd, EngineError> {
+        finish(t, events).await;
+        let e = self.died("before the turn finished");
+        if interrupted {
+            return Ok(TurnEnd::Interrupted);
+        }
+        if given_up {
+            self.wind_up(before, events).await;
+            return Ok(TurnEnd::Completed);
+        }
+        Err(e)
+    }
+
+    /// A line of the conversation: its agents kept, its items sent on, and
+    /// a replayed steer logged where it landed, which ends the wait for the
+    /// turn that reads it (`grace`). An `init` alone does not: Claude Code
+    /// sends some that no turn follows.
+    async fn conversation(&mut self, msg: &Value, t: &mut Translator, events: &Events, grace: &mut Option<(tokio::time::Instant, stream::Outcome)>) -> Result<(), EngineError> {
+        if let Some(agents) = self.track(msg) {
+            let _ = events.send(EngineEvent::BackendAgents { agents }).await;
+        }
+        // An agent's events come before the line's own: its end before the
+        // parent's `Agent` call is answered.
+        let children = self.status.children().apply(msg);
+        forward(events, children).await;
+        let out = t.apply(msg)?;
+        forward(events, out).await;
+        if let Some(steer) = self.replayed(msg) {
+            *grace = None;
+            forward(events, t.steered(steer.item())).await;
+        }
+        Ok(())
+    }
+
+    /// Asks Claude Code to stop: the request's id, and how long it has.
+    /// With `interrupt_cancel_queued_v1` the steering it has not read yet is
+    /// cancelled with it.
+    async fn interrupt(&mut self, receipt_required: bool, cancel_queued: bool) -> Result<(String, tokio::time::Instant), EngineError> {
+        let id = self.request_id();
+        let mut req = json!({"subtype": "interrupt"});
+        if cancel_queued {
+            req["cancel_queued"] = json!(true);
+        }
+        self.send(&json!({"type": "control_request", "request_id": id.clone(), "request": req})).await?;
+        self.interrupts.push(id.clone());
+        Ok((id, tokio::time::Instant::now() + if receipt_required { RECEIPT_GRACE } else { INTERRUPT_GRACE }))
+    }
+
+    /// Sends `stop_task` for one agent (R-SUB-10); Claude Code's answer
+    /// goes to whoever asked (`stop_answered`). One given up on before it
+    /// was read is not sent: a stop answered `not_stoppable` never happens
+    /// later.
+    async fn stop_task(&mut self, StopAsk { task_id, sent, done }: StopAsk) {
+        if done.is_closed() {
+            return;
+        }
+        let id = self.request_id();
+        match self.send(&json!({"type": "control_request", "request_id": id, "request": {"subtype": "stop_task", "task_id": task_id}})).await {
+            Ok(()) => {
+                let _ = sent.send(());
+                self.stopping.insert(id, done);
+            }
+            Err(e) => {
+                let _ = done.send(Err(e.message));
+            }
+        }
+    }
+
+    /// A `control_response` in a turn: a `stop_task`'s answer goes to whoever
+    /// asked, and the interrupt's ends the wait for it (`receipted`), and
+    /// says what it cancelled. The interrupt that gave up on steering ends
+    /// the turn at the result it was given up at (`given_up`).
+    fn responded(&mut self, msg: &Value, receipt: &mut Option<String>, (grace, given_up): (&mut Option<(tokio::time::Instant, stream::Outcome)>, &mut Option<stream::Outcome>), deadline: &mut Option<tokio::time::Instant>) -> Option<stream::Outcome> {
+        if self.stop_answered(msg) {
+            return None;
+        }
+        let id = msg.pointer("/response/request_id").and_then(Value::as_str);
+        if let Some(c) = msg.pointer("/response/response/cancelled").and_then(Value::as_array)
+            && self.interrupts.iter().any(|i| Some(i.as_str()) == id)
+        {
+            self.cancelled.get_or_insert_default().extend(c.iter().filter_map(Value::as_str).map(String::from));
+        }
+        receipted(msg, receipt, grace, deadline).or_else(|| if receipt.is_none() { given_up.take() } else { None })
+    }
+
+    /// Whether `msg` answers a `stop_task`, which then goes to whoever
+    /// asked: done, or Claude Code's words for why not.
+    fn stop_answered(&mut self, msg: &Value) -> bool {
+        let Some(done) = msg.pointer("/response/request_id").and_then(Value::as_str).and_then(|id| self.stopping.remove(id)) else { return false };
+        let r = &msg["response"];
+        let _ = done.send(match r["subtype"] == "error" {
+            true => Err(r["error"].as_str().unwrap_or("no reason given").to_string()),
+            false => Ok(()),
+        });
+        true
+    }
+
+    /// Writes the steering queued since the last look. Once Claude Code
+    /// has begun no turn to read the steering written before a `result`
+    /// within `STEER_GRACE`, gruntas stops waiting: since Claude Code may yet
+    /// begin it, an interrupt cancels what it has not read (`receipt`,
+    /// `deadline`), and once answered the turn ends at that result
+    /// (`given_up`), handing back what was cancelled; what its answer does
+    /// not name was read after all.
+    async fn steer(&mut self, steers: &Steers, session_dir: &Path, grace: &mut Option<(tokio::time::Instant, stream::Outcome)>, receipt_required: bool, (receipt, deadline, given_up): (&mut Option<String>, &mut Option<tokio::time::Instant>, &mut Option<stream::Outcome>)) -> Result<(), EngineError> {
+        if grace.as_ref().is_some_and(|(at, _)| tokio::time::Instant::now() >= *at) {
+            let (id, until) = self.interrupt(receipt_required, true).await?;
+            (*receipt, *deadline, *given_up) = (Some(id), Some(until), grace.take().map(|(_, o)| o));
+            return Ok(());
+        }
+        let new = steers.take();
+        self.write_steers(new, steers, session_dir).await
+    }
+
+    /// Writes each steer to stdin as a `user` line of its own, images as a
+    /// prompt's, under a `uuid` it is known by. One that cannot be written
+    /// goes back to the queue with those after it.
+    async fn write_steers(&mut self, steers: Vec<Steer>, queue: &Steers, session_dir: &Path) -> Result<(), EngineError> {
+        let mut left = steers.into_iter();
+        while let Some(steer) = left.next() {
+            let uuid = gruntas_store::new_id();
+            let content = user_content(&steer.text, &steer.images, session_dir).await;
+            if let Err(e) = self.send(&json!({"type": "user", "message": {"role": "user", "content": content}, "parent_tool_use_id": null, "session_id": "", "uuid": uuid})).await {
+                queue.put_back(std::iter::once(steer).chain(left).collect());
+                return Err(e);
+            }
+            self.unread.push(Sent { uuid, steer });
+        }
+        Ok(())
+    }
+
+    /// The steer a replayed `user` line is, once, by the `uuid` its line
+    /// carried, which the replay keeps.
+    fn replayed(&mut self, msg: &Value) -> Option<Steer> {
+        if msg["type"] != "user" || msg["isReplay"] != true || !main_thread(msg) {
+            return None;
+        }
+        let at = self.unread.iter().position(|s| msg["uuid"].as_str() == Some(s.uuid.as_str()))?;
+        Some(self.unread.remove(at).steer)
+    }
+
+    /// After a `result`, the one the gruntas turn ends at, or none when it
+    /// reads on: into the prompt's own answer past a turn Claude Code began
+    /// by itself (`fold`), or, not interrupted (`grace` given), into a turn
+    /// that reads steering, waited on for `STEER_GRACE`.
+    #[allow(clippy::too_many_arguments)]
+    async fn goes_on(&mut self, o: stream::Outcome, prompted: bool, owed: &mut u32, words: (&mut Option<String>, &mut Option<String>), grace: Option<&mut Option<(tokio::time::Instant, stream::Outcome)>>, ctx: &TurnContext, events: &Events) -> Result<Option<stream::Outcome>, EngineError> {
+        if self.fold(&o, prompted, owed, words, events).await {
+            return Ok(None);
+        }
+        let Some(grace) = grace else { return Ok(Some(o)) };
+        if !self.read_on(&o, &ctx.steers, &ctx.session_dir).await? {
+            return Ok(Some(o));
+        }
+        *grace = Some((tokio::time::Instant::now() + STEER_GRACE, o));
+        Ok(None)
+    }
+
+    /// After a `result`, whether the gruntas turn reads on: steering written
+    /// and not replayed is read in a turn Claude Code begins by itself, and
+    /// steering still queued is written now, for the same. With none, the
+    /// queue is closed in the same locked step as the last look, so a steer
+    /// is read or refused, never lost. A turn that failed reads on to
+    /// nothing: what it never read goes back on its result.
+    async fn read_on(&mut self, o: &stream::Outcome, steers: &Steers, session_dir: &Path) -> Result<bool, EngineError> {
+        // A binary that cannot cancel what it has not read is written no
+        // steering: it goes back on the turn's result, as it always did.
+        if o.subtype != "success" || o.is_error || !self.cancel_queued {
+            return Ok(false);
+        }
+        if !self.unread.is_empty() {
+            return Ok(true);
+        }
+        let mut more = steers.take();
+        if more.is_empty() {
+            if steers.close_if_empty() {
+                return Ok(false);
+            }
+            more = steers.take();
+        }
+        self.write_steers(more, steers, session_dir).await?;
+        Ok(true)
+    }
+
+    /// What was read between turns, for the turn about to be read: the
+    /// lines queued, why Claude Code began its own turn, how many results
+    /// are owed before a prompt's, and the words of what finished before.
+    fn take_begun(&mut self, prompted: bool) -> (VecDeque<Value>, Option<String>, u32, Option<String>) {
+        // A turn Claude Code began is read from where the idle loop left
+        // it. Under a prompt it is the race the host could not see — it
+        // began as the prompt was on its way — and its `result` is not the
+        // prompt's: an `origin` says so, and a binary too old to send one
+        // is taken at its word that one result is owed first.
+        let mut queued: VecDeque<Value> = std::mem::take(&mut self.begun).into();
+        let why = self.status.pending().take().map(|p| p.reason);
+        let owed = u32::from(prompted && !queued.is_empty() && !self.origins);
+        queued.append(&mut self.backlog);
+        self.held_init = None;
+        if !queued.is_empty() {
+            self.ended.clear();
+        }
+        // What finished before a prompt either began its turn — waiting, or
+        // folded here — or begins it only after the prompt's answer, which
+        // a stray `init` is not proof of: the leave to start one goes, the
+        // words stay for the turn that does follow.
+        let before = if prompted { self.finished.take() } else { None };
+        if prompted {
+            self.armed = false;
+        }
+        (queued, why, owed, before)
+    }
+
+    /// Whether the `result` read ends a turn of Claude Code's own inside a
+    /// prompted one, which is folded into it: noted, and the prompt's
+    /// answer read on. `owed` counts results due before the prompt's.
+    async fn fold(&mut self, o: &stream::Outcome, prompted: bool, owed: &mut u32, (why, before): (&mut Option<String>, &mut Option<String>), events: &Events) -> bool {
+        self.origins |= o.unprompted;
+        if self.origins {
+            *owed = 0;
+        }
+        if !(prompted && (o.unprompted || *owed > 0)) {
+            return false;
+        }
+        *owed = if o.unprompted { 0 } else { *owed - 1 };
+        let reason = why.take().or_else(|| self.finished.take()).or_else(|| before.take()).unwrap_or_else(|| BEGAN.into());
+        *before = None;
+        self.armed = false;
+        self.ended.clear();
+        note(events, folded(&reason)).await;
+        true
+    }
+
+    /// What is left once a turn's `result` is read.
+    async fn wind_up(&mut self, before: Option<String>, events: &Events) {
+        // Words no fold took are the next self-started turn's, unless an
+        // agent finished since.
+        if self.finished.is_none() {
+            self.finished = before;
+        }
+        // An agent run in the foreground ends with the turn that ran it.
+        let ended = self.status.children().turn_ended();
+        forward(events, ended).await;
+        if let Some(agents) = self.drop_foreground() {
+            let _ = events.send(EngineEvent::BackendAgents { agents }).await;
+        }
+    }
+
+    /// Answers a `control_request` of Claude Code's. An approved
+    /// ExitPlanMode or EnterPlanMode moves it to default or plan for what
+    /// follows. While the person decides, a stop of one agent is still
+    /// sent (`sending_stops`); one of the agent asking takes its question
+    /// back, as an interrupt of the turn does.
+    async fn answer(&mut self, msg: &Value, ask: &Answers, events: &Events, cancel: &tokio::sync::watch::Receiver<bool>) -> Result<(), EngineError> {
+        let id = msg["request_id"].as_str().unwrap_or_default();
+        let answer = match self.asker(&msg["request"]) {
+            Some(task_id) => {
+                // An agent's call: its request and its answer are the
+                // agent's events, sent under its own session (R-SUB-9).
+                let (tx, mut rx) = mpsc::channel(4);
+                // The turn's interrupt, or a stop of this agent.
+                let (mine, theirs) = tokio::sync::watch::channel(*cancel.borrow());
+                let asked = async {
+                    let tx = tx;
+                    ask.answer(id, &msg["request"], Some((&tx, &theirs))).await
+                };
+                let call = msg.pointer("/request/tool_use_id").and_then(Value::as_str).unwrap_or_default();
+                let told = async {
+                    let child = |ev| EngineEvent::BackendChild { task_id: task_id.clone(), event: Box::new(ev) };
+                    while let Some(ev) = rx.recv().await {
+                        if let EngineEvent::Approval(r) = &ev
+                            && !call.is_empty()
+                        {
+                            let _ = events.send(child(EngineEvent::AskedFor { request_id: r.request_id.clone(), call_id: call.into() })).await;
+                        }
+                        let _ = events.send(child(ev)).await;
+                    }
+                };
+                let both = async { tokio::join!(asked, told).0 };
+                self.sending_stops(both, Some((&task_id, &mine)), cancel).await
+            }
+            None => self.sending_stops(ask.answer(id, &msg["request"], Some((events, cancel))), None, cancel).await,
+        };
+        if msg.pointer("/request/subtype").and_then(Value::as_str) == Some("can_use_tool")
+            && answer.pointer("/response/response/behavior").and_then(Value::as_str) == Some("allow")
+        {
+            match msg.pointer("/request/tool_name").and_then(Value::as_str) {
+                Some("ExitPlanMode") => self.mode = "default".into(),
+                Some("EnterPlanMode") => self.mode = "plan".into(),
+                _ => {}
+            }
+        }
+        self.send(&answer).await
+    }
+
+    /// Waits for `answering` — a request the person may take minutes over —
+    /// writing each stop of one agent handed over meanwhile (R-SUB-10).
+    /// `mine` is the agent asking and its question's cancel: a stop of it,
+    /// or the turn's interrupt, takes the question back.
+    async fn sending_stops<T>(&mut self, answering: impl std::future::Future<Output = T>, mine: Option<(&str, &tokio::sync::watch::Sender<bool>)>, cancel: &tokio::sync::watch::Receiver<bool>) -> T {
+        tokio::pin!(answering);
+        let mut turn = cancel.clone();
+        let mut followed = mine.is_none();
+        loop {
+            tokio::select! {
+                biased;
+                t = &mut answering => return t,
+                _ = cancelled(&mut turn), if !followed => {
+                    followed = true;
+                    if let Some((_, m)) = mine {
+                        let _ = m.send(true);
+                    }
+                }
+                Some(s) = self.stops.recv() => {
+                    let asking = mine.filter(|(task, _)| *task == s.task_id);
+                    self.stop_task(s).await;
+                    if let Some((_, m)) = asking {
+                        let _ = m.send(true);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The running agent a `can_use_tool` is of, by task id: Claude Code
+    /// names it (`agent_id`, recorded with 2.1.289), and the call it asks
+    /// about (`tool_use_id`) was made in its conversation.
+    fn asker(&self, req: &Value) -> Option<String> {
+        if req["subtype"] != "can_use_tool" {
+            return None;
+        }
+        self.status.children().asker(req["agent_id"].as_str(), req["tool_use_id"].as_str())
+    }
+
+    /// Once the turn's `init` has come (`came_up`), what it said of an
+    /// interrupt, in `said`.
+    async fn announce(&mut self, t: &Translator, said: &mut Option<(bool, bool)>, ask: &Answers, events: &Events, b: &Backend, instance: &str) -> Result<(), EngineError> {
+        if said.is_some() {
+            return Ok(());
+        }
+        if let Some(init) = t.init.clone() {
+            *said = Some(self.came_up(&init, ask, events, b, instance).await?);
+        }
+        Ok(())
+    }
+
+    /// Claude Code's `init`: its mode taken, then the turn announced. What
+    /// it says of an interrupt: whether one is acknowledged, and whether it
+    /// can cancel the steering not read yet.
+    async fn came_up(&mut self, init: &Init, ask: &Answers, events: &Events, b: &Backend, instance: &str) -> Result<(bool, bool), EngineError> {
+        self.mode.clone_from(&init.permission_mode);
+        // A mode looser than gruntas's — a setting, a
+        // wrapper — is stopped before it runs anything.
+        if !init.permission_mode.is_empty() && looser_than(&init.permission_mode, ask.mode) {
+            self.terminate().await;
+            return Err(EngineError::new(
+                "backend_permission_mode",
+                format!(
+                    "Claude Code on {instance} came up in its `{}` permission mode, looser than gruntas's `{}` for this turn, so gruntas stopped it before it ran anything — check `permissions.defaultMode` in its settings and the instance's `args`, or rerun gruntas with a mode that allows it",
+                    init.permission_mode,
+                    ask.mode.name()
+                ),
+            ));
+        }
+        announce(events, init, b, instance).await?;
+        let has = |c: &str| init.capabilities.iter().any(|x| x == c);
+        self.cancel_queued = has("interrupt_cancel_queued_v1");
+        Ok((has("interrupt_receipt_v1"), self.cancel_queued))
+    }
+
+    /// Keeps the list of agents from Claude Code's `system` lines, and says
+    /// it, whole, when it changed. An agent counts when it is the
+    /// conversation's own (`local_agent`, at the first depth) — not a shell,
+    /// not one a subagent started. It is gone at its `task_notification`,
+    /// at a `task_updated` that finishes it, or — run in the background —
+    /// when `background_tasks_changed` no longer lists it.
+    fn track(&mut self, msg: &Value) -> Option<Vec<BackendAgent>> {
+        if msg["type"] != "system" {
+            return None;
+        }
+        let s = |k: &str| msg.get(k).and_then(Value::as_str).unwrap_or_default();
+        let id = s("task_id");
+        let status = self.status.clone();
+        let mut agents = status.agents();
+        let ids = |a: &[Tracked]| a.iter().map(|t| t.agent.task_id.clone()).collect::<Vec<_>>();
+        let before = ids(&agents);
+        let mut done = None;
+        match s("subtype") {
+            "task_started" => {
+                if children::own(msg) && !id.is_empty() && !agents.iter().any(|t| t.agent.task_id == id) {
+                    let agent = BackendAgent { task_id: id.into(), description: s("description").into(), agent: Some(s("subagent_type").to_string()).filter(|a| !a.is_empty()) };
+                    agents.push(Tracked { agent, background: msg["is_backgrounded"] == true });
+                }
+            }
+            "task_notification" => done = Some(s("status")),
+            "task_updated" => {
+                let st = msg.pointer("/patch/status").and_then(Value::as_str).unwrap_or_default();
+                if !matches!(st, "" | "pending" | "running") {
+                    done = Some(st);
+                }
+            }
+            "background_tasks_changed" => {
+                let listed: Vec<&str> = msg["tasks"].as_array().map(|a| a.iter().filter_map(|t| t["task_id"].as_str()).collect()).unwrap_or_default();
+                let (kept, gone): (Vec<Tracked>, Vec<Tracked>) = agents.drain(..).partition(|t| !t.background || listed.contains(&t.agent.task_id.as_str()));
+                *agents = kept;
+                for t in gone {
+                    self.finished = Some(format!("background agent “{}” finished", t.agent.description));
+                    self.armed = true;
+                    self.ended.push(t.agent);
+                }
+            }
+            _ => return None,
+        }
+        if let Some(st) = done {
+            let st = if st.is_empty() { "finished" } else { st };
+            let at = agents.iter().position(|t| t.agent.task_id == id);
+            let gone = at.map(|i| agents.remove(i));
+            // Its end in words, for the turn Claude Code begins to answer it.
+            let what = match gone {
+                Some(t) => t.background.then_some(t.agent.description),
+                None => self.ended.iter().find(|a| a.task_id == id).map(|a| a.description.clone()),
+            };
+            if let Some(d) = what {
+                self.finished = Some(format!("background agent “{d}” {st}"));
+                self.armed = true;
+            }
+        }
+        (ids(&agents) != before).then(|| agents.iter().map(|t| t.agent.clone()).collect())
+    }
+
+    /// The agents run in the foreground, gone with their turn.
+    fn drop_foreground(&mut self) -> Option<Vec<BackendAgent>> {
+        let mut agents = self.status.agents();
+        let before = agents.len();
+        agents.retain(|t| t.background);
+        (agents.len() != before).then(|| agents.iter().map(|t| t.agent.clone()).collect())
+    }
+
+    /// A line read between turns, after `track`: a subagent's call is
+    /// metered, and a turn Claude Code began by itself is kept, from its
+    /// first line, for the turn that runs it.
+    fn idle_line(&mut self, msg: Value) {
+        if !main_thread(&msg) {
+            if msg["type"] == "assistant" {
+                self.status.meter().see(&msg, None);
+            }
+            return;
+        }
+        match (msg["type"].as_str().unwrap_or_default(), msg["subtype"].as_str().unwrap_or_default()) {
+            // A turn begins with `init`, and one after an agent finished is
+            // Claude Code answering it. One with nothing finished is kept
+            // aside: Claude Code sends some between turns that no turn
+            // follows.
+            ("system", "init") if self.armed => self.begun.push(msg),
+            ("system", "init") => self.held_init = Some(msg),
+            // Whatever began it, the conversation's own lines are a turn.
+            ("stream_event" | "assistant" | "user" | "result", _) => {
+                self.begun.extend(self.held_init.take());
+                self.begun.push(msg);
+            }
+            _ => {}
+        }
+    }
+
+    /// Stops the whole process group — Claude Code and every shell and
+    /// server it started: SIGTERM, a moment to write what it was writing,
+    /// then SIGKILL.
+    async fn terminate(&mut self) {
+        self.exited = true;
+        if self.group_done {
+            return;
+        }
+        #[cfg(unix)]
+        {
+            signal_group(self.pid, libc::SIGTERM);
+            let _ = tokio::time::timeout(TERM_GRACE, self.child.wait()).await;
+            signal_group(self.pid, libc::SIGKILL);
+        }
+        let _ = self.child.kill().await;
+        self.group_done = true;
+        crate::group::release(self.pid);
+    }
+
+    async fn kill(mut self) {
+        self.terminate().await;
+    }
+
+    /// Asks the process to exit by closing its stdin, gives it a moment, and
+    /// then stops what is left of its group, so nothing it started outlives
+    /// the session.
+    async fn shutdown(mut self) {
+        drop(self.stdin.take());
+        let _ = tokio::time::timeout(EXIT_GRACE, self.child.wait()).await;
+        self.terminate().await;
+    }
+}
+
+
+/// When `msg` answers the interrupt (`receipt`): once acknowledged, the
+/// result is waited for the full grace (`deadline`). Between a result and
+/// the turn that reads the steering (`grace`), no other result is coming,
+/// since the interrupt cancelled that turn's input: the turn ends at the
+/// result it had, returned.
+fn receipted(msg: &Value, receipt: &mut Option<String>, grace: &mut Option<(tokio::time::Instant, stream::Outcome)>, deadline: &mut Option<tokio::time::Instant>) -> Option<stream::Outcome> {
+    if receipt.is_none() || msg.pointer("/response/request_id").and_then(Value::as_str) != receipt.as_deref() {
+        return None;
+    }
+    *receipt = None;
+    *deadline = Some(tokio::time::Instant::now() + INTERRUPT_GRACE);
+    grace.take().map(|(_, o)| o)
+}
+
+/// Why a turn Claude Code ended without success failed.
+fn failed(result: &stream::Outcome, limit: Option<&crate::protocol::LimitStatus>, instance: &str) -> EngineError {
+    let said = if !result.text.trim().is_empty() { result.text.trim().to_string() } else if !result.errors.is_empty() { result.errors.join("; ") } else { result.subtype.clone() };
+    let lower = said.to_lowercase();
+    // The account's plan limit, or the API's rate limit: what a switch to
+    // another instance answers (R-INST-7), with when it lifts.
+    let rejected = limit.filter(|l| l.status == crate::protocol::LimitState::Limited);
+    // Only what Claude Code reports about the account — its rate-limit
+    // event, the API's status, its own error list — never the model's
+    // words, which a prompt can make say anything.
+    let errors = result.errors.join(" ").to_lowercase();
+    if rejected.is_some() || result.api_status == Some(429) || errors.contains("usage limit") || errors.contains("limit reached") || errors.contains("rate limit") {
+        let resets = rejected.and_then(|l| l.resets_at_ms).or_else(|| limit.and_then(|l| l.resets_at_ms));
+        let until = resets.map(|ms| format!(" until {}", crate::host::clock(ms))).unwrap_or_default();
+        return EngineError::new("rate_limited", format!("Claude Code on {instance} is limited{until} ({said}){CONTINUE_HINT}")).with_status(result.api_status.unwrap_or(429)).with_resets(resets);
+    }
+    if lower.contains("/login") || lower.contains("not logged in") || lower.contains("invalid api key") || result.api_status == Some(401) {
+        let add = crate::connect::connect_command(instance, "claude-code");
+        return EngineError::new("not_authenticated", format!("Claude Code is not signed in for the {instance} instance ({said}) — sign in with `{add}`, which runs Claude's own login")).with_status(401);
+    }
+    EngineError::new("backend_failed", format!("Claude Code could not finish the turn: {said}")).with_status(result.api_status.unwrap_or(0))
+}
+
+/// What the translator still holds, sent on as the turn ends.
+async fn finish(t: &mut Translator, events: &Events) {
+    let mut out = Vec::new();
+    t.finish(&mut out);
+    forward(events, out).await;
+}
+
+async fn forward(events: &Events, out: Vec<EngineEvent>) {
+    for ev in out {
+        let _ = events.send(ev).await;
+    }
+}
+
+/// A note of gruntas's in the turn, as a `userText` item.
+async fn note(events: &Events, text: String) {
+    let item_id = gruntas_store::new_id();
+    let _ = events.send(EngineEvent::ItemStarted { item_id: item_id.clone(), kind: ItemKind::UserText }).await;
+    let _ = events.send(EngineEvent::ItemCompleted { item_id, item: Item::user(text) }).await;
+}
+
+/// The turn's context and the Claude session behind it, from `init`.
+async fn announce(events: &Events, init: &Init, b: &Backend, instance: &str) -> Result<(), EngineError> {
+    let bridged = bridge::definitions();
+    let tools = init
+        .tools
+        .iter()
+        .map(|name| bridged.iter().find(|d| &d.name == name).cloned().unwrap_or_else(|| ToolDefinition { name: name.clone(), description: String::new(), input_schema: json!({}), grammar: None }))
+        .collect();
+    let _ = events.send(EngineEvent::Context { system: SYSTEM_NOTE.into(), tools }).await;
+    if let Some((_, status)) = init.mcp_servers.iter().find(|(n, _)| n == bridge::SERVER)
+        && status != "connected"
+    {
+        return Err(EngineError::new("backend_failed", format!("Claude Code on {instance} did not connect gruntas's tools (the gruntas MCP server is {status})")));
+    }
+    let billing = match init.api_key_source.as_str() {
+        "" => None,
+        "none" => Some(Billing::Subscription),
+        _ => Some(Billing::ApiKey),
+    };
+    // A session id is joined to a path only when it is one (a UUID's
+    // characters): the vendor's output is not trusted to name a file.
+    let transcript = crate::handoff::valid_session_id(&init.session_id).then(|| b.home.as_ref().map(|h| transcript_path(h, &init.cwd, &init.session_id).display().to_string())).flatten();
+    if !init.session_id.is_empty() {
+        let _ = events.send(EngineEvent::BackendSession { backend: BACKEND.into(), session_id: init.session_id.clone(), transcript, billing }).await;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ask_user_question_is_the_persons_to_answer_and_their_answers_ride_back_in_updated_input() {
+        use crate::protocol::{ApprovalDecision, QuestionAnswer};
+        let approvals = permissions::Approvals::default();
+        let gate = Gate::new(permissions::Policy::modes_only(Path::new("/repo")), PermissionMode::Plan, Default::default(), Some(approvals.clone()), None, "s", "t");
+        let ask = Answers { session_id: "s".into(), turn_id: "t".into(), model: ModelRef { instance: "claude:me".into(), model: "claude-opus-5-5".into() }, cwd: PathBuf::from("/repo"), mode: PermissionMode::Plan, gruntas_version: "test".into(), gate, evidence: None, mcp: Arc::default(), approved: Arc::default(), session_dir: PathBuf::new(), images: Arc::default() };
+        let input = json!({"questions": [
+            {"question": "Which database?", "header": "DB", "multiSelect": false, "options": [{"label": "Postgres", "description": "x"}, {"label": "SQLite", "description": "y"}]},
+            {"question": "Which tests?", "header": "Tests", "multiSelect": true, "options": [{"label": "unit", "description": ""}, {"label": "e2e", "description": ""}]},
+        ]});
+        let req = json!({"subtype": "can_use_tool", "tool_name": "AskUserQuestion", "input": input});
+        let (tx, mut rx) = mpsc::channel(8);
+        let (_c, cancel) = tokio::sync::watch::channel(false);
+        let answering = approvals.clone();
+        tokio::spawn(async move {
+            let mut n = 0;
+            while let Some(ev) = rx.recv().await {
+                if let EngineEvent::Approval(req) = ev {
+                    // Asked in plan mode too: a question changes nothing.
+                    let answers = vec![QuestionAnswer { id: "Which database?".into(), picked: vec![], text: Some("DuckDB".into()) }, QuestionAnswer { id: "Which tests?".into(), picked: vec!["unit".into(), "e2e".into()], text: None }];
+                    let decision = if n == 0 { ApprovalDecision::Allow } else { ApprovalDecision::Deny };
+                    answering.answer("s", &req.request_id, decision, if n == 0 { answers } else { vec![] }).unwrap();
+                    n += 1;
+                }
+            }
+        });
+        let got = ask.answer("r1", &req, Some((&tx, &cancel))).await;
+        let r = &got["response"]["response"];
+        assert_eq!(r["behavior"], "allow", "{got}");
+        assert_eq!(r["updatedInput"]["answers"], json!({"Which database?": "DuckDB", "Which tests?": "unit, e2e"}));
+        assert_eq!(r["updatedInput"]["questions"], input["questions"], "its questions as Claude Code sent them");
+        let declined = ask.answer("r2", &req, Some((&tx, &cancel))).await;
+        assert_eq!((declined["response"]["response"]["behavior"].as_str(), declined["response"]["response"]["message"].as_str()), (Some("deny"), Some(permissions::DECLINED)));
+        // Between turns nobody is asked.
+        let idle = ask.answer("r3", &req, None).await;
+        assert_eq!(idle["response"]["response"]["message"], permissions::NOBODY_TO_ASK);
+    }
+
+    #[test]
+    fn r_back_1_the_process_is_launched_with_the_stream_json_protocol_and_gruntas_mcp_server() {
+        let l = Launch { model: "haiku".into(), resume: Some("cc-1".into()), effort: Some("high"), plan: false, disallowed: Vec::new(), mcp: Vec::new() };
+        let a = args(&l, &["--add-dir".into(), "/x".into()]);
+        let s = a.join(" ");
+        assert!(s.starts_with("-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --replay-user-messages --permission-prompt-tool stdio --mcp-config "), "{s}");
+        let rest = format!("--strict-mcp-config --settings {SETTINGS} --model haiku --resume cc-1 --effort high --permission-mode default --add-dir /x");
+        assert!(s.contains(&format!(r#"{{"mcpServers":{{"gruntas":{{"name":"gruntas","type":"sdk"}}}}}} {rest}"#)) || s.contains(&format!(r#"{{"mcpServers":{{"gruntas":{{"type":"sdk","name":"gruntas"}}}}}} {rest}"#)), "{s}");
+        // Commits and pull requests made through Claude Code carry no Claude attribution.
+        let settings: Value = serde_json::from_str(SETTINGS).unwrap();
+        assert_eq!(settings, json!({"attribution": {"commit": "", "pr": ""}, "includeCoAuthoredBy": false}));
+        assert!(s.contains("--permission-mode default --add-dir"), "the mode is always named, so settings cannot loosen it: {s}");
+        assert!(args(&Launch { plan: true, resume: None, effort: None, ..l.clone() }, &[]).join(" ").ends_with("--model haiku --permission-mode plan"));
+        // R-PERM-1: gruntas's deny rules reach what Claude Code allows by itself.
+        let denied = args(&Launch { disallowed: vec!["Bash(rm:*)".into(), "Read(.env)".into()], ..l }, &[]).join(" ");
+        assert!(denied.contains("--disallowedTools Bash(rm:*) Read(.env) --permission-mode default"), "{denied}");
+        let mut p = permissions::Policy::modes_only(Path::new("/repo"));
+        p.loaded.rules.push((permissions::Kind::Deny, permissions::rules::parse("Bash(rm:*)", "test", Path::new("/repo")).unwrap()));
+        let gate = |m| Gate::new(p.clone(), m, Default::default(), None, None, "s", "t");
+        assert_eq!(disallowed(&gate(PermissionMode::BypassPermissions)), ["Bash(rm:*)"]);
+        assert!(disallowed(&gate(PermissionMode::Unhinged)).is_empty(), "unhinged starts Claude Code without gruntas's deny rules");
+        assert!(looser_than("bypassPermissions", PermissionMode::AcceptEdits) && looser_than("acceptEdits", PermissionMode::Default) && looser_than("auto", PermissionMode::AcceptEdits));
+        assert!(looser_than("default", PermissionMode::Plan) && looser_than("somethingNew", PermissionMode::AcceptEdits));
+        assert!(!looser_than("default", PermissionMode::Default) && !looser_than("plan", PermissionMode::Plan) && !looser_than("bypassPermissions", PermissionMode::BypassPermissions) && !looser_than("bypassPermissions", PermissionMode::Unhinged));
+        assert_eq!([Effort::None, Effort::Medium, Effort::Max].map(effort_level), ["low", "medium", "max"]);
+    }
+
+    #[test]
+    fn r_back_1_approvals_follow_gruntas_modes_and_its_own_tools_always_run() {
+        let cwd = std::env::temp_dir().join(format!("gruntas-approve-{}", std::process::id()));
+        std::fs::create_dir_all(&cwd).unwrap();
+        let cwd = cwd.canonicalize().unwrap();
+        let judge = |m, t: &str, i: &Value, protected: &[PathBuf]| crate::permissions::judge(m, Ok(call_of(t, i, &cwd)), &cwd, protected);
+        let approve = |m, t: &str, i: &Value| judge(m, t, i, &[]);
+        let d = PermissionMode::Default;
+        assert!(approve(d, "mcp__gruntas__session_info", &json!({})).is_ok());
+        assert!(approve(d, "Read", &json!({"file_path": "README.md"})).is_ok());
+        assert!(approve(d, "Read", &json!({"file_path": "/etc/passwd"})).unwrap_err().contains("outside the working directory"));
+        assert!(approve(d, "Edit", &json!({"file_path": "a.txt"})).unwrap_err().contains("default mode"));
+        assert!(approve(PermissionMode::AcceptEdits, "Edit", &json!({"file_path": "a.txt"})).is_ok());
+        assert!(approve(PermissionMode::AcceptEdits, "Write", &json!({"file_path": ".git/config"})).unwrap_err().contains(".git"));
+        assert!(approve(PermissionMode::AcceptEdits, "Bash", &json!({"command": "ls"})).unwrap_err().contains("runs a command"));
+        assert!(approve(PermissionMode::BypassPermissions, "Bash", &json!({"command": "ls"})).is_ok());
+        assert!(approve(d, "WebFetch", &json!({"url": "https://x"})).is_err(), "a fetch is asked about");
+        assert!(approve(d, "SomethingNew", &json!({})).is_err(), "and so is a tool this build does not know");
+        assert!(approve(PermissionMode::Plan, "Write", &json!({"file_path": "a.txt"})).unwrap_err().contains("plan mode"));
+        // A glob that names another directory is judged like a path.
+        assert!(approve(d, "Glob", &json!({"pattern": "/etc/**/*.conf"})).unwrap_err().contains("outside the working directory"));
+        assert!(approve(d, "Grep", &json!({"pattern": "x", "glob": "/root/*"})).unwrap_err().contains("outside the working directory"));
+        assert!(approve(d, "Glob", &json!({"pattern": "**/*.rs"})).is_ok() && approve(d, "Grep", &json!({"pattern": "/etc/"})).is_ok(), "a relative glob, and grep's regex, are not paths");
+        assert!(approve(d, "Glob", &json!({"pattern": format!("{}/src/**", cwd.display())})).is_ok());
+        assert!(approve(PermissionMode::BypassPermissions, "Glob", &json!({"pattern": "/etc/*"})).is_ok());
+        // R-BACK-6's other half: an edit that would make Claude Code run
+        // something — its settings, hooks, agents — needs a person's say.
+        let ae = PermissionMode::AcceptEdits;
+        for f in [".claude/settings.json", ".claude/settings.local.json", ".claude/agents/x.md", "sub/.claude/hooks/h.sh", ".Claude/settings.json", ".CLAUDE./agents/a.md", ".claude /settings.json", ".gruntas/config.json"] {
+            let e = approve(ae, "Write", &json!({"file_path": f})).unwrap_err();
+            assert!(e.contains(".claude") || e.contains(".gruntas"), "{f}: {e}");
+        }
+        let config = cwd.join("cc-config");
+        std::fs::create_dir_all(&config).unwrap();
+        let err = judge(ae, "Edit", &json!({"file_path": config.join("settings.json").display().to_string()}), std::slice::from_ref(&config)).unwrap_err();
+        assert!(err.contains("settings decide what runs"), "{err}");
+        assert!(approve(ae, "Edit", &json!({"file_path": ".GIT/config"})).unwrap_err().contains(".git"));
+        let err = judge(ae, "Write", &json!({"file_path": cwd.join("CC-Config/settings.json").display().to_string()}), std::slice::from_ref(&config)).unwrap_err();
+        assert!(err.contains("settings decide what runs"), "the config directory in another case: {err}");
+        assert!(judge(PermissionMode::BypassPermissions, "Write", &json!({"file_path": ".claude/settings.json"}), &[config]).is_ok());
+        let _ = std::fs::remove_dir_all(&cwd);
+    }
+
+    #[test]
+    fn r_sub_7_a_process_let_go_ends_its_agents_saying_why_whoever_asked() {
+        let status = Status::default();
+        let started = json!({"type": "system", "subtype": "task_started", "task_id": "a1", "tool_use_id": "call_a", "description": "x", "task_type": "local_agent", "spawn_depth": 1, "prompt": "p"});
+        assert!(status.children().apply(&started).len() > 1);
+        let told = Arc::new(Mutex::new(Vec::new()));
+        let keep = told.clone();
+        let tell: Idle = Arc::new(move |ev| keep.lock().unwrap().push(ev));
+        // A shutdown asked for is told too: the transcript is closed.
+        assert!(status.clear_telling(SHUT_DOWN, Some(&tell)));
+        let told = told.lock().unwrap();
+        assert!(matches!(told.last(), Some(EngineEvent::BackendChildEnded { task_id, status: crate::protocol::ChildState::Interrupted, error: Some(e) }) if task_id == "a1" && e == SHUT_DOWN), "{told:?}");
+        assert!(!status.clear_telling(SHUT_DOWN, Some(&tell)), "nothing left to end");
+        // After a turn, the reason is how the turn did.
+        assert_eq!(stopped_why(&Ok(TurnEnd::Interrupted)), INTERRUPTED);
+        assert_eq!(stopped_why(&Ok(TurnEnd::Completed)), EXITED);
+        assert_eq!(stopped_why(&Err(EngineError::new("backend_failed", "x"))), FAILED);
+    }
+
+    /// R-SUB-10: a stop's answer is waited for from when it was written,
+    /// not from when it was handed over: one written late in the first
+    /// wait still gets the whole second. One nothing writes is said not
+    /// sent; one written and not answered in time is taken, its agent's
+    /// end left to say how it went.
+    #[tokio::test]
+    async fn r_sub_10_a_stops_answer_is_waited_for_from_its_write() {
+        let grace = Duration::from_millis(200);
+        let status = Arc::new(Status::default());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        *status.stopper() = Some(tx);
+        let process = tokio::spawn(async move {
+            // Written at 150 ms, answered at 300 ms: past the first grace
+            // counted from the hand-over, inside the second.
+            let ask: StopAsk = rx.recv().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            ask.sent.send(()).unwrap();
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            ask.done.send(Ok(())).unwrap();
+            // Written, never answered.
+            let ask: StopAsk = rx.recv().await.unwrap();
+            ask.sent.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            drop(ask.done);
+        });
+        assert!(stop_answer(&status, "a1", grace).await.is_ok());
+        assert!(stop_answer(&status, "a1", grace).await.is_ok(), "written, and not answered: taken");
+        process.abort();
+        // Handed over, never written: not sent.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        *status.stopper() = Some(tx);
+        let e = stop_answer(&status, "a1", grace).await.unwrap_err();
+        assert!(e.message.contains("so it was not sent"), "{e}");
+        // No process.
+        *status.stopper() = None;
+        assert!(stop_answer(&status, "a1", grace).await.unwrap_err().message.contains("its process is not running"));
+    }
+
+    #[test]
+    fn r_back_5_the_transcript_is_found_where_claude_code_keeps_it() {
+        let home = std::env::temp_dir().join(format!("gruntas-transcript-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(transcript_path(&home, "/tmp/a.b/c", "s1"), home.join("projects/-tmp-a-b-c/s1.jsonl"), "where it will be");
+        std::fs::create_dir_all(home.join("projects/-shortened-123")).unwrap();
+        std::fs::write(home.join("projects/-shortened-123/s2.jsonl"), "").unwrap();
+        assert_eq!(transcript_path(&home, "/a/very/long/path", "s2"), home.join("projects/-shortened-123/s2.jsonl"), "or where it is");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+}

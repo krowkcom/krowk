@@ -1,4 +1,4 @@
-$ @tty krowk push a.txt --title "a run"
+$ @tty gruntas push a.txt --title "a run"
 tty:
 <spinner>\e[32m✓\e[0m Uploaded a.txt → http://<registry>/a/<art_1>
 \e[2m  5 B · run <run_1> · a run\e[0m
@@ -7,17 +7,17 @@ tty:
 **a.txt** · [View preview ↗](http://<registry>/a/<art_1>)
 exit: 0
 
-$ @tty krowk artifacts list
+$ @tty gruntas artifacts list
 tty:
 a.txt  5 B  http://<registry>/a/<art_1>
 exit: 0
 
-$ @tty krowk runs list
+$ @tty gruntas runs list
 tty:
 <run_1>  finished  a run
 exit: 0
 
-$ @tty krowk auth verify
+$ @tty gruntas auth verify
 tty:
 \e[32m✓\e[0m Key <key_1> is valid
   Workspace   Local workspace (<ws_1>)
@@ -25,9 +25,9 @@ tty:
   Plan        Pro · renews 19 Dec 2026
 exit: 0
 
-$ @tty krowk workspaces
+$ @tty gruntas workspaces
 tty:
 No keys stored yet. Until there is one, uploads are anonymous and expire.
-\e[2m  Add one:\e[0m \e[36mkrowk login\e[0m
+\e[2m  Add one:\e[0m \e[36mgruntas login\e[0m
 exit: 0
 

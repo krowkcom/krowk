@@ -1,4 +1,4 @@
-$ krowk uploads create a.txt --quiet
+$ gruntas uploads create a.txt --quiet
 stdout:
 {
   "artifacts": [
@@ -37,7 +37,7 @@ stdout:
 }
 exit: 0
 
-$ krowk uploads show <art_2>
+$ gruntas uploads show <art_2>
 stderr:
 {
   "ok": false,
@@ -51,55 +51,55 @@ stderr:
 }
 exit: 2
 
-$ krowk uploads
+$ gruntas uploads
 stderr:
 {
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "the artifacts command needs a subcommand: create, list, show, attach, delete or claim; run `krowk help artifacts`",
+    "fix": "the artifacts command needs a subcommand: create, list, show, attach, delete or claim; run `gruntas help artifacts`",
     "retryable": false
   }
 }
 exit: 1
 
-$ krowk help uploads --format human
+$ gruntas help uploads --format human
 stdout:
-krowk artifacts — Create, list, show, attach, delete or claim artifacts
+gruntas artifacts — Create, list, show, attach, delete or claim artifacts
 
-An artifact is a file published to a link. `krowk push` and `krowk claim`
+An artifact is a file published to a link. `gruntas push` and `gruntas claim`
 are the short forms of `create` and `claim`; `uploads` is an older name.
 
-Commands (krowk artifacts …)
-  create <file...> [flags]    Upload files: the long form of `krowk push`
-  list [flags]                List artifacts, newest first: a run's, or the
-                              workspace's
+Commands (gruntas artifacts …)
+  create <file...> [flags]    Upload files: the long form of `gruntas push`
+  list [flags]                List artifacts, newest first, of a run or the
+                              workspace
   show <artifact>             Read one artifact back
   attach <art> --run <run>    Put an artifact under a run afterwards
   delete <art> [token]        Take an artifact down — immediate, cannot be
                               undone
   claim <art> <token> [--run]
-                              The long form of `krowk claim`
+                              The long form of `gruntas claim`
 
 Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
 exit: 0
 
-$ krowk uplods list
+$ gruntas uplods list
 stderr:
 {
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "`uplods list` is not a krowk command — did you mean `krowk artifacts list`?",
+    "fix": "`uplods list` is not a gruntas command — did you mean `gruntas artifacts list`?",
     "retryable": false
   }
 }
 exit: 1
 
-$ krowk help uploads bogus --format human
+$ gruntas help uploads bogus --format human
 stderr:
-✗ `uploads bogus` is not a krowk command or help topic.
-  Try: krowk help artifacts
+✗ `uploads bogus` is not a gruntas command or help topic.
+  Try: gruntas help artifacts
   Code: unknown_command
 exit: 1
 

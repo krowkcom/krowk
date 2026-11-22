@@ -20,13 +20,13 @@ all-features = true
 [advisories]
 # Every RustSec advisory — a vulnerability, an unmaintained or unsound crate,
 # a yanked version — fails the check. An exception goes here with the
-# advisory's id and why it does not reach krowk, never as a blanket level.
+# advisory's id and why it does not reach gruntas, never as a blanket level.
 unmaintained = "all"
 yanked = "deny"
 ignore = []
 
 [licenses]
-# What krowk's own MIT licence can ship beside. Where a crate offers a
+# What gruntas's own MIT licence can ship beside. Where a crate offers a
 # choice ("MIT OR Apache-2.0 OR LGPL-2.1-or-later"), cargo deny accepts it
 # when any one choice is on this list, so the copyleft alternatives some
 # crates list (self_cell, r-efi) are never the ones taken.

@@ -1,6 +1,6 @@
 @registry
-@env KROWK_TOKEN=krowk_sk_supersecretvalue_with_underscores
+@env GRUNTAS_TOKEN=krowk_sk_supersecretvalue_with_underscores
 @file a.txt hello
-krowk push a.txt --jq '.data.artifacts[0] | error'
-krowk auth token --jq .
-krowk auth verify --jq '.data | tonumber' 
+gruntas push a.txt --jq '.data.artifacts[0] | error'
+gruntas auth token --jq .
+gruntas auth verify --jq '.data | tonumber' 

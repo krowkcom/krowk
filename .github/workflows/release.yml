@@ -1,7 +1,7 @@
 name: Release
 
 # A tag is the whole trigger. `git tag -a v0.1.0 -m ... && git push origin v0.1.0`
-# checks the tag, builds both builds of krowk (full and lean) and krowk-mcp for
+# checks the tag, builds both builds of gruntas (full and lean) and gruntas-mcp for
 # five platforms in parallel (dist.yml), rebuilds one platform on a second
 # runner and refuses to go on unless the bytes match, signs the checksums and
 # the SBOMs, opens the GitHub Release with all of it on it, and publishes the
@@ -101,7 +101,7 @@ jobs:
       # release ships. It is a superset of what a binary links — the tool
       # resolves the workspace's features together — so it may name a crate
       # one build leaves out, never the other way round; the exact list for
-      # the lean build is crates/krowk/lean-deps.txt. The timestamp is the
+      # the lean build is crates/gruntas/lean-deps.txt. The timestamp is the
       # tagged commit's, so a rerun writes the same file.
       - name: SBOM
         env:
@@ -114,11 +114,11 @@ jobs:
           for build in full lean; do
             features=()
             [[ "$build" == full ]] && features=(--features harness)
-            cargo cyclonedx --manifest-path crates/krowk/Cargo.toml --format json --spec-version 1.5 \
+            cargo cyclonedx --manifest-path crates/gruntas/Cargo.toml --format json --spec-version 1.5 \
               --target all --no-build-deps "${features[@]}" --override-filename sbom
-            name="krowk"
-            [[ "$build" == lean ]] && name="krowk-lean"
-            mv crates/krowk/sbom.json "sbom/${name}_${VERSION}.cdx.json"
+            name="gruntas"
+            [[ "$build" == lean ]] && name="gruntas-lean"
+            mv crates/gruntas/sbom.json "sbom/${name}_${VERSION}.cdx.json"
           done
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -228,7 +228,7 @@ jobs:
       - name: The same bytes
         run: |
           set -euo pipefail
-          for bin in "$TARGET/krowk" "$TARGET/krowk-mcp" "$TARGET-lean/krowk"; do
+          for bin in "$TARGET/gruntas" "$TARGET/gruntas-mcp" "$TARGET-lean/gruntas"; do
             want=$(sha256sum "released/$bin" | cut -d' ' -f1)
             got=$(sha256sum "rebuild/dist/$bin" | cut -d' ' -f1)
             echo "$bin  released $want  rebuilt $got"
@@ -236,7 +236,7 @@ jobs:
             echo "- \`$bin\` \`$want\`, rebuilt identically" >> "$GITHUB_STEP_SUMMARY"
           done
 
-  # The code `krowk upgrade` checks a signature with, compiled at this tag in
+  # The code `gruntas upgrade` checks a signature with, compiled at this tag in
   # a job that can sign nothing and write nothing: the dependencies' build
   # scripts and proc macros run here, never beside the OIDC token or the
   # release's write access. Only the test binary leaves it.
@@ -253,13 +253,13 @@ jobs:
           rustup toolchain install 1.97.1 --profile minimal
           rustup default 1.97.1
 
-      - name: Build krowk's unit tests
+      - name: Build gruntas's unit tests
         run: |
           set -euo pipefail
-          bin=$(cargo test --locked -p krowk --lib --no-run --message-format=json \
-            | jq -r 'select(.reason == "compiler-artifact" and .profile.test and .target.name == "krowk" and (.target.kind | index("lib"))) | .executable')
-          [[ -x "$bin" ]] || { echo "::error::no krowk unit-test binary was built" >&2; exit 1; }
-          mkdir -p verifier && cp "$bin" verifier/krowk-unit-tests
+          bin=$(cargo test --locked -p gruntas --lib --no-run --message-format=json \
+            | jq -r 'select(.reason == "compiler-artifact" and .profile.test and .target.name == "gruntas" and (.target.kind | index("lib"))) | .executable')
+          [[ -x "$bin" ]] || { echo "::error::no gruntas unit-test binary was built" >&2; exit 1; }
+          mkdir -p verifier && cp "$bin" verifier/gruntas-unit-tests
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -306,10 +306,10 @@ jobs:
       # so `cosign verify-blob --bundle` needs nothing else (SECURITY.md).
       # The services come from the signing config in the repository, not the
       # one cosign 3 fetches from Sigstore's TUF repository at signing time
-      # by default (--use-signing-config=true): `krowk upgrade` reads only a
+      # by default (--use-signing-config=true): `gruntas upgrade` reads only a
       # Rekor v1 entry with its signed entry timestamp, so a release logged
       # to Rekor v2 because Sigstore moved its default would be one no
-      # shipped krowk upgrades to. .github/sigstore/signing-config.json is
+      # shipped gruntas upgrades to. .github/sigstore/signing-config.json is
       # TUF's signing_config.v0.2.json as it stood (Fulcio, Rekor v1, the
       # timestamp authority); oss_hygiene pins its hash and TUF version.
       # Runbook — sign fails on a service: refresh the file from TUF; if TUF's
@@ -328,10 +328,10 @@ jobs:
           name: signatures
           path: dist/*.sigstore.json
 
-  # The bundles just written, checked by the code `krowk upgrade` runs at
+  # The bundles just written, checked by the code `gruntas upgrade` runs at
   # this tag (the verifier job's test binary), before anything is
   # published: a change in what cosign writes or Sigstore logs fails this
-  # release, not every krowk's next upgrade. Read-only, like the build.
+  # release, not every gruntas's next upgrade. Read-only, like the build.
   verify:
     needs: [check, verifier, sign]
     if: ${{ !cancelled() && !failure() }}
@@ -352,14 +352,14 @@ jobs:
           name: verifier
           path: verifier
 
-      - name: Check the signature as krowk upgrade will
+      - name: Check the signature as gruntas upgrade will
         env:
           VERSION: ${{ needs.check.outputs.version }}
         run: |
           set -euo pipefail
-          chmod +x verifier/krowk-unit-tests
-          KROWK_RELEASE_DIR="$PWD/dist" KROWK_RELEASE_VERSION="$VERSION" verifier/krowk-unit-tests \
-            cli::upgrade::sigstore::tests::r_oss_3_the_release_being_published_verifies_as_krowk_upgrade_will_check_it \
+          chmod +x verifier/gruntas-unit-tests
+          GRUNTAS_RELEASE_DIR="$PWD/dist" GRUNTAS_RELEASE_VERSION="$VERSION" verifier/gruntas-unit-tests \
+            cli::upgrade::sigstore::tests::r_oss_3_the_release_being_published_verifies_as_gruntas_upgrade_will_check_it \
             --ignored --exact
 
   publish:
@@ -413,21 +413,21 @@ jobs:
           ## Install
 
           \`\`\`bash
-          # npm — the bare \`krowk\` name is blocked by npm's typosquat filter
-          npx @krowk/cli push screenshot.png
+          # npm
+          npx @gruntas/cli push screenshot.png
 
           # The installer: the full build on a workstation, the lean one in CI
           # and containers (or with --lean)
           curl -fsSL https://krowk.com/install | bash
 
-          # Direct download — no runtime, no package manager. krowk_… is the
-          # full build (the agent, sessions); krowk-lean_… the lean
+          # Direct download — no runtime, no package manager. gruntas_… is the
+          # full build (the agent, sessions); gruntas-lean_… the lean
           # agent-container build.
-          curl -sSfL https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/krowk_${VERSION}_\$(uname -s | tr A-Z a-z)_\$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz \\
-            | tar -xz -C /usr/local/bin krowk krowk-mcp
+          curl -sSfL https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/gruntas_${VERSION}_\$(uname -s | tr A-Z a-z)_\$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz \\
+            | tar -xz -C /usr/local/bin gruntas gruntas-mcp
 
           # From source
-          cargo install --locked --git https://github.com/$GITHUB_REPOSITORY --tag $tag --features harness krowk
+          cargo install --locked --git https://github.com/$GITHUB_REPOSITORY --tag $tag --features harness gruntas
           \`\`\`
 
           \`checksums.txt\` covers every archive on this release, and
@@ -469,8 +469,8 @@ jobs:
       - name: Assemble the npm packages
         run: node npm/build.mjs
 
-      # Skips with a notice when NPM_TOKEN is unset, which it is until somebody
-      # claims the names. The release above has already happened by then.
+      # Skips with a notice when NPM_TOKEN is unset: the first @gruntas publish
+      # uses a token the owner adds for the scope (trusted publishing follows). The release above has already happened by then.
       # With provenance: npm records, from the OIDC token above, which
       # workflow at which commit published each package, and shows it. It
       # needs npm 9.5 or later (Node 22 ships 10) and, like the publish
@@ -482,7 +482,7 @@ jobs:
           NPM_CONFIG_PROVENANCE: "true"
         run: node npm/publish.mjs
 
-      # The moving major tag, so `uses: krowkcom/krowk@v0` follows the 0.x line
+      # The moving major tag, so `uses: gruntas/gruntas@v0` follows the 0.x line
       # instead of freezing a workflow on one patch release. It moves last, once
       # the release exists and npm carries the packages: a tag pointing at bytes
       # nobody can download yet is worse than a tag that lags by a minute.

@@ -1,4 +1,4 @@
-$ krowk push a.txt
+$ gruntas push a.txt
 stdout:
 {
   "ok": true,
@@ -15,7 +15,7 @@ stdout:
         "run": {
           "slug": "<run_1>",
           "metadata": {
-            "krowk.client": "krowk-cli/0.0.0-golden"
+            "krowk.client": "gruntas-cli/0.0.0-golden"
           },
           "created_at": "<time>"
         },
@@ -39,7 +39,7 @@ stdout:
         },
         "created_at": "<time>",
         "metadata": {
-          "krowk.client": "krowk-cli/0.0.0-golden"
+          "krowk.client": "gruntas-cli/0.0.0-golden"
         }
       }
     ],
@@ -49,7 +49,7 @@ stdout:
       "started_at": "<time>",
       "finished_at": "<time>",
       "metadata": {
-        "krowk.client": "krowk-cli/0.0.0-golden"
+        "krowk.client": "gruntas-cli/0.0.0-golden"
       }
     }
   },
@@ -78,7 +78,7 @@ stdout:
 }
 exit: 0
 
-$ krowk push a.txt --private
+$ gruntas push a.txt --private
 stdout:
 {
   "ok": true,
@@ -95,7 +95,7 @@ stdout:
         "run": {
           "slug": "<run_2>",
           "metadata": {
-            "krowk.client": "krowk-cli/0.0.0-golden"
+            "krowk.client": "gruntas-cli/0.0.0-golden"
           },
           "created_at": "<time>"
         },
@@ -119,7 +119,7 @@ stdout:
         },
         "created_at": "<time>",
         "metadata": {
-          "krowk.client": "krowk-cli/0.0.0-golden"
+          "krowk.client": "gruntas-cli/0.0.0-golden"
         }
       }
     ],
@@ -129,7 +129,7 @@ stdout:
       "started_at": "<time>",
       "finished_at": "<time>",
       "metadata": {
-        "krowk.client": "krowk-cli/0.0.0-golden"
+        "krowk.client": "gruntas-cli/0.0.0-golden"
       }
     }
   },
@@ -158,7 +158,7 @@ stdout:
 }
 exit: 0
 
-$ krowk push a.txt --title "the work" --pull-request https://github.com/o/r/pull/1 --session s1 --repo o/r --commit abc123 --agent claude --reference https://example.com/x
+$ gruntas push a.txt --title "the work" --pull-request https://github.com/o/r/pull/1 --session s1 --repo o/r --commit abc123 --agent claude --reference https://example.com/x
 stdout:
 {
   "ok": true,
@@ -178,7 +178,7 @@ stdout:
             "vcs.repository.name": "o/r",
             "vcs.ref.head.revision": "abc123",
             "krowk.harness": "claude",
-            "krowk.client": "krowk-cli/0.0.0-golden",
+            "krowk.client": "gruntas-cli/0.0.0-golden",
             "vcs.change.id": "1",
             "vcs.change.title": "the work",
             "krowk.change.url": "https://github.com/o/r/pull/1",
@@ -212,7 +212,7 @@ stdout:
           "vcs.repository.name": "o/r",
           "vcs.ref.head.revision": "abc123",
           "krowk.harness": "claude",
-          "krowk.client": "krowk-cli/0.0.0-golden"
+          "krowk.client": "gruntas-cli/0.0.0-golden"
         }
       }
     ],
@@ -225,7 +225,7 @@ stdout:
         "vcs.repository.name": "o/r",
         "vcs.ref.head.revision": "abc123",
         "krowk.harness": "claude",
-        "krowk.client": "krowk-cli/0.0.0-golden",
+        "krowk.client": "gruntas-cli/0.0.0-golden",
         "vcs.change.id": "1",
         "vcs.change.title": "the work",
         "krowk.change.url": "https://github.com/o/r/pull/1",
@@ -262,7 +262,7 @@ stdout:
 }
 exit: 0
 
-$ krowk push a.txt --metadata '{"test":"login"}'
+$ gruntas push a.txt --metadata '{"test":"login"}'
 stderr:
 {
   "ok": false,
@@ -274,7 +274,7 @@ stderr:
 }
 exit: 1
 
-$ krowk push a.txt --metadata notjson
+$ gruntas push a.txt --metadata notjson
 stderr:
 {
   "ok": false,
@@ -286,7 +286,7 @@ stderr:
 }
 exit: 1
 
-$ krowk push a.txt --link https://example.com --link-title Example --link-rel docs
+$ gruntas push a.txt --link https://example.com --link-title Example --link-rel docs
 stdout:
 {
   "ok": true,
@@ -303,7 +303,7 @@ stdout:
         "run": {
           "slug": "<run_4>",
           "metadata": {
-            "krowk.client": "krowk-cli/0.0.0-golden",
+            "krowk.client": "gruntas-cli/0.0.0-golden",
             "krowk.links": [
               {
                 "url": "https://example.com",
@@ -334,7 +334,7 @@ stdout:
         },
         "created_at": "<time>",
         "metadata": {
-          "krowk.client": "krowk-cli/0.0.0-golden"
+          "krowk.client": "gruntas-cli/0.0.0-golden"
         }
       }
     ],
@@ -344,7 +344,7 @@ stdout:
       "started_at": "<time>",
       "finished_at": "<time>",
       "metadata": {
-        "krowk.client": "krowk-cli/0.0.0-golden",
+        "krowk.client": "gruntas-cli/0.0.0-golden",
         "krowk.links": [
           {
             "url": "https://example.com",

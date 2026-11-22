@@ -1,9 +1,9 @@
-$ krowk sessions import --from all --quiet --jq '.providers | map({provider, sessions_inserted})'
+$ gruntas sessions import --from all --quiet --jq '.providers | map({provider, sessions_inserted})'
 stdout:
 [{"provider":"claude","sessions_inserted":4},{"provider":"cursor","sessions_inserted":2},{"provider":"opencode","sessions_inserted":2},{"provider":"ledger","sessions_inserted":0}]
 exit: 0
 
-$ krowk sessions budget ses_parent --max-tokens 1000000
+$ gruntas sessions budget ses_parent --max-tokens 1000000
 stdout:
 {
   "ok": true,
@@ -34,7 +34,7 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions budget ses_parent --max-tokens 1
+$ gruntas sessions budget ses_parent --max-tokens 1
 stderr:
 {
   "ok": false,
@@ -70,13 +70,13 @@ stderr:
       ]
     },
     "error": "budget_exceeded",
-    "fix": "session <uuid_1> is over budget: 1738 tokens generated, over --max-tokens 1 — stop the run; krowk cancels nothing, and the provider keeps billing whatever is still running",
+    "fix": "session <uuid_1> is over budget: 1738 tokens generated, over --max-tokens 1 — stop the run; gruntas cancels nothing, and the provider keeps billing whatever is still running",
     "retryable": false
   }
 }
 exit: 4
 
-$ krowk sessions budget ses_parent --max-usd ""
+$ gruntas sessions budget ses_parent --max-usd ""
 stderr:
 {
   "ok": false,

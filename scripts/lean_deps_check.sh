@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# R-PKG-2, R-OSS-7: the agent build — `krowk` with no features, the one a container
+# R-PKG-2, R-OSS-7: the agent build — `gruntas` with no features, the one a container
 # compiles from source — keeps its dependency promise. The crates it links are
-# listed in crates/krowk/lean-deps.txt, by name; any change to that set, from
+# listed in crates/gruntas/lean-deps.txt, by name; any change to that set, from
 # a new feature leaking into the default build or a dependency growing a new
 # one, fails `make check` until the list is updated on purpose. The list is
 # resolved for every target (`--target all`), not the host's, so the same
@@ -14,8 +14,8 @@ set -euo pipefail
 # under en_US would not match one sorted under CI's C locale.
 export LC_ALL=C
 cd "$(dirname "$0")/.."
-want=crates/krowk/lean-deps.txt
-got=$(cargo tree -p krowk -e normal --prefix none --locked --target all | awk '{print $1}' | sort -u)
+want=crates/gruntas/lean-deps.txt
+got=$(cargo tree -p gruntas -e normal --prefix none --locked --target all | awk '{print $1}' | sort -u)
 if [ "${LEAN_DEPS_UPDATE:-}" = 1 ]; then
   printf '%s\n' "$got" > "$want"
   echo "wrote $want ($(wc -l < "$want") crates)"

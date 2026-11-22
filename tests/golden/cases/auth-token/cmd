@@ -1,10 +1,10 @@
 @registry
-krowk auth token
-krowk auth verify
-krowk auth login --token krowk_sk_test
-krowk auth token
-krowk auth verify
+gruntas auth token
+gruntas auth verify
+gruntas auth login --token krowk_sk_test
+gruntas auth token
+gruntas auth verify
 @ls {home}
-@env KROWK_TOKEN=krowk_sk_other
-krowk auth token
-krowk auth verify
+@env GRUNTAS_TOKEN=krowk_sk_other
+gruntas auth token
+gruntas auth verify

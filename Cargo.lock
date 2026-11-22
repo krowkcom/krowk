@@ -644,9 +644,9 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -750,6 +750,162 @@ checksum = "ee8cfcc411d9adbbaba82fb72661cc1bcca13e8bba98b364e62b2dba8f960159"
 dependencies = [
  "color_quant",
  "weezl",
+]
+
+[[package]]
+name = "gruntas"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "flate2",
+ "gruntas-api",
+ "gruntas-client",
+ "gruntas-devregistry",
+ "gruntas-harness",
+ "gruntas-import",
+ "gruntas-store",
+ "inquire",
+ "jaq-core",
+ "jaq-json",
+ "jaq-std",
+ "jiff",
+ "libc",
+ "regex-lite",
+ "rustls-pki-types",
+ "rustls-webpki",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tokio",
+ "ureq",
+ "url",
+]
+
+[[package]]
+name = "gruntas-api"
+version = "0.0.0"
+dependencies = [
+ "gruntas-client",
+ "gruntas-devregistry",
+ "jiff",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "ureq",
+]
+
+[[package]]
+name = "gruntas-bench"
+version = "0.0.0"
+dependencies = [
+ "gruntas-api",
+ "gruntas-client",
+ "gruntas-devregistry",
+ "gruntas-harness",
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
+name = "gruntas-client"
+version = "0.0.0"
+dependencies = [
+ "chacha20poly1305",
+ "curve25519-dalek",
+ "ed25519-dalek",
+ "getrandom 0.4.3",
+ "gruntas-api",
+ "hkdf",
+ "hmac",
+ "hpke",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "spake2",
+ "unicode-normalization",
+ "unicode-security",
+ "zeroize",
+]
+
+[[package]]
+name = "gruntas-devregistry"
+version = "0.0.0"
+dependencies = [
+ "gruntas-api",
+ "gruntas-client",
+ "jiff",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "gruntas-golden"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "regex",
+ "serde_json",
+ "shlex",
+]
+
+[[package]]
+name = "gruntas-harness"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "futures-util",
+ "gruntas-api",
+ "gruntas-client",
+ "gruntas-devregistry",
+ "gruntas-harness",
+ "gruntas-import",
+ "gruntas-store",
+ "if-addrs",
+ "image",
+ "jsonschema",
+ "libc",
+ "mdns-sd",
+ "reqwest",
+ "ring",
+ "rustls",
+ "rustls-platform-verifier",
+ "ruzstd",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tokio-tungstenite",
+ "tower-layer",
+ "tower-service",
+ "url",
+]
+
+[[package]]
+name = "gruntas-import"
+version = "0.0.0"
+dependencies = [
+ "gruntas-api",
+ "gruntas-store",
+ "jiff",
+ "libc",
+ "rusqlite",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "gruntas-store"
+version = "0.0.0"
+dependencies = [
+ "gruntas-api",
+ "rusqlite",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1334,162 +1490,6 @@ dependencies = [
  "num-traits",
  "serde_json",
  "zmij",
-]
-
-[[package]]
-name = "krowk"
-version = "0.0.0"
-dependencies = [
- "base64 0.22.1",
- "flate2",
- "inquire",
- "jaq-core",
- "jaq-json",
- "jaq-std",
- "jiff",
- "krowk-api",
- "krowk-client",
- "krowk-devregistry",
- "krowk-harness",
- "krowk-import",
- "krowk-store",
- "libc",
- "regex-lite",
- "rustls-pki-types",
- "rustls-webpki",
- "serde",
- "serde_json",
- "sha2",
- "tar",
- "tokio",
- "ureq",
- "url",
-]
-
-[[package]]
-name = "krowk-api"
-version = "0.0.0"
-dependencies = [
- "jiff",
- "krowk-client",
- "krowk-devregistry",
- "libc",
- "serde",
- "serde_json",
- "sha2",
- "ureq",
-]
-
-[[package]]
-name = "krowk-bench"
-version = "0.0.0"
-dependencies = [
- "krowk-api",
- "krowk-client",
- "krowk-devregistry",
- "krowk-harness",
- "serde",
- "serde_json",
- "toml",
-]
-
-[[package]]
-name = "krowk-client"
-version = "0.0.0"
-dependencies = [
- "chacha20poly1305",
- "curve25519-dalek",
- "ed25519-dalek",
- "getrandom 0.4.3",
- "hkdf",
- "hmac",
- "hpke",
- "krowk-api",
- "schemars",
- "serde",
- "serde_json",
- "sha2",
- "spake2",
- "unicode-normalization",
- "unicode-security",
- "zeroize",
-]
-
-[[package]]
-name = "krowk-devregistry"
-version = "0.0.0"
-dependencies = [
- "jiff",
- "krowk-api",
- "krowk-client",
- "serde_json",
- "sha2",
-]
-
-[[package]]
-name = "krowk-golden"
-version = "0.0.0"
-dependencies = [
- "libc",
- "regex",
- "serde_json",
- "shlex",
-]
-
-[[package]]
-name = "krowk-harness"
-version = "0.0.0"
-dependencies = [
- "base64 0.22.1",
- "futures-util",
- "if-addrs",
- "image",
- "jsonschema",
- "krowk-api",
- "krowk-client",
- "krowk-devregistry",
- "krowk-harness",
- "krowk-import",
- "krowk-store",
- "libc",
- "mdns-sd",
- "reqwest",
- "ring",
- "rustls",
- "rustls-platform-verifier",
- "ruzstd",
- "schemars",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
- "tokio-tungstenite",
- "tower-layer",
- "tower-service",
- "url",
-]
-
-[[package]]
-name = "krowk-import"
-version = "0.0.0"
-dependencies = [
- "jiff",
- "krowk-api",
- "krowk-store",
- "libc",
- "rusqlite",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "krowk-store"
-version = "0.0.0"
-dependencies = [
- "krowk-api",
- "rusqlite",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -2980,9 +2980,9 @@ dependencies = [
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",

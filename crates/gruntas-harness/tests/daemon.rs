@@ -1,0 +1,1177 @@
+//! The host daemon over its unix socket, against the fake `claude` typing
+//! slowly (`common/fake.rs`): a turn outlives the client that asked for it, a
+//! client that attaches late sees the turn so far and then the rest, two
+//! clients on one session see the same frames, and the daemon goes away
+//! once it has nothing to do (R-HOST-1, R-PROTO-1). Each test runs its own
+//! daemon on a thread, in a runtime directory of its own.
+
+#![cfg(unix)]
+
+#[path = "common/fake.rs"]
+mod fake;
+#[path = "common/scratch.rs"]
+mod scratch;
+
+use gruntas_harness::daemon::{self, client::Client, server};
+use gruntas_harness::host::HostConfig;
+use gruntas_harness::instances::{InstancesConfig, Registry};
+use gruntas_harness::log;
+use gruntas_harness::protocol::{Command, Delta, Item, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, StreamLine, TurnStatus};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
+
+struct Home {
+    root: PathBuf,
+    instances: InstancesConfig,
+    /// How many hosts' configurations the daemon has asked for.
+    made: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Home {
+    /// A home whose one instance, `claude`, is the fake playing `scenario`.
+    fn new(name: &str, scenario: Option<&str>) -> Home {
+        let root = scratch::root(&format!("daemon-{name}"));
+        for d in ["home", "run", "repo/.git"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let instances = InstancesConfig { instances: [("claude".to_string(), fake::claude(&root, "claude", scenario))].into_iter().collect(), ..Default::default() };
+        Home { root, instances, made: Arc::default() }
+    }
+
+    fn env(&self) -> impl Fn(&str) -> String + Clone + Send + 'static {
+        let root = self.root.clone();
+        move |k| match k {
+            "HOME" => root.join("home").display().to_string(),
+            "XDG_RUNTIME_DIR" => root.join("run").display().to_string(),
+            "PATH" => std::env::var("PATH").unwrap_or_default(),
+            _ => String::new(),
+        }
+    }
+
+    /// The prompts the fake was sent.
+    fn prompts(&self) -> usize {
+        fake::prompts(&self.root, "claude").len()
+    }
+
+    fn socket(&self) -> PathBuf {
+        daemon::socket(&self.env()).unwrap()
+    }
+
+    fn repo(&self) -> PathBuf {
+        self.root.join("repo")
+    }
+
+    /// Starts the daemon on a thread of its own; joined, it has exited.
+    fn serve(&self, idle: Option<Duration>) -> std::thread::JoinHandle<Result<(), String>> {
+        self.serve_with(idle, None)
+    }
+
+    /// `serve`, every client let go each time `kick` is notified.
+    fn serve_with(&self, idle: Option<Duration>, kick: Option<Arc<tokio::sync::Notify>>) -> std::thread::JoinHandle<Result<(), String>> {
+        self.serve_as("test", idle, kick)
+    }
+
+    /// `serve_with`, the daemon of gruntas `version`.
+    fn serve_as(&self, version: &str, idle: Option<Duration>, kick: Option<Arc<tokio::sync::Notify>>) -> std::thread::JoinHandle<Result<(), String>> {
+        self.serve_hooked(version, idle, kick, Hooks::default())
+    }
+
+    /// `serve_as`, with the in-process hooks an automatic sync's supervisor
+    /// would hand it: where turns are told, and the sessions it bridges.
+    fn serve_hooked(&self, version: &str, idle: Option<Duration>, kick: Option<Arc<tokio::sync::Notify>>, hooks: Hooks) -> std::thread::JoinHandle<Result<(), String>> {
+        let (env, socket, version) = (self.env(), self.socket(), version.to_string());
+        let credentials = self.root.join("home/.gruntas/credentials.json");
+        let (made, instances) = (self.made.clone(), self.instances.clone());
+        let t = std::thread::spawn(move || {
+            let factory: server::Factory = Box::new(move |cwd: &Path, answers: bool| {
+                made.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(HostConfig {
+                    sessions_dir: log::sessions_dir(&env).unwrap(),
+                    cwd: cwd.to_path_buf(),
+                    registry: Registry::resolve(&instances, &env),
+                    gruntas_version: "test".into(),
+                    pricer: Arc::new(|_, _, _| None),
+                    catalog: Arc::new(|_, _| None),
+                    credentials: credentials.clone(),
+                    trust: gruntas_harness::trust::allow_all(),
+                    publisher: None,
+                    permissions: gruntas_harness::permissions::Config { approvals: answers, ..Default::default() },
+                    agents: gruntas_harness::agents::AgentsConfig::none(),
+                    session: Default::default(),
+                })
+            });
+            server::run(server::Options { socket, idle, gruntas_version: version, kick, turns: hooks.turns, bridged: hooks.bridged, introductions: hooks.introductions, ..Default::default() }, factory)
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::os::unix::net::UnixStream::connect(self.socket()).is_err() {
+            assert!(std::time::Instant::now() < deadline, "the daemon never listened");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        t
+    }
+
+    async fn client(&self) -> Client {
+        self.client_answering(false).await
+    }
+
+    async fn client_answering(&self, answers: bool) -> Client {
+        match Client::connect(&self.socket(), &self.repo(), "test", answers).await {
+            Ok(c) => c,
+            Err(_) => panic!("no daemon answered"),
+        }
+    }
+
+    /// A background client, as an automatic sync bridge connects.
+    async fn background(&self, answers: bool) -> Client {
+        match Client::connect_as(&self.socket(), &self.repo(), "test", answers, true).await {
+            Ok(c) => c,
+            Err(_) => panic!("no daemon answered"),
+        }
+    }
+
+    fn prompt(&self, text: &str) -> Command {
+        let model = ModelRef { instance: "claude".into(), model: "sonnet".into() };
+        Command::Prompt { session_id: None, text: text.into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None }
+    }
+}
+
+/// The in-process hooks of `server::Options`.
+#[derive(Default)]
+struct Hooks {
+    turns: Option<tokio::sync::mpsc::UnboundedSender<server::TurnEvent>>,
+    bridged: Option<Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>>,
+    introductions: Option<Arc<gruntas_harness::sync::introduce::Introductions>>,
+}
+
+impl Drop for Home {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+const ANSWER: &str = "w0 w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 ";
+
+/// A model that types `ANSWER`, a word every 40 ms, every turn.
+fn slow() -> String {
+    format!("@when \"user\"\n{}", fake::typed(12, 0.04, "w", 1))
+}
+
+fn rt() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+}
+
+/// Reads `rx` until the session's `result`.
+async fn to_result(rx: &mut mpsc::Receiver<StreamLine>, into: &mut Vec<StreamLine>) {
+    loop {
+        let line = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await.expect("the turn never ended").expect("the stream closed first");
+        let done = matches!(line, StreamLine::Live(LiveEvent::Result(_)));
+        into.push(line);
+        if done {
+            return;
+        }
+    }
+}
+
+fn typed(lines: &[StreamLine]) -> String {
+    lines
+        .iter()
+        .filter_map(|l| match l {
+            StreamLine::Live(LiveEvent::ItemDelta { delta: Delta::Text { text }, .. }) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn answered(lines: &[StreamLine]) -> Option<String> {
+    lines.iter().find_map(|l| match l {
+        StreamLine::Log(LogEvent { body: LogBody::ItemCompleted { item: Item::AssistantText { text }, .. }, .. }) => Some(text.clone()),
+        _ => None,
+    })
+}
+
+#[test]
+fn r_host_1_a_turn_outlives_its_client_and_a_new_one_reattaches_mid_stream() {
+    let home = Home::new("reattach", Some(&slow()));
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    let (session, first, later) = rt.block_on(async {
+        // The first client starts the turn, reads three words, and goes
+        // away as a closed terminal does: without a word to the daemon.
+        let a = home.client().await;
+        let (tx, mut rx) = mpsc::channel(1024);
+        let cmd = home.prompt("count to twelve");
+        let mut exec = Box::pin(a.execute(cmd, tx));
+        let mut first = Vec::new();
+        loop {
+            tokio::select! {
+                Some(line) = rx.recv() => {
+                    first.push(line);
+                    if typed(&first).split_whitespace().count() >= 3 {
+                        break;
+                    }
+                }
+                _ = &mut exec => panic!("the turn ended before the client left"),
+            }
+        }
+        drop(exec);
+        drop(a);
+        let session = first[0].session_id().to_string();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // A new client, as `gruntas` opened again, attaches mid-turn.
+        let b = home.client().await;
+        let (tx, mut rx) = mpsc::channel(1024);
+        let running = b.attach(&session, None, tx).await.unwrap();
+        assert!(running, "the turn is still under way in the daemon");
+        let mut later = Vec::new();
+        to_result(&mut rx, &mut later).await;
+        (session, first, later)
+    });
+    // It was caught up from the start of the session — the log — and on
+    // the turn so far, the typing of the reply under way included, then
+    // given the rest live: every word, once, in order.
+    assert!(matches!(&later[0], StreamLine::Log(LogEvent { body: LogBody::SessionStarted { .. }, .. })), "{:?}", later[0]);
+    assert_eq!(typed(&later), ANSWER, "the typing so far and the rest, nothing twice");
+    assert_eq!(answered(&later).as_deref(), Some(ANSWER));
+    assert!(typed(&first).len() < ANSWER.len(), "the first client left mid-reply");
+    let StreamLine::Live(LiveEvent::Result(r)) = later.last().unwrap() else { unreachable!() };
+    assert_eq!((r.status, r.session_id.as_str()), (TurnStatus::Completed, session.as_str()));
+    // And the log has the turn whole: the daemon finished it for nobody.
+    let events = log::read_events(&log::sessions_dir(&home.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap();
+    assert!(events.iter().any(|e| matches!(e.body, LogBody::TurnCompleted { status: TurnStatus::Completed, .. })));
+    // With no client left — its runtime gone, as its process would be —
+    // the daemon exits after its window.
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+#[test]
+fn r_proto_1_two_clients_on_one_session_see_identical_frames() {
+    let home = Home::new("two", Some(&slow()));
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    let (a_lines, b_lines) = rt.block_on(async {
+        let a = home.client().await;
+        let b = home.client().await;
+        let (atx, mut arx) = mpsc::channel(1024);
+        let exec = a.execute(home.prompt("count to twelve"), atx);
+        tokio::pin!(exec);
+        let mut a_lines = Vec::new();
+        let mut b_lines = Vec::new();
+        let (btx, mut brx) = mpsc::channel(1024);
+        // B attaches once A has seen a word: some frames it is caught up
+        // on, the rest it sees live.
+        let mut attached = false;
+        let r = loop {
+            tokio::select! {
+                Some(line) = arx.recv() => {
+                    a_lines.push(line);
+                    if !attached && !typed(&a_lines).is_empty() {
+                        attached = true;
+                        b.attach(a_lines[0].session_id(), None, btx.clone()).await.unwrap();
+                    }
+                }
+                r = &mut exec => break r,
+            }
+        };
+        assert_eq!(r.unwrap().unwrap().status, TurnStatus::Completed);
+        while let Ok(l) = arx.try_recv() {
+            a_lines.push(l);
+        }
+        to_result(&mut brx, &mut b_lines).await;
+        (a_lines, b_lines)
+    });
+    let json = |l: &[StreamLine]| l.iter().map(|x| serde_json::to_string(x).unwrap()).collect::<Vec<_>>();
+    assert_eq!(json(&a_lines), json(&b_lines), "the same frames, in the same order");
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+#[test]
+fn r_host_1_the_daemon_exits_after_its_idle_window_and_not_while_a_client_is_on() {
+    let home = Home::new("idle", None);
+    let daemon = home.serve(Some(Duration::from_millis(400)));
+    let rt = rt();
+    rt.block_on(async {
+        let c = home.client().await;
+        let (tx, _rx) = mpsc::channel(1024);
+        c.execute(home.prompt("hi"), tx).await.unwrap().unwrap();
+        // A client connected holds it up, however long it idles.
+        tokio::time::sleep(Duration::from_millis(900)).await;
+        let status = c.status().await.unwrap();
+        assert_eq!(status.clients, 1);
+        assert_eq!(status.sessions.len(), 1);
+        assert_eq!(status.idle_exit_ms, Some(400));
+    });
+    drop(rt);
+    let started = std::time::Instant::now();
+    daemon.join().unwrap().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(3), "it went once idle");
+    assert!(!home.socket().exists(), "and took its socket with it: nothing stays resident");
+}
+
+#[test]
+fn r_proto_1_a_client_of_another_protocol_version_is_refused_with_a_fix() {
+    use std::io::{BufRead, Write};
+    let home = Home::new("version", None);
+    let daemon = home.serve(Some(Duration::from_millis(200)));
+    let mut s = std::os::unix::net::UnixStream::connect(home.socket()).unwrap();
+    writeln!(s, r#"{{"type":"hello","protocolVersion":999,"cwd":"/"}}"#).unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(&s).read_line(&mut line).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(v["type"], "refused");
+    assert_eq!(v["code"], "protocol_mismatch");
+    assert!(v["fix"].as_str().unwrap().contains("kill"), "{v}");
+    drop(s);
+    daemon.join().unwrap().unwrap();
+}
+
+#[test]
+fn r_host_1_two_gruntas_starting_at_once_spawn_one_daemon_over_a_stale_socket() {
+    let home = Home::new("race", None);
+    // A socket a daemon that died left behind: nothing answers on it.
+    drop(std::os::unix::net::UnixListener::bind(home.socket()).unwrap());
+    assert!(home.socket().exists());
+    let spawned = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let daemons = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let home = Arc::new(home);
+    let starters: Vec<_> = (0..2)
+        .map(|_| {
+            let (home, spawned, daemons) = (home.clone(), spawned.clone(), daemons.clone());
+            std::thread::spawn(move || {
+                let env = home.env();
+                let spawn = || {
+                    spawned.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    daemons.lock().unwrap().push(home.serve(Some(Duration::from_millis(300))));
+                    Ok(None)
+                };
+                rt().block_on(async { daemon::ensure(&env, &home.repo(), "test", false, &spawn).await.map(|c| c.pid) }).unwrap()
+            })
+        })
+        .collect();
+    for s in starters {
+        assert_eq!(s.join().unwrap(), std::process::id());
+    }
+    assert_eq!(spawned.load(std::sync::atomic::Ordering::SeqCst), 1, "one daemon for the two");
+    for d in daemons.lock().unwrap().drain(..) {
+        d.join().unwrap().unwrap();
+    }
+}
+
+/// A model that asks to run one bash command, then answers once it has the
+/// result. It runs nothing: were it allowed, the file would be the test's.
+fn runs_bash() -> String {
+    format!("{}\n@touch made-by-the-model\n{}", fake::asks_bash("toolu_01Call", "touch made-by-the-model"), fake::answer("Done."))
+}
+
+fn tool_result(lines: &[StreamLine]) -> Option<(String, bool)> {
+    lines.iter().find_map(|l| match l {
+        StreamLine::Log(LogEvent { body: LogBody::ItemCompleted { item: Item::ToolResult { output, is_error, .. }, .. }, .. }) => Some((output.clone(), *is_error)),
+        _ => None,
+    })
+}
+
+/// R-HOST-1: a `gruntas -p` client answers no approval request, so its turn
+/// in the daemon refuses what would be asked exactly as in-process `-p`
+/// does — never waiting on a person nobody will be.
+#[test]
+fn r_host_1_a_p_clients_turn_refuses_what_would_be_asked_as_in_process() {
+    let home = Home::new("refuse", Some(&runs_bash()));
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    let lines = rt.block_on(async {
+        let c = home.client().await;
+        let (tx, mut rx) = mpsc::channel(1024);
+        let r = tokio::time::timeout(Duration::from_secs(10), c.execute(home.prompt("make a file"), tx)).await.expect("the turn never waits on a person").unwrap().unwrap();
+        assert_eq!(r.status, TurnStatus::Completed);
+        let mut lines = Vec::new();
+        while let Ok(l) = rx.try_recv() {
+            lines.push(l);
+        }
+        lines
+    });
+    assert!(!lines.iter().any(|l| matches!(l, StreamLine::Live(LiveEvent::ApprovalRequested(_)))), "nobody was asked");
+    let (output, is_error) = tool_result(&lines).unwrap();
+    assert!(is_error && output.contains("--permission-mode"), "the in-process refusal, with what would allow it: {output}");
+    assert!(!home.repo().join("made-by-the-model").exists());
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-HOST-1: a turn waiting on an answer from a client that went away is
+/// answered `deny`, so it ends, and the daemon can go.
+#[test]
+fn r_host_1_a_request_left_with_no_client_to_answer_it_is_denied() {
+    let home = Home::new("leave", Some(&runs_bash()));
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    let session = rt.block_on(async {
+        let a = home.client_answering(true).await;
+        let (tx, mut rx) = mpsc::channel(1024);
+        let mut exec = Box::pin(a.execute(home.prompt("make a file"), tx));
+        let session = loop {
+            tokio::select! {
+                Some(line) = rx.recv() => if let StreamLine::Live(LiveEvent::ApprovalRequested(r)) = line { break r.session_id },
+                _ = &mut exec => panic!("the turn ended without asking"),
+            }
+        };
+        // The terminal closes with the question on screen.
+        drop(exec);
+        drop(a);
+        session
+    });
+    drop(rt);
+    // No client left: the request is denied, the turn ends, and the
+    // daemon exits after its window.
+    daemon.join().unwrap().unwrap();
+    let events = log::read_events(&log::sessions_dir(&home.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap();
+    assert!(events.iter().any(|e| matches!(e.body, LogBody::TurnCompleted { .. })), "the turn ended");
+    let lines: Vec<StreamLine> = events.into_iter().map(StreamLine::Log).collect();
+    let (output, is_error) = tool_result(&lines).unwrap();
+    assert!(is_error, "{output}");
+    assert!(!home.repo().join("made-by-the-model").exists());
+}
+
+/// R-HOST-2: `gruntas machines always-on on` hands the socket over to the service by
+/// asking the daemon gruntas started to stop — refused while a turn runs.
+#[test]
+fn r_host_2_a_daemon_stops_when_asked_unless_a_turn_runs() {
+    let home = Home::new("stop", Some(&slow()));
+    let daemon = home.serve(None);
+    let rt = rt();
+    rt.block_on(async {
+        let a = home.client().await;
+        let (tx, mut rx) = mpsc::channel(1024);
+        let mut exec = Box::pin(a.execute(home.prompt("count"), tx));
+        loop {
+            tokio::select! {
+                Some(line) = rx.recv() => if matches!(line, StreamLine::Live(LiveEvent::ItemDelta { .. })) { break },
+                _ = &mut exec => panic!("ended early"),
+            }
+        }
+        let b = home.client().await;
+        assert_eq!(b.stop(false).await.unwrap_err().code, "host_busy");
+        exec.await.unwrap();
+        // A's still connected: an open viewer, say.
+        assert_eq!(b.stop(false).await.unwrap_err().code, "host_in_use");
+        b.stop(true).await.unwrap();
+    });
+    drop(rt);
+    // With no idle window at all, only the stop ends it.
+    daemon.join().unwrap().unwrap();
+    assert!(!home.socket().exists());
+}
+
+/// R-HOST-1: what an interactive client reattaches with — a client following a running
+/// turn gets its frames and its result as the client that sent it does;
+/// one following a session with nothing running is told so at once.
+#[test]
+fn r_host_1_a_follower_gets_the_running_turns_frames_and_its_result() {
+    let home = Home::new("follow", Some(&slow()));
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    rt.block_on(async {
+        let a = home.client().await;
+        let (atx, mut arx) = mpsc::channel(1024);
+        let mut exec = Box::pin(a.execute(home.prompt("count"), atx));
+        let mut a_lines = Vec::new();
+        loop {
+            tokio::select! {
+                Some(line) = arx.recv() => {
+                    a_lines.push(line);
+                    if !typed(&a_lines).is_empty() {
+                        break;
+                    }
+                }
+                _ = &mut exec => panic!("ended early"),
+            }
+        }
+        let session = a_lines[0].session_id().to_string();
+        let b = home.client_answering(true).await;
+        let (btx, mut brx) = mpsc::channel(1024);
+        let (ra, rb) = tokio::join!(&mut exec, b.follow(&session, None, btx));
+        let (ra, rb) = (ra.unwrap().unwrap(), rb.unwrap().expect("the turn's result"));
+        assert_eq!((rb.turn_id.as_str(), rb.status), (ra.turn_id.as_str(), TurnStatus::Completed));
+        let mut b_lines = Vec::new();
+        while let Ok(l) = brx.try_recv() {
+            b_lines.push(l);
+        }
+        assert_eq!(typed(&b_lines), ANSWER, "every word, once");
+        // Over: following it now answers at once, with nothing.
+        let (ctx, _crx) = mpsc::channel(1024);
+        assert!(b.follow(&session, None, ctx).await.unwrap().is_none());
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-PROTO-1: a client running a turn in one session while following
+/// another keeps their streams apart — each line goes to its session's.
+#[test]
+fn r_proto_1_a_client_in_two_sessions_keeps_their_streams_apart() {
+    let home = Home::new("apart", Some(&slow()));
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    rt.block_on(async {
+        let a = home.client().await;
+        let (atx, mut arx) = mpsc::channel(1024);
+        let mut first = Box::pin(a.execute(home.prompt("count"), atx));
+        let one = tokio::select! {
+            Some(line) = arx.recv() => line.session_id().to_string(),
+            _ = &mut first => panic!("ended early"),
+        };
+        // The same client starts a second session while following the first.
+        let b = home.client().await;
+        let (ftx, mut frx) = mpsc::channel(1024);
+        let (stx, mut srx) = mpsc::channel(1024);
+        let (r1, r2) = tokio::join!(b.follow(&one, None, ftx), b.execute(home.prompt("count again"), stx));
+        let (r1, r2) = (r1.unwrap().unwrap(), r2.unwrap().unwrap());
+        assert_ne!(r1.session_id, r2.session_id);
+        let drain = |rx: &mut mpsc::Receiver<StreamLine>| {
+            let mut v = Vec::new();
+            while let Ok(l) = rx.try_recv() {
+                v.push(l);
+            }
+            v
+        };
+        let (followed, ran) = (drain(&mut frx), drain(&mut srx));
+        assert!(followed.iter().all(|l| l.session_id() == r1.session_id), "only the followed session's lines");
+        assert!(ran.iter().all(|l| l.session_id() == r2.session_id), "only its own turn's lines");
+        first.await.unwrap();
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// `gruntas connect` from another process: the daemon reads every host's instances again.
+#[test]
+fn r_proto_1_reload_reads_every_hosts_instances_again() {
+    let home = Home::new("reload", None);
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    rt.block_on(async {
+        let c = home.client().await;
+        let (tx, _rx) = mpsc::channel(1024);
+        c.execute(home.prompt("hi"), tx).await.unwrap().unwrap();
+        let before = home.made.load(std::sync::atomic::Ordering::SeqCst);
+        c.reload(Some("claude"), None).await.unwrap();
+        assert!(home.made.load(std::sync::atomic::Ordering::SeqCst) > before, "each host's configuration made again");
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-PROTO-1: a turn's stream nobody drains never holds up the client's
+/// other answers — an interrupt sent on the same connection is answered,
+/// and stops the turn.
+#[test]
+fn r_proto_1_an_interrupt_is_answered_while_the_turns_stream_is_full() {
+    // Two thousand words, then held until interrupted, as Claude Code is.
+    let interrupted = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming","errors":[],"session_id":"{{SESSION}}"}"#;
+    let home = Home::new("full", Some(&format!("@type 2000 0 word\n@await-interrupt\n{interrupted}")));
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    rt.block_on(async {
+        let c = home.client().await;
+        // Two lines of room, and nobody reading them.
+        let (tx, mut rx) = mpsc::channel(2);
+        let mut exec = Box::pin(c.execute(home.prompt("talk"), tx));
+        let session = tokio::select! {
+            Some(l) = rx.recv() => l.session_id().to_string(),
+            _ = &mut exec => panic!("ended early"),
+        };
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            _ = &mut exec => panic!("ended early"),
+        }
+        let (itx, _irx) = mpsc::channel(1);
+        tokio::time::timeout(Duration::from_secs(3), c.execute(Command::Interrupt { session_id: session }, itx)).await.expect("answered, not stuck behind the stream").unwrap();
+        // Drained, the turn ends interrupted, its lines all there.
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let r = exec.await.unwrap().unwrap();
+        assert_eq!(r.status, TurnStatus::Interrupted);
+        drain.abort();
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-HOST-1: a client whose daemon went away reaches the next one on its
+/// next command — started when none runs — instead of failing until gruntas
+/// is restarted.
+#[test]
+fn r_host_1_a_remote_client_reconnects_when_its_daemon_goes() {
+    let home = Arc::new(Home::new("reconnect", None));
+    let first = home.serve(Some(Duration::from_millis(300)));
+    let started = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let rt = rt();
+    rt.block_on(async {
+        let (h, st) = (home.clone(), started.clone());
+        let spawn: Box<daemon::Spawn<'static>> = Box::new(move || {
+            st.lock().unwrap().push(h.serve(Some(Duration::from_millis(300))));
+            Ok(None)
+        });
+        let env = home.env();
+        let r = daemon::remote::Remote::connect(Box::new(env), home.repo(), "test".into(), true, spawn).await.unwrap();
+        let (tx, _rx) = mpsc::channel(1024);
+        r.execute(home.prompt("hi"), tx).await.unwrap().unwrap();
+        // Stopped under it, as `gruntas host stop --force` does.
+        let other = home.client().await;
+        other.stop(true).await.unwrap();
+        drop(other);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let (tx, _rx) = mpsc::channel(1024);
+        let again = r.execute(home.prompt("hi again"), tx).await.unwrap().unwrap();
+        assert_eq!(again.status, TurnStatus::Completed);
+        assert!(r.take_note().is_some_and(|n| n.contains("reconnected")));
+    });
+    drop(rt);
+    first.join().unwrap().unwrap();
+    assert_eq!(started.lock().unwrap().len(), 1, "the next daemon was started for it");
+    for d in started.lock().unwrap().drain(..) {
+        d.join().unwrap().unwrap();
+    }
+}
+
+/// A daemon of an older gruntas is replaced with one of the client's between
+/// turns, and its next prompt runs there; one of a newer gruntas is left to
+/// run, so an older gruntas still open never replaces it in turn.
+#[test]
+fn r_host_1_an_older_daemon_is_replaced_and_a_newer_one_left() {
+    let home = Arc::new(Home::new("renew", None));
+    let old = home.serve_as("0.12.1", Some(Duration::from_millis(300)), None);
+    let started = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let rt = rt();
+    rt.block_on(async {
+        let (h, st) = (home.clone(), started.clone());
+        let spawn: Box<daemon::Spawn<'static>> = Box::new(move || {
+            st.lock().unwrap().push(h.serve_as("0.13.0", Some(Duration::from_millis(300)), None));
+            Ok(None)
+        });
+        let r = daemon::remote::Remote::connect(Box::new(home.env()), home.repo(), "0.13.0".into(), true, spawn).await.unwrap();
+        assert_eq!(r.gruntas_version(), "0.12.1");
+        assert!(r.renew().await, "replaced");
+        assert_eq!(r.gruntas_version(), "0.13.0");
+        assert!(r.take_note().is_some_and(|n| n.contains("0.12.1") && n.contains("replaced")));
+        assert!(!r.renew().await, "the same gruntas's is left");
+        let (tx, _rx) = mpsc::channel(1024);
+        assert_eq!(r.execute(home.prompt("hi"), tx).await.unwrap().unwrap().status, TurnStatus::Completed);
+        assert_eq!(r.status().await.unwrap().background, Some(0), "it counts what runs in the background");
+        let spawn: Box<daemon::Spawn<'static>> = Box::new(|| Err("the daemon runs; none is to be started".into()));
+        let older = daemon::remote::Remote::connect(Box::new(home.env()), home.repo(), "0.12.1".into(), true, spawn).await.unwrap();
+        assert!(!older.renew().await, "a newer daemon is never replaced");
+        assert_eq!(older.gruntas_version(), "0.13.0");
+    });
+    drop(rt);
+    old.join().unwrap().unwrap();
+    assert_eq!(started.lock().unwrap().len(), 1, "one daemon of this gruntas started");
+    for d in started.lock().unwrap().drain(..) {
+        d.join().unwrap().unwrap();
+    }
+}
+
+/// An older daemon running a turn is left to finish it.
+#[test]
+fn r_host_1_an_older_daemon_is_not_replaced_while_a_turn_runs() {
+    let home = Home::new("renew-busy", Some(&slow()));
+    let old = home.serve_as("0.12.1", Some(Duration::from_millis(300)), None);
+    let rt = rt();
+    rt.block_on(async {
+        let busy = home.client().await;
+        let (tx, mut rx) = mpsc::channel(1024);
+        let cmd = home.prompt("hi");
+        let turn = async move { busy.execute(cmd, tx).await };
+        let spawn: Box<daemon::Spawn<'static>> = Box::new(|| Err("none is to be started".into()));
+        let r = daemon::remote::Remote::connect(Box::new(home.env()), home.repo(), "0.13.0".into(), true, spawn).await.unwrap();
+        let check = async {
+            // Under way once its first frame is out.
+            rx.recv().await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(!r.renew().await, "left to finish its turn");
+            assert_eq!(r.gruntas_version(), "0.12.1");
+            while rx.recv().await.is_some() {}
+        };
+        let (done, ()) = tokio::join!(turn, check);
+        assert_eq!(done.unwrap().unwrap().status, TurnStatus::Completed);
+    });
+    drop(rt);
+    old.join().unwrap().unwrap();
+}
+
+/// R-PROTO-1: a prompt that starts a session gets its own lines, bound by
+/// its command — never those of a session the client still follows that
+/// happen to arrive first — and a session left sends nothing more.
+#[test]
+fn r_proto_1_a_new_sessions_stream_is_bound_by_its_command_and_leave_stops_the_rest() {
+    let home = Home::new("bind", Some(&slow()));
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    rt.block_on(async {
+        let a = home.client().await;
+        // A ran a turn in S, so it follows S.
+        let (tx, _rx) = mpsc::channel(1024);
+        let s = a.execute(home.prompt("count"), tx).await.unwrap().unwrap().session_id;
+        // B runs another turn in S while A starts a new session.
+        let b = home.client().await;
+        let resume = |text: &str| match home.prompt(text) {
+            Command::Prompt { model, permission_mode, .. } => Command::Prompt { session_id: Some(s.clone()), text: text.into(), images: Vec::new(), model, permission_mode, toolset: None, effort: None, rollover: None, budget: None },
+            _ => unreachable!(),
+        };
+        let (btx, _brx) = mpsc::channel(1024);
+        let mut other = Box::pin(b.execute(resume("again"), btx));
+        let (atx, mut arx) = mpsc::channel(1024);
+        let mut watch = a.watch();
+        let mut mine = Box::pin(a.execute(home.prompt("count too"), atx));
+        let (r_other, r_mine) = tokio::join!(&mut other, &mut mine);
+        let (r_other, r_mine) = (r_other.unwrap().unwrap(), r_mine.unwrap().unwrap());
+        assert_eq!(r_other.session_id, s);
+        assert_ne!(r_mine.session_id, s);
+        let mut lines = Vec::new();
+        while let Ok(l) = arx.try_recv() {
+            lines.push(l);
+        }
+        assert!(!lines.is_empty() && lines.iter().all(|l| l.session_id() == r_mine.session_id), "only its own session's lines");
+        // S's frames came to A's watch instead; once A leaves S, none do.
+        let mut saw_s = false;
+        while let Ok(l) = watch.try_recv() {
+            saw_s |= l.session_id() == s;
+        }
+        assert!(saw_s, "S's frames went where they belong");
+        a.leave(&s);
+        // A leave is not answered, and B's prompt goes on a connection of
+        // its own, so it could reach the daemon first. The daemon takes A's
+        // frames in order: once it has answered one sent after the leave,
+        // it has left. What came for S before that is behind it.
+        a.status().await.unwrap();
+        while watch.try_recv().is_ok() {}
+        let (btx, _brx) = mpsc::channel(1024);
+        b.execute(resume("once more"), btx).await.unwrap().unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(watch.try_recv().is_err(), "a session left sends nothing");
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-HOST-1: reattaching after the last event a replay drew gets every
+/// later event once — nothing appended between the replay and the attach
+/// is lost, and nothing drawn comes again.
+#[test]
+fn r_host_1_following_after_the_replays_last_event_misses_and_repeats_nothing() {
+    let home = Home::new("after", Some(&slow()));
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    rt.block_on(async {
+        let a = home.client().await;
+        let (atx, mut arx) = mpsc::channel(1024);
+        let mut exec = Box::pin(a.execute(home.prompt("count"), atx));
+        let mut seen = Vec::new();
+        loop {
+            tokio::select! {
+                Some(l) = arx.recv() => {
+                    seen.push(l);
+                    if typed(&seen).split_whitespace().count() >= 2 { break }
+                }
+                _ = &mut exec => panic!("ended early"),
+            }
+        }
+        let session = seen[0].session_id().to_string();
+        let path = log::sessions_dir(&home.env()).unwrap().join(&session).join(log::EVENTS_FILE);
+        // The replay, then time passes before the attach.
+        let drawn = log::read_events(&path).unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let b = home.client().await;
+        let (btx, mut brx) = mpsc::channel(1024);
+        b.follow(&session, drawn.last().map(|e| e.id.as_str()), btx).await.unwrap().unwrap();
+        exec.await.unwrap();
+        let mut got: Vec<String> = drawn.iter().map(|e| e.id.clone()).collect();
+        while let Ok(l) = brx.try_recv() {
+            if let StreamLine::Log(ev) = l {
+                got.push(ev.id);
+            }
+        }
+        let whole: Vec<String> = log::read_events(&path).unwrap().into_iter().map(|e| e.id).collect();
+        assert_eq!(got, whole, "the log, each event once, in order");
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-LAG-4: an interactive client's connection let go mid-turn — as the daemon lets go of a
+/// client it cannot catch up without a gap — is re-followed on the next
+/// from its cursor, its last `seq` and logged event: the turn's typing
+/// comes on where it stopped, nothing twice and nothing skipped, and the
+/// turn answers its result as though nothing had happened.
+#[test]
+fn r_lag_4_a_remote_let_go_mid_turn_resumes_from_its_cursor_with_no_gap_or_duplicate() {
+    let answer: String = (0..300).map(|i| format!("w{i} ")).collect();
+    let home = Home::new("resume", Some(&fake::typed(300, 0.004, "w", 1)));
+    let kick = Arc::new(tokio::sync::Notify::new());
+    let daemon = home.serve_with(Some(Duration::from_millis(300)), Some(kick.clone()));
+    let rt = rt();
+    rt.block_on(async {
+        let spawn: Box<daemon::Spawn<'static>> = Box::new(|| Err("the daemon runs; none is to be started".into()));
+        let r = daemon::remote::Remote::connect(Box::new(home.env()), home.repo(), "test".into(), true, spawn).await.unwrap();
+        let (tx, mut rx) = mpsc::channel(1 << 16);
+        let collect = tokio::spawn(async move {
+            let (mut typed, mut logged, mut kicked) = (String::new(), Vec::new(), false);
+            while let Some(line) = rx.recv().await {
+                match line {
+                    StreamLine::Live(LiveEvent::ItemDelta { delta: Delta::Text { text }, .. }) => {
+                        typed.push_str(&text);
+                        if !kicked && typed.len() > 200 {
+                            kicked = true;
+                            kick.notify_one();
+                        }
+                    }
+                    StreamLine::Log(ev) => logged.push(ev),
+                    _ => {}
+                }
+            }
+            (typed, logged, kicked)
+        });
+        let result = r.execute(home.prompt("count"), tx).await.expect("the turn resumed on the next connection").expect("and answered");
+        assert_eq!(result.status, TurnStatus::Completed);
+        let (typed, logged, kicked) = collect.await.unwrap();
+        assert!(kicked, "the connection was let go mid-turn");
+        assert!(r.take_note().is_some_and(|n| n.contains("reconnected")), "on a connection of its own");
+        assert!(typed == answer, "every word once, in order: {} of {} bytes", typed.len(), answer.len());
+        let ids: std::collections::HashSet<&str> = logged.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids.len(), logged.len(), "no logged event twice");
+        let finished = logged.iter().filter(|e| matches!(&e.body, LogBody::ItemCompleted { item: Item::AssistantText { .. }, .. })).count();
+        assert_eq!(finished, 1, "the finished item once");
+        // Resumed, not run again: the prompt went to the model once.
+        assert_eq!(home.prompts(), 1, "the prompt was sent once");
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-LAG-4: a prompt that starts a session, its connection cut before its
+/// first line named the session, is found again on the next connection by
+/// the `clientRef` it was sent with: followed from the start, it answers
+/// its turn's result. The prompt went to the provider once, and there is
+/// no `host_gone`.
+#[test]
+fn r_lag_4_a_new_session_prompt_cut_before_its_first_line_is_found_again_by_its_client_ref() {
+    use gruntas_harness::host::{HoldAt, hold_turns};
+    // Its answer comes a second after it is asked: after the test has seen it asked.
+    let home = Home::new("refind", Some(&format!("@sleep 1\n{}", fake::answer("found again"))));
+    let kick = Arc::new(tokio::sync::Notify::new());
+    let daemon = home.serve_with(Some(Duration::from_millis(300)), Some(kick.clone()));
+    let rt = rt();
+    rt.block_on(async {
+        let spawn: Box<daemon::Spawn<'static>> = Box::new(|| Err("the daemon runs; none is to be started".into()));
+        let r = daemon::remote::Remote::connect(Box::new(home.env()), home.repo(), "test".into(), true, spawn).await.unwrap();
+        // Accepted, and held before its session is made: no line of it sent.
+        let held = hold_turns(HoldAt::Open);
+        let (tx, mut rx) = mpsc::channel(1 << 12);
+        let exec = r.execute(home.prompt("hi"), tx);
+        tokio::pin!(exec);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        macro_rules! drive {
+            ($d:expr) => {
+                tokio::select! {
+                    r = &mut exec => panic!("the prompt ended early: {r:?}"),
+                    () = tokio::time::sleep($d) => {}
+                }
+            };
+        }
+        while held.waiting() == 0 {
+            assert!(std::time::Instant::now() < deadline, "the prompt never reached the hold");
+            drive!(Duration::from_millis(5));
+        }
+        kick.notify_one();
+        // Cut, reconnected, and asking after it before it names its session.
+        drive!(Duration::from_millis(300));
+        assert!(rx.try_recv().is_err(), "no line came before the cut");
+        drop(held);
+        while home.prompts() == 0 {
+            assert!(std::time::Instant::now() < deadline, "the model was never asked");
+            drive!(Duration::from_millis(5));
+        }
+        let result = exec.await.expect("found again, not host_gone").expect("and answered");
+        assert_eq!(result.status, TurnStatus::Completed);
+        assert!(r.take_note().is_some_and(|n| n.contains("reconnected")), "on a connection of its own");
+        let mut started = 0;
+        while let Ok(l) = rx.try_recv() {
+            if let StreamLine::Log(LogEvent { body: LogBody::SessionStarted { .. }, session_id, .. }) = l {
+                assert_eq!(session_id, result.session_id);
+                started += 1;
+            }
+        }
+        assert_eq!(started, 1, "its session followed from the start, once");
+        assert_eq!(home.prompts(), 1, "the prompt was sent once");
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-HOST-1: a background client — an automatic sync bridge, always on —
+/// never holds the daemon up: with only it connected the daemon exits after
+/// its window and takes its socket, as with nobody connected. (An ordinary
+/// client connected as long holds it up: the idle test above.)
+#[test]
+fn r_host_1_a_background_client_does_not_hold_the_daemon_up() {
+    let home = Home::new("bg-idle", None);
+    let daemon = home.serve(Some(Duration::from_millis(400)));
+    let started = std::time::Instant::now();
+    let rt = rt();
+    let bridge = rt.block_on(async {
+        let b = home.background(true).await;
+        // Served like any other client while it is on.
+        assert_eq!(b.status().await.unwrap().clients, 0, "and not counted as one");
+        b
+    });
+    // It stays connected, its runtime alive, while the daemon goes.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || tx.send(daemon.join()));
+    let joined = rx.recv_timeout(Duration::from_secs(3)).expect("the daemon exited within 3 s of a background client connecting");
+    joined.unwrap().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(!home.socket().exists(), "and took its socket with it");
+    drop(bridge);
+    drop(rt);
+}
+
+/// R-HOST-1: `gruntas host stop` is not refused for a background client, and
+/// `status` counts only the ordinary ones.
+#[test]
+fn r_host_1_stop_and_status_do_not_count_a_background_client() {
+    let home = Home::new("bg-stop", None);
+    let daemon = home.serve(None);
+    let rt = rt();
+    rt.block_on(async {
+        let _bridge = home.background(true).await;
+        let a = home.client().await;
+        assert_eq!(a.status().await.unwrap().clients, 1, "the ordinary client alone");
+        a.stop(false).await.expect("no host_in_use for a background client");
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+    assert!(!home.socket().exists());
+}
+
+/// R-HOST-1: `status` says how many clients following a session answer its
+/// approvals — a background one that answers counts like any other.
+#[test]
+fn r_host_1_status_counts_a_sessions_answering_followers() {
+    let home = Home::new("answering", None);
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    rt.block_on(async {
+        let a = home.client_answering(true).await;
+        let (tx, _rx) = mpsc::channel(1024);
+        let session = a.execute(home.prompt("hi"), tx).await.unwrap().unwrap().session_id;
+        // `a` ran it, so follows it; a `-p` client attaches too.
+        let p = home.client().await;
+        let (tx, _prx) = mpsc::channel(1024);
+        p.attach(&session, None, tx).await.unwrap();
+        let of = |s: gruntas_harness::protocol::HostStatus| s.sessions.into_iter().find(|x| x.session_id == session).map(|x| (x.clients, x.answering));
+        assert_eq!(of(a.status().await.unwrap()), Some((2, 1)), "one answering follower and one not");
+        let bridge = home.background(true).await;
+        let (tx, _brx) = mpsc::channel(1024);
+        bridge.attach(&session, None, tx).await.unwrap();
+        assert_eq!(of(a.status().await.unwrap()), Some((3, 2)), "a second answering follower");
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-HOST-1: a session's `running` in `status` agrees with whether a prompt
+/// to it is refused as busy — true from the moment a prompt is accepted,
+/// while its turn sets up before `turn.started` and after its
+/// `turn.completed` until it lets go, not only in between.
+#[test]
+fn r_host_1_status_running_agrees_with_a_prompt_refused_as_busy() {
+    use gruntas_harness::host::{HoldAt, hold_turns};
+    let home = Home::new("busy", None);
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    rt.block_on(async {
+        let a = home.client().await;
+        let (tx, _rx) = mpsc::channel(1024);
+        let s = a.execute(home.prompt("hi"), tx).await.unwrap().unwrap().session_id;
+        let resume = |text: &str| match home.prompt(text) {
+            Command::Prompt { model, permission_mode, .. } => Command::Prompt { session_id: Some(s.clone()), text: text.into(), images: Vec::new(), model, permission_mode, toolset: None, effort: None, rollover: None, budget: None },
+            _ => unreachable!(),
+        };
+        let running = |st: gruntas_harness::protocol::HostStatus| st.sessions.into_iter().find(|x| x.session_id == s).map(|x| x.running);
+        assert_eq!(running(a.status().await.unwrap()), Some(false), "nothing runs between turns");
+        let b = home.client().await;
+        for (at, logged, window) in [(HoldAt::Start, false, "before its turn.started"), (HoldAt::Result, true, "after its turn.completed")] {
+            // The next turn is accepted, and held there.
+            let held = hold_turns(at);
+            let (tx, mut rx) = mpsc::channel(1024);
+            let mut first = Box::pin(a.execute(resume("again"), tx));
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while held.waiting() == 0 {
+                assert!(std::time::Instant::now() < deadline, "the turn never reached the hold {window}");
+                tokio::select! {
+                    r = &mut first => panic!("the turn ended before the hold {window}: {r:?}"),
+                    () = tokio::time::sleep(Duration::from_millis(5)) => {}
+                }
+            }
+            // What the turn logged before the hold is on its way to the
+            // client: waited for when it is to come, else none came.
+            let mut seen = (false, false);
+            let take = |seen: &mut (bool, bool), l: StreamLine| match l {
+                StreamLine::Log(LogEvent { body: LogBody::TurnStarted { .. }, .. }) => seen.0 = true,
+                StreamLine::Log(LogEvent { body: LogBody::TurnCompleted { .. }, .. }) => seen.1 = true,
+                _ => {}
+            };
+            if logged {
+                while seen != (true, true) {
+                    take(&mut seen, tokio::time::timeout(Duration::from_secs(10), rx.recv()).await.expect("the turn's turn.completed never came").expect("the stream closed first"));
+                }
+            } else {
+                while let Ok(l) = rx.try_recv() {
+                    take(&mut seen, l);
+                }
+                assert_eq!(seen, (false, false), "held {window}");
+            }
+            let (btx, _brx) = mpsc::channel(1024);
+            let refused = b.execute(resume("too"), btx).await.expect_err("a second prompt is refused meanwhile");
+            assert_eq!(refused.code, "session_busy", "{window}");
+            assert_eq!(running(b.status().await.unwrap()), Some(true), "status says it runs while a prompt is refused as busy, {window}");
+            drop(held);
+            first.await.unwrap().unwrap();
+        }
+        let (btx, _brx) = mpsc::channel(1024);
+        b.execute(resume("now"), btx).await.expect("a prompt is taken once the turns are over");
+        assert_eq!(running(b.status().await.unwrap()), Some(false), "and not once its command is over");
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// A turn hook's events until `n` have come.
+async fn turn_events(rx: &mut tokio::sync::mpsc::UnboundedReceiver<server::TurnEvent>, n: usize) -> Vec<server::TurnEvent> {
+    let mut got = Vec::new();
+    while got.len() < n {
+        got.push(tokio::time::timeout(Duration::from_secs(10), rx.recv()).await.expect("a turn event came").expect("the hook is open"));
+    }
+    got
+}
+
+/// R-HOST-1, R-LAG-9: the daemon tells an in-process hook — the automatic
+/// sync's supervisor — when a session's own turn starts and ends, without
+/// waiting on it: a turn too short for any poll is not missed, and a
+/// subagent's turn is not told.
+#[test]
+fn r_lag_9_the_turn_hook_is_told_each_sessions_own_turns_and_never_a_subagents() {
+    // A survey is the recorded turn of Claude Code running two agents, its
+    // control lines and replayed prompt left out; anything else, a plain answer.
+    let raw = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/recorded/agents_parallel.txt")).unwrap();
+    let printed: Vec<serde_json::Value> = raw.lines().filter_map(|l| l.strip_prefix("<< ")).map(|j| serde_json::from_str(j).unwrap()).collect();
+    let init = printed.iter().position(|m| m["subtype"] == "init").unwrap();
+    let mut scenario = String::from("@when survey\n");
+    for m in printed[init + 1..].iter().filter(|m| !matches!(m["type"].as_str(), Some("control_request" | "control_response")) && m["isReplay"] != true) {
+        scenario.push_str(&format!("{m}\n"));
+    }
+    let home = Home::new("turns", Some(&scenario));
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let daemon = home.serve_hooked("test", Some(Duration::from_millis(300)), None, Hooks { turns: Some(tx), bridged: None, introductions: None });
+    let rt = rt();
+    rt.block_on(async {
+        let c = home.client().await;
+        // A short turn, in a new session.
+        let (ltx, _lrx) = mpsc::channel(1024);
+        let session = c.execute(home.prompt("hi"), ltx).await.unwrap().unwrap().session_id;
+        let start = |running| server::TurnEvent { session: session.clone(), running };
+        assert_eq!(turn_events(&mut rx, 2).await, [start(true), start(false)]);
+        // A turn that runs a subagent: the child's own turn is in the
+        // stream, and only the parent's is told.
+        let (ltx, mut lrx) = mpsc::channel(1024);
+        let r = c.execute(home.prompt("survey the repo"), ltx).await.unwrap().unwrap();
+        let mut lines = Vec::new();
+        while let Ok(l) = lrx.try_recv() {
+            lines.push(l);
+        }
+        let child = lines.iter().find_map(|l| if let StreamLine::Log(LogEvent { body: LogBody::SubagentStarted { subagent_session_id, .. }, .. }) = l { Some(subagent_session_id.clone()) } else { None }).expect("a subagent ran");
+        assert!(lines.iter().any(|l| matches!(l, StreamLine::Log(LogEvent { session_id, body: LogBody::TurnStarted { .. }, .. }) if *session_id == child)), "the child's turn was streamed");
+        let parent = |running| server::TurnEvent { session: r.session_id.clone(), running };
+        assert_eq!(turn_events(&mut rx, 2).await, [parent(true), parent(false)]);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(rx.try_recv().is_err(), "nothing of the child's");
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-HOST-1: `status` reports the sessions the process's sync bridges, from
+/// the set its owner keeps — and nothing from a daemon without one.
+#[test]
+fn r_host_1_status_reports_the_bridged_sessions_only_with_a_supervisor() {
+    let home = Home::new("bridged", None);
+    let daemon = home.serve(Some(Duration::from_millis(200)));
+    rt().block_on(async { assert_eq!(home.client().await.status().await.unwrap().bridged, None) });
+    daemon.join().unwrap().unwrap();
+
+    let set = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
+    let daemon = home.serve_hooked("test", Some(Duration::from_millis(200)), None, Hooks { turns: None, bridged: Some(set.clone()), introductions: None });
+    rt().block_on(async {
+        let c = home.client().await;
+        assert_eq!(c.status().await.unwrap().bridged, Some(Vec::new()));
+        set.lock().unwrap().extend(["b".to_string(), "a".to_string()]);
+        assert_eq!(c.status().await.unwrap().bridged, Some(vec!["a".to_string(), "b".to_string()]));
+    });
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-EASE-5: a client of the unix socket asks the offer a host opened for a
+/// new machine and sends the person's answer; with no pairing waiting for
+/// one, an answer is refused, and a daemon with no introductions has no
+/// offer to tell.
+#[test]
+fn r_ease_5_a_client_reads_the_pairing_offer_and_an_answer_with_none_waiting_is_refused() {
+    use gruntas_api::sync::DeliveredPairingRequest;
+    use gruntas_harness::sync::introduce::Introductions;
+    let home = Home::new("offer", None);
+    let daemon = home.serve(Some(Duration::from_millis(200)));
+    rt().block_on(async { assert_eq!(home.client().await.pairing_offer().await.unwrap(), None) });
+    daemon.join().unwrap().unwrap();
+
+    // A host that is not on the list its keys are checked against: the
+    // request is taken up and refused before any call, and the refusal is
+    // what a client is told.
+    let device = gruntas_client::e2e::DeviceKey::generate();
+    let signing = gruntas_client::e2e::SigningKey::generate();
+    let listed = gruntas_client::e2e::DeviceKey::generate();
+    let listed_signing = gruntas_client::e2e::SigningKey::generate();
+    let subject = gruntas_client::device_chain::Subject { kind: gruntas_client::device_chain::Kind::Device, name: "other".into(), os: "Linux".into(), device: listed.public(), signing: listed_signing.public() };
+    let (chain, start) = gruntas_client::device_chain::Chain::start(subject, &listed_signing, None, 1_790_000_000).unwrap();
+    let id = device.id();
+    let secret = signing.secret_bytes().to_vec();
+    let introductions = Introductions::new(Box::new(move || {
+        Ok(gruntas_harness::sync::introduce::Introducer {
+            api: Arc::new(gruntas_api::Client::new("http://127.0.0.1:9", "krowk_sk_x")),
+            keys: gruntas_client::user_key::UserKeys::new(start.newest.clone(), []).unwrap(),
+            chain: chain.clone(),
+            entries: start.entries.clone(),
+            device: id,
+            signing: gruntas_client::e2e::SigningKey::from_secret(&secret).unwrap(),
+            keep: None,
+        })
+    }));
+    let daemon = home.serve_hooked("test", Some(Duration::from_millis(400)), None, Hooks { introductions: Some(introductions.clone()), ..Hooks::default() });
+    rt().block_on(async {
+        let c = home.client().await;
+        assert_eq!(c.pairing_offer().await.unwrap(), None);
+        introductions.deliver(&[DeliveredPairingRequest { id: "prq_1".into(), ..Default::default() }]);
+        let offer = loop {
+            if let Some(o) = c.pairing_offer().await.unwrap() {
+                break o;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert_eq!(offer.stage, gruntas_harness::protocol::OfferStage::Failed);
+        assert!(offer.note.contains("not on your device list") && offer.code.is_empty(), "{offer:?}");
+        let refused = c.pairing_answer(&offer.pairing, true).await.unwrap_err();
+        assert_eq!(refused.code, "no_pairing_offer");
+    });
+    daemon.join().unwrap().unwrap();
+}

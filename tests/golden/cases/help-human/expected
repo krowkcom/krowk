@@ -1,20 +1,20 @@
-$ @tty krowk --help
+$ @tty gruntas --help
 tty:
-█  █  \e[1mKrowk\e[0m 0.0.0-golden
+█  █  \e[1mGruntas\e[0m 0.0.0-golden
 █▀▀▄  Permalinks for agent output
 
 \e[1mUsage\e[0m
-  krowk <command> [flags]
-  krowk push shot.png        Upload a file, get a link
+  gruntas <command> [flags]
+  gruntas push shot.png      Upload a file, get a link
 
 \e[1mExamples\e[0m
-  krowk push shot.png        Upload a screenshot and get a link to paste
-  krowk push shot.png --json
+  gruntas push shot.png      Upload a screenshot and get a link to paste
+  gruntas push shot.png --json
                              The same, as JSON for a script or an agent
-  krowk login                Add a key, so uploads keep and group under runs
+  gruntas login              Add a key, so uploads keep and group under runs
 
 \e[1mAccounts\e[0m
-  login         Sign in to your krowk account
+  login         Sign in to your gruntas account
   whoami        Show the key and its workspace
   billing       Choose or manage the workspace's plan
 
@@ -26,36 +26,37 @@ tty:
 
 \e[1mHealth\e[0m
   doctor        Check this machine's setup
-  upgrade       Upgrade krowk
+  upgrade       Upgrade gruntas
   config        Show or set configuration
 
 \e[1mFlags\e[0m
   --json · --jq <expr>       Output as JSON, or filter it
   -h, --help · -v, --version
 
-krowk help <command>  A command's own flags
-krowk help --all      Every command and subcommand
-krowk help topics     Flags, exit codes, environment, workspaces, links
-krowk help agents     For AI agents and scripts: the output contract
+gruntas help <command>
+                      A command's own flags
+gruntas help --all    Every command and subcommand
+gruntas help topics   Flags, exit codes, environment, workspaces, links
+gruntas help agents   For AI agents and scripts: the output contract
 exit: 0
 
-$ krowk help --format human
+$ gruntas help --format human
 stdout:
-█  █  Krowk 0.0.0-golden
+█  █  Gruntas 0.0.0-golden
 █▀▀▄  Permalinks for agent output
 
 Usage
-  krowk <command> [flags]
-  krowk push shot.png        Upload a file, get a link
+  gruntas <command> [flags]
+  gruntas push shot.png      Upload a file, get a link
 
 Examples
-  krowk push shot.png        Upload a screenshot and get a link to paste
-  krowk push shot.png --json
+  gruntas push shot.png      Upload a screenshot and get a link to paste
+  gruntas push shot.png --json
                              The same, as JSON for a script or an agent
-  krowk login                Add a key, so uploads keep and group under runs
+  gruntas login              Add a key, so uploads keep and group under runs
 
 Accounts
-  login         Sign in to your krowk account
+  login         Sign in to your gruntas account
   whoami        Show the key and its workspace
   billing       Choose or manage the workspace's plan
 
@@ -67,96 +68,97 @@ Publish
 
 Health
   doctor        Check this machine's setup
-  upgrade       Upgrade krowk
+  upgrade       Upgrade gruntas
   config        Show or set configuration
 
 Flags
   --json · --jq <expr>       Output as JSON, or filter it
   -h, --help · -v, --version
 
-krowk help <command>  A command's own flags
-krowk help --all      Every command and subcommand
-krowk help topics     Flags, exit codes, environment, workspaces, links
-krowk help agents     For AI agents and scripts: the output contract
+gruntas help <command>
+                      A command's own flags
+gruntas help --all    Every command and subcommand
+gruntas help topics   Flags, exit codes, environment, workspaces, links
+gruntas help agents   For AI agents and scripts: the output contract
 exit: 0
 
-$ krowk help --all --format human
+$ gruntas help --all --format human
 stdout:
-krowk — every command and subcommand
+gruntas — every command and subcommand
 
 Accounts
-  login               Sign in to your krowk account
+  login               Sign in to your gruntas account
   whoami              Show the key and its workspace
   billing             Choose or manage the workspace's plan
 
 Work
   sessions            List and read agent sessions on this machine
-  sessions show       Read one session back, with its turns, messages and parts
+  sessions show       Read one session back: its turns, messages and parts
   sessions import     Import this machine's agent transcripts
   sessions rebuild    Delete the local store and re-import every transcript
   sessions budget     Check a session against a spend limit
-  sessions sync       Import what changed since the last import, refresh prices
+  sessions sync       Import what changed since last import, refresh prices
 
 Publish
   push                Upload files, get a link for each
 
 Health
   doctor              Check this machine's setup
-  upgrade             Upgrade krowk
-  config show         The effective configuration, and which layer set each
-                      value
+  upgrade             Upgrade gruntas
+  config show         The effective config, and which layer set each value
   config get          One key's effective value and where it comes from
   config set          Write one value into the repo config, or the global one
   config unset        Remove one value from the repo config, or the global one
 
 More
   logout              Remove this machine's key
-  workspaces list     List the stored keys, and which workspace resolves here
+  workspaces list     List the stored keys, and the one in use here
   workspaces use      Make a stored key the machine-wide default
-  auth login          The long form of `krowk login`
-  auth logout         The long form of `krowk logout`
+  auth login          The long form of `gruntas login`
+  auth logout         The long form of `gruntas logout`
   auth token          Print the stored token
-  auth verify         The long form of `krowk whoami`
+  auth verify         The long form of `gruntas whoami`
   runs start          Open a run to group uploads under
   runs list           List the workspace's runs, newest first
   runs show           Read one run back, with its metadata
   runs finish         Close a run
-  artifacts create    Upload files: the long form of `krowk push`
-  artifacts list      List artifacts, newest first: a run's, or the workspace's
+  artifacts create    Upload files: the long form of `gruntas push`
+  artifacts list      List artifacts, newest first, of a run or the workspace
   artifacts show      Read one artifact back
   artifacts attach    Put an artifact under a run afterwards
   artifacts delete    Take an artifact down — immediate, cannot be undone
-  artifacts claim     The long form of `krowk claim`
+  artifacts claim     The long form of `gruntas claim`
   claim               Keep an anonymous upload past expiry
   pricing refresh     Refresh the models.dev price cache
   help                This, a command's help, or a topic
 
-krowk help <command>  A command's own flags and explanation
-krowk help topics     Flags, exit codes, environment, workspaces, links
-krowk help agents     For AI agents and scripts: the output contract
-krowk help --json     The whole surface as data, for tooling
+gruntas help <command>
+                      A command's own flags and explanation
+gruntas help topics   Flags, exit codes, environment, workspaces, links
+gruntas help agents   For AI agents and scripts: the output contract
+gruntas help --json   The whole surface as data, for tooling
 exit: 0
 
-$ krowk help topics --format human
+$ gruntas help topics --format human
 stdout:
 Topics
-  agents       Driving krowk from an AI agent or a script
+  agents       Driving gruntas from an AI agent or a script
   flags        The flags every command takes
   exit-codes   What each exit code means
   environment  Environment variables, and where files live
   workspaces   Which stored key a command uses
   links        Naming an upload or a run by any link to it
 
-krowk help <topic>
+gruntas help <topic>
 exit: 0
 
-$ krowk help exit-codes --format human
+$ gruntas help exit-codes --format human
 stdout:
-krowk help exit-codes — What each exit code means
+gruntas help exit-codes — What each exit code means
 
 Exit codes
   0  It worked.
-  1  The command was wrong, or krowk failed on its own — also anything
+  1  The command was wrong, or gruntas failed on its own — also anything
      unclassified.
   2  Not found — no such artifact or run in this workspace, or no such
      endpoint.
@@ -170,29 +172,29 @@ Exit codes
   6  The bytes did not move — the registry or object storage could not be
      reached.
   7  The registry failed on its side, or answered something unreadable — or a
-     login page krowk will not open, which is the same news.
+     login page gruntas will not open, which is the same news.
   8  Gone — the artifact expired or was taken down, or a browser login lapsed
      before anybody approved it; no retry brings any of them back.
 exit: 0
 
-$ krowk help exit-codes --json
+$ gruntas help exit-codes --json
 stdout:
-"krowk help exit-codes — What each exit code means\n\nExit codes\n  0  It worked.\n  1  The command was wrong, or krowk failed on its own — also anything\n     unclassified.\n  2  Not found — no such artifact or run in this workspace, or no such\n     endpoint.\n  3  Refused for want of credentials — no key, a key the registry rejects, a\n     browser login somebody denied or that nothing on CI could approve, or no\n     claim token where that is the only authority (a claim token the registry\n     does not recognise is 2, since it answers that as no such record).\n  4  Refused by the registry on the request or the state of things — retrying\n     unchanged answers the same; also a session over its `sessions budget`.\n  5  Rate limited — wait and retry.\n  6  The bytes did not move — the registry or object storage could not be\n     reached.\n  7  The registry failed on its side, or answered something unreadable — or a\n     login page krowk will not open, which is the same news.\n  8  Gone — the artifact expired or was taken down, or a browser login lapsed\n     before anybody approved it; no retry brings any of them back."
+"gruntas help exit-codes — What each exit code means\n\nExit codes\n  0  It worked.\n  1  The command was wrong, or gruntas failed on its own — also anything\n     unclassified.\n  2  Not found — no such artifact or run in this workspace, or no such\n     endpoint.\n  3  Refused for want of credentials — no key, a key the registry rejects, a\n     browser login somebody denied or that nothing on CI could approve, or no\n     claim token where that is the only authority (a claim token the registry\n     does not recognise is 2, since it answers that as no such record).\n  4  Refused by the registry on the request or the state of things — retrying\n     unchanged answers the same; also a session over its `sessions budget`.\n  5  Rate limited — wait and retry.\n  6  The bytes did not move — the registry or object storage could not be\n     reached.\n  7  The registry failed on its side, or answered something unreadable — or a\n     login page gruntas will not open, which is the same news.\n  8  Gone — the artifact expired or was taken down, or a browser login lapsed\n     before anybody approved it; no retry brings any of them back."
 exit: 0
 
-$ krowk help push --format human
+$ gruntas help push --format human
 stdout:
-krowk push — Upload files, get a link for each
+gruntas push — Upload files, get a link for each
 
 Usage
-  krowk push <file...> [flags]
+  gruntas push <file...> [flags]
 
-The short form of `krowk artifacts create`.
+The short form of `gruntas artifacts create`.
 
 Run metadata — the pull request, the links, the references, the session — is
 recorded on a run, and a run belongs to a workspace, so it needs an API key.
 Without one an upload still works: it lands anonymously, expires within a
-day, and comes back with a claim token that `krowk claim` spends to move it
+day, and comes back with a claim token that `gruntas claim` spends to move it
 into a workspace — where a paid plan keeps it and a free one gives it another
 day.
 
@@ -206,10 +208,11 @@ Flags
                            `krowk.caption` and used wherever it is pasted.
                            Repeat to caption several files, in the order they
                            are given
-  --destination <string>   Print what this tool wants pasted into it: the krowk
-                           block for github, linear and the like, the bare link
-                           for the ones that unfurl it themselves, like slack. A
-                           tool krowk has not been told about gets the block
+  --destination <string>   Print what this tool wants pasted into it: the
+                           gruntas block for github, linear and the like, the
+                           bare link for the ones that unfurl it themselves,
+                           like slack. A tool gruntas has not been told about
+                           gets the block
   --private                Upload where only this workspace can read it. The
                            image still embeds — the byte URL is the capability —
                            but the card opens only for a signed-in member, reads
@@ -242,20 +245,20 @@ Flags
 Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
 exit: 0
 
-$ krowk help exit codes --format human
+$ gruntas help exit codes --format human
 stderr:
-✗ `exit codes` is not a krowk command or help topic.
-  Try: krowk help
+✗ `exit codes` is not a gruntas command or help topic.
+  Try: gruntas help
   Code: unknown_command
 exit: 1
 
-$ krowk help agents --format human
+$ gruntas help agents --format human
 stdout:
-krowk help agents — Driving krowk from an AI agent or a script
+gruntas help agents — Driving gruntas from an AI agent or a script
 
 When stdout is not a terminal, commands answer with one JSON envelope — on
 stdout when they worked, on stderr when they failed. Help is text unless
---json is given, --version is always text, and `krowk help --json` marks
+--json is given, --version is always text, and `gruntas help --json` marks
 the other commands that print text `no_json`. --json asks for the envelope
 on a terminal too, --quiet drops it for the bare record, and --jq filters
 it with no jq binary needed. Pickers are skipped when piped, under --json
@@ -265,7 +268,7 @@ terminal, refusing without one.
 
   {"ok": true, "data": {…}, "summary": "…", "breadcrumbs": [{…}]}
   {"ok": false, "error": {"error": "<code>", "fix": "…", "retryable": false}}
-  breadcrumb: {"action": "…", "cmd": "krowk …", "description": "…"}
+  breadcrumb: {"action": "…", "cmd": "gruntas …", "description": "…"}
 
 Report `summary`. A breadcrumb's `cmd` is a command left to run, and its
 `description` says what it does; fill in any <placeholder> first. On a
@@ -277,20 +280,20 @@ each artifact carries its own `paste`.
 Exit codes
   0 ok · 1 the command was wrong · 2 not found · 3 credentials · 4 refused
   5 rate limited · 6 unreachable · 7 registry failed · 8 gone
-  Retry on 5 and 6; change the command on 1, 2 and 4. `krowk help exit-codes`
+  Retry on 5 and 6; change the command on 1, 2 and 4. `gruntas help exit-codes`
   says more.
 
 Tasks
-  krowk push <file> --json         Publish a file; paste its .paste.markdown
-  krowk runs start --title "…"     Open a run for several pushes (needs a key)
-  krowk push <file> --run <run>    Add a file to that run
-  krowk whoami                     Which key and workspace are in use
-  krowk sessions                   Agent sessions on this machine, newest first
-  krowk doctor                     What is wrong with the setup
+  gruntas push <file> --json       Publish a file; paste its .paste.markdown
+  gruntas runs start --title "…"   Open a run for several pushes (needs a key)
+  gruntas push <file> --run <run>  Add a file to that run
+  gruntas whoami                   Which key and workspace are in use
+  gruntas sessions                 Agent sessions on this machine, newest first
+  gruntas doctor                   What is wrong with the setup
 
 Discover more
-  krowk help --json                Every command, argument and flag, as data
-  krowk help <command> --json      One command's arguments and flags
-  krowk help <command>             The same, with what the command is for
+  gruntas help --json              Every command, argument and flag, as data
+  gruntas help <command> --json    One command's arguments and flags
+  gruntas help <command>           The same, with what the command is for
 exit: 0
 

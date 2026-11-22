@@ -1,7 +1,7 @@
 @fixture harnesses
-krowk sessions import --from claude
-krowk sessions import --from cursor
-krowk sessions import --from opencode
-krowk sessions import --from nope
-krowk sessions import
-krowk sessions import --from claude --limit 1
+gruntas sessions import --from claude
+gruntas sessions import --from cursor
+gruntas sessions import --from opencode
+gruntas sessions import --from nope
+gruntas sessions import
+gruntas sessions import --from claude --limit 1

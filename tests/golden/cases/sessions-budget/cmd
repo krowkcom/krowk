@@ -1,5 +1,5 @@
 @fixture harnesses
-krowk sessions import --from all --quiet --jq '.providers | map({provider, sessions_inserted})'
-krowk sessions budget ses_parent --max-tokens 1000000
-krowk sessions budget ses_parent --max-tokens 1
-krowk sessions budget ses_parent --max-usd ""
+gruntas sessions import --from all --quiet --jq '.providers | map({provider, sessions_inserted})'
+gruntas sessions budget ses_parent --max-tokens 1000000
+gruntas sessions budget ses_parent --max-tokens 1
+gruntas sessions budget ses_parent --max-usd ""

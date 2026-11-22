@@ -1,10 +1,10 @@
 {
-  "name": "@krowk/mcp",
+  "name": "@gruntas/mcp",
   "version": "0.0.0-unpublished",
-  "mcpName": "io.github.krowkcom/krowk",
-  "description": "Publishing from Krowk, the coding agent harness, for any MCP client: an MCP server that turns an agent's screenshots, recordings, diffs and logs into links that unfurl in Slack and Basecamp; in GitHub and Linear, images show inline.",
+  "mcpName": "io.github.gruntas/gruntas",
+  "description": "Publishing from Gruntas, the coding agent harness, for any MCP client: an MCP server that turns an agent's screenshots, recordings, diffs and logs into links that unfurl in Slack and Basecamp; in GitHub and Linear, images show inline.",
   "keywords": [
-    "krowk",
+    "gruntas",
     "mcp",
     "model-context-protocol",
     "screenshot",
@@ -12,15 +12,15 @@
     "agent"
   ],
   "homepage": "https://krowk.com",
-  "bugs": "https://github.com/krowkcom/krowk/issues",
+  "bugs": "https://github.com/gruntas/gruntas/issues",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/krowkcom/krowk.git",
+    "url": "git+https://github.com/gruntas/gruntas.git",
     "directory": "npm/mcp"
   },
   "license": "MIT",
   "bin": {
-    "krowk-mcp": "bin/krowk-mcp.js"
+    "gruntas-mcp": "bin/gruntas-mcp.js"
   },
   "files": [
     "bin"
@@ -29,10 +29,10 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "@krowk/cli-darwin-arm64": "0.0.0-unpublished",
-    "@krowk/cli-darwin-x64": "0.0.0-unpublished",
-    "@krowk/cli-linux-arm64": "0.0.0-unpublished",
-    "@krowk/cli-linux-x64": "0.0.0-unpublished",
-    "@krowk/cli-win32-x64": "0.0.0-unpublished"
+    "@gruntas/cli-darwin-arm64": "0.0.0-unpublished",
+    "@gruntas/cli-darwin-x64": "0.0.0-unpublished",
+    "@gruntas/cli-linux-arm64": "0.0.0-unpublished",
+    "@gruntas/cli-linux-x64": "0.0.0-unpublished",
+    "@gruntas/cli-win32-x64": "0.0.0-unpublished"
   }
 }

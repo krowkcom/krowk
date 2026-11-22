@@ -2,7 +2,7 @@
 # WT16: the worktree wave measured on this repository, with no model calls.
 # A scratch clone of the checkout (its HEAD), a scratch worktrees root, both
 # under one directory that is removed on the way out; the checkout's own
-# repository never gets a worktree. The driver, the krowk-harness example
+# repository never gets a worktree. The driver, the gruntas-harness example
 # bench_worktrees, says what it measures; this prints its table:
 #
 #   method | creation p50 | p95 | check wall time | peak RSS | total slot wait | leftovers
@@ -19,10 +19,10 @@ cd "$(dirname "$0")/.."
 count=${1:-20}
 base=${BENCH_WORKTREES_DIR:-${TMPDIR:-/tmp}}
 mkdir -p "$base"
-scratch=$(mktemp -d "$base/krowk-bench-worktrees.XXXXXX")
+scratch=$(mktemp -d "$base/gruntas-bench-worktrees.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT
 
-cargo build --quiet --locked -p krowk-harness --example bench_worktrees
+cargo build --quiet --locked -p gruntas-harness --example bench_worktrees
 driver=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/debug/examples/bench_worktrees
 
 git clone --quiet . "$scratch/repo"

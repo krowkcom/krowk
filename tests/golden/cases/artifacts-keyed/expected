@@ -1,4 +1,4 @@
-$ krowk artifacts create a.txt b.txt
+$ gruntas artifacts create a.txt b.txt
 stdout:
 {
   "ok": true,
@@ -15,7 +15,7 @@ stdout:
         "run": {
           "slug": "<run_1>",
           "metadata": {
-            "krowk.client": "krowk-cli/0.0.0-golden"
+            "krowk.client": "gruntas-cli/0.0.0-golden"
           },
           "created_at": "<time>"
         },
@@ -39,7 +39,7 @@ stdout:
         },
         "created_at": "<time>",
         "metadata": {
-          "krowk.client": "krowk-cli/0.0.0-golden"
+          "krowk.client": "gruntas-cli/0.0.0-golden"
         }
       },
       {
@@ -53,7 +53,7 @@ stdout:
         "run": {
           "slug": "<run_1>",
           "metadata": {
-            "krowk.client": "krowk-cli/0.0.0-golden"
+            "krowk.client": "gruntas-cli/0.0.0-golden"
           },
           "created_at": "<time>"
         },
@@ -77,7 +77,7 @@ stdout:
         },
         "created_at": "<time>",
         "metadata": {
-          "krowk.client": "krowk-cli/0.0.0-golden"
+          "krowk.client": "gruntas-cli/0.0.0-golden"
         }
       }
     ],
@@ -87,7 +87,7 @@ stdout:
       "started_at": "<time>",
       "finished_at": "<time>",
       "metadata": {
-        "krowk.client": "krowk-cli/0.0.0-golden"
+        "krowk.client": "gruntas-cli/0.0.0-golden"
       }
     }
   },
@@ -121,7 +121,7 @@ stdout:
 }
 exit: 0
 
-$ krowk artifacts list
+$ gruntas artifacts list
 stdout:
 {
   "ok": true,
@@ -138,7 +138,7 @@ stdout:
         "run": {
           "slug": "<run_1>",
           "metadata": {
-            "krowk.client": "krowk-cli/0.0.0-golden"
+            "krowk.client": "gruntas-cli/0.0.0-golden"
           },
           "created_at": "<time>"
         },
@@ -162,7 +162,7 @@ stdout:
         },
         "created_at": "<time>",
         "metadata": {
-          "krowk.client": "krowk-cli/0.0.0-golden"
+          "krowk.client": "gruntas-cli/0.0.0-golden"
         }
       },
       {
@@ -176,7 +176,7 @@ stdout:
         "run": {
           "slug": "<run_1>",
           "metadata": {
-            "krowk.client": "krowk-cli/0.0.0-golden"
+            "krowk.client": "gruntas-cli/0.0.0-golden"
           },
           "created_at": "<time>"
         },
@@ -200,7 +200,7 @@ stdout:
         },
         "created_at": "<time>",
         "metadata": {
-          "krowk.client": "krowk-cli/0.0.0-golden"
+          "krowk.client": "gruntas-cli/0.0.0-golden"
         }
       }
     ]
@@ -209,7 +209,7 @@ stdout:
 }
 exit: 0
 
-$ krowk artifacts list --limit 1
+$ gruntas artifacts list --limit 1
 stdout:
 {
   "ok": true,
@@ -226,7 +226,7 @@ stdout:
         "run": {
           "slug": "<run_1>",
           "metadata": {
-            "krowk.client": "krowk-cli/0.0.0-golden"
+            "krowk.client": "gruntas-cli/0.0.0-golden"
           },
           "created_at": "<time>"
         },
@@ -250,7 +250,7 @@ stdout:
         },
         "created_at": "<time>",
         "metadata": {
-          "krowk.client": "krowk-cli/0.0.0-golden"
+          "krowk.client": "gruntas-cli/0.0.0-golden"
         }
       }
     ],
@@ -260,27 +260,27 @@ stdout:
   "breadcrumbs": [
     {
       "action": "next page",
-      "cmd": "krowk artifacts list --limit 1 --before <art_2>",
+      "cmd": "gruntas artifacts list --limit 1 --before <art_2>",
       "description": "this page came back full, so any older rows are behind that cursor"
     }
   ]
 }
 exit: 0
 
-$ krowk artifacts list --format human
+$ gruntas artifacts list --format human
 stdout:
 b.txt  5 B  http://<registry>/a/<art_2>
 a.txt  5 B  http://<registry>/a/<art_1>
 exit: 0
 
-$ krowk artifacts list --format markdown
+$ gruntas artifacts list --format markdown
 stdout:
 **b.txt** · [View preview ↗](http://<registry>/a/<art_2>)
 
 **a.txt** · [View preview ↗](http://<registry>/a/<art_1>)
 exit: 0
 
-$ krowk artifacts list --format url
+$ gruntas artifacts list --format url
 stdout:
 http://<registry>/a/<art_2>
 http://<registry>/a/<art_1>

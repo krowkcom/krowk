@@ -1,10 +1,10 @@
 # Every slug-taking command against slugs that were never minted.
 @registry
-@env KROWK_TOKEN=krowk_sk_test
-krowk artifacts show art_000000000000000000000000
-krowk artifacts delete art_000000000000000000000000
-krowk artifacts attach art_000000000000000000000000 --run run_000000000000000000000000
-krowk runs show run_000000000000000000000000
-krowk runs finish run_000000000000000000000000
+@env GRUNTAS_TOKEN=krowk_sk_test
+gruntas artifacts show art_000000000000000000000000
+gruntas artifacts delete art_000000000000000000000000
+gruntas artifacts attach art_000000000000000000000000 --run run_000000000000000000000000
+gruntas runs show run_000000000000000000000000
+gruntas runs finish run_000000000000000000000000
 @file a.txt hello
-krowk push a.txt --run run_doesnotexist000000000000
+gruntas push a.txt --run run_doesnotexist000000000000

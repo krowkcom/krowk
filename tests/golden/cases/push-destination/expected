@@ -1,32 +1,32 @@
-$ krowk push a.png --destination github
+$ gruntas push a.png --destination github
 stdout:
 [![a.png](http://<registry>/_storage/weur/<ws_1>/<art_1>/a.png)](http://<registry>/a/<art_1>)
 a.png · [View preview ↗](http://<registry>/a/<art_1>) · expires <date>
 exit: 0
 
-$ krowk push a.png --destination slack
+$ gruntas push a.png --destination slack
 stdout:
 http://<registry>/a/<art_2>
 exit: 0
 
-$ krowk push a.png --destination linear
+$ gruntas push a.png --destination linear
 stdout:
 [![a.png](http://<registry>/_storage/weur/<ws_1>/<art_3>/a.png)](http://<registry>/a/<art_3>)
 a.png · [View preview ↗](http://<registry>/a/<art_3>) · expires <date>
 exit: 0
 
-$ krowk push a.png --destination basecamp
+$ gruntas push a.png --destination basecamp
 stdout:
 http://<registry>/a/<art_4>
 exit: 0
 
-$ krowk push a.png --destination notion
+$ gruntas push a.png --destination notion
 stdout:
 [![a.png](http://<registry>/_storage/weur/<ws_1>/<art_5>/a.png)](http://<registry>/a/<art_5>)
 a.png · [View preview ↗](http://<registry>/a/<art_5>) · expires <date>
 exit: 0
 
-$ krowk push a.png --destination nope
+$ gruntas push a.png --destination nope
 stdout:
 [![a.png](http://<registry>/_storage/weur/<ws_1>/<art_6>/a.png)](http://<registry>/a/<art_6>)
 a.png · [View preview ↗](http://<registry>/a/<art_6>) · expires <date>

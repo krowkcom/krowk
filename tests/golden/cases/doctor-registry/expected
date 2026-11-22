@@ -1,28 +1,28 @@
-$ krowk doctor
+$ gruntas doctor
 stdout:
 {
   "version": "0.0.0-golden",
   "runtime": "<runtime>",
   "api": "http://<registry>/v1",
-  "registry": "custom (KROWK_API_URL)",
+  "registry": "custom (GRUNTAS_API_URL)",
   "api_status": "reachable (krowk-registry, v1)",
   "authenticated": true,
-  "token_source": "KROWK_TOKEN",
+  "token_source": "GRUNTAS_TOKEN",
   "key": "<key_1> (<ws_1>) local",
-  "workspace": "unknown — not recorded at login; `krowk whoami` asks the registry",
+  "workspace": "unknown — not recorded at login; `gruntas whoami` asks the registry",
   "runs_available": true,
-  "credentials": "<scratch>/home/.krowk/credentials.json",
-  "config": "global <scratch>/home/.krowk/config.json (absent)",
+  "credentials": "<scratch>/home/.gruntas/credentials.json",
+  "config": "global <scratch>/home/.gruntas/config.json (absent)",
   "store": {
     "name": "store",
     "status": "pass",
-    "message": "healthy (<scratch>/home/.krowk/sessions/krowk.db, schema v1, wal)"
+    "message": "healthy (<scratch>/home/.gruntas/sessions/gruntas.db, schema v1, wal)"
   },
   "pricing": {
     "name": "pricing",
     "status": "warn",
     "message": "no price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build",
-    "hint": "run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day"
+    "hint": "run `gruntas pricing refresh`, or `gruntas sessions sync`, which refreshes prices once a day"
   },
   "providers": {
     "name": "providers",
@@ -69,14 +69,14 @@ stdout:
     {
       "name": "store",
       "status": "pass",
-      "message": "healthy (<scratch>/home/.krowk/sessions/krowk.db, schema v1, wal)"
+      "message": "healthy (<scratch>/home/.gruntas/sessions/gruntas.db, schema v1, wal)"
     },
     {
       "name": "pricing",
       "status": "warn",
       "message": "no price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build",
-      "hint": "run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day",
-      "fix": "run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day"
+      "hint": "run `gruntas pricing refresh`, or `gruntas sessions sync`, which refreshes prices once a day",
+      "fix": "run `gruntas pricing refresh`, or `gruntas sessions sync`, which refreshes prices once a day"
     }
   ]
 }

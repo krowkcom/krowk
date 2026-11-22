@@ -1,1 +1,1 @@
-//! Black-box cases for any krowk binary; see tests/golden.rs.
+//! Black-box cases for any gruntas binary; see tests/golden.rs.

@@ -11,19 +11,18 @@
 #   scripts/dist.sh all VERSION             build every target, then assemble
 #
 # The layout is what GoReleaser wrote, because npm/build.mjs, install.sh and the
-# upgrader read it: dist/krowk_<version>_<goos>_<goarch>.tar.gz (.zip on Windows)
-# holding krowk and krowk-mcp at its root, dist/checksums.txt in `sha256sum`
+# upgrader read it: dist/gruntas_<version>_<goos>_<goarch>.tar.gz (.zip on Windows)
+# holding gruntas and gruntas-mcp at its root, dist/checksums.txt in `sha256sum`
 # form, and dist/<triple>/ holding the loose binaries.
 #
-# Two builds of krowk per target (R-PKG-3). The full build (`--features
-# harness`: the agent, the session store) is the one above, under the
-# name every earlier release used, so links, npm and old upgraders keep
-# getting what a person wants. The lean build (no features: the agent-container
-# build, R-PKG-2) is dist/krowk-lean_<version>_<goos>_<goarch>.tar.gz beside
-# it, and dist/<triple>-lean/ loose. krowk-mcp is the same lean binary in both.
+# Two builds of gruntas per target (R-PKG-3). The full build (`--features
+# harness`: the agent, the session store) is the one above, what a person
+# wants. The lean build (no features: the agent-container
+# build, R-PKG-2) is dist/gruntas-lean_<version>_<goos>_<goarch>.tar.gz beside
+# it, and dist/<triple>-lean/ loose. gruntas-mcp is the same lean binary in both.
 # install.sh picks between them; an upgrade stays on the build it is.
 #
-# KROWK_FAST_BUILD=1 builds without LTO and with parallel codegen: the same
+# GRUNTAS_FAST_BUILD=1 builds without LTO and with parallel codegen: the same
 # binaries in every way a packaging test can see, minutes sooner. Releases
 # never set it.
 
@@ -50,11 +49,11 @@ row() {
 }
 
 archive_name() {
-  local ext="tar.gz" name="krowk"
+  local ext="tar.gz" name="gruntas"
   [[ "$1" == windows ]] && ext="zip"
   case "${4:-full}" in
     full) ;;
-    lean) name="krowk-lean" ;;
+    lean) name="gruntas-lean" ;;
     *) die "no build ${4} — full or lean" ;;
   esac
   echo "${name}_${3}_${1}_${2}.${ext}"
@@ -67,9 +66,9 @@ archive() {
   archive="dist/$(archive_name "$goos" "$goarch" "$version" "$flavour")"
   rm -f "$archive"
   if [[ "$goos" == windows ]]; then
-    (cd "$dir" && zip -q -X "$OLDPWD/$archive" "krowk$ext" "krowk-mcp$ext")
+    (cd "$dir" && zip -q -X "$OLDPWD/$archive" "gruntas$ext" "gruntas-mcp$ext")
   else
-    tar -czf "$archive" -C "$dir" krowk krowk-mcp
+    tar -czf "$archive" -C "$dir" gruntas gruntas-mcp
   fi
   echo "dist.sh: $archive"
 }
@@ -88,29 +87,29 @@ build() {
   # The only machine-specific input a release binary would otherwise carry is
   # the absolute path of its sources, in panic locations and in the C that
   # SQLite and ring compile, so both are rewritten to fixed prefixes: this
-  # checkout to /krowk, cargo's registry to /cargo. The standard library's
+  # checkout to /gruntas, cargo's registry to /cargo. The standard library's
   # paths are already /rustc/<commit>. The toolchain versions are the other
   # input, and they are pinned in the workflows.
   local cargo_home="${CARGO_HOME:-$HOME/.cargo}"
-  export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$PWD=/krowk --remap-path-prefix=$cargo_home=/cargo"
-  export CFLAGS="${CFLAGS:-} -ffile-prefix-map=$PWD=/krowk -ffile-prefix-map=$cargo_home=/cargo"
-  if [[ "${KROWK_FAST_BUILD:-}" == 1 ]]; then
+  export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$PWD=/gruntas --remap-path-prefix=$cargo_home=/cargo"
+  export CFLAGS="${CFLAGS:-} -ffile-prefix-map=$PWD=/gruntas -ffile-prefix-map=$cargo_home=/cargo"
+  if [[ "${GRUNTAS_FAST_BUILD:-}" == 1 ]]; then
     export CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
   fi
-  # The lean build first, both binaries: krowk-mcp never touches the session
-  # store, so it is the lean build in both archives. Its krowk is copied out
-  # before the full build overwrites target/…/krowk.
-  KROWK_VERSION="$version" cargo "$tool" --release --locked --target "$triple" -p krowk --bin krowk --bin krowk-mcp
+  # The lean build first, both binaries: gruntas-mcp never touches the session
+  # store, so it is the lean build in both archives. Its gruntas is copied out
+  # before the full build overwrites target/…/gruntas.
+  GRUNTAS_VERSION="$version" cargo "$tool" --release --locked --target "$triple" -p gruntas --bin gruntas --bin gruntas-mcp
   local lean="dist/$triple-lean"
   rm -rf "$lean" && mkdir -p "$lean"
-  for bin in krowk krowk-mcp; do
+  for bin in gruntas gruntas-mcp; do
     cp "target/$triple/release/$bin$ext" "$lean/"
   done
-  KROWK_VERSION="$version" cargo "$tool" --release --locked --target "$triple" -p krowk --bin krowk --features harness
+  GRUNTAS_VERSION="$version" cargo "$tool" --release --locked --target "$triple" -p gruntas --bin gruntas --features harness
 
   out="dist/$triple"
   rm -rf "$out" && mkdir -p "$out"
-  cp "target/$triple/release/krowk$ext" "$lean/krowk-mcp$ext" "$out/"
+  cp "target/$triple/release/gruntas$ext" "$lean/gruntas-mcp$ext" "$out/"
   archive "$out" "$goos" "$goarch" "$version" full
   archive "$lean" "$goos" "$goarch" "$version" lean
 }
@@ -127,16 +126,16 @@ assemble() {
   done <<<"$TARGETS"
   (cd dist && sha256 "${archives[@]}" >checksums.txt)
 
-  printf '{"project_name":"krowk","tag":"v%s","version":"%s"}\n' "$version" "$version" >dist/metadata.json
+  printf '{"project_name":"gruntas","tag":"v%s","version":"%s"}\n' "$version" "$version" >dist/metadata.json
   {
     echo "["
     local first=1
     while read -r triple goos goarch _; do
       ext=""
       [[ "$goos" == windows ]] && ext=".exe"
-      # The lean krowk is listed as its own ID, which npm/build.mjs does not
+      # The lean gruntas is listed as its own ID, which npm/build.mjs does not
       # package: npm carries the full build, as it always has.
-      for entry in "krowk $triple krowk" "krowk-mcp $triple krowk-mcp" "krowk-lean $triple-lean krowk"; do
+      for entry in "gruntas $triple gruntas" "gruntas-mcp $triple gruntas-mcp" "gruntas-lean $triple-lean gruntas"; do
         read -r id dir bin <<<"$entry"
         [[ $first == 1 ]] || echo ","
         first=0

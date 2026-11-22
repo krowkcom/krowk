@@ -1,9 +1,9 @@
 @registry
-@env KROWK_TOKEN=krowk_sk_test
-krowk runs start --title "first" --pull-request https://github.com/o/r/pull/2 --session sess --repo o/r --commit deadbeef --agent claude
-krowk runs start
-krowk runs list
-krowk runs list --limit 1
-krowk runs list --format human
-krowk runs show run_000000000000000000000000
-krowk runs finish run_000000000000000000000000
+@env GRUNTAS_TOKEN=krowk_sk_test
+gruntas runs start --title "first" --pull-request https://github.com/o/r/pull/2 --session sess --repo o/r --commit deadbeef --agent claude
+gruntas runs start
+gruntas runs list
+gruntas runs list --limit 1
+gruntas runs list --format human
+gruntas runs show run_000000000000000000000000
+gruntas runs finish run_000000000000000000000000

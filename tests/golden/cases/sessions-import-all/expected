@@ -1,10 +1,10 @@
-$ krowk sessions import --from all --dry-run
+$ gruntas sessions import --from all --dry-run
 stdout:
 {
   "ok": true,
   "data": {
     "dry_run": true,
-    "store": "<scratch>/home/.krowk/sessions/krowk.db",
+    "store": "<scratch>/home/.gruntas/sessions/gruntas.db",
     "providers": [
       {
         "provider": "claude",
@@ -77,7 +77,7 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions
+$ gruntas sessions
 stdout:
 {
   "ok": true,
@@ -88,13 +88,13 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions import --from all
+$ gruntas sessions import --from all
 stdout:
 {
   "ok": true,
   "data": {
     "dry_run": false,
-    "store": "<scratch>/home/.krowk/sessions/krowk.db",
+    "store": "<scratch>/home/.gruntas/sessions/gruntas.db",
     "providers": [
       {
         "provider": "claude",
@@ -172,7 +172,7 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions
+$ gruntas sessions
 stdout:
 {
   "ok": true,
@@ -319,7 +319,7 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions --format human
+$ gruntas sessions --format human
 stdout:
 Title                                                         Source                               Turns        Cost  Updated
 Parent session                                                opencode · gpt-5.5                 2 turns       $0.01  <ago>  #019b76dc
@@ -333,7 +333,7 @@ Redacted unused session                                       claude            
 — has no price for its model
 exit: 0
 
-$ krowk sessions --all
+$ gruntas sessions --all
 stdout:
 {
   "ok": true,
@@ -480,7 +480,7 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions --limit 1
+$ gruntas sessions --limit 1
 stdout:
 {
   "ok": true,
@@ -507,13 +507,13 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions import --from all
+$ gruntas sessions import --from all
 stdout:
 {
   "ok": true,
   "data": {
     "dry_run": false,
-    "store": "<scratch>/home/.krowk/sessions/krowk.db",
+    "store": "<scratch>/home/.gruntas/sessions/gruntas.db",
     "providers": [
       {
         "provider": "claude",
@@ -591,7 +591,7 @@ stdout:
 }
 exit: 0
 
-@ls {home}/.krowk/sessions
+@ls {home}/.gruntas/sessions
+gruntas.db 600
 import.lock 600
-krowk.db 600
 

@@ -2,25 +2,25 @@
 # run when one is named; and a keyless delete is also by token.
 @registry
 @file a.txt hello
-krowk push a.txt
+gruntas push a.txt
 @let ART .data.artifacts[0].slug
 @let TOKEN .data.artifacts[0].claim_token
-krowk push a.txt
+gruntas push a.txt
 @let ART2 .data.artifacts[0].slug
 @let TOKEN2 .data.artifacts[0].claim_token
-krowk push a.txt
+gruntas push a.txt
 @let ART3 .data.artifacts[0].slug
 @let TOKEN3 .data.artifacts[0].claim_token
-krowk claim {ART} {TOKEN}
-@env KROWK_TOKEN=krowk_sk_test
-krowk claim {ART} {TOKEN}
-krowk claim {ART} {TOKEN}
-krowk claim {ART} krowk_claim_0000000000000000000000000000000000000000000000000000000000000000
-krowk runs start --title claimed
+gruntas claim {ART} {TOKEN}
+@env GRUNTAS_TOKEN=krowk_sk_test
+gruntas claim {ART} {TOKEN}
+gruntas claim {ART} {TOKEN}
+gruntas claim {ART} krowk_claim_0000000000000000000000000000000000000000000000000000000000000000
+gruntas runs start --title claimed
 @let RUN .data.slug
-krowk claim {ART2} {TOKEN2} --run {RUN}
-@tty krowk claim {ART2} {TOKEN2}
-@unenv KROWK_TOKEN
-krowk artifacts delete {ART3} krowk_claim_0000000000000000000000000000000000000000000000000000000000000000
-krowk artifacts delete {ART3} {TOKEN3}
-krowk artifacts delete {ART3} {TOKEN3}
+gruntas claim {ART2} {TOKEN2} --run {RUN}
+@tty gruntas claim {ART2} {TOKEN2}
+@unenv GRUNTAS_TOKEN
+gruntas artifacts delete {ART3} krowk_claim_0000000000000000000000000000000000000000000000000000000000000000
+gruntas artifacts delete {ART3} {TOKEN3}
+gruntas artifacts delete {ART3} {TOKEN3}

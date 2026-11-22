@@ -1,4 +1,4 @@
-$ krowk push f.png f.jpg f.gif f.webp f.svg f.html f.md f.txt f.json f.log f.diff f.patch f.csv f.pdf f.mp4 f.webm f.mov f.zip f.unknownext --quiet
+$ gruntas push f.png f.jpg f.gif f.webp f.svg f.html f.md f.txt f.json f.log f.diff f.patch f.csv f.pdf f.mp4 f.webm f.mov f.zip f.unknownext --quiet
 stdout:
 {
   "artifacts": [

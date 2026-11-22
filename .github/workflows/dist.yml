@@ -1,15 +1,15 @@
 name: Dist
 
 # Every release binary, one runner per target, in parallel, then one job that
-# gathers them into the release layout: per target, the full build of krowk
-# (krowk_…, for people) and the lean one (krowk-lean_…, for CI and containers),
-# each archived with krowk-mcp. Called by release.yml (full profile,
+# gathers them into the release layout: per target, the full build of gruntas
+# (gruntas_…, for people) and the lean one (gruntas-lean_…, for CI and containers),
+# each archived with gruntas-mcp. Called by release.yml (full profile,
 # the bytes that ship) and packaging.yml (fast profile, the same layout
 # minutes sooner). scripts/dist.sh does the work, so `make dist` builds the
 # same thing locally.
 #
 # In parallel because a build is the slow part: a size-tuned LTO build of
-# krowk takes ~3 minutes, mostly on one core, and five of them in a row on one
+# gruntas takes ~3 minutes, mostly on one core, and five of them in a row on one
 # runner took ~17.
 on:
   workflow_call:
@@ -83,7 +83,7 @@ jobs:
 
       - name: Build
         env:
-          KROWK_FAST_BUILD: ${{ inputs.fast && '1' || '' }}
+          GRUNTAS_FAST_BUILD: ${{ inputs.fast && '1' || '' }}
           TARGET: ${{ matrix.target }}
           VERSION: ${{ inputs.version }}
         run: scripts/dist.sh build "$TARGET" "$VERSION"

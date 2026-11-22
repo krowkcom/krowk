@@ -1,18 +1,18 @@
 # workspace is the one key; the local file lives in the checkout, the global
 # one under the config home, and show reports which one won.
 @sh mkdir -p .git
-krowk config show
-krowk config set workspace ws_local
-krowk config show
+gruntas config show
+gruntas config set workspace ws_local
+gruntas config show
 @ls {work}
-@cat {work}/.krowk/config.json
-krowk config set workspace ws_global --global
-krowk config show
+@cat {work}/.gruntas/config.json
+gruntas config set workspace ws_global --global
+gruntas config show
 @ls {home}
-krowk config unset workspace
-krowk config show
-krowk config unset workspace --global
-krowk config show --format human
-krowk config set bogus_key 1
-@env KROWK_WORKSPACE=ws_env
-krowk config show
+gruntas config unset workspace
+gruntas config show
+gruntas config unset workspace --global
+gruntas config show --format human
+gruntas config set bogus_key 1
+@env GRUNTAS_WORKSPACE=ws_env
+gruntas config show

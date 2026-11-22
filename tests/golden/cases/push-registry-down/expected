@@ -1,4 +1,4 @@
-$ krowk push a.txt
+$ gruntas push a.txt
 stderr:
 {
   "ok": false,
@@ -6,7 +6,7 @@ stderr:
     "detail": "<transport error>",
     "endpoint": "http://127.0.0.1:9/v1/artifacts",
     "error": "network_unreachable",
-    "fix": "cannot reach http://127.0.0.1:9/v1 — check the network, or point KROWK_API_URL at a reachable registry",
+    "fix": "cannot reach http://127.0.0.1:9/v1 — check the network, or point GRUNTAS_API_URL at a reachable registry",
     "retryable": false
   }
 }

@@ -44,8 +44,8 @@ jobs:
       - name: Advisories, licences and sources
         run: cargo deny check
 
-  # R-BACK-3: krowk drives `codex app-server`, and the schema of that
-  # protocol is pinned in crates/krowk-harness/schema/codex/ for the Codex
+  # R-BACK-3: gruntas drives `codex app-server`, and the schema of that
+  # protocol is pinned in crates/gruntas-harness/schema/codex/ for the Codex
   # version beside it. This installs exactly that Codex and fails when the
   # pinned copy no longer matches what it generates — a hand edit, or a pin
   # moved without regenerating. Generating needs no login and reads none.
@@ -63,7 +63,7 @@ jobs:
           node-version: 22
 
       - name: Install the pinned Codex
-        run: npm install -g "@openai/codex@$(cat crates/krowk-harness/schema/codex/VERSION)"
+        run: npm install -g "@openai/codex@$(cat crates/gruntas-harness/schema/codex/VERSION)"
 
       - name: The pinned app-server schema is current
         run: make codex-schema

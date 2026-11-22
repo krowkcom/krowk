@@ -1,29 +1,29 @@
-$ krowk config show
+$ gruntas config show
 stdout:
 {
   "ok": true,
   "data": {
     "global_path": "(no home directory)",
-    "repo_path": "<scratch>/work/.krowk/config.json"
+    "repo_path": "<scratch>/work/.gruntas/config.json"
   },
   "summary": "no configuration set — uploads use the stored default key",
   "breadcrumbs": [
     {
       "action": "set the workspace",
-      "cmd": "krowk config set workspace <workspace>",
+      "cmd": "gruntas config set workspace <workspace>",
       "description": "pins which workspace commands in this repository use — --global sets the machine-wide fallback instead"
     }
   ]
 }
 exit: 0
 
-$ krowk config set workspace ws_x --global
+$ gruntas config set workspace ws_x --global
 stderr:
 {
   "ok": false,
   "error": {
     "error": "no_home",
-    "fix": "there is no home directory to keep krowk's files in — set HOME, or KROWK_HOME to an absolute path",
+    "fix": "there is no home directory to keep gruntas's files in — set HOME, or GRUNTAS_HOME to an absolute path",
     "retryable": false
   }
 }
@@ -32,26 +32,26 @@ exit: 1
 @ls {work}
 .git/
 
-$ krowk config show
+$ gruntas config show
 stdout:
 {
   "ok": true,
   "data": {
     "global_path": "(no home directory)",
-    "repo_path": "<scratch>/work/.krowk/config.json"
+    "repo_path": "<scratch>/work/.gruntas/config.json"
   },
   "summary": "no configuration set — uploads use the stored default key",
   "breadcrumbs": [
     {
       "action": "set the workspace",
-      "cmd": "krowk config set workspace <workspace>",
+      "cmd": "gruntas config set workspace <workspace>",
       "description": "pins which workspace commands in this repository use — --global sets the machine-wide fallback instead"
     }
   ]
 }
 exit: 0
 
-$ krowk workspaces
+$ gruntas workspaces
 stdout:
 {
   "ok": true,
@@ -62,7 +62,7 @@ stdout:
   "breadcrumbs": [
     {
       "action": "log in",
-      "cmd": "krowk login",
+      "cmd": "gruntas login",
       "description": "approving it in the browser stores a key, and uploads stop expiring — `--token krowk_sk_...` stores one directly instead"
     }
   ]

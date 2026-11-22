@@ -1,7 +1,7 @@
 # A push inside a checkout records the repository, commit, branch and whether
 # the tree is dirty — what the card shows about where a file came from.
 @registry
-@env KROWK_TOKEN=krowk_sk_test
+@env GRUNTAS_TOKEN=krowk_sk_test
 @env GIT_CONFIG_NOSYSTEM=1
 @env GIT_AUTHOR_NAME=golden
 @env GIT_AUTHOR_EMAIL=golden@example.com
@@ -9,19 +9,19 @@
 @env GIT_COMMITTER_EMAIL=golden@example.com
 @env GIT_AUTHOR_DATE=2026-01-01T00:00:00Z
 @env GIT_COMMITTER_DATE=2026-01-01T00:00:00Z
-@sh git init -q -b feature/golden && git remote add origin git@github.com:krowkcom/golden.git
+@sh git init -q -b feature/golden && git remote add origin git@github.com:gruntas/golden.git
 @file a.txt hello
 @sh git add a.txt && git commit -q -m first
-krowk push a.txt --jq '.data.artifacts[0].metadata'
-krowk push a.txt --jq '.data.run.metadata'
+gruntas push a.txt --jq '.data.artifacts[0].metadata'
+gruntas push a.txt --jq '.data.run.metadata'
 @file b.txt dirty
-krowk push a.txt --jq '.data.artifacts[0].metadata'
+gruntas push a.txt --jq '.data.artifacts[0].metadata'
 @sh git remote set-url origin https://gitlab.example.com/group/sub/proj.git
-krowk push a.txt --jq '.data.artifacts[0].metadata'
-@sh git remote set-url origin https://user:secret@github.com/krowkcom/golden.git
-krowk push a.txt --jq '.data.artifacts[0].metadata'
+gruntas push a.txt --jq '.data.artifacts[0].metadata'
+@sh git remote set-url origin https://user:secret@github.com/gruntas/golden.git
+gruntas push a.txt --jq '.data.artifacts[0].metadata'
 @sh git checkout -q --detach
-krowk push a.txt --jq '.data.artifacts[0].metadata'
-krowk push a.txt --repo o/override --commit abc --agent codex --jq '.data.artifacts[0].metadata'
-@tty krowk push a.txt
-krowk doctor
+gruntas push a.txt --jq '.data.artifacts[0].metadata'
+gruntas push a.txt --repo o/override --commit abc --agent codex --jq '.data.artifacts[0].metadata'
+@tty gruntas push a.txt
+gruntas doctor

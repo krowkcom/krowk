@@ -1,0 +1,30 @@
+# The stand-in for api.krowk.com that the golden cases and the client's own
+# tests run against. Test infrastructure: built by no release, never shipped.
+[package]
+name = "gruntas-devregistry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish = false
+
+[lib]
+name = "gruntas_devregistry"
+
+[[bin]]
+name = "devregistry"
+path = "src/main.rs"
+
+[dependencies]
+# Signs relay tickets as the registry does (relay.md → Tickets), through
+# gruntas-client's `relay_ticket`: crypto lives there alone (R-E2E-2). Test
+# infrastructure, so nothing released gains a crate.
+gruntas-client = { path = "../gruntas-client" }
+jiff = { version = "0.2", default-features = false, features = ["std"] }
+sha2 = "0.11"
+
+[dev-dependencies]
+# The calls `gruntas devices add` and `gruntas sync join` make, so the device
+# tests drive the stand-in the way the CLI does. Test-only.
+gruntas-api = { path = "../gruntas-api" }
+serde_json = "1"

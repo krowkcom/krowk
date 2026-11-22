@@ -1,58 +1,58 @@
-$ krowk push a.txt --jq '.data.artifacts[0].metadata'
+$ gruntas push a.txt --jq '.data.artifacts[0].metadata'
 stdout:
-{"krowk.client":"krowk-cli/0.0.0-golden","krowk.harness":"github-actions","vcs.ref.head.name":"feature/x","vcs.ref.head.revision":"0123456789abcdef0123456789abcdef01234567","vcs.repository.name":"krowkcom/golden"}
+{"krowk.client":"gruntas-cli/0.0.0-golden","krowk.harness":"github-actions","vcs.ref.head.name":"feature/x","vcs.ref.head.revision":"0123456789abcdef0123456789abcdef01234567","vcs.repository.name":"gruntas/golden"}
 exit: 0
 
-$ krowk push a.txt --jq '.data.run.metadata'
+$ gruntas push a.txt --jq '.data.run.metadata'
 stdout:
-{"krowk.change.url":"https://github.com/krowkcom/golden/pull/42","krowk.client":"krowk-cli/0.0.0-golden","krowk.harness":"github-actions","krowk.session":"999","vcs.change.id":"42","vcs.ref.head.name":"feature/x","vcs.ref.head.revision":"0123456789abcdef0123456789abcdef01234567","vcs.repository.name":"krowkcom/golden"}
+{"krowk.change.url":"https://github.com/gruntas/golden/pull/42","krowk.client":"gruntas-cli/0.0.0-golden","krowk.harness":"github-actions","krowk.session":"999","vcs.change.id":"42","vcs.ref.head.name":"feature/x","vcs.ref.head.revision":"0123456789abcdef0123456789abcdef01234567","vcs.repository.name":"gruntas/golden"}
 exit: 0
 
-$ krowk push a.txt --jq '.data.artifacts[0].metadata'
+$ gruntas push a.txt --jq '.data.artifacts[0].metadata'
 stdout:
-{"gen_ai.request.model":"claude-opus-5","gen_ai.system":"anthropic","krowk.client":"krowk-cli/0.0.0-golden","krowk.harness":"claude-code","vcs.ref.head.name":"feature/x","vcs.ref.head.revision":"0123456789abcdef0123456789abcdef01234567","vcs.repository.name":"krowkcom/golden"}
+{"gen_ai.request.model":"claude-opus-5","gen_ai.system":"anthropic","krowk.client":"gruntas-cli/0.0.0-golden","krowk.harness":"claude-code","vcs.ref.head.name":"feature/x","vcs.ref.head.revision":"0123456789abcdef0123456789abcdef01234567","vcs.repository.name":"gruntas/golden"}
 exit: 0
 
-$ krowk push a.txt --jq '.data.artifacts[0].metadata'
+$ gruntas push a.txt --jq '.data.artifacts[0].metadata'
 stdout:
-{"krowk.client":"krowk-cli/0.0.0-golden","krowk.harness":"cursor","vcs.ref.head.name":"feature/x","vcs.ref.head.revision":"0123456789abcdef0123456789abcdef01234567","vcs.repository.name":"krowkcom/golden"}
+{"krowk.client":"gruntas-cli/0.0.0-golden","krowk.harness":"cursor","vcs.ref.head.name":"feature/x","vcs.ref.head.revision":"0123456789abcdef0123456789abcdef01234567","vcs.repository.name":"gruntas/golden"}
 exit: 0
 
-$ krowk push a.txt --jq '.data.artifacts[0].metadata'
+$ gruntas push a.txt --jq '.data.artifacts[0].metadata'
 stdout:
-{"gen_ai.request.model":"gpt-5.5","gen_ai.system":"openai","krowk.client":"krowk-cli/0.0.0-golden","krowk.harness":"my-agent","vcs.ref.head.name":"feature/x","vcs.ref.head.revision":"0123456789abcdef0123456789abcdef01234567","vcs.repository.name":"krowkcom/golden"}
+{"gen_ai.request.model":"gpt-5.5","gen_ai.system":"openai","krowk.client":"gruntas-cli/0.0.0-golden","krowk.harness":"my-agent","vcs.ref.head.name":"feature/x","vcs.ref.head.revision":"0123456789abcdef0123456789abcdef01234567","vcs.repository.name":"gruntas/golden"}
 exit: 0
 
-$ krowk push a.txt --jq '.data.run.metadata'
+$ gruntas push a.txt --jq '.data.run.metadata'
 stdout:
-{"gen_ai.request.model":"gpt-5.5","gen_ai.system":"openai","krowk.change.url":"https://github.com/krowkcom/golden/pull/42","krowk.client":"krowk-cli/0.0.0-golden","krowk.harness":"my-agent","krowk.session":"s-9","vcs.change.id":"42","vcs.ref.head.name":"feature/x","vcs.ref.head.revision":"0123456789abcdef0123456789abcdef01234567","vcs.repository.name":"krowkcom/golden"}
+{"gen_ai.request.model":"gpt-5.5","gen_ai.system":"openai","krowk.change.url":"https://github.com/gruntas/golden/pull/42","krowk.client":"gruntas-cli/0.0.0-golden","krowk.harness":"my-agent","krowk.session":"s-9","vcs.change.id":"42","vcs.ref.head.name":"feature/x","vcs.ref.head.revision":"0123456789abcdef0123456789abcdef01234567","vcs.repository.name":"gruntas/golden"}
 exit: 0
 
-$ krowk doctor
+$ gruntas doctor
 stdout:
 {
   "version": "0.0.0-golden",
   "runtime": "<runtime>",
   "api": "http://<registry>/v1",
-  "registry": "custom (KROWK_API_URL)",
+  "registry": "custom (GRUNTAS_API_URL)",
   "api_status": "reachable (krowk-registry, v1)",
   "authenticated": true,
-  "token_source": "KROWK_TOKEN",
+  "token_source": "GRUNTAS_TOKEN",
   "key": "<key_1> (<ws_1>) local",
-  "workspace": "unknown — not recorded at login; `krowk whoami` asks the registry",
+  "workspace": "unknown — not recorded at login; `gruntas whoami` asks the registry",
   "runs_available": true,
-  "credentials": "<scratch>/home/.krowk/credentials.json",
-  "config": "global <scratch>/home/.krowk/config.json (absent)",
+  "credentials": "<scratch>/home/.gruntas/credentials.json",
+  "config": "global <scratch>/home/.gruntas/config.json (absent)",
   "store": {
     "name": "store",
     "status": "pass",
-    "message": "healthy (<scratch>/home/.krowk/sessions/krowk.db, schema v1, wal)"
+    "message": "healthy (<scratch>/home/.gruntas/sessions/gruntas.db, schema v1, wal)"
   },
   "pricing": {
     "name": "pricing",
     "status": "warn",
     "message": "no price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build",
-    "hint": "run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day"
+    "hint": "run `gruntas pricing refresh`, or `gruntas sessions sync`, which refreshes prices once a day"
   },
   "providers": {
     "name": "providers",
@@ -60,14 +60,14 @@ stdout:
     "message": "this build runs no model"
   },
   "context": {
-    "vcs.repository.name": "krowkcom/golden",
+    "vcs.repository.name": "gruntas/golden",
     "vcs.ref.head.revision": "0123456789abcdef0123456789abcdef01234567",
     "vcs.ref.head.name": "feature/x",
     "krowk.harness": "my-agent",
     "gen_ai.request.model": "gpt-5.5",
     "gen_ai.system": "openai",
     "vcs.change.id": "42",
-    "krowk.change.url": "https://github.com/krowkcom/golden/pull/42",
+    "krowk.change.url": "https://github.com/gruntas/golden/pull/42",
     "krowk.session": "s-9"
   },
   "checks": [
@@ -109,14 +109,14 @@ stdout:
     {
       "name": "store",
       "status": "pass",
-      "message": "healthy (<scratch>/home/.krowk/sessions/krowk.db, schema v1, wal)"
+      "message": "healthy (<scratch>/home/.gruntas/sessions/gruntas.db, schema v1, wal)"
     },
     {
       "name": "pricing",
       "status": "warn",
       "message": "no price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build",
-      "hint": "run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day",
-      "fix": "run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day"
+      "hint": "run `gruntas pricing refresh`, or `gruntas sessions sync`, which refreshes prices once a day",
+      "fix": "run `gruntas pricing refresh`, or `gruntas sessions sync`, which refreshes prices once a day"
     }
   ]
 }

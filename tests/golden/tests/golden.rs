@@ -1,7 +1,7 @@
-//! Black-box cases for any krowk binary: what it printed, how it exited, and
+//! Black-box cases for any gruntas binary: what it printed, how it exited, and
 //! what it left on disk.
 //!
-//! The binary under test is `$KROWK_BIN`, defaulting to target/release/krowk;
+//! The binary under test is `$GRUNTAS_BIN`, defaulting to target/release/gruntas;
 //! `make golden` passes the one it built, on `$GOLDEN_PROFILE`.
 //! Each case's transcript is held byte for byte:
 //!
@@ -24,7 +24,7 @@
 //! command per line:
 //!
 //!     # a comment
-//!     @registry                 start the stand-in registry; KROWK_API_URL points at it
+//!     @registry                 start the stand-in registry; GRUNTAS_API_URL points at it
 //!     @fixture name             copy fixtures/name/{home,work} in as above, then run its
 //!                               setup.sh (if any) in work/ with $FIXTURE naming the directory
 //!     @env KEY=VALUE            set for every later command ({home} {work} {registry} expand)
@@ -34,11 +34,11 @@
 //!     @cat path                 print a file into the transcript ({home} {work} expand)
 //!     @ls path                  print a directory tree into the transcript
 //!     @sh command               run /bin/sh -c in work/ for setup; not recorded ({case} expands too)
-//!     krowk args...             run the binary; shell-style quoting
-//!     krowk-mcp args...         run $KROWK_MCP_BIN, default target/release/krowk-mcp
+//!     gruntas args...           run the binary; shell-style quoting
+//!     gruntas-mcp args...       run $GRUNTAS_MCP_BIN, default target/release/gruntas-mcp
 //!     @let NAME .path[0].to     capture a value from the previous command's stdout (JSON,
 //!                               before masking); {NAME} expands in every later line
-//!     @tty krowk args...        run with stdout and stderr on one pseudo-terminal, to see
+//!     @tty gruntas args...      run with stdout and stderr on one pseudo-terminal, to see
 //!                               what a person sees; ESC and CR print as \e and \r.
 //!                               stdin stays /dev/null, so a path that asks a question —
 //!                               the rebuild confirmation, the sessions picker — takes its
@@ -47,11 +47,11 @@
 //!                               outside this gate and checked by hand.
 //!
 //! Every command runs with an empty environment apart from PATH, HOME, TMPDIR,
-//! TZ=UTC, KROWK_NO_UPDATE_CHECK and KROWK_TEST_NOW_MS (the store's clock,
+//! TZ=UTC, GRUNTAS_NO_UPDATE_CHECK and GRUNTAS_TEST_NOW_MS (the store's clock,
 //! from 2026-01-01, a minute later for each command and a millisecond later
-//! for each read within one), with KROWK_API_URL on a port nothing listens on
+//! for each read within one), with GRUNTAS_API_URL on a port nothing listens on
 //! and every proxy variable pointing there too, so nothing on the machine — a
-//! key, a krowk.db, a harness transcript — leaks in, and no case reaches the
+//! key, a gruntas.db, a harness transcript — leaks in, and no case reaches the
 //! network (models.dev, GitHub) by accident.
 //!
 //! What is random or clock-bound is masked before comparing: slugs, tokens,
@@ -95,12 +95,12 @@ fn bin_from(var: &str, default: &str) -> PathBuf {
 
 #[test]
 fn golden() {
-    let krowk = bin_from("KROWK_BIN", "target/release/krowk");
-    let mcp = std::env::var_os("KROWK_MCP_BIN").map(PathBuf::from).unwrap_or_else(|| workspace_path("target/release/krowk-mcp"));
+    let gruntas = bin_from("GRUNTAS_BIN", "target/release/gruntas");
+    let mcp = std::env::var_os("GRUNTAS_MCP_BIN").map(PathBuf::from).unwrap_or_else(|| workspace_path("target/release/gruntas-mcp"));
     let mcp = if mcp.is_relative() { workspace_path(&mcp.to_string_lossy()) } else { mcp };
     // The version is compared like any other output, so a binary stamped with
     // anything else fails most cases with diffs that never mention why.
-    for bin in [&krowk, &mcp] {
+    for bin in [&gruntas, &mcp] {
         let stamp = Command::new(bin).arg("--version").env_clear().output().unwrap().stdout;
         assert_eq!(
             String::from_utf8_lossy(&stamp).trim(),
@@ -109,7 +109,7 @@ fn golden() {
             bin.display()
         );
     }
-    let registry = bin_from("KROWK_REGISTRY_BIN", "bin/devregistry");
+    let registry = bin_from("GRUNTAS_REGISTRY_BIN", "bin/devregistry");
     let update = std::env::var_os("GOLDEN_UPDATE").is_some();
     let only = std::env::var("GOLDEN_CASE").unwrap_or_default();
 
@@ -124,7 +124,7 @@ fn golden() {
     for case in cases.iter().filter(|c| c.to_string_lossy().contains(&only)) {
         ran += 1;
         let name = case.file_name().unwrap().to_string_lossy().into_owned();
-        let got = run_case(case, ran, &Bins { krowk: &krowk, mcp: &mcp, registry: &registry });
+        let got = run_case(case, ran, &Bins { gruntas: &gruntas, mcp: &mcp, registry: &registry });
         let path = case.join("expected");
         if update {
             fs::write(&path, &got).unwrap();
@@ -141,7 +141,7 @@ fn golden() {
         failed.is_empty(),
         "{} of {ran} case(s) differ against {}:\n\n{}",
         failed.len(),
-        krowk.display(),
+        gruntas.display(),
         failed.join("\n\n")
     );
 }
@@ -184,7 +184,7 @@ fn start_registry(bin: &Path) -> (Registry, String) {
 }
 
 struct Bins<'a> {
-    krowk: &'a Path,
+    gruntas: &'a Path,
     mcp: &'a Path,
     registry: &'a Path,
 }
@@ -193,7 +193,7 @@ fn run_case(case: &Path, n: usize, bins: &Bins) -> String {
     // Under /tmp rather than $TMPDIR, and with no dash in the name: Cursor
     // spells a project path with `/` as `-` and decodes it back, so a dash
     // anywhere in the scratch path would make a fixture decode to nowhere.
-    let scratch = PathBuf::from("/tmp").join(format!("krowkgolden{}x{n}", std::process::id()));
+    let scratch = PathBuf::from("/tmp").join(format!("gruntasgolden{}x{n}", std::process::id()));
     let _ = fs::remove_dir_all(&scratch);
     // Canonical, so a path the binary resolves (macOS puts temp under a
     // /var -> /private/var link) still masks.
@@ -215,13 +215,13 @@ fn run_case(case: &Path, n: usize, bins: &Bins) -> String {
         ("PATH".into(), "/usr/bin:/bin".into()),
         ("HOME".into(), home.display().to_string()),
         ("TMPDIR".into(), tmp.display().to_string()),
-        ("KROWK_NO_UPDATE_CHECK".into(), "1".into()),
-        ("KROWK_API_URL".into(), "http://127.0.0.1:9/v1".into()),
+        ("GRUNTAS_NO_UPDATE_CHECK".into(), "1".into()),
+        ("GRUNTAS_API_URL".into(), "http://127.0.0.1:9/v1".into()),
         ("HTTPS_PROXY".into(), "http://127.0.0.1:9".into()),
         ("HTTP_PROXY".into(), "http://127.0.0.1:9".into()),
         ("NO_PROXY".into(), "127.0.0.1,localhost".into()),
         // The store's clock: see `step_clock`.
-        ("KROWK_TEST_NOW_MS".into(), STORE_EPOCH_MS.to_string()),
+        ("GRUNTAS_TEST_NOW_MS".into(), STORE_EPOCH_MS.to_string()),
         // "expires tomorrow" counts midnights in the local zone.
         ("TZ".into(), "UTC".into()),
     ];
@@ -246,7 +246,7 @@ fn run_case(case: &Path, n: usize, bins: &Bins) -> String {
         match word {
             "@registry" => {
                 let started = start_registry(bins.registry);
-                set(&mut env, "KROWK_API_URL", &format!("{}/v1", started.1));
+                set(&mut env, "GRUNTAS_API_URL", &format!("{}/v1", started.1));
                 registry = Some(started);
             }
             "@env" => {
@@ -307,19 +307,19 @@ fn run_case(case: &Path, n: usize, bins: &Bins) -> String {
             }
             "@tty" => {
                 let (word, rest) = rest.split_once(' ').unwrap_or((rest, ""));
-                assert_eq!(word, "krowk", "{}: @tty runs krowk only", case.display());
+                assert_eq!(word, "gruntas", "{}: @tty runs gruntas only", case.display());
                 let args: Vec<String> = shlex::split(rest).expect("unbalanced quotes").iter().map(|a| expand(a)).collect();
                 step_clock(&mut env, &mut commands);
-                let (screen, code) = run_on_tty(bins.krowk, &args, &work, &env, case, line);
+                let (screen, code) = run_on_tty(bins.gruntas, &args, &work, &env, case, line);
                 // What a terminal shows is not JSON to capture; a @let after
                 // this line must fail rather than read the command before it.
                 last_stdout.clear();
                 out.push_str(&format!("$ {line}\ntty:\n{}exit: {code}\n\n", ensure_newline(&visible(&screen))));
             }
-            "krowk" | "krowk-mcp" => {
+            "gruntas" | "gruntas-mcp" => {
                 step_clock(&mut env, &mut commands);
                 let args: Vec<String> = shlex::split(rest).expect("unbalanced quotes").iter().map(|a| expand(a)).collect();
-                let mut child = Command::new(if word == "krowk" { bins.krowk } else { bins.mcp })
+                let mut child = Command::new(if word == "gruntas" { bins.gruntas } else { bins.mcp })
                     .args(&args)
                     .current_dir(&work)
                     .env_clear()
@@ -457,7 +457,7 @@ fn json_path(value: &serde_json::Value, path: &str) -> Option<String> {
 /// earlier than the import did, which is the one thing a real clock never
 /// does. A minute is more reads than any command makes.
 fn step_clock(env: &mut Vec<(String, String)>, commands: &mut i64) {
-    set(env, "KROWK_TEST_NOW_MS", &(STORE_EPOCH_MS + *commands * 60_000).to_string());
+    set(env, "GRUNTAS_TEST_NOW_MS", &(STORE_EPOCH_MS + *commands * 60_000).to_string());
     *commands += 1;
 }
 
@@ -551,7 +551,7 @@ static NUMBERED: LazyLock<Vec<(Regex, &str)>> = LazyLock::new(|| {
 static PLAIN: LazyLock<Vec<(Regex, &str)>> = LazyLock::new(|| {
     [
         (r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})", "<time>"),
-        // Only the dates krowk computes from the clock: a date inside a
+        // Only the dates gruntas computes from the clock: a date inside a
         // transcript is fixture input and stays.
         (r"\bexpires (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}(, \d{4})?\b", "expires <date>"),
         (r"\b\d+ ?(s|m|h|d|w|mo|y|seconds?|minutes?|hours?|days?|weeks?|months?|years?) ago\b", "<ago>"),
@@ -563,7 +563,7 @@ static PLAIN: LazyLock<Vec<(Regex, &str)>> = LazyLock::new(|| {
         // doctor output the port is expected to change.
         (r#""runtime": "[^"]*""#, r#""runtime": "<runtime>""#),
         (r"(?m)^Runtime +\S.*$", "Runtime         <runtime>"),
-        // A transport failure's wording is the HTTP library's, not krowk's:
+        // A transport failure's wording is the HTTP library's, not gruntas's:
         // the error code beside it is the behavior, the detail is not.
         (r#"(Get|Post|Put|Patch|Delete|Head) \\?"http[^"\\]*\\?": [^"\n]*"#, "<transport error>"),
         // How many spinner frames draw is how long the command took.
@@ -578,7 +578,7 @@ static PLAIN: LazyLock<Vec<(Regex, &str)>> = LazyLock::new(|| {
 
 fn normalize(text: &str, scratch: &Path, registry: Option<&str>, bins: &Bins) -> String {
     let mut text = text.replace(&scratch.display().to_string(), "<scratch>");
-    for (bin, name) in [(bins.mcp, "<krowk-mcp>"), (bins.krowk, "<krowk>")] {
+    for (bin, name) in [(bins.mcp, "<gruntas-mcp>"), (bins.gruntas, "<gruntas>")] {
         text = text.replace(&bin.display().to_string(), name);
     }
     if let Some(url) = registry {
@@ -589,7 +589,7 @@ fn normalize(text: &str, scratch: &Path, registry: Option<&str>, bins: &Bins) ->
         text = re.replace_all(&text, *to).into_owned();
     }
     // What a jq library says about a failed expression is its own wording; the
-    // error code and krowk's sentence around it are the behavior. A message
+    // error code and gruntas's sentence around it are the behavior. A message
     // carrying a credential is left alone, so a leak still shows as a diff.
     static JQ: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r#"--jq: ((?:[^"\\]|\\.)*?)(\. The command itself succeeded|")"#).unwrap());

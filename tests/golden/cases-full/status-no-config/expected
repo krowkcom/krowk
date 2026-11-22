@@ -1,4 +1,4 @@
-$ krowk status
+$ gruntas status
 stderr:
 {
   "ok": false,
@@ -13,7 +13,7 @@ stderr:
           "state": "not_installed",
           "ready": false,
           "source": "Claude Code's own login in <scratch>/home/.claude",
-          "fix": "install Claude Code (https://claude.com/claude-code), or name the binary with `krowk connect anthropic --method subscription --binary <path>`",
+          "fix": "install Claude Code (https://claude.com/claude-code), or name the binary with `gruntas connect anthropic --method subscription --binary <path>`",
           "var": null,
           "reason": null
         },
@@ -24,7 +24,7 @@ stderr:
           "state": "not_installed",
           "ready": false,
           "source": "Codex's own login in <scratch>/home/.codex",
-          "fix": "install Codex (https://developers.openai.com/codex), or name the binary with `krowk connect openai --method subscription --binary <path>`",
+          "fix": "install Codex (https://developers.openai.com/codex), or name the binary with `gruntas connect openai --method subscription --binary <path>`",
           "var": null,
           "reason": null
         }
@@ -37,7 +37,7 @@ stderr:
 }
 exit: 3
 
-$ krowk status --json
+$ gruntas status --json
 stderr:
 {
   "ok": false,
@@ -52,7 +52,7 @@ stderr:
           "state": "not_installed",
           "ready": false,
           "source": "Claude Code's own login in <scratch>/home/.claude",
-          "fix": "install Claude Code (https://claude.com/claude-code), or name the binary with `krowk connect anthropic --method subscription --binary <path>`",
+          "fix": "install Claude Code (https://claude.com/claude-code), or name the binary with `gruntas connect anthropic --method subscription --binary <path>`",
           "var": null,
           "reason": null
         },
@@ -63,7 +63,7 @@ stderr:
           "state": "not_installed",
           "ready": false,
           "source": "Codex's own login in <scratch>/home/.codex",
-          "fix": "install Codex (https://developers.openai.com/codex), or name the binary with `krowk connect openai --method subscription --binary <path>`",
+          "fix": "install Codex (https://developers.openai.com/codex), or name the binary with `gruntas connect openai --method subscription --binary <path>`",
           "var": null,
           "reason": null
         }
@@ -76,7 +76,7 @@ stderr:
 }
 exit: 3
 
-$ krowk status --json
+$ gruntas status --json
 stderr:
 {
   "ok": false,
@@ -91,7 +91,7 @@ stderr:
           "state": "not_installed",
           "ready": false,
           "source": "Claude Code's own login in <scratch>/home/.claude",
-          "fix": "install Claude Code (https://claude.com/claude-code), or name the binary with `krowk connect anthropic --method subscription --binary <path>`",
+          "fix": "install Claude Code (https://claude.com/claude-code), or name the binary with `gruntas connect anthropic --method subscription --binary <path>`",
           "var": null,
           "reason": null
         },
@@ -102,7 +102,7 @@ stderr:
           "state": "not_installed",
           "ready": false,
           "source": "Codex's own login in <scratch>/home/.codex",
-          "fix": "install Codex (https://developers.openai.com/codex), or name the binary with `krowk connect openai --method subscription --binary <path>`",
+          "fix": "install Codex (https://developers.openai.com/codex), or name the binary with `gruntas connect openai --method subscription --binary <path>`",
           "var": null,
           "reason": null
         }
@@ -115,17 +115,17 @@ stderr:
 }
 exit: 3
 
-$ krowk status --format human
+$ gruntas status --format human
 stdout:
-claude  Claude subscription   not installed  Claude Code's own login in <scratch>/home/.claude  — install Claude Code (https://claude.com/claude-code), or name the binary with `krowk connect anthropic --method subscription --binary <path>`
-codex   ChatGPT subscription  not installed  Codex's own login in <scratch>/home/.codex  — install Codex (https://developers.openai.com/codex), or name the binary with `krowk connect openai --method subscription --binary <path>`
+claude  Claude subscription   not installed  Claude Code's own login in <scratch>/home/.claude  — install Claude Code (https://claude.com/claude-code), or name the binary with `gruntas connect anthropic --method subscription --binary <path>`
+codex   ChatGPT subscription  not installed  Codex's own login in <scratch>/home/.codex  — install Codex (https://developers.openai.com/codex), or name the binary with `gruntas connect openai --method subscription --binary <path>`
 stderr:
 ✗ None of the 2 instances can run a turn here.
   Each row's fix says what makes it ready.
   Code: none_ready
 exit: 3
 
-$ krowk providers list --format human
+$ gruntas providers list --format human
 stdout:
 claude  Claude subscription   not installed  claude  (Claude Code's own login in <scratch>/home/.claude)
 codex   ChatGPT subscription  not installed  codex  (Codex's own login in <scratch>/home/.codex)

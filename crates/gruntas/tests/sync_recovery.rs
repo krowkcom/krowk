@@ -1,0 +1,289 @@
+//! Setting sync up, getting back in and replacing the kit, end to end on
+//! scratch homes against the stand-in registry (D6; canon,
+//! engineering/devices.md → Recovery, Replacing the kit, Starting over):
+//! `gruntas sync init` with the kit saved to a file, a start-over that keeps
+//! the sessions this device can open, `gruntas machines recovery new` with the
+//! old kit's words, and `gruntas sync recover` on a new machine.
+
+#![cfg(all(feature = "harness", unix))]
+
+use gruntas_client::e2e::{self, DeviceSigner, SessionKey};
+use gruntas_client::keystore::Keystore;
+use gruntas_client::session_record::{self, Signer};
+use serde_json::Value;
+use std::io::Write;
+use std::net::TcpListener;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+
+/// One person's keys (`person_for` reads the part before `#`).
+const LAPTOP: &str = "krowk_sk_kit#laptop";
+const DESKTOP: &str = "krowk_sk_kit#desktop";
+
+fn root(name: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!("gruntas-recovery-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for d in ["laptop", "desktop"] {
+        std::fs::create_dir_all(root.join(d)).unwrap();
+    }
+    root.canonicalize().unwrap()
+}
+
+fn registry() -> (gruntas_devregistry::Running, String) {
+    let r = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), gruntas_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", r.url());
+    (r, api)
+}
+
+/// gruntas with `home` as HOME and nothing else of this machine's, the debug
+/// build's stand-in for the person at the terminal answering `answers` in
+/// turn, and `input` on stdin.
+fn gruntas(home: &Path, api: &str, token: &str, args: &[&str], answers: &str, input: &str) -> Output {
+    gruntas_with(home, api, token, args, answers, input, &[])
+}
+
+/// `gruntas`, with `env` set as well.
+fn gruntas_with(home: &Path, api: &str, token: &str, args: &[&str], answers: &str, input: &str, env: &[(&str, &str)]) -> Output {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
+    c.args(args)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", home)
+        .env("GRUNTAS_NO_UPDATE_CHECK", "1")
+        .env("GRUNTAS_API_URL", api)
+        .env("GRUNTAS_TOKEN", token)
+        .env("GRUNTAS_DEVICE_NAME", home.file_name().unwrap())
+        .env("GRUNTAS_TEST_UNATTENDED_DEVICE_APPROVAL", "1")
+        .env("GRUNTAS_TEST_ANSWERS", answers)
+        .current_dir(home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .envs(env.iter().copied());
+    let mut child = c.spawn().unwrap();
+    child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+    child.wait_with_output().unwrap()
+}
+
+fn ok(out: &Output) -> Value {
+    assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+fn keys(home: &Path) -> Keystore {
+    Keystore::new(&home.join(".gruntas"))
+}
+
+/// `sync init` on `home`, the kit written to `kit` (0600, never stdout).
+fn init(home: &Path, api: &str, token: &str, kit: &Path) -> String {
+    let out = gruntas(home, api, token, &["sync", "init", "--save", kit.to_str().unwrap(), "--json"], "", "");
+    let v = ok(&out);
+    assert_eq!(v["data"]["recovery_kit"], true, "{v}");
+    let words = std::fs::read_to_string(kit).unwrap().trim().to_string();
+    assert_eq!(words.split(' ').count(), 12);
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(std::fs::metadata(kit).unwrap().permissions().mode() & 0o777, 0o600);
+    assert!(!String::from_utf8_lossy(&out.stdout).contains(&words) && !String::from_utf8_lossy(&out.stderr).contains(&words), "the kit is in the file alone");
+    words
+}
+
+/// The registry as `home`'s device: on `token`, the key `sync init` or
+/// `sync recover` bound to it there, signed by its key, as every session
+/// call is.
+fn client_of(home: &Path, api: &str, token: &str) -> gruntas_api::Client {
+    let ks = keys(home);
+    let (device, signing) = (ks.device().unwrap().unwrap(), ks.signing_key().unwrap());
+    gruntas_api::Client::new(api, token).signed_by(DeviceSigner::new(device.id(), signing).shared())
+}
+
+/// A session `home` publishes as its host would: its key sealed under the
+/// user key it holds, the record signed by it.
+fn publish(home: &Path, api: &str, token: &str, id: &str) -> SessionKey {
+    let ks = keys(home);
+    let (device, signing) = (ks.device().unwrap().unwrap(), ks.signing_key().unwrap());
+    let user = ks.user_keys().unwrap().unwrap();
+    let raw = gruntas_harness::daemon::ws::uuid(id);
+    let key = SessionKey::generate();
+    let sealed = e2e::seal_session_key(&key, &raw, &user, user.newest().generation()).unwrap();
+    let signature = session_record::sign(&raw, &sealed, session_record::SEAL_USER, user.newest(), &signing).unwrap();
+    let client = gruntas_api::Client::new(api, token).signed_by(DeviceSigner::new(device.id(), signing).shared());
+    client.put_sync_session(id, &e2e::hex(&sealed), Some((&e2e::hex(&signature), &device.id().to_string())), None, None).unwrap();
+    key
+}
+
+/// The key the session was published with, as `home` opens it now (the
+/// record checked against the list it keeps, the ring opened with the user
+/// keys it holds), and how many key epochs it has had since.
+fn open_ring(home: &Path, api: &str, token: &str, id: &str) -> Result<(SessionKey, u32), String> {
+    let ks = keys(home);
+    let (user, chain) = (ks.user_keys().unwrap().unwrap(), ks.device_list().unwrap().unwrap());
+    let s = client_of(home, api, token).show_sync_session(id).map_err(|e| e.code())?;
+    gruntas_harness::sync::store::open_session_key(&s, id, &user, &chain, Signer::EverHeld).map(|k| (k.at(0).expect("epoch 0").clone(), k.epoch()))
+}
+
+fn open(home: &Path, api: &str, token: &str, id: &str) -> Result<SessionKey, String> {
+    open_ring(home, api, token, id).map(|(k, _)| k)
+}
+
+/// D6 (C1 of #204's review): a start-over from a device that holds the
+/// user key keeps its device key and brings its sessions along — one it
+/// published itself included — sealed again under the new list's
+/// generation 1, and the old keys stay aside until the person drops them.
+#[test]
+fn d6_a_start_over_seals_this_devices_sessions_again_under_the_new_list() {
+    let (_r, api) = registry();
+    let r = root("start-over");
+    let laptop = r.join("laptop");
+    init(&laptop, &api, LAPTOP, &r.join("kit-1"));
+    let device = keys(&laptop).device().unwrap().unwrap().id();
+    let id = "01a0ec7b-6666-7000-8000-000000000061";
+    let key = publish(&laptop, &api, LAPTOP, id);
+    let old_root = keys(&laptop).device_list().unwrap().unwrap().root();
+
+    let out = gruntas(&laptop, &api, LAPTOP, &["sync", "init", "--start-over", "--save", r.join("kit-2").to_str().unwrap(), "--json"], "y", "");
+    let v = ok(&out);
+    assert_eq!((v["data"]["started_over"].clone(), v["data"]["resealed"].clone(), v["data"]["left"].clone()), (true.into(), 1.into(), 0.into()), "{v}");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("come along"), "the prompt says the sessions come along");
+
+    let ks = keys(&laptop);
+    assert_eq!(ks.device().unwrap().unwrap().id(), device, "the device key is kept");
+    assert_ne!(ks.device_list().unwrap().unwrap().root(), old_root, "a new list");
+    assert_eq!(ks.user_keys().unwrap().unwrap().newest().generation(), 1);
+    let (first, epoch) = open_ring(&laptop, &api, LAPTOP, id).unwrap();
+    assert_eq!((first.as_bytes(), epoch), (key.as_bytes(), 1), "the old session opens under the new list, a key epoch on");
+    assert!(laptop.join(".gruntas/before-start-over").is_dir(), "the old keys stay aside");
+
+    // Run again, it goes through what is left: nothing.
+    let again = ok(&gruntas(&laptop, &api, LAPTOP, &["sync", "init", "--start-over", "--json"], "", ""));
+    assert_eq!((again["data"]["resealed"].clone(), again["data"]["left"].clone(), again["data"]["continued"].clone()), (0.into(), 0.into(), true.into()), "{again}");
+    // D6: said, so a person who meant a new start-over knows to discard first.
+    let said = gruntas(&laptop, &api, LAPTOP, &["sync", "init", "--start-over"], "", "");
+    assert!(String::from_utf8_lossy(&said.stdout).contains("a new start-over needs `gruntas machines recovery discard-old` first"), "{}", String::from_utf8_lossy(&said.stdout));
+    // And the aside goes only when the person says so.
+    let dropped = ok(&gruntas(&laptop, &api, LAPTOP, &["sync", "recovery", "discard-old", "--json"], "y", ""));
+    assert_eq!((dropped["data"]["discarded"].clone(), dropped["data"]["left"].clone()), (true.into(), 0.into()), "{dropped}");
+    assert!(!laptop.join(".gruntas/before-start-over").exists());
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// D6: with a kit on the list, `recovery new` takes the old kit's words and
+/// replaces it at once — posted as the old kit, on this machine's own key
+/// — and the key rotates.
+#[test]
+fn d6_recovery_new_with_the_old_kit_replaces_it_at_once() {
+    let (_r, api) = registry();
+    let r = root("kit-new");
+    let laptop = r.join("laptop");
+    let old = init(&laptop, &api, LAPTOP, &r.join("kit-1"));
+    let v = ok(&gruntas(&laptop, &api, LAPTOP, &["sync", "recovery", "new", "--save", r.join("kit-2").to_str().unwrap(), "--json"], "", &format!("{old}\n")));
+    assert_eq!(v["data"]["generation"], 2, "{v}");
+    let new = std::fs::read_to_string(r.join("kit-2")).unwrap();
+    ok(&gruntas(&laptop, &api, LAPTOP, &["sync", "recovery", "check", "--json"], "", &new));
+    let refused = gruntas(&laptop, &api, LAPTOP, &["sync", "recovery", "check", "--json"], "", &format!("{old}\n"));
+    assert!(!refused.status.success() && String::from_utf8_lossy(&refused.stderr).contains("kit_not_on_list"));
+    // The device still syncs, on a key that speaks for it.
+    let status = ok(&gruntas(&laptop, &api, LAPTOP, &["sync", "status", "--json"], "", ""));
+    assert_eq!((status["data"]["generation"].clone(), status["data"]["recovery_kit"].clone()), (2.into(), true.into()), "{status}");
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// D6: a new machine gets back in from the kit's words, piped in: the list
+/// verified from seq 0, every device on it kept or removed by the person,
+/// and only then the key — which opens what the lost machine published.
+#[test]
+fn d6_recover_on_a_new_machine_keeps_or_removes_each_device_and_opens_the_old_sessions() {
+    let (_r, api) = registry();
+    let r = root("recover");
+    let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
+    let words = init(&laptop, &api, LAPTOP, &r.join("kit"));
+    let id = "01a0ec7b-6666-7000-8000-000000000062";
+    let key = publish(&laptop, &api, LAPTOP, id);
+
+    // The laptop is lost: removed in the review.
+    let v = ok(&gruntas(&desktop, &api, DESKTOP, &["sync", "recover", "--json"], "n", &format!("{words}\n")));
+    assert_eq!((v["data"]["removed"].clone(), v["data"]["generation"].clone(), v["data"]["kept"].clone()), (1.into(), 2.into(), serde_json::json!([])), "{v}");
+    let chain = keys(&desktop).device_list().unwrap().unwrap();
+    let names: Vec<_> = chain.devices().iter().map(|d| d.name.clone()).collect();
+    assert!(names.contains(&"desktop".to_string()) && !names.contains(&"laptop".to_string()), "{names:?}");
+    assert_eq!(open(&desktop, &api, DESKTOP, id).unwrap().as_bytes(), key.as_bytes(), "the lost machine's session opens here");
+    // And the removed laptop is refused.
+    let refused = gruntas(&laptop, &api, LAPTOP, &["sync", "status", "--json"], "", "");
+    assert!(!refused.status.success(), "{}", String::from_utf8_lossy(&refused.stdout));
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// D7: `devices remove` takes a device off the list and rotates the key
+/// away from it, so a session sealed afterwards does not open with what
+/// the removed device holds — and the registry refuses it besides.
+#[test]
+fn d7_a_removed_device_cannot_open_a_session_sealed_after_its_removal() {
+    let (_r, api) = registry();
+    let r = root("remove");
+    let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
+    let words = init(&laptop, &api, LAPTOP, &r.join("kit"));
+    let back = ok(&gruntas(&desktop, &api, DESKTOP, &["sync", "recover", "--json"], "y", &format!("{words}\n")));
+    assert_eq!(back["data"]["kept"], serde_json::json!(["laptop"]), "{back}");
+    let held = keys(&desktop).user_keys().unwrap().unwrap();
+    // The laptop takes the desktop's list in, then removes it.
+    ok(&gruntas(&laptop, &api, LAPTOP, &["sync", "status", "--json"], "", ""));
+    let v = ok(&gruntas(&laptop, &api, LAPTOP, &["devices", "remove", "desktop", "--json"], "y", ""));
+    assert_eq!(v["data"]["generation"], 2, "{v}");
+
+    let id = "01a0ec7b-6666-7000-8000-000000000071";
+    let key = publish(&laptop, &api, LAPTOP, id);
+    assert_eq!(open(&laptop, &api, LAPTOP, id).unwrap().as_bytes(), key.as_bytes());
+    let s = client_of(&laptop, &api, LAPTOP).show_sync_session(id).unwrap();
+    let wrapped = e2e::unhex(&s.wrapped_key).unwrap();
+    assert!(e2e::unwrap_session_key(&wrapped, &gruntas_harness::daemon::ws::uuid(id), &held).is_err(), "the desktop's keys do not open it");
+    let refused = gruntas(&desktop, &api, DESKTOP, &["sync", "status", "--json"], "", "");
+    assert!(!refused.status.success(), "and the desktop is off the list: {}", String::from_utf8_lossy(&refused.stdout));
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// D6: a kit skipped at [s] is warned about once, where the person decides
+/// — the summary after it does not say it again.
+#[test]
+fn d6_a_skipped_kit_is_warned_about_once() {
+    let (_r, api) = registry();
+    let r = root("skip");
+    let out = gruntas(&r.join("laptop"), &api, LAPTOP, &["sync", "init"], "s", "");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert_eq!(said.matches("no recovery kit").count(), 1, "{said}");
+    assert!(said.contains("sync is set up"), "{said}");
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// Ticket 168: past the registry's v1_until date, a gruntas that signs v1's
+/// lines (forced, in a test build) is refused. It says the registry's words
+/// whole and once, exits non-zero, and names the code to search for.
+#[test]
+fn a_gruntas_signing_retired_v1_lines_is_told_to_upgrade() {
+    let config = gruntas_devregistry::Config { v1_until: "2000-01-01".into(), v2_release: "0.42.0".into(), ..Default::default() };
+    let registry = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), config).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let r = root("retired");
+    let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
+    let kit = r.join("kit.txt");
+    let init = ["sync", "init", "--save", kit.to_str().unwrap()];
+    let v1 = [("GRUNTAS_TEST_SIGN_V1", "1")];
+
+    let out = gruntas_with(&laptop, &api, LAPTOP, &[&init[..], &["--json"]].concat(), "", "", &v1);
+    // The envelope follows what init said of the kit before it was refused.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let err: Value = stderr.find("{\n").and_then(|at| serde_json::from_str(&stderr[at..]).ok()).unwrap_or_else(|| panic!("{stderr}"));
+    assert!(!out.status.success());
+    let said = "this gruntas is older than 0.42.0 and signs registry requests with the retired v1 lines — run `gruntas upgrade`";
+    assert_eq!((err["error"]["error"].as_str(), err["error"]["fix"].as_str()), (Some("signature_version_retired"), Some(said)), "{err}");
+
+    let out = gruntas_with(&desktop, &api, DESKTOP, &[&init[..], &["--format", "human"]].concat(), "", "", &v1);
+    let human = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && human.contains("This gruntas is older than 0.42.0 and signs registry requests with the retired v1 lines.") && human.contains("Try: gruntas upgrade"), "{human}");
+    assert_eq!((human.matches("0.42.0").count(), human.matches("gruntas upgrade").count()), (1, 1), "{human}");
+    assert!(human.contains("Code: signature_version_retired"), "{human}");
+
+    // Unforced, the same machine signs v2 and is served.
+    let _ = std::fs::remove_file(&kit);
+    ok(&gruntas(&laptop, &api, LAPTOP, &[&init[..], &["--json"]].concat(), "", ""));
+    let _ = std::fs::remove_dir_all(&r);
+}

@@ -1,0 +1,1441 @@
+//! The host daemon's WebSocket transport and the no-lag rules, against the
+//! fake `claude` typing at a known rate (R-PROTO-1, R-LAG-1, 2, 3, 4, 5, 9,
+//! 10). A test binary of its own, its tests one at a time:
+//! they measure time, and a daemon under another test's load would measure
+//! that instead. The client is tungstenite's, not the daemon's code, so a
+//! framing mistake cannot pass on both ends.
+
+#![cfg(unix)]
+
+#[path = "common/fake.rs"]
+mod fake;
+#[path = "common/scratch.rs"]
+mod scratch;
+
+use futures_util::{SinkExt, StreamExt};
+use gruntas_harness::daemon::outbox::Caps;
+use gruntas_harness::daemon::ws::{self, Envelope};
+use gruntas_harness::daemon::{self, client::Client, server};
+use gruntas_harness::host::HostConfig;
+use gruntas_harness::instances::{InstancesConfig, Registry};
+use gruntas_harness::log;
+use gruntas_harness::protocol::{ClientFrame, Command, Delta, LiveEvent, ModelRef, PermissionMode, ServerFrame, StreamLine, PROTOCOL_VERSION};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio_tungstenite::tungstenite::Message;
+
+static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+/// How long a configuration read takes, and the instances it reads.
+type Read = (Duration, Option<InstancesConfig>);
+
+struct Home {
+    root: PathBuf,
+    /// The instances a configuration read finds: the fake `claude`, as
+    /// `claude`, under `root/claude`.
+    instances: InstancesConfig,
+    /// The daemon's thread's worst lateness, in µs, since last zeroed.
+    late: Arc<AtomicU64>,
+    /// How the next configuration reads go, one each, first first: how long
+    /// each takes, and the instances it reads, when others. Reads past
+    /// these are at once, of `instances`.
+    reads: Arc<Mutex<std::collections::VecDeque<Read>>>,
+    /// Configuration reads begun.
+    begun: Arc<AtomicU64>,
+}
+
+impl Home {
+    /// A home whose model is the fake `claude` playing `scenario` (a plain
+    /// `ok` a turn without one).
+    fn new(name: &str, scenario: Option<&str>) -> Home {
+        Home::on(name, "claude", scenario)
+    }
+
+    /// The same, the fake's account under `root/<dir>`, logging to `root/<dir>.log`.
+    fn on(name: &str, dir: &str, scenario: Option<&str>) -> Home {
+        let root = Home::root(name);
+        let instances = Home::claude(&root, dir, scenario);
+        Home { root, instances, late: Arc::default(), reads: Arc::default(), begun: Arc::default() }
+    }
+
+    fn root(name: &str) -> PathBuf {
+        let root = scratch::root(&format!("ws-{name}"));
+        for d in ["home", "run", "repo/.git"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        root
+    }
+
+    /// The fake under `root/<dir>` as the one instance, `claude`.
+    fn claude(root: &Path, dir: &str, scenario: Option<&str>) -> InstancesConfig {
+        InstancesConfig { instances: [("claude".to_string(), fake::claude(root, dir, scenario))].into_iter().collect(), ..Default::default() }
+    }
+
+    fn env(&self) -> impl Fn(&str) -> String + Clone + Send + 'static {
+        let root = self.root.clone();
+        move |k| match k {
+            "HOME" => root.join("home").display().to_string(),
+            "XDG_RUNTIME_DIR" => root.join("run").display().to_string(),
+            _ => String::new(),
+        }
+    }
+
+    fn socket(&self) -> PathBuf {
+        daemon::socket(&self.env()).unwrap()
+    }
+
+    fn repo(&self) -> PathBuf {
+        self.root.join("repo")
+    }
+
+    /// Starts the daemon, with its WebSocket on a port of its choosing, on
+    /// a thread of its own.
+    fn serve(&self, heartbeat: Duration, caps: Caps) -> std::thread::JoinHandle<Result<(), String>> {
+        let (env, socket) = (self.env(), self.socket());
+        let credentials = self.root.join("home/.gruntas/credentials.json");
+        let late = self.late.clone();
+        let (reads, begun, instances) = (self.reads.clone(), self.begun.clone(), self.instances.clone());
+        let t = std::thread::spawn(move || {
+            let factory: server::Factory = Box::new(move |cwd: &Path, answers: bool| {
+                let (delay, read) = reads.lock().unwrap().pop_front().unwrap_or_default();
+                begun.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(delay);
+                let instances = read.unwrap_or_else(|| instances.clone());
+                // A directory named `slow` takes a second to read, as one
+                // on a slow disk would: a turn there is working, not yet
+                // running, for that long.
+                if cwd.ends_with("slow") {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+                // One named `stuck` takes longer than anyone waits: a dead
+                // mount.
+                if cwd.ends_with("stuck") {
+                    std::thread::sleep(Duration::from_secs(8));
+                }
+                Ok(HostConfig {
+                    sessions_dir: log::sessions_dir(&env).unwrap(),
+                    cwd: cwd.to_path_buf(),
+                    registry: Registry::resolve(&instances, &env),
+                    gruntas_version: "test".into(),
+                    pricer: Arc::new(|_, _, _| None),
+                    catalog: Arc::new(|_, _| None),
+                    credentials: credentials.clone(),
+                    trust: gruntas_harness::trust::allow_all(),
+                    publisher: None,
+                    permissions: gruntas_harness::permissions::Config { approvals: answers, trusted: Some(Arc::new(|_: &Path| true)), ..Default::default() },
+                    agents: gruntas_harness::agents::AgentsConfig::none(),
+                    session: Default::default(),
+                })
+            });
+            let opts = server::Options { socket, idle: Some(Duration::from_millis(300)), gruntas_version: "test".into(), websocket: Some("127.0.0.1:0".parse().unwrap()), heartbeat, caps, lateness: Some(late), ..Default::default() };
+            server::run(opts, factory)
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while std::os::unix::net::UnixStream::connect(self.socket()).is_err() {
+            assert!(Instant::now() < deadline, "the daemon never listened");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        t
+    }
+
+    async fn client(&self) -> Client {
+        match Client::connect(&self.socket(), &self.repo(), "test", false).await {
+            Ok(c) => c,
+            Err(_) => panic!("no daemon answered"),
+        }
+    }
+
+    /// The WebSocket's address, from `status`, and its token, from beside
+    /// the socket.
+    async fn websocket(&self) -> (String, String) {
+        let addr = self.client().await.status().await.unwrap().websocket.expect("the daemon listens on a WebSocket");
+        let token = std::fs::read_to_string(self.socket().parent().unwrap().join(ws::TOKEN)).unwrap();
+        (addr, token)
+    }
+
+    /// The worst the daemon's thread has been late since the last call, and
+    /// zeroed for the next.
+    fn lateness(&self) -> Duration {
+        Duration::from_micros(self.late.swap(0, Ordering::Relaxed))
+    }
+
+    fn prompt(&self, text: &str, mode: PermissionMode) -> Command {
+        let model = ModelRef { instance: "claude".into(), model: "sonnet".into() };
+        Command::Prompt { session_id: None, text: text.into(), images: Vec::new(), model: Some(model), permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None }
+    }
+}
+
+impl Drop for Home {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+fn rt() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+}
+
+/// `n` distinct words, so a word twice or missing shows: what the fake's
+/// `@type n … w` types.
+fn words(n: usize) -> String {
+    (0..n).map(|i| format!("w{i} ")).collect()
+}
+
+/// A turn typing `words(n)`, `per` words every `pause` seconds: on average
+/// a word every `pause / per`. Several at a time where a word each would be
+/// faster than a `sleep` wakes; a batch is 16 ms of the daemon's time, so a
+/// burst inside one is the same to it as the words spread over it.
+fn typing(n: usize, pause: f64, per: usize) -> String {
+    format!("@type {n} {pause} w {per}\n{}", fake::result(&words(n)))
+}
+
+/// `typing(n, pause, 1)`, the stream then held open `hold` seconds after
+/// its last word before it ends and the whole message comes.
+fn held_typing(n: usize, pause: f64, hold: f64) -> String {
+    let event = |e: serde_json::Value| serde_json::json!({"type": "stream_event", "event": e, "session_id": "{{SESSION}}", "parent_tool_use_id": null}).to_string();
+    let mut out = vec![
+        event(serde_json::json!({"type": "message_start", "message": {"model": "{{MODEL}}", "id": "msg_held", "type": "message", "role": "assistant", "content": [], "usage": {"input_tokens": 3, "output_tokens": 1}}})),
+        event(serde_json::json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})),
+    ];
+    for i in 0..n {
+        out.push(event(serde_json::json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": format!("w{i} ")}})));
+        out.push(format!("@sleep {pause}"));
+    }
+    out.push(format!("@sleep {hold}"));
+    out.push(event(serde_json::json!({"type": "content_block_stop", "index": 0})));
+    out.push(event(serde_json::json!({"type": "message_stop"})));
+    // The closing message is the one streamed, as Claude Code sends it.
+    out.push(fake::answer(&words(n)).replacen("msg_fake", "msg_held", 1));
+    out.join("\n")
+}
+
+/// A Bash call the model makes and runs, which takes `seconds`, and then
+/// `answer`.
+fn runs_bash(command: &str, seconds: f64, answer: &str) -> String {
+    let call = serde_json::json!({"type": "assistant", "message": {"id": "msg_bash", "model": "{{MODEL}}", "role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01Bash", "name": "Bash", "input": {"command": command}}]}, "parent_tool_use_id": null, "session_id": "{{SESSION}}"});
+    let result = serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": "toolu_01Bash", "type": "tool_result", "content": [{"type": "text", "text": ""}], "is_error": false}]}, "parent_tool_use_id": null, "session_id": "{{SESSION}}"});
+    format!("{call}\n@sleep {seconds}\n{result}\n{answer}")
+}
+
+/// `section` for every turn, of every process: each prompt answered alike,
+/// however many turns came before it and whether the session was resumed.
+fn every_turn(section: &str) -> String {
+    format!("@when \"role\":\"user\"\n{section}")
+}
+
+type Wire = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// A WebSocket client of the daemon, the relay's side of the contract.
+struct Ws {
+    wire: Wire,
+    batches: u64,
+    /// Acknowledges every batch as it arrives; off, the daemon's window
+    /// fills.
+    acks: bool,
+}
+
+enum Got {
+    Batch(Envelope, Vec<ServerFrame>),
+    Ping,
+    Pong,
+}
+
+impl Ws {
+    async fn connect(addr: &str, token: Option<&str>, cwd: &Path) -> (Ws, ServerFrame) {
+        // No Nagle: an ack or a ping held back for the last one's ACK would
+        // time the client's TCP, not the daemon.
+        let (wire, _) = tokio_tungstenite::connect_async_with_config(format!("ws://{addr}"), None, true).await.unwrap();
+        let mut ws = Ws { wire, batches: 0, acks: true };
+        ws.send(&ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: cwd.display().to_string(), gruntas_version: "test".into(), answers_approvals: false, token: token.map(String::from), background: false }).await;
+        loop {
+            if let Got::Batch(_, mut frames) = ws.next().await.expect("the daemon answers the hello") {
+                return (ws, frames.remove(0));
+            }
+        }
+    }
+
+    async fn send(&mut self, f: &ClientFrame) {
+        let e = Envelope { kind: ws::KIND_FRAME, flags: 0, enc: ws::ENC_NONE, session: [0; 16], seq: 0, payload: serde_json::to_vec(f).unwrap() };
+        self.wire.send(Message::Binary(e.encode().into())).await.unwrap();
+    }
+
+    async fn ack(&mut self) {
+        let e = Envelope { kind: ws::KIND_ACK, flags: 0, enc: ws::ENC_NONE, session: [0; 16], seq: self.batches, payload: Vec::new() };
+        self.wire.send(Message::Binary(e.encode().into())).await.unwrap();
+    }
+
+    /// The next message; none once closed.
+    async fn next(&mut self) -> Option<Got> {
+        loop {
+            match self.wire.next().await? {
+                Ok(Message::Binary(b)) => {
+                    let e = Envelope::decode(&b).unwrap();
+                    assert_eq!(e.kind, ws::KIND_BATCH);
+                    let plain = e.plain(64 << 20).unwrap();
+                    let frames = plain.split(|b| *b == b'\n').filter(|l| !l.is_empty()).map(|l| serde_json::from_slice::<ServerFrame>(l).unwrap()).collect();
+                    self.batches = self.batches.wrapping_add(1);
+                    if self.acks {
+                        self.ack().await;
+                    }
+                    return Some(Got::Batch(e, frames));
+                }
+                Ok(Message::Ping(_)) => return Some(Got::Ping),
+                Ok(Message::Pong(_)) => return Some(Got::Pong),
+                Ok(Message::Close(_)) | Err(_) => return None,
+                Ok(_) => {}
+            }
+        }
+    }
+}
+
+/// The assistant's text a logged item carries whole.
+fn completed_text(f: &ServerFrame) -> Option<&str> {
+    use gruntas_harness::protocol::{Item, LogBody, LogEvent};
+    match f {
+        ServerFrame::Line { line: StreamLine::Log(LogEvent { body: LogBody::ItemCompleted { item: Item::AssistantText { text }, .. }, .. }), .. } => Some(text),
+        _ => None,
+    }
+}
+
+fn delta_text(f: &ServerFrame) -> Option<(&str, &str)> {
+    match f {
+        ServerFrame::Line { line: StreamLine::Live(LiveEvent::ItemDelta { session_id, delta: Delta::Text { text }, .. }), .. } => Some((session_id, text)),
+        _ => None,
+    }
+}
+
+#[test]
+fn r_proto_1_a_websocket_client_runs_a_turn_and_one_without_the_token_is_refused() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let answer = words(40);
+    let home = Home::new("turn", Some(&typing(40, 0.008, 4)));
+    let daemon = home.serve(ws::HEARTBEAT, Caps::default());
+    rt().block_on(async {
+        let (addr, token) = home.websocket().await;
+        let (_, refused) = Ws::connect(&addr, None, &home.repo()).await;
+        assert!(matches!(&refused, ServerFrame::Refused { code, .. } if code == "unauthorized"), "{refused:?}");
+        let (_, refused) = Ws::connect(&addr, Some("not-the-token"), &home.repo()).await;
+        assert!(matches!(&refused, ServerFrame::Refused { code, .. } if code == "unauthorized"), "{refused:?}");
+
+        let (mut c, welcome) = Ws::connect(&addr, Some(&token), &home.repo()).await;
+        assert!(matches!(welcome, ServerFrame::Welcome { protocol_version: PROTOCOL_VERSION, .. }));
+        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("count", PermissionMode::Default), client_ref: None }).await;
+        let (mut typed, mut seqs, mut compressed) = (String::new(), Vec::new(), 0);
+        let mut result_seen = false;
+        'turn: while let Some(got) = c.next().await {
+            let Got::Batch(e, frames) = got else { continue };
+            compressed += usize::from(e.flags & ws::FLAG_ZSTD != 0);
+            for f in &frames {
+                if let Some((_, t)) = delta_text(f) {
+                    typed.push_str(t);
+                }
+                match f {
+                    ServerFrame::Line { seq: Some(s), cmd: Some(1), line, .. } => {
+                        seqs.push(*s);
+                        result_seen |= matches!(line, StreamLine::Live(LiveEvent::Result(_)));
+                    }
+                    ServerFrame::Done { id: 1, result, error } => {
+                        assert!(error.is_none(), "{error:?}");
+                        assert!(result_seen, "the turn's lines, its result among them, come before its done");
+                        assert_eq!(result.as_ref().unwrap().result, answer);
+                        break 'turn;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(typed, answer);
+        assert!(seqs.windows(2).all(|w| w[0] < w[1]), "numbered in order: {seqs:?}");
+        assert!(compressed > 0, "batches of several frames go compressed");
+    });
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-IMG-1 to R-IMG-4: three images that together are past the 4 MiB message
+/// cap each go as a `putImage` of their own, ahead of the prompt that names
+/// them by hash, and the model call carries all three; a repeat is taken, and
+/// a prompt naming a hash the host holds nothing for is refused with nothing
+/// logged.
+#[test]
+fn r_img_1_three_images_past_the_message_cap_reach_the_model_each_as_its_own_message() {
+    use base64::Engine as _;
+    use gruntas_harness::protocol::ImageInput;
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let home = Home::new("images", Some(&fake::answer("Three dots.")));
+    let daemon = home.serve(ws::HEARTBEAT, Caps::default());
+    let header = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x02\0\0\0";
+    let images: Vec<Vec<u8>> = (1u8..=3).map(|n| [&header[..], &vec![n; 1_800_000][..]].concat()).collect();
+    assert!(images.iter().map(Vec::len).sum::<usize>() > 4 << 20, "past one message's cap");
+    let shas: Vec<String> = images.iter().map(|b| gruntas_harness::images::sha256(b)).collect();
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+    let put = |n: usize| Command::PutImage { session_id: None, sha256: shas[n].clone(), media_type: "image/png".into(), data: b64(&images[n]) };
+    let named = |ns: &[usize]| ns.iter().map(|&n| ImageInput { number: n as u32 + 1, media_type: "image/png".into(), data: String::new(), sha256: Some(shas[n].clone()) }).collect::<Vec<_>>();
+    rt().block_on(async {
+        let (addr, token) = home.websocket().await;
+        let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
+        fn with(cmd: Command, named: Vec<ImageInput>) -> Command {
+            match cmd {
+                Command::Prompt { session_id, text, model, permission_mode, toolset, effort, budget, .. } => Command::Prompt { session_id, text, images: named, model, permission_mode, toolset, effort, rollover: None, budget },
+                _ => unreachable!(),
+            }
+        }
+        let mut id = 0;
+        let mut run = |cmd: Command| {
+            id += 1;
+            (id, cmd)
+        };
+        async fn done(c: &mut Ws, want: u64) -> (Option<gruntas_harness::protocol::RunResult>, Option<gruntas_harness::protocol::ErrorInfo>) {
+            while let Some(got) = c.next().await {
+                if let Got::Batch(_, frames) = got {
+                    for f in frames {
+                        if let ServerFrame::Done { id, result, error } = f
+                            && id == want
+                        {
+                            return (result, error);
+                        }
+                    }
+                }
+            }
+            panic!("the daemon closed before it answered");
+        }
+        // A hash nothing was put under: refused, and no session made.
+        let (i, cmd) = run(with(home.prompt("look at [Image #1]", PermissionMode::Default), named(&[0])));
+        c.send(&ClientFrame::Execute { id: i, command: cmd, client_ref: None }).await;
+        let (result, error) = done(&mut c, i).await;
+        assert!(result.is_none());
+        let e = error.expect("refused");
+        assert_eq!((e.code.as_str(), e.message.as_str()), ("image_missing", "the host has no copy of image #1; send the prompt again"));
+        assert!(gruntas_harness::log::list(&gruntas_harness::log::sessions_dir(&home.env()).unwrap()).unwrap_or_default().is_empty(), "nothing logged");
+        // Each, one message; the first twice.
+        for n in [0, 0, 1, 2] {
+            let (i, cmd) = run(put(n));
+            c.send(&ClientFrame::Execute { id: i, command: cmd, client_ref: None }).await;
+            let (_, error) = done(&mut c, i).await;
+            assert!(error.is_none(), "{error:?}");
+        }
+        let (i, cmd) = run(with(home.prompt("what are [Image #1], [Image #2] and [Image #3]?", PermissionMode::Default), named(&[0, 1, 2])));
+        c.send(&ClientFrame::Execute { id: i, command: cmd, client_ref: None }).await;
+        let (result, error) = done(&mut c, i).await;
+        assert!(error.is_none(), "{error:?}");
+        let session = result.unwrap().session_id;
+        let held: Vec<_> = std::fs::read_dir(gruntas_harness::log::sessions_dir(&home.env()).unwrap().join(&session).join("images")).unwrap().collect();
+        assert_eq!(held.len(), 3, "one file each");
+    });
+    let prompts = fake::prompts(&home.root, "claude");
+    let content = prompts[0]["message"]["content"].as_array().unwrap();
+    let sent = content.iter().filter(|b| b["type"] == "image").count();
+    assert_eq!(sent, 3, "the model call carries all three: {}", content.len());
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-LAG-1: while the model types, nothing under gruntas's home is written —
+/// neither the log nor gruntas.db nor anything else: the deltas go from the
+/// model's stream to the socket through memory alone, and only the
+/// finished item is logged. The stream is held open after its last word
+/// for two seconds after its last word, so the finished item's write cannot
+/// land before a slow client has looked.
+#[test]
+fn r_lag_1_no_write_sits_between_the_provider_stream_and_the_socket() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let answer = words(60);
+    let home = Home::new("nowrite", Some(&held_typing(60, 0.01, 2.0)));
+    let queued = log::queued_syncs();
+    let daemon = home.serve(ws::HEARTBEAT, Caps::default());
+    fn written(dir: &Path, into: &mut Vec<(PathBuf, u64, std::time::SystemTime)>) {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let (p, meta) = (e.path(), e.metadata().unwrap());
+            if meta.is_dir() {
+                written(&p, into);
+            } else {
+                into.push((p, meta.len(), meta.modified().unwrap()));
+            }
+        }
+        into.sort();
+    }
+    let snapshot = || {
+        let mut v = Vec::new();
+        written(&home.root.join("home"), &mut v);
+        v
+    };
+    rt().block_on(async {
+        let (addr, token) = home.websocket().await;
+        let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
+        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("count", PermissionMode::Default), client_ref: None }).await;
+        let (mut typed, mut first, mut deltas) = (String::new(), None, 0);
+        'turn: while let Some(got) = c.next().await {
+            let Got::Batch(_, frames) = got else { continue };
+            for f in &frames {
+                if let Some((_, t)) = delta_text(f) {
+                    typed.push_str(t);
+                    deltas += 1;
+                    let now = snapshot();
+                    match &first {
+                        None => first = Some(now),
+                        Some(then) => assert_eq!(then, &now, "something was written while the model typed ({} words in)", typed.split_whitespace().count()),
+                    }
+                    if typed.len() == answer.len() {
+                        break 'turn;
+                    }
+                }
+            }
+        }
+        assert_eq!(typed, answer);
+        assert!(deltas > 10, "the answer streamed in pieces: {deltas}");
+        let first = first.unwrap();
+        let events = first.iter().filter(|(p, ..)| p.ends_with(log::EVENTS_FILE)).count();
+        assert_eq!(events, 1, "the log was there all along, and did not move");
+        // The stream ends, and the finished item is logged: the one write,
+        // and one the snapshots would have seen.
+        while let Some(got) = c.next().await {
+            let Got::Batch(_, frames) = got else { continue };
+            if frames.iter().any(|f| matches!(f, ServerFrame::Done { id: 1, .. })) {
+                break;
+            }
+        }
+        let grown = |v: &[(PathBuf, u64, std::time::SystemTime)]| v.iter().find(|(p, ..)| p.ends_with(log::EVENTS_FILE)).map(|(_, len, _)| *len);
+        assert!(grown(&snapshot()) > grown(&first), "the finished item is logged once the stream ends");
+    });
+    daemon.join().unwrap().unwrap();
+    // The turn's sync ran before the daemon's runtime went: `serve` waits
+    // for it on its way out.
+    assert!(log::queued_syncs() > queued, "the turn's sync was handed to the blocking pool");
+    assert_eq!(log::pending_syncs(), 0, "a sync was dropped unrun as the daemon exited");
+}
+
+/// The acceptance load (R-LAG-2: one queue per session; R-LAG-3: batches by
+/// time, 16 ms, never by content; R-LAG-9: nothing blocks the thread they
+/// share): three sessions streaming 500 tokens a second and a fourth
+/// flooding, over one WebSocket; no session's stream stalls more than 50 ms
+/// because of another, and the daemon's thread is never late more than
+/// 30 ms. The progress-slot half of R-LAG-2 — a subagent flooding `cost`
+/// frames costs one frame — is `outbox`'s own test.
+///
+/// Here the flood is 5,000 tokens a second, which the unoptimized build
+/// `make check` runs keeps up with; the release build takes the flood
+/// unpaced (`…_release_…`, run by `make bench`), since an unoptimized
+/// build spends tens of milliseconds parsing a burst of hundreds of
+/// kilobytes on the thread.
+///
+/// The model is the fake `claude`, a bash script: it types the paced
+/// sessions 4 words every 8 ms and the flood 40 every 8 ms, the same
+/// average rates, and "unpaced" is as fast as bash prints its lines, a few
+/// thousand a second, which is far below what a provider's burst was. So
+/// the unpaced variant now holds the limits under a gentler flood than it
+/// was written for. And a session's longest gap now counts the fake's own
+/// wakes too: four bash processes forking `sleep`, which a loaded machine
+/// holds up 50–150 ms where the daemon's thread is on time within 15 ms.
+/// The 50 ms limit is kept, so `make bench` needs its quiet machine more
+/// than it did; a failure with the thread's lateness low is the machine.
+///
+/// The two limits, 30 ms and 50 ms, are held in the release build only,
+/// which `make bench` runs on a quiet machine, both variants. The
+/// unoptimized build's thread is busy for real stretches parsing the
+/// flood, and on a loaded machine the scheduler stretches that busy time by
+/// the thread's share of the cores: two busy cores and a debug daemon read
+/// 80–300 ms late, while a thread of the test's that only sleeps and wakes
+/// is on time within 2 ms, so no idle reference tells the machine's part
+/// from the code's. What `make check` holds here is the half that does not
+/// depend on the machine: every session typed whole, the flood too, with
+/// the numbers printed.
+#[test]
+fn r_lag_2_r_lag_3_three_sessions_at_500_tokens_a_second_and_a_flood_stall_none() {
+    load(8_000, Some(Duration::from_micros(200)));
+}
+
+/// The same with the flood unpaced — every word the model has, as fast as
+/// it prints them. Release only: `make bench` runs it.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "release only, as make bench runs it")]
+fn r_lag_2_r_lag_3_release_three_sessions_and_an_unpaced_flood_stall_none() {
+    load(30_000, None);
+}
+
+fn load(flood_words: usize, flood_pace: Option<Duration>) {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let paced = words(1000);
+    let flood = words(flood_words);
+    // The flood typed 40 words at a time, every 40 paces; unpaced, at once.
+    let flooding = match flood_pace {
+        Some(pace) => typing(flood_words, (pace * 40).as_secs_f64(), 40),
+        None => typing(flood_words, 0.0, 1),
+    };
+    let home = Home::new("load", Some(&format!("@when flood\n{flooding}\n---\n{}", typing(1000, 0.008, 4))));
+    let daemon = home.serve(ws::HEARTBEAT, Caps::default());
+    let (arrivals, texts, late) = rt().block_on(async {
+        let (addr, token) = home.websocket().await;
+        let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
+        for (id, what) in [(1, "paced one"), (2, "paced two"), (3, "paced three"), (4, "flood")] {
+            c.send(&ClientFrame::Execute { id, command: home.prompt(what, PermissionMode::Default), client_ref: None }).await;
+        }
+        // For each session: when each batch with its typing arrived, and
+        // what it typed.
+        let mut arrivals: std::collections::HashMap<String, Vec<Instant>> = Default::default();
+        let mut texts: std::collections::HashMap<String, String> = Default::default();
+        let mut done = 0;
+        let mut probed = false;
+        let mut late = Duration::ZERO;
+        while done < 4 {
+            let Some(got) = tokio::time::timeout(Duration::from_secs(30), c.next()).await.expect("the load finished") else { panic!("closed") };
+            let Got::Batch(_, frames) = got else { continue };
+            let at = Instant::now();
+            let mut sessions = std::collections::HashSet::new();
+            for f in &frames {
+                if let Some((s, t)) = delta_text(f) {
+                    texts.entry(s.to_string()).or_default().push_str(t);
+                    sessions.insert(s.to_string());
+                }
+                done += usize::from(matches!(f, ServerFrame::Done { .. }));
+            }
+            for s in sessions {
+                arrivals.entry(s).or_default().push(at);
+            }
+            // Once every session is typing, the daemon's thread is watched
+            // until the last ends: nothing may block it long enough to
+            // stall the others (R-LAG-9). The first host's setup, before
+            // that, is the known exception (harness.md → The host daemon).
+            if !probed && arrivals.len() == 4 {
+                probed = true;
+                home.lateness();
+            }
+            if probed && done == 4 {
+                late = home.lateness();
+            }
+        }
+        (arrivals, texts, late)
+    });
+    // Held to the limits in the release build alone: the doc comment on
+    // the test says why.
+    let timed = !cfg!(debug_assertions);
+    eprintln!("the daemon's thread was late by at most {late:?} while all four streamed");
+    assert!(!timed || late < Duration::from_millis(30), "something blocked the daemon's thread {late:?} while four sessions streamed");
+    let paced_sessions: Vec<&String> = texts.iter().filter(|(_, t)| t.len() == paced.len()).map(|(s, _)| s).collect();
+    assert_eq!(paced_sessions.len(), 3, "each paced session typed its answer whole");
+    assert!(texts.values().any(|t| t == &flood), "and the flood its own");
+    for s in paced_sessions {
+        let at = &arrivals[s];
+        let worst = at.windows(2).map(|w| w[1] - w[0]).max().unwrap();
+        let span = *at.last().unwrap() - at[0];
+        eprintln!("session {s}: {} batches over {span:?}, longest gap {worst:?}", at.len());
+        assert!(!timed || worst < Duration::from_millis(50), "session {s} stalled {worst:?} while the others streamed");
+    }
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-LAG-4 / R-LAG-10 over the WebSocket: a client that stops reading and
+/// acknowledging fills its window, then its outbox, and falls behind to its
+/// cursor — the daemon holds no more than the cap for it however long it
+/// sleeps — and once it reads again it is caught up from that cursor:
+/// every word, once, in order.
+#[test]
+fn r_lag_4_r_lag_10_a_slow_websocket_client_is_caught_up_from_its_cursor_in_bounded_memory() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let answer = words(3000);
+    let home = Home::new("slow", Some(&typing(3000, 0.014, 20)));
+    let cap = 32 * 1024;
+    let daemon = home.serve(ws::HEARTBEAT, Caps { session_bytes: cap, control_bytes: 1 << 20 });
+    rt().block_on(async {
+        let (addr, token) = home.websocket().await;
+        let watcher = home.client().await;
+        let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
+        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("count", PermissionMode::Default), client_ref: None }).await;
+        // Asleep: nothing read, nothing acknowledged, while the turn runs:
+        // 1.2 s at least, and on until it has fallen behind and a while
+        // after. A macOS runner's `sleep`s type the answer several times
+        // slower, and 1.2 s alone did not put the client behind there. The
+        // turn's words are enough to put it behind at any rate.
+        let mut most = 0u64;
+        let start = Instant::now();
+        let deadline = start + Duration::from_secs(30);
+        let mut behind: Option<Instant> = None;
+        while start.elapsed() < Duration::from_millis(1200) || behind.is_none_or(|at| at.elapsed() < Duration::from_millis(300)) {
+            let s = watcher.status().await.unwrap();
+            most = most.max(s.queued_bytes);
+            if s.caught_up > 0 && behind.is_none() {
+                behind = Some(Instant::now());
+            }
+            assert!(Instant::now() < deadline, "a client reading nothing never fell behind; it was held at most {most} bytes");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(most <= (cap + 16 * 1024) as u64, "the daemon held {most} bytes for a client that does not read");
+        // Awake: read everything to the turn's end.
+        let (mut typed, mut completed, mut seqs) = (String::new(), Vec::new(), Vec::new());
+        'turn: while let Some(got) = tokio::time::timeout(Duration::from_secs(20), c.next()).await.expect("the turn ended") {
+            let Got::Batch(_, frames) = got else { continue };
+            for f in &frames {
+                if let Some((_, t)) = delta_text(f) {
+                    typed.push_str(t);
+                }
+                completed.extend(completed_text(f).map(String::from));
+                if let ServerFrame::Line { seq: Some(s), .. } = f {
+                    seqs.push(*s);
+                }
+                if let ServerFrame::Done { id: 1, result, .. } = f {
+                    assert_eq!(result.as_ref().unwrap().result, answer);
+                    break 'turn;
+                }
+            }
+        }
+        // The typing it was caught up on runs on from where it stood — a
+        // turn that ended meanwhile is in the log, whole, and its typing
+        // ephemeral — and the item comes once, complete.
+        assert!(answer.starts_with(&typed), "nothing typed twice, nothing skipped: {} of {} bytes", typed.len(), answer.len());
+        assert_eq!(completed, vec![answer.clone()], "the finished item once");
+        assert!(seqs.windows(2).all(|w| w[0] < w[1]), "in order, nothing twice");
+        assert!(watcher.status().await.unwrap().caught_up > 0, "it fell behind and was caught up from its cursor");
+    });
+    daemon.join().unwrap().unwrap();
+}
+
+/// The same bound on the unix socket, which an interactive client is on: an interactive client suspended
+/// with ^Z while it follows a long turn costs the daemon the cap, not the
+/// turn (R-LAG-4, R-LAG-10).
+#[test]
+fn r_lag_4_r_lag_10_a_suspended_unix_client_is_caught_up_from_its_cursor_in_bounded_memory() {
+    use std::io::{BufRead, Write};
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let answer = words(4000);
+    let home = Home::new("suspended", Some(&typing(4000, 0.01, 20)));
+    let cap = 32 * 1024;
+    let daemon = home.serve(ws::HEARTBEAT, Caps { session_bytes: cap, control_bytes: 1 << 20 });
+    let mut s = std::os::unix::net::UnixStream::connect(home.socket()).unwrap();
+    let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: home.repo().display().to_string(), gruntas_version: "test".into(), answers_approvals: false, token: None, background: false };
+    let exec = ClientFrame::Execute { id: 1, command: home.prompt("count", PermissionMode::Default), client_ref: None };
+    writeln!(s, "{}\n{}", serde_json::to_string(&hello).unwrap(), serde_json::to_string(&exec).unwrap()).unwrap();
+    // Suspended: not a byte read, while a second client watches the
+    // daemon's queues.
+    let most = rt().block_on(async {
+        let watcher = home.client().await;
+        let mut most = 0u64;
+        let until = Instant::now() + Duration::from_millis(1500);
+        while Instant::now() < until {
+            most = most.max(watcher.status().await.unwrap().queued_bytes);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        most
+    });
+    assert!(most <= (cap + 16 * 1024) as u64, "the daemon held {most} bytes for a client that does not read");
+    // Resumed.
+    let (mut typed, mut completed, mut seqs) = (String::new(), Vec::new(), Vec::new());
+    for line in std::io::BufReader::new(&s).lines() {
+        let f: ServerFrame = serde_json::from_str(&line.unwrap()).unwrap();
+        if let Some((_, t)) = delta_text(&f) {
+            typed.push_str(t);
+        }
+        completed.extend(completed_text(&f).map(String::from));
+        if let ServerFrame::Line { seq: Some(n), .. } = f {
+            seqs.push(n);
+        }
+        if let ServerFrame::Done { id: 1, .. } = f {
+            break;
+        }
+    }
+    assert!(answer.starts_with(&typed), "nothing typed twice, nothing skipped: {} of {} bytes", typed.len(), answer.len());
+    assert_eq!(completed, vec![answer.clone()], "the finished item once");
+    assert!(seqs.windows(2).all(|w| w[0] < w[1]), "in order, nothing twice");
+    let caught_up = rt().block_on(async { home.client().await.status().await.unwrap().caught_up });
+    assert!(caught_up > 0, "it fell behind and was caught up from its cursor");
+    drop(s);
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-LAG-9: a tool that blocks for five seconds holds up neither the
+/// daemon's pings nor its answers to the client's: a busy host never looks
+/// like a dead one.
+#[test]
+fn r_lag_9_a_tool_that_blocks_for_five_seconds_does_not_delay_heartbeats() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let home = Home::new("heartbeat", Some(&runs_bash("sleep 5", 5.0, &fake::answer("Slept."))));
+    let beat = Duration::from_millis(100);
+    let daemon = home.serve(beat, Caps::default());
+    rt().block_on(async {
+        let (addr, token) = home.websocket().await;
+        let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
+        let started = Instant::now();
+        home.lateness();
+        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("sleep", PermissionMode::BypassPermissions), client_ref: None }).await;
+        let (mut pings, mut rtts, mut asked) = (Vec::new(), Vec::new(), None::<Instant>);
+        // The thread's lateness a beat at a time, so a failure says when in
+        // the turn the thread was held: at its start (the host's setup, the
+        // tool's spawn) or in the middle of the tool's sleep, where the
+        // daemon has nothing to do and only the machine can hold it.
+        let mut when = Vec::new();
+        let mut ask = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            tokio::select! {
+                _ = ask.tick() => {
+                    when.push((started.elapsed(), home.lateness()));
+                    if asked.is_none() {
+                        c.wire.send(Message::Ping(Vec::new().into())).await.unwrap();
+                        asked = Some(Instant::now());
+                    }
+                }
+                got = c.next() => match got.expect("the connection stayed up") {
+                    Got::Ping => pings.push(Instant::now()),
+                    Got::Pong => rtts.push(asked.take().expect("a pong answers a ping").elapsed()),
+                    Got::Batch(_, frames) => {
+                        if frames.iter().any(|f| matches!(f, ServerFrame::Done { id: 1, .. })) {
+                            break;
+                        }
+                    }
+                },
+            }
+        }
+        let took = started.elapsed();
+        when.push((took, home.lateness()));
+        let late = when.iter().map(|(_, l)| *l).max().unwrap();
+        let held: Vec<String> = when.iter().filter(|(_, l)| *l >= Duration::from_millis(5)).map(|(at, l)| format!("{l:?} by {at:?}")).collect();
+        assert!(took >= Duration::from_secs(5), "the tool ran its five seconds: {took:?}");
+        assert!(late < Duration::from_millis(30), "the daemon's thread was blocked {late:?} during the turn — held {held:?}");
+        let gap = pings.windows(2).map(|w| w[1] - w[0]).max().unwrap();
+        let rtt = rtts.iter().max().unwrap();
+        eprintln!("{} pings, longest gap {gap:?}; {} pongs, slowest {rtt:?}", pings.len(), rtts.len());
+        assert!(pings.len() as u128 >= took.as_millis() / beat.as_millis() - 2, "a ping every beat: {}", pings.len());
+        assert!(gap < beat + Duration::from_millis(50), "pings went on while the tool blocked: {gap:?}");
+        assert!(*rtt < Duration::from_millis(50), "and pings were answered at once: {rtt:?}");
+    });
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-LAG-9: no file I/O on the daemon's thread during a turn. Every log
+/// append, context record and log read is made to take 40 ms, as on a disk
+/// that stalls; the turn, a tool call and an answer, writes a dozen of them.
+/// One of those left on the thread is said by the thread that waited it out
+/// (`stalls_on_daemon_thread`), with where it was made. The lateness probe
+/// (5 ms ticks) shows it as 40 ms or more, but a loaded machine holds the
+/// thread up as long with no write on it (36 ms on Linux under load, 130 ms
+/// on a macOS runner). On Linux the probe takes off what the thread spent
+/// waiting for a CPU (its schedstat), which is the load, so there it is held
+/// to under one stall again; elsewhere only to a backstop of six: the
+/// thread waiting out a turn's writes made elsewhere (a `block_on`), one
+/// after another, which no stall on it would say.
+#[test]
+fn r_lag_9_a_turn_on_a_stalling_disk_writes_nothing_on_the_daemon_thread() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let home = Home::new("slow-disk", Some(&runs_bash("true", 0.0, &typing(200, 0.0, 200))));
+    let daemon = home.serve(Duration::from_millis(100), Caps::default());
+    const STALL: Duration = Duration::from_millis(40);
+    let slow = log::simulate_slow_disk(STALL);
+    rt().block_on(async {
+        let (addr, token) = home.websocket().await;
+        let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
+        let started = Instant::now();
+        home.lateness();
+        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("run true, then talk", PermissionMode::BypassPermissions), client_ref: None }).await;
+        let (mut logged, mut when) = (0, Vec::new());
+        let mut ask = tokio::time::interval(Duration::from_millis(50));
+        loop {
+            tokio::select! {
+                _ = ask.tick() => when.push((started.elapsed(), home.lateness())),
+                got = c.next() => if let Got::Batch(_, frames) = got.expect("the connection stayed up") {
+                    logged += frames.iter().filter(|f| matches!(f, ServerFrame::Line { line: StreamLine::Log(_), .. })).count();
+                    if frames.iter().any(|f| matches!(f, ServerFrame::Done { id: 1, .. })) {
+                        break;
+                    }
+                },
+            }
+        }
+        let took = started.elapsed();
+        when.push((took, home.lateness()));
+        let late = when.iter().map(|(_, l)| *l).max().unwrap();
+        let held: Vec<String> = when.iter().filter(|(_, l)| *l >= Duration::from_millis(5)).map(|(at, l)| format!("{l:?} by {at:?}")).collect();
+        assert!(logged >= 6, "the turn logged its events: {logged}");
+        assert!(took >= STALL * logged as u32, "each write waited out the stalling disk: {took:?} for {logged}");
+        let on_thread = log::stalls_on_daemon_thread();
+        assert!(on_thread.is_empty(), "{} writes stalled the daemon's thread (held {late:?}: {held:?}), the first at:\n{}", on_thread.len(), on_thread[0]);
+        // And a backstop for the thread waiting on writes made elsewhere: six
+        // stalls end to end, past the 130 ms a loaded runner was seen to
+        // hold it with nothing on it, and short of a turn's dozen writes
+        // waited for one after another.
+        assert!(late < STALL * 6, "the daemon's thread was held {late:?} during the turn — waiting on its writes? held {held:?}");
+        // The load taken off: what is left is the thread held by something
+        // on it, or waiting on something off it.
+        if std::path::Path::new("/proc/thread-self/schedstat").exists() {
+            assert!(late < STALL * 3 / 4, "the daemon's thread was held {late:?} during the turn, past any wait for a CPU — a write on it, or waited for? held {held:?}");
+        }
+    });
+    drop(slow);
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-LAG-9: `reload` reads config.json and the credentials off the
+/// daemon's thread. Its read is made to take 40 ms, as on a slow disk; the
+/// thread, watched by the lateness probe, stays on time to within 10 ms,
+/// and the reload is answered once what it read is applied. Three times:
+/// on Linux the probe takes off what the thread spent waiting for a CPU,
+/// and each is held to it; elsewhere a loaded machine holds the thread as
+/// long with nothing on it (`r_lag_9_a_turn_on_a_stalling_disk…`), so one
+/// of the three is, where a read on the thread would hold up all three.
+#[test]
+fn r_lag_9_a_reload_on_a_slow_disk_leaves_the_daemon_thread_on_time() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let home = Home::new("slow-reload", None);
+    let daemon = home.serve(Duration::from_millis(100), Caps::default());
+    const STALL: Duration = Duration::from_millis(40);
+    rt().block_on(async {
+        let (addr, token) = home.websocket().await;
+        let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
+        // A host to reload.
+        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("hi", PermissionMode::Default), client_ref: None }).await;
+        done(&mut c, &[1]).await;
+        let mut lates = Vec::new();
+        for id in 2..5 {
+            home.reads.lock().unwrap().push_back((STALL, None));
+            home.lateness();
+            let started = Instant::now();
+            c.send(&ClientFrame::Reload { id, changed: Some("claude".into()), renamed_from: None, renamed_to: None }).await;
+            let error = done(&mut c, &[id]).await.remove(&id).unwrap();
+            let took = started.elapsed();
+            lates.push(home.lateness());
+            assert!(error.is_none(), "the reload succeeded: {error:?}");
+            assert!(took >= STALL, "answered once its slow read was applied: {took:?}");
+            assert!(home.reads.lock().unwrap().is_empty(), "the reload read the configuration");
+        }
+        let limit = Duration::from_millis(10);
+        if Path::new("/proc/thread-self/schedstat").exists() {
+            assert!(lates.iter().all(|l| *l < limit), "the daemon's thread was held while a reload read: {lates:?}");
+        } else {
+            assert!(lates.iter().any(|l| *l < limit), "the daemon's thread was held while each reload read: {lates:?}");
+        }
+    });
+    daemon.join().unwrap().unwrap();
+}
+
+/// Two reloads one after the other, the second sent while the first is
+/// read, slowly: the second's read, made once the first's is back, is the
+/// one applied, never put back by the first's, and a prompt sent right
+/// after them, before either is answered, runs on it.
+#[test]
+fn r_proto_1_two_reloads_in_quick_succession_apply_the_seconds_registry() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let home = Home::on("two-reloads", "old", None);
+    let new = Home::claude(&home.root, "new", None);
+    let (old_asked, new_asked) = (|| fake::prompts(&home.root, "old").len(), || fake::prompts(&home.root, "new").len());
+    let daemon = home.serve(Duration::from_millis(100), Caps::default());
+    rt().block_on(async {
+        let (addr, token) = home.websocket().await;
+        let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
+        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("hi", PermissionMode::Default), client_ref: None }).await;
+        done(&mut c, &[1]).await;
+        // The first reads what was there before, slowly; the second what
+        // is there now, sooner, but not before the prompt could reach the
+        // model were it not held for it.
+        home.reads.lock().unwrap().extend([(Duration::from_millis(300), Some(home.instances.clone())), (Duration::from_millis(100), Some(new))]);
+        let before = home.begun.load(Ordering::SeqCst);
+        c.send(&ClientFrame::Reload { id: 2, changed: None, renamed_from: None, renamed_to: None }).await;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while home.begun.load(Ordering::SeqCst) == before {
+            assert!(Instant::now() < deadline, "the first reload never read");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        c.send(&ClientFrame::Reload { id: 3, changed: None, renamed_from: None, renamed_to: None }).await;
+        c.send(&ClientFrame::Execute { id: 4, command: home.prompt("again", PermissionMode::Default), client_ref: None }).await;
+        let answers = done(&mut c, &[2, 3, 4]).await;
+        assert!(answers.values().all(Option::is_none), "every one answered without error: {answers:?}");
+        assert_eq!(old_asked(), 1, "the first prompt alone went to the old account");
+        assert_eq!(new_asked(), 1, "the one after the reloads went to the new");
+        // And it stays applied once the slow read is back.
+        c.send(&ClientFrame::Execute { id: 5, command: home.prompt("once more", PermissionMode::Default), client_ref: None }).await;
+        done(&mut c, &[5]).await;
+        assert_eq!(new_asked(), 2, "the slow first read did not replace the second's");
+    });
+    daemon.join().unwrap().unwrap();
+}
+
+/// Reads until each of `ids` is answered by `done`: each one's error.
+async fn done(c: &mut Ws, ids: &[u64]) -> std::collections::HashMap<u64, Option<String>> {
+    let mut got = std::collections::HashMap::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while got.len() < ids.len() {
+        let next = tokio::time::timeout_at(deadline, c.next()).await.unwrap_or_else(|_| panic!("{ids:?} answered in time: only {got:?}")).expect("the connection stayed up");
+        let Got::Batch(_, frames) = next else { continue };
+        for f in frames {
+            if let ServerFrame::Done { id, error, .. } = f
+                && ids.contains(&id)
+            {
+                got.insert(id, error.map(|e| e.message));
+            }
+        }
+    }
+    got
+}
+
+/// R-LAG-9's other half: a peer that has gone — nothing heard, not even a
+/// pong, for three beats — is let go by the daemon, however long TCP would
+/// take to notice.
+#[test]
+fn r_lag_9_a_peer_that_answers_no_heartbeat_is_let_go() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let home = Home::new("dead", None);
+    let daemon = home.serve(Duration::from_millis(100), Caps::default());
+    rt().block_on(async {
+        let (addr, token) = home.websocket().await;
+        let watcher = home.client().await;
+        // Said hello, then never read again: its pongs never go out.
+        let (c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
+        assert_eq!(watcher.status().await.unwrap().clients, 2);
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert_eq!(watcher.status().await.unwrap().clients, 1, "the silent peer was let go");
+        drop(c);
+    });
+    daemon.join().unwrap().unwrap();
+}
+
+/// A client of the unix socket reading and writing raw frames, as an interactive client's
+/// link does, with the `seq`s and cursors the client library hides.
+struct Raw {
+    w: std::os::unix::net::UnixStream,
+    r: std::io::BufReader<std::os::unix::net::UnixStream>,
+    epoch: u64,
+    /// How many frames were read, and the last of them: where a read that
+    /// never came stalled, for a wait that times out only now and then.
+    read: usize,
+    last: String,
+}
+
+impl Raw {
+    fn connect(home: &Home) -> Raw {
+        Raw::connect_in(home, &home.repo())
+    }
+
+    fn connect_in(home: &Home, cwd: &Path) -> Raw {
+        use std::io::Write;
+        let s = std::os::unix::net::UnixStream::connect(home.socket()).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let mut raw = Raw { w: s.try_clone().unwrap(), r: std::io::BufReader::new(s), epoch: 0, read: 0, last: String::new() };
+        let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: cwd.display().to_string(), gruntas_version: "test".into(), answers_approvals: false, token: None, background: false };
+        writeln!(raw.w, "{}", serde_json::to_string(&hello).unwrap()).unwrap();
+        match raw.next() {
+            ServerFrame::Welcome { epoch, .. } => raw.epoch = epoch,
+            f => panic!("{f:?}"),
+        }
+        raw
+    }
+
+    fn send(&mut self, f: &ClientFrame) {
+        use std::io::Write;
+        writeln!(self.w, "{}", serde_json::to_string(f).unwrap()).unwrap();
+    }
+
+    fn next(&mut self) -> ServerFrame {
+        use std::io::BufRead;
+        let mut line = String::new();
+        if let Err(e) = self.r.read_line(&mut line) {
+            panic!("a frame in time: {e}; {} read, the last {}", self.read, self.last);
+        }
+        self.read += 1;
+        self.last = line.chars().take(200).collect();
+        serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line}"))
+    }
+
+    /// Frames up to and including the first `until` matches.
+    fn until(&mut self, until: impl Fn(&ServerFrame) -> bool) -> Vec<ServerFrame> {
+        let mut out = Vec::new();
+        loop {
+            let f = self.next();
+            let end = until(&f);
+            out.push(f);
+            if end {
+                return out;
+            }
+        }
+    }
+}
+
+fn prompt_in(home: &Home, session: Option<&str>, text: &str) -> Command {
+    let Command::Prompt { model, permission_mode, .. } = home.prompt(text, PermissionMode::Default) else { unreachable!() };
+    Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model, permission_mode, toolset: None, effort: None, rollover: None, budget: None }
+}
+
+fn seqs_of(frames: &[ServerFrame]) -> Vec<u64> {
+    frames.iter().filter_map(|f| if let ServerFrame::Line { seq: Some(s), .. } = f { Some(*s) } else { None }).collect()
+}
+
+fn typed_of(frames: &[ServerFrame]) -> String {
+    frames.iter().filter_map(delta_text).map(|(_, t)| t).collect()
+}
+
+/// R-PROTO-1's cursor: a session's `seq`s never start again while the
+/// daemon runs, even once nothing followed it and it was let go; and a
+/// cursor from another daemon run (`epoch`) is caught up from the log, not
+/// trusted to a `seq` this daemon never gave.
+#[test]
+fn r_proto_1_a_seq_is_never_reused_and_a_cursor_from_another_run_is_caught_up_from_the_log() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let answer = words(200);
+    let home = Home::new("seq", Some(&every_turn(&typing(200, 0.008, 4))));
+    let daemon = home.serve(ws::HEARTBEAT, Caps::default());
+    let mut a = Raw::connect(&home);
+    a.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, None, "one"), client_ref: None });
+    let first = a.until(|f| matches!(f, ServerFrame::Done { id: 1, .. }));
+    let session = first.iter().find_map(|f| if let ServerFrame::Line { session, .. } = f { Some(session.clone()) } else { None }).unwrap();
+    let top = *seqs_of(&first).iter().max().unwrap();
+    // Gone, and with it the session's hub: nothing follows or runs it.
+    drop(a);
+    std::thread::sleep(Duration::from_millis(100));
+    let mut b = Raw::connect(&home);
+    b.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, Some(&session), "two"), client_ref: None });
+    // Mid-turn, a client with a cursor from another daemon run attaches:
+    // a `seq` past anything, which this daemon must not trust.
+    let mut c = Raw::connect(&home);
+    let early = b.until(|f| typed_of(std::slice::from_ref(f)).contains("w20 "));
+    c.send(&ClientFrame::Attach { id: 7, session_id: session.clone(), after_event_id: None, after_seq: Some(1_000_000), epoch: Some(c.epoch - 1), client_ref: None });
+    let rest = b.until(|f| matches!(f, ServerFrame::Done { id: 1, .. }));
+    let second: Vec<ServerFrame> = early.into_iter().chain(rest).collect();
+    assert!(seqs_of(&second).iter().all(|s| *s > top), "numbered on from {top}, never again from 1: {:?}", &seqs_of(&second)[..3]);
+    let caught = c.until(|f| matches!(f, ServerFrame::Line { line: StreamLine::Live(LiveEvent::Result(_)), .. }));
+    let typed = typed_of(&caught);
+    assert_eq!(typed, answer, "the typing so far and the rest, from the log's cursor alone");
+    drop((b, c));
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-LAG-4: a client caught up across a turn boundary gets the first turn's
+/// `done` after that turn's lines and before the next turn's — the place
+/// it was queued at, not after all the catching up.
+#[test]
+fn r_lag_4_a_done_held_while_behind_goes_back_at_its_place() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let home = Home::new("held", Some(&every_turn(&typing(1500, 0.006, 20))));
+    let daemon = home.serve(ws::HEARTBEAT, Caps { session_bytes: 16 * 1024, control_bytes: 1 << 20 });
+    // X runs the first turn and stops reading; Y runs the next one in the
+    // same session while X is still behind.
+    let mut x = Raw::connect(&home);
+    x.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, None, "one"), client_ref: None });
+    let head = x.until(|f| matches!(f, ServerFrame::Line { .. }));
+    let ServerFrame::Line { session, .. } = &head[0] else { unreachable!() };
+    let session = session.clone();
+    let watcher = Raw::connect(&home);
+    drop(watcher);
+    let mut y = Raw::connect(&home);
+    // The first turn's command is over while X sleeps: waited for, not
+    // slept on, since a slow runner types slower than the fake's pace. Not
+    // by `status`, whose `running` is false until `turn.started`, after the
+    // session's first line, and again from `turn.completed`, before the
+    // command lets the session go: a prompt sent in either window is
+    // refused as busy, and there is no second turn. An attach's `running`
+    // is the whole command, and `settled` its end.
+    let mut w = Raw::connect(&home);
+    w.send(&ClientFrame::Attach { id: 3, session_id: session.clone(), after_event_id: None, after_seq: None, epoch: None, client_ref: None });
+    let attached = w.until(|f| matches!(f, ServerFrame::Attached { id: 3, .. }));
+    let Some(ServerFrame::Attached { running, error: None, .. }) = attached.last() else { panic!("attached: {:?}", attached.last()) };
+    if *running {
+        w.until(|f| matches!(f, ServerFrame::Settled { session: s } if *s == session));
+    }
+    drop(w);
+    y.send(&ClientFrame::Execute { id: 9, command: prompt_in(&home, Some(&session), "two"), client_ref: None });
+    let taken = y.until(|f| matches!(f, ServerFrame::Done { id: 9, .. }));
+    if let Some(ServerFrame::Done { error: Some(e), .. }) = taken.last() {
+        panic!("the second prompt was taken, not refused: {} ({})", e.code, e.message);
+    }
+    // X reads again: its first turn's end, its done, then the second turn.
+    use gruntas_harness::protocol::{LogBody, LogEvent};
+    let log_kind = |f: &ServerFrame, started: bool| match f {
+        ServerFrame::Line { line: StreamLine::Log(LogEvent { body: LogBody::TurnStarted { .. }, .. }), .. } => started,
+        ServerFrame::Line { line: StreamLine::Log(LogEvent { body: LogBody::TurnCompleted { .. }, .. }), .. } => !started,
+        _ => false,
+    };
+    let mut all = head;
+    let mut ends = 0;
+    while ends < 2 {
+        let f = x.next();
+        ends += usize::from(log_kind(&f, false));
+        all.push(f);
+    }
+    let first_end = all.iter().position(|f| log_kind(f, false)).unwrap();
+    let done = all.iter().position(|f| matches!(f, ServerFrame::Done { id: 1, .. })).expect("the first turn's done came");
+    let second_start = all.iter().enumerate().filter(|(_, f)| log_kind(f, true)).map(|(i, _)| i).nth(1).expect("the second turn started");
+    assert!(first_end < done && done < second_start, "done at {done}, between its turn's end ({first_end}) and the next turn's start ({second_start})");
+    // X itself was caught up, not just someone: a line replayed from the
+    // log has no `seq`.
+    assert!(all.iter().any(|f| matches!(f, ServerFrame::Line { seq: None, .. })), "it did fall behind");
+    drop((x, y));
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-LAG-10: catching up is paged. A client attaching to a session whose
+/// log is many times the cap, and reading slowly, costs the daemon about a
+/// page at a time, not the log — and gets the whole log once, in order,
+/// then `attached`.
+#[test]
+fn r_lag_10_an_attach_to_a_long_log_is_paged_at_the_cap() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let home = Home::new("paged", Some(&every_turn(&typing(300, 0.0, 300))));
+    let cap = 4 * 1024;
+    let daemon = home.serve(ws::HEARTBEAT, Caps { session_bytes: cap, control_bytes: 1 << 20 });
+    // Twelve turns: a log several times the cap.
+    let mut a = Raw::connect(&home);
+    a.send(&ClientFrame::Execute { id: 0, command: prompt_in(&home, None, "turn"), client_ref: None });
+    let first = a.until(|f| matches!(f, ServerFrame::Done { id: 0, .. }));
+    let ServerFrame::Line { session, .. } = &first[0] else { unreachable!() };
+    let session = session.clone();
+    for id in 1..12 {
+        a.send(&ClientFrame::Execute { id, command: prompt_in(&home, Some(&session), "turn"), client_ref: None });
+        a.until(|f| matches!(f, ServerFrame::Done { id: d, .. } if *d == id));
+    }
+    let log = std::fs::read(log::sessions_dir(&home.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap();
+    assert!(log.len() > 8 * cap, "a log of {} bytes", log.len());
+    let events = log.iter().filter(|b| **b == b'\n').count();
+    // A slow reader attaches.
+    let mut c = Raw::connect(&home);
+    c.send(&ClientFrame::Attach { id: 5, session_id: session.clone(), after_event_id: None, after_seq: None, epoch: None, client_ref: None });
+    let watch = std::thread::spawn({
+        let socket = home.socket();
+        let repo = home.repo();
+        move || {
+            rt().block_on(async {
+                let w = match Client::connect(&socket, &repo, "test", false).await { Ok(c) => c, Err(_) => panic!("no daemon") };
+                let mut most = 0;
+                for _ in 0..60 {
+                    most = most.max(w.status().await.unwrap().queued_bytes);
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                most
+            })
+        }
+    });
+    let mut got = Vec::new();
+    loop {
+        std::thread::sleep(Duration::from_millis(2));
+        let f = c.next();
+        if matches!(f, ServerFrame::Attached { id: 5, .. }) {
+            break;
+        }
+        got.push(f);
+    }
+    let most = watch.join().unwrap();
+    let biggest = log.split(|b| *b == b'\n').map(|l| l.len()).max().unwrap();
+    assert!(most as usize <= cap + biggest + 1024, "the daemon held {most} bytes for an attach of a {}-byte log", log.len());
+    let ids: Vec<String> = got.iter().filter_map(|f| if let ServerFrame::Line { line: StreamLine::Log(e), .. } = f { Some(e.id.clone()) } else { None }).collect();
+    assert_eq!(ids.len(), events, "every event once");
+    let mut sorted = ids.clone();
+    sorted.dedup();
+    assert_eq!(sorted.len(), ids.len());
+    drop((a, c));
+    daemon.join().unwrap().unwrap();
+}
+
+/// A page near the end of a long log reads the end, not the log: an attach
+/// from a cursor among the last turn's events, in a log of 50,000 events,
+/// reads under 64 KiB of it; and a last line caught half written is read
+/// again, from there, until it is whole.
+#[test]
+fn a_page_near_the_end_of_a_long_log_reads_from_its_cursor() {
+    use gruntas_harness::protocol::{LogBody, LogEvent, Usage};
+    use std::io::Write;
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let home = Home::new("offset", None);
+    let daemon = home.serve(ws::HEARTBEAT, Caps { session_bytes: 1 << 20, control_bytes: 1 << 20 });
+    let mut a = Raw::connect(&home);
+    a.send(&ClientFrame::Execute { id: 0, command: prompt_in(&home, None, "turn"), client_ref: None });
+    let first = a.until(|f| matches!(f, ServerFrame::Done { id: 0, .. }));
+    let ServerFrame::Line { session, .. } = &first[0] else { unreachable!() };
+    let session = session.clone();
+    let path = log::sessions_dir(&home.env()).unwrap().join(&session).join(log::EVENTS_FILE);
+    // 50,000 events no turn replays, hung from the log's head.
+    let filler = |i: usize, parent: String| LogEvent {
+        id: format!("01900000-0000-7000-8000-{i:012x}"),
+        parent_id: Some(parent),
+        session_id: session.clone(),
+        time_ms: 0,
+        body: LogBody::SubagentResponse { turn_id: "t".into(), response_id: None, model: "m".into(), usage: Usage::default() },
+    };
+    let head = log::read_events(&path).unwrap().last().unwrap().id.clone();
+    let mut parent = head;
+    let mut text = String::new();
+    for i in 0..50_000 {
+        let ev = filler(i, parent);
+        text.push_str(&serde_json::to_string(&ev).unwrap());
+        text.push('\n');
+        parent = ev.id;
+    }
+    std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(text.as_bytes()).unwrap();
+    // A turn on it: the hub notes where each of its events starts.
+    a.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, Some(&session), "turn"), client_ref: None });
+    a.until(|f| matches!(f, ServerFrame::Done { id: 1, .. }));
+    let events = log::read_events(&path).unwrap();
+    assert!(events.len() > 50_000);
+    let started = events.iter().rposition(|e| matches!(e.body, LogBody::TurnStarted { .. })).unwrap();
+    assert!(events.len() - started <= 10, "the cursor is among the last 10 events");
+    let cursor = events[started].id.clone();
+    let ids_of = |got: &[ServerFrame]| -> Vec<String> { got.iter().filter_map(|f| if let ServerFrame::Line { line: StreamLine::Log(e), .. } = f { Some(e.id.clone()) } else { None }).collect() };
+    let attach = |id: u64| {
+        let mut c = Raw::connect(&home);
+        c.send(&ClientFrame::Attach { id, session_id: session.clone(), after_event_id: Some(cursor.clone()), after_seq: None, epoch: None, client_ref: None });
+        c
+    };
+    let attached = |c: &mut Raw, id: u64| {
+        let got = c.until(|f| matches!(f, ServerFrame::Attached { id: i, .. } if *i == id));
+        let Some(ServerFrame::Attached { error: None, .. }) = got.last() else { panic!("attached: {:?}", got.last()) };
+        got
+    };
+    let after: Vec<String> = events[started + 1..].iter().map(|e| e.id.clone()).collect();
+    let before = log::bytes_read();
+    let mut c = attach(5);
+    let got = attached(&mut c, 5);
+    let read = log::bytes_read() - before;
+    assert_eq!(ids_of(&got), after, "the log after the cursor");
+    let size = std::fs::metadata(&path).unwrap().len();
+    assert!(read < 64 * 1024, "the page read {read} bytes of a {size}-byte log");
+    // Its last line half written as the next attach reads, whole a little
+    // later: read again, from the cursor, until it is.
+    let torn = serde_json::to_string(&filler(50_000, events.last().unwrap().id.clone())).unwrap();
+    let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+    f.write_all(&torn.as_bytes()[..torn.len() / 2]).unwrap();
+    let before = log::bytes_read();
+    let mut d = attach(6);
+    // Read twice while torn, then whole.
+    let until = Instant::now() + Duration::from_secs(10);
+    while log::bytes_read() - before <= 2 * read && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    writeln!(f, "{}", &torn[torn.len() / 2..]).unwrap();
+    let got = attached(&mut d, 6);
+    let again = log::bytes_read() - before;
+    let want: Vec<String> = after.iter().cloned().chain([filler(50_000, String::new()).id]).collect();
+    assert_eq!(ids_of(&got), want, "the torn line once whole, after the rest");
+    assert!(again > 2 * read && again < size / 10, "the torn line was read again from the cursor, not the top: {again} bytes");
+    drop((a, c, d));
+    daemon.join().unwrap().unwrap();
+}
+
+/// What a client without the token can learn and cost: nothing about the
+/// daemon (not even its pid or version, whatever protocol it claims), no
+/// decompression, and no connection at all from a browser page.
+#[test]
+fn r_proto_1_nothing_is_said_before_the_token_and_browsers_are_refused() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let home = Home::new("preauth", None);
+    let daemon = home.serve(ws::HEARTBEAT, Caps::default());
+    rt().block_on(async {
+        let (addr, token) = home.websocket().await;
+        // Another protocol, no token: unauthorized, not a version to read.
+        let (wire, _) = tokio_tungstenite::connect_async_with_config(format!("ws://{addr}"), None, true).await.unwrap();
+        let mut ws = Ws { wire, batches: 0, acks: true };
+        ws.send(&ClientFrame::Hello { protocol_version: 999, cwd: "/".into(), gruntas_version: String::new(), answers_approvals: false, token: None, background: false }).await;
+        let Some(Got::Batch(_, f)) = ws.next().await else { panic!("no answer") };
+        assert!(matches!(&f[0], ServerFrame::Refused { code, message, .. } if code == "unauthorized" && !message.contains("pid")), "{:?}", f[0]);
+        // A compressed hello is not decompressed, token or not.
+        let (wire, _) = tokio_tungstenite::connect_async_with_config(format!("ws://{addr}"), None, true).await.unwrap();
+        let mut ws = Ws { wire, batches: 0, acks: true };
+        let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: "/".into(), gruntas_version: String::new(), answers_approvals: false, token: Some(token.clone()), background: false };
+        let packed = ws::batch("", 0, serde_json::to_string(&hello).unwrap().repeat(20).as_bytes());
+        assert_eq!(packed.flags & ws::FLAG_ZSTD, ws::FLAG_ZSTD);
+        let e = Envelope { kind: ws::KIND_FRAME, ..packed };
+        ws.wire.send(Message::Binary(e.encode().into())).await.unwrap();
+        let Some(Got::Batch(_, f)) = ws.next().await else { panic!("no answer") };
+        assert!(matches!(&f[0], ServerFrame::Refused { code, .. } if code == "unauthorized"), "{:?}", f[0]);
+        // A browser's handshake carries an Origin: refused before a frame.
+        let mut req = tokio_tungstenite::tungstenite::client::IntoClientRequest::into_client_request(format!("ws://{addr}")).unwrap();
+        req.headers_mut().insert("origin", "https://example.com".parse().unwrap());
+        assert!(tokio_tungstenite::connect_async(req).await.is_err(), "a page may not connect");
+        // An ack past anything sent neither panics nor stalls the writer.
+        let (mut ok, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
+        ok.batches = u64::MAX;
+        ok.ack().await;
+        ok.send(&ClientFrame::Status { id: 3 }).await;
+        let Some(Got::Batch(_, f)) = ok.next().await else { panic!("the writer stalled") };
+        assert!(matches!(&f[0], ServerFrame::Status { id: 3, .. }), "{:?}", f[0]);
+    });
+    daemon.join().unwrap().unwrap();
+}
+
+/// SIGTERM with a turn running: the daemon takes no new turn — neither one
+/// sent after the signal nor one whose new directory was still being read
+/// when it came (`host_stopping`) — interrupts the running one the way a
+/// person does, so it logs its end, and exits within `SHUTDOWN_GRACE` with
+/// that turn's sync run, not dropped with its runtime (R-LAG-9's syncs off
+/// the thread, made durable).
+#[test]
+fn r_lag_9_a_sigterm_interrupts_the_running_turn_syncs_it_and_takes_no_new_one() {
+    use gruntas_harness::protocol::{LogBody, LogEvent, TurnStatus};
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let interrupt = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/interrupt.jsonl")).unwrap();
+    let home = Home::new("sigterm", Some(&interrupt));
+    let queued = log::queued_syncs();
+    let slow = home.root.join("slow");
+    std::fs::create_dir_all(slow.join(".git")).unwrap();
+    let daemon = home.serve(ws::HEARTBEAT, Caps::default());
+    let mut a = Raw::connect(&home);
+    a.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, None, "one"), client_ref: None });
+    let mut seen = a.until(|f| delta_text(f).is_some());
+    // A turn in a new directory whose configuration is still being read.
+    let mut b = Raw::connect_in(&home, &slow);
+    b.send(&ClientFrame::Execute { id: 2, command: prompt_in(&home, None, "two"), client_ref: None });
+    std::thread::sleep(Duration::from_millis(200));
+    let signalled = Instant::now();
+    assert!(std::process::Command::new("kill").args(["-TERM", &std::process::id().to_string()]).status().unwrap().success());
+    seen.extend(a.until(|f| matches!(f, ServerFrame::Done { id: 1, .. })));
+    let interrupted = seen.iter().any(|f| matches!(f, ServerFrame::Line { line: StreamLine::Log(LogEvent { body: LogBody::TurnCompleted { status: TurnStatus::Interrupted, .. }, .. }), .. }));
+    assert!(interrupted, "the running turn was interrupted and logged its end");
+    // Stopping, and still up while the slow read holds it: a new turn is
+    // refused, and so is the one whose read the signal overtook.
+    a.send(&ClientFrame::Execute { id: 3, command: prompt_in(&home, None, "three"), client_ref: None });
+    let refused = |f: &ServerFrame, want: u64| matches!(f, ServerFrame::Done { id, error: Some(e), .. } if *id == want && e.code == "host_stopping");
+    let three = a.until(|f| matches!(f, ServerFrame::Done { id: 3, .. }));
+    assert!(refused(three.last().unwrap(), 3), "{:?}", three.last());
+    let two = b.until(|f| matches!(f, ServerFrame::Done { id: 2, .. }));
+    assert!(refused(two.last().unwrap(), 2), "{:?}", two.last());
+    daemon.join().unwrap().unwrap();
+    assert!(signalled.elapsed() < gruntas_harness::host::SHUTDOWN_GRACE, "exited in {:?}", signalled.elapsed());
+    assert!(log::queued_syncs() > queued, "the interrupted turn's sync was handed to the blocking pool");
+    assert_eq!(log::pending_syncs(), 0, "the interrupted turn's sync ran before the daemon exited");
+    drop((a, b));
+}
+
+/// A second SIGTERM while the daemon waits on its way out — here for a
+/// turn whose directory's configuration is stuck on a dead mount — exits at
+/// once, rather than after every wait's grace has run out.
+#[test]
+fn r_lag_9_a_second_sigterm_exits_at_once() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let home = Home::new("sigterm2", None);
+    let stuck = home.root.join("stuck");
+    std::fs::create_dir_all(stuck.join(".git")).unwrap();
+    let daemon = home.serve(ws::HEARTBEAT, Caps::default());
+    let mut a = Raw::connect_in(&home, &stuck);
+    a.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, None, "one"), client_ref: None });
+    std::thread::sleep(Duration::from_millis(200));
+    let term = || assert!(std::process::Command::new("kill").args(["-TERM", &std::process::id().to_string()]).status().unwrap().success());
+    term();
+    // The first waits for the turn it took.
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!daemon.is_finished(), "the first signal waits for the turn under way");
+    let again = Instant::now();
+    term();
+    daemon.join().unwrap().unwrap();
+    assert!(again.elapsed() < Duration::from_secs(2), "a second signal exits at once, not in {:?}", again.elapsed());
+    drop(a);
+}
+
+/// R-MCP-21: a daemon-hosted session's servers are asked and restarted over
+/// the protocol as a local host's are.
+#[test]
+fn r_mcp_21_a_daemon_hosted_session_reports_its_servers_and_reconnects_one() {
+    use gruntas_harness::protocol::McpState;
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let home = Home::new("mcp", None);
+    let fake = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp/fake-mcp");
+    std::fs::write(home.repo().join(".mcp.json"), serde_json::json!({"mcpServers": {"fake": {"command": "bash", "args": [fake], "env": {"FAKE_TOOLS": "2"}}}}).to_string()).unwrap();
+    let daemon = home.serve(ws::HEARTBEAT, Caps::default());
+    rt().block_on(async {
+        let c = home.client().await;
+        let (tx, _rx) = tokio::sync::mpsc::channel(1024);
+        let r = c.execute(home.prompt("hi", PermissionMode::Default), tx).await.unwrap().unwrap();
+        let mut servers = Vec::new();
+        for _ in 0..200 {
+            servers = c.mcp_status(&r.session_id).await.unwrap();
+            if servers.iter().all(|s| s.state == McpState::Connected) && !servers.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!((servers[0].name.as_str(), servers[0].source.as_str(), servers[0].state, servers[0].tools.len()), ("fake", ".mcp.json", McpState::Connected, 2), "{servers:?}");
+        c.mcp_reconnect(&r.session_id, "fake").await.unwrap();
+        assert_eq!(c.mcp_reconnect(&r.session_id, "nope").await.unwrap_err().code, "no_such_server");
+        assert!(c.mcp_status("no-such-session").await.unwrap().is_empty());
+        c.stop(true).await.ok();
+    });
+    let _ = daemon.join();
+}

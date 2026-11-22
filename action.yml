@@ -1,14 +1,14 @@
-# action.yml — the GitHub Action face of the CLI: `uses: krowkcom/krowk@v0`,
+# action.yml — the GitHub Action face of the CLI: `uses: gruntas/gruntas@v0`,
 # or a release tag where a workflow wants the version frozen.
 #
 # It is a composite of two bash steps, install then push, because that is all
-# the action does: put the binary on the runner and run the same `krowk push`
+# the action does: put the binary on the runner and run the same `gruntas push`
 # a person would. Everything the CLI detects on its own — repo, commit, branch,
 # the pull request from GITHUB_REF, the agent, the session from GITHUB_RUN_ID —
 # it detects here too, so the useful invocation is just `files:`.
-name: Krowk
+name: Gruntas
 description: >-
-  Upload screenshots, videos and other agent output to Krowk and get permalinks
+  Upload screenshots, videos and other agent output to Gruntas and get permalinks
   back — ready to paste into a pull request comment.
 branding:
   icon: upload
@@ -57,20 +57,20 @@ outputs:
     value: ${{ steps.push.outputs.run-slug }}
   json:
     description: >-
-      The JSON envelope from `krowk push --json`, with claim tokens and
+      The JSON envelope from `gruntas push --json`, with claim tokens and
       breadcrumbs stripped so it is safe to paste.
     value: ${{ steps.push.outputs.json }}
 
 runs:
   using: composite
   steps:
-    - name: Install krowk
+    - name: Install gruntas
       shell: bash
       env:
-        KROWK_VERSION: ${{ inputs.version }}
+        GRUNTAS_VERSION: ${{ inputs.version }}
         # The runner already has its skills; installing one here would write
         # into a throwaway home directory anyway.
-        KROWK_SKIP_SKILL: "1"
+        GRUNTAS_SKIP_SKILL: "1"
       run: |
         set -euo pipefail
         if [ "${RUNNER_OS:-}" = "Windows" ]; then
@@ -81,34 +81,34 @@ runs:
         # that release, so pinning the action pins the binary too. Any other
         # ref — the moving major tag, main, a SHA, a branch — has no release of
         # its own, so latest it is.
-        if [ -z "${KROWK_VERSION:-}" ]; then
+        if [ -z "${GRUNTAS_VERSION:-}" ]; then
           case "${GITHUB_ACTION_REF:-}" in
-            v[0-9]*.[0-9]*.[0-9]*) export KROWK_VERSION="${GITHUB_ACTION_REF#v}" ;;
+            v[0-9]*.[0-9]*.[0-9]*) export GRUNTAS_VERSION="${GITHUB_ACTION_REF#v}" ;;
           esac
         fi
         # Whose releases to install. A remote `uses: owner/repo@ref` names its
         # repository in GITHUB_ACTION_REPOSITORY, and that is the answer — never
-        # the calling workflow's repository, which has no krowk releases. The
+        # the calling workflow's repository, which has no gruntas releases. The
         # runner fetches the whole repository for it, so the checkout test below
         # would pass there too, which is why it comes second. `uses: ./` and a
         # `run:` step name no action repository: a checkout of this project
         # installs its own repository's releases (either side of a rename, or a
         # fork), and anything else — a vendored copy — the canonical ones.
-        if [ -z "${KROWK_REPO:-}" ]; then
+        if [ -z "${GRUNTAS_REPO:-}" ]; then
           if [ -n "${GITHUB_ACTION_REPOSITORY:-}" ]; then
-            KROWK_REPO="$GITHUB_ACTION_REPOSITORY"
-          elif [ -d "${GITHUB_ACTION_PATH:?}/crates/krowk" ]; then
-            KROWK_REPO="${GITHUB_REPOSITORY:-krowkcom/krowk}"
+            GRUNTAS_REPO="$GITHUB_ACTION_REPOSITORY"
+          elif [ -d "${GITHUB_ACTION_PATH:?}/crates/gruntas" ]; then
+            GRUNTAS_REPO="${GITHUB_REPOSITORY:-gruntas/gruntas}"
           else
-            KROWK_REPO="krowkcom/krowk"
+            GRUNTAS_REPO="gruntas/gruntas"
           fi
         fi
-        export KROWK_REPO
-        export KROWK_BIN_DIR="$RUNNER_TEMP/krowk-bin"
-        mkdir -p "$KROWK_BIN_DIR"
+        export GRUNTAS_REPO
+        export GRUNTAS_BIN_DIR="$RUNNER_TEMP/gruntas-bin"
+        mkdir -p "$GRUNTAS_BIN_DIR"
         # Already on PATH before the installer runs, so its setup_path leaves
         # the runner's dotfiles alone — a self-hosted runner keeps its .bashrc.
-        export PATH="$KROWK_BIN_DIR:$PATH"
+        export PATH="$GRUNTAS_BIN_DIR:$PATH"
         # The installer ships with the action itself — the runner already has
         # this repo on disk at GITHUB_ACTION_PATH — so pinning the action pins
         # the installer, with no fetch to go stale and nothing hard-coded that
@@ -117,21 +117,21 @@ runs:
         # A runner is CI, so this is the lean build either way; asked for by
         # name so a self-hosted runner without CI set gets it too.
         bash "${GITHUB_ACTION_PATH:?}/scripts/install.sh" --lean
-        echo "$KROWK_BIN_DIR" >> "$GITHUB_PATH"
+        echo "$GRUNTAS_BIN_DIR" >> "$GITHUB_PATH"
         # `@v0` resolved to the latest release just now, which is what that tag
         # means for as long as 0.x is the latest line and not one release after.
         # Nothing here can ask for "the newest 0.x" without hard-coding a host
         # this action would then not resolve on GitHub Enterprise, so the major
         # is checked instead: a workflow that asked for 0.x gets told, rather
         # than handed a 1.x binary and a changed command surface.
-        if [ -z "${KROWK_VERSION:-}" ]; then
+        if [ -z "${GRUNTAS_VERSION:-}" ]; then
           case "${GITHUB_ACTION_REF:-}" in
             v[0-9]*.*) ;;
             v[0-9]*)
               want="${GITHUB_ACTION_REF#v}"
-              got=$(krowk --version)
+              got=$(gruntas --version)
               if [ "${got%%.*}" != "$want" ]; then
-                echo "::error::krowk@${GITHUB_ACTION_REF} resolved to the latest release, ${got}, which is not on the ${want}.x line. Pin a release tag to stay on ${want}.x, or move the action to @v${got%%.*}." >&2
+                echo "::error::gruntas@${GITHUB_ACTION_REF} resolved to the latest release, ${got}, which is not on the ${want}.x line. Pin a release tag to stay on ${want}.x, or move the action to @v${got%%.*}." >&2
                 exit 1
               fi
               ;;
@@ -142,7 +142,7 @@ runs:
       id: push
       shell: bash
       env:
-        KROWK_TOKEN: ${{ inputs.token }}
+        GRUNTAS_TOKEN: ${{ inputs.token }}
         INPUT_FILES: ${{ inputs.files }}
         INPUT_RUN: ${{ inputs.run-slug }}
         INPUT_TITLE: ${{ inputs.title }}
@@ -160,14 +160,14 @@ runs:
         # self-hosted runner may not, and the failure should say so.
         command -v jq >/dev/null || { echo "::error::jq is required and is not on this runner" >&2; exit 1; }
 
-        # Mask the token even when it did not come from a secret, so a krowk
+        # Mask the token even when it did not come from a secret, so a gruntas
         # error that echoes configuration cannot surface it in the log.
-        [ -n "$KROWK_TOKEN" ] && echo "::add-mask::$KROWK_TOKEN"
+        [ -n "$GRUNTAS_TOKEN" ] && echo "::add-mask::$GRUNTAS_TOKEN"
 
         # Split the input into patterns with globbing off, so an unmatched
         # pattern survives to be named in the error instead of vanishing under
         # nullglob; then expand each one with globbing back on. The input is
-        # whitespace-separated — a path with a space in it reaches krowk
+        # whitespace-separated — a path with a space in it reaches gruntas
         # through a glob.
         set -f
         read -d '' -ra patterns <<<"$INPUT_FILES" || true
@@ -184,9 +184,9 @@ runs:
             exit 1
           fi
           # nullglob only drops unmatched *globs* — a literal path survives
-          # expansion whether it exists or not. And what krowk pushes is
+          # expansion whether it exists or not. And what gruntas pushes is
           # files, so a directory a glob swept up is an error here, where the
-          # pattern can be named, not later in krowk's own words.
+          # pattern can be named, not later in gruntas's own words.
           for f in "${matched[@]}"; do
             if [ -f "$f" ]; then
               continue
@@ -209,7 +209,7 @@ runs:
         [ -n "$INPUT_TITLE" ] && args+=(--title "$INPUT_TITLE")
         [ -n "$INPUT_PULL_REQUEST" ] && args+=(--pull-request "$INPUT_PULL_REQUEST")
 
-        out=$(krowk "${args[@]}")
+        out=$(gruntas "${args[@]}")
 
         # Multi-line values go through the heredoc form of GITHUB_OUTPUT. The
         # delimiter is random so no artifact caption can terminate it early.
@@ -236,7 +236,7 @@ runs:
 
         # The summary makes the links clickable without a PR comment step.
         {
-          echo "### Krowk uploads"
+          echo "### Gruntas uploads"
           echo
           jq -r '.data.artifacts[]? | "- \(.url)"' <<<"$out"
         } >> "$GITHUB_STEP_SUMMARY"

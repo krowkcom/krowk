@@ -1,4 +1,4 @@
-krowk sessions --limit 0
-krowk sessions --limit -1
-krowk sessions show a b
-krowk sessions rebuild extra
+gruntas sessions --limit 0
+gruntas sessions --limit -1
+gruntas sessions show a b
+gruntas sessions rebuild extra

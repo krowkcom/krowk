@@ -5,7 +5,7 @@ For each provider (claude, cursor, opencode) five sessions are picked from the
 store and `krowk sessions show <id> --json` is compared against counts this
 script derives from the SOURCE itself (Claude/Cursor JSONL, opencode.db) —
 never from krowk or krowk.db. The source-side rules mirror the importers in
-crates/krowk-import/src/{claude,cursor,opencode}.rs and turn.rs; the few places
+crates/gruntas-import/src/{claude,cursor,opencode}.rs and turn.rs; the few places
 where the store is deliberately not mirrored are labelled in the output.
 
 krowk always runs with XDG_DATA_HOME=--data and XDG_CACHE_HOME=a scratch copy
@@ -36,7 +36,7 @@ CURSOR_ROOT = HOME / ".cursor/projects"
 OPENCODE_DB = HOME / ".local/share/opencode/opencode.db"
 PROVIDERS = ("claude", "cursor", "opencode")
 
-# Mirrored importer constants (file:line in crates/krowk-import/src).
+# Mirrored importer constants (file:line in crates/gruntas-import/src).
 MAX_LINE_BYTES = 16 << 20        # jsonl.rs:9
 MAX_FILE_BYTES = 64 << 20        # home.rs:11 (open_home default cap)
 INTERRUPT_PREFIX = "[Request interrupted"   # claude.rs:44
@@ -59,7 +59,7 @@ class Krowk:
         # Scratch data, cache and config, and no update check: nothing a run
         # does lands in the real home.
         self.env = dict(os.environ, XDG_DATA_HOME=str(data), XDG_CACHE_HOME=str(cache),
-                        XDG_CONFIG_HOME=str(cache / "config"), KROWK_NO_UPDATE_CHECK="1")
+                        XDG_CONFIG_HOME=str(cache / "config"), GRUNTAS_NO_UPDATE_CHECK="1")
 
     def run(self, *args, check=True):
         t0 = time.perf_counter()

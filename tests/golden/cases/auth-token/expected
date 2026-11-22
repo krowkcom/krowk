@@ -1,33 +1,33 @@
-$ krowk auth token
+$ gruntas auth token
 stderr:
 {
   "ok": false,
   "error": {
     "error": "not_authenticated",
-    "fix": "run `krowk login --token krowk_sk_...`, or upload anonymously",
+    "fix": "run `gruntas login --token krowk_sk_...`, or upload anonymously",
     "retryable": false
   }
 }
 exit: 3
 
-$ krowk auth verify
+$ gruntas auth verify
 stderr:
 {
   "ok": false,
   "error": {
     "error": "not_authenticated",
-    "fix": "no key to verify — run `krowk login --token krowk_sk_...`, or upload anonymously",
+    "fix": "no key to verify — run `gruntas login --token krowk_sk_...`, or upload anonymously",
     "retryable": false
   }
 }
 exit: 3
 
-$ krowk auth login --token krowk_sk_test
+$ gruntas auth login --token krowk_sk_test
 stdout:
 {
   "ok": true,
   "data": {
-    "path": "<scratch>/home/.krowk/credentials.json",
+    "path": "<scratch>/home/.gruntas/credentials.json",
     "confirmed": true,
     "key_id": "<key_1>",
     "workspace": "<ws_1>"
@@ -36,19 +36,19 @@ stdout:
   "breadcrumbs": [
     {
       "action": "push",
-      "cmd": "krowk push <file>",
+      "cmd": "gruntas push <file>",
       "description": "the key is stored and accepted, so nothing else is needed before uploading; <file> is the path to upload"
     }
   ]
 }
 exit: 0
 
-$ krowk auth token
+$ gruntas auth token
 stdout:
 krowk_sk_test
 exit: 0
 
-$ krowk auth verify
+$ gruntas auth verify
 stdout:
 {
   "ok": true,
@@ -65,7 +65,7 @@ stdout:
   "breadcrumbs": [
     {
       "action": "push",
-      "cmd": "krowk push <file>",
+      "cmd": "gruntas push <file>",
       "description": "the key works, so an upload with it lands in that workspace and does not expire; <file> is the path to upload"
     }
   ]
@@ -73,17 +73,17 @@ stdout:
 exit: 0
 
 @ls {home}
-.krowk/
-.krowk/.old-layout-checked 644
-.krowk/credentials.json 600
-.krowk/credentials.lock 600
+.gruntas/
+.gruntas/.old-layout-checked 644
+.gruntas/credentials.json 600
+.gruntas/credentials.lock 600
 
-$ krowk auth token
+$ gruntas auth token
 stdout:
 krowk_sk_other
 exit: 0
 
-$ krowk auth verify
+$ gruntas auth verify
 stdout:
 {
   "ok": true,
@@ -100,7 +100,7 @@ stdout:
   "breadcrumbs": [
     {
       "action": "push",
-      "cmd": "krowk push <file>",
+      "cmd": "gruntas push <file>",
       "description": "the key works, so an upload with it lands in that workspace and does not expire; <file> is the path to upload"
     }
   ]

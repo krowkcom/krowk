@@ -4,7 +4,7 @@ name: Bench
 # every number is read on the same kind of machine — an image named by
 # version, not -latest, which moves under the numbers. Each check is the
 # median of repeated runs held against the absolute number in
-# crates/krowk-bench/budgets.toml, never against an earlier run, and the
+# crates/gruntas-bench/budgets.toml, never against an earlier run, and the
 # idle checks read Linux /proc, so this runner is also the one machine where
 # nothing may be skipped (--strict). The table lands in the job summary.
 #

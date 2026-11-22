@@ -1,4 +1,4 @@
 @registry
-@env KROWK_TOKEN=krowk_sk_env
-krowk auth verify --format human
-krowk auth token --format human
+@env GRUNTAS_TOKEN=krowk_sk_env
+gruntas auth verify --format human
+gruntas auth token --format human

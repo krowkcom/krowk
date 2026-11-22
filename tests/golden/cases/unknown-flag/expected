@@ -1,34 +1,34 @@
-$ krowk push --nope a.txt
+$ gruntas push --nope a.txt
 stderr:
 {
   "ok": false,
   "error": {
     "error": "bad_flag",
-    "fix": "unknown flag --nope; run `krowk help push`",
+    "fix": "unknown flag --nope; run `gruntas help push`",
     "retryable": false
   }
 }
 exit: 1
 
-$ krowk --nope
+$ gruntas --nope
 stderr:
 {
   "ok": false,
   "error": {
     "error": "bad_flag",
-    "fix": "unknown flag --nope; run `krowk --help`",
+    "fix": "unknown flag --nope; run `gruntas --help`",
     "retryable": false
   }
 }
 exit: 1
 
-$ krowk sessions --limit notanumber
+$ gruntas sessions --limit notanumber
 stderr:
 {
   "ok": false,
   "error": {
     "error": "bad_flag",
-    "fix": "--limit takes a whole number, not \"notanumber\"; run `krowk help sessions`",
+    "fix": "--limit takes a whole number, not \"notanumber\"; run `gruntas help sessions`",
     "retryable": false
   }
 }

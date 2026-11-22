@@ -1,10 +1,10 @@
-$ krowk sessions sync --no-network
+$ gruntas sessions sync --no-network
 stdout:
 {
   "ok": true,
   "data": {
     "dry_run": false,
-    "store": "<scratch>/home/.krowk/sessions/krowk.db",
+    "store": "<scratch>/home/.gruntas/sessions/gruntas.db",
     "providers": [
       {
         "provider": "claude",
@@ -85,18 +85,18 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions --jq '[.data.sessions[] | {title, time_updated_ms}]'
+$ gruntas sessions --jq '[.data.sessions[] | {title, time_updated_ms}]'
 stdout:
 [{"time_updated_ms":<store_ms_8>,"title":"Parent session"},{"time_updated_ms":<store_ms_7>,"title":"Child session"},{"time_updated_ms":<store_ms_6>,"title":"<timestamp>Thursday, Sep 10, 2026, 7:41 AM (UTC+3)</timestamp> <user_query> firs"},{"time_updated_ms":<store_ms_5>,"title":"<timestamp>Friday, Sep 11, 2026, 9:00 AM (UTC+3)</timestamp> <user_query> redact"},{"time_updated_ms":<store_ms_4>,"title":"redacted prompt outside a checkout"},{"time_updated_ms":<store_ms_3>,"title":"redacted subagent task"},{"time_updated_ms":<store_ms_2>,"title":"Redacted session title"},{"time_updated_ms":<store_ms_1>,"title":"Redacted unused session"}]
 exit: 0
 
-$ krowk sessions sync --no-network
+$ gruntas sessions sync --no-network
 stdout:
 {
   "ok": true,
   "data": {
     "dry_run": false,
-    "store": "<scratch>/home/.krowk/sessions/krowk.db",
+    "store": "<scratch>/home/.gruntas/sessions/gruntas.db",
     "providers": [
       {
         "provider": "claude",
@@ -175,13 +175,13 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions sync --no-network
+$ gruntas sessions sync --no-network
 stdout:
 {
   "ok": true,
   "data": {
     "dry_run": false,
-    "store": "<scratch>/home/.krowk/sessions/krowk.db",
+    "store": "<scratch>/home/.gruntas/sessions/gruntas.db",
     "providers": [
       {
         "provider": "claude",
@@ -262,18 +262,18 @@ stdout:
 }
 exit: 0
 
-$ krowk sessions --jq '[.data.sessions[] | {title, time_updated_ms}]'
+$ gruntas sessions --jq '[.data.sessions[] | {title, time_updated_ms}]'
 stdout:
 [{"time_updated_ms":<store_ms_9>,"title":"Redacted session title"},{"time_updated_ms":<store_ms_8>,"title":"Parent session"},{"time_updated_ms":<store_ms_7>,"title":"Child session"},{"time_updated_ms":<store_ms_6>,"title":"<timestamp>Thursday, Sep 10, 2026, 7:41 AM (UTC+3)</timestamp> <user_query> firs"},{"time_updated_ms":<store_ms_5>,"title":"<timestamp>Friday, Sep 11, 2026, 9:00 AM (UTC+3)</timestamp> <user_query> redact"},{"time_updated_ms":<store_ms_4>,"title":"redacted prompt outside a checkout"},{"time_updated_ms":<store_ms_3>,"title":"redacted subagent task"},{"time_updated_ms":<store_ms_1>,"title":"Redacted unused session"}]
 exit: 0
 
-$ krowk sessions sync
+$ gruntas sessions sync
 stdout:
 {
   "ok": true,
   "data": {
     "dry_run": false,
-    "store": "<scratch>/home/.krowk/sessions/krowk.db",
+    "store": "<scratch>/home/.gruntas/sessions/gruntas.db",
     "providers": [
       {
         "provider": "claude",

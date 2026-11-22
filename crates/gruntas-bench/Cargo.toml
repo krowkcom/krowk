@@ -1,0 +1,23 @@
+# `make bench`: measures the built binaries against budgets.toml and fails on
+# any budget broken (R-PERF-7). Test infrastructure: built by no release, and
+# nothing here reaches the binaries it measures.
+[package]
+name = "gruntas-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish = false
+
+[dependencies]
+# The log append is measured through the harness's own writer, not a copy.
+gruntas-harness = { path = "../gruntas-harness" }
+# remote.attach (R-PERF-6): a session sealed into the stand-in registry,
+# attached from its checkpoint through the harness's own reader. A bench
+# tool, never shipped, so these cost no budget.
+gruntas-api = { path = "../gruntas-api" }
+gruntas-client = { path = "../gruntas-client" }
+gruntas-devregistry = { path = "../gruntas-devregistry" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }

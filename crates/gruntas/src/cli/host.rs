@@ -1,0 +1,406 @@
+//! `gruntas host`: the per-user daemon sessions run in, so a session outlives
+//! the terminal that started it (R-HOST-1). The daemon itself, its socket
+//! and its protocol are `gruntas_harness::daemon`; this is the command line
+//! around them.
+//!
+//! - `serve` (not listed): the daemon. The first `gruntas` that needs it
+//!   (`gruntas -p --daemon`) starts it detached; a service runs it too.
+//! - `status`: whether it runs, and what it holds.
+//! - `attach <session>`: follows a session in it as stream-json — the log,
+//!   the turn so far, then live — until the running turn ends.
+//! - `enable` / `disable`: the systemd user unit or launchd agent that
+//!   keeps it running on an always-on machine (R-HOST-2).
+
+use super::{prompt, Ctx};
+use crate::output::Format;
+use gruntas_api::{fail, Error};
+use gruntas_harness::daemon::{self, server, service};
+use gruntas_harness::engine::EngineError;
+use gruntas_harness::host::HostConfig;
+use gruntas_harness::instances::Registry;
+use gruntas_harness::protocol::HostStatus;
+use gruntas_harness::{log, trust};
+use serde_json::json;
+use std::sync::Arc;
+
+/// Where the daemon's stdout and stderr go: `host.log` in gruntas's home.
+pub(super) fn log_path(ctx: &Ctx) -> Result<std::path::PathBuf, Error> {
+    Ok(gruntas_api::home::dir(ctx.io.env)?.join("host.log"))
+}
+
+/// Starts the daemon, detached, from this very binary.
+pub(super) fn spawner(ctx: &Ctx) -> Result<impl Fn() -> Result<Option<std::process::Child>, String> + Send + Sync + use<>, Error> {
+    let exe = std::env::current_exe().map_err(|e| fail("host_unavailable", format!("gruntas cannot find its own binary to start the host daemon: {e}")))?;
+    let log = log_path(ctx)?;
+    Ok(move || daemon::spawn_detached(&exe, &["host", "serve"], &log).map(Some))
+}
+
+fn engine(e: EngineError) -> Error {
+    prompt::engine_error(&e.code, &e.message, e.status)
+}
+
+/// The daemon: every working directory's host made the way `gruntas -p`
+/// makes its own, save what only a person at a terminal could answer. A
+/// repository is trusted for a backend only when it is on the trusted
+/// list — a daemon asks nobody — and a turn asks approval of the clients
+/// following its session only when the client that ran it answers them;
+/// a `gruntas -p` client's turn refuses what would be asked, as
+/// in-process `-p` does.
+pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
+    let config = prompt::config_json()?;
+    let socket = daemon::socket(ctx.io.env).map_err(|e| fail("host_unavailable", e))?;
+    let idle = daemon::idle_window(ctx.io.env, Some(&config)).map_err(|e| fail("bad_config", e))?;
+    let websocket = daemon::websocket_addr(ctx.io.env, Some(&config)).map_err(|e| fail("bad_config", e))?;
+    let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(std::path::PathBuf::from);
+    let store = trust::Store::new(Some(super::providers::gruntas_dir()?.join(trust::FILE)), home);
+    let trusted_store = store.clone();
+    let announced_store = store.clone();
+    // config.json's rules and hooks are read again for every turn: the
+    // daemon outlives an edit of them, and a deny rule added since holds.
+    let permissions = gruntas_harness::permissions::Config { reread: true, ..prompt::permissions_config(ctx, &config, Arc::new(move |root: &std::path::Path| trusted_store.trusts(root)), true) };
+    let gate: trust::Gate = Arc::new(move |root: &std::path::Path| {
+        if store.trusts(root) {
+            return Ok(());
+        }
+        if let Some(why) = store.refuses(root) {
+            return Err(trust::untrusted(root, &format!("It cannot be trusted for good — {why}. Run `gruntas -p --trust` there, in this process rather than the daemon, for one run.")));
+        }
+        Err(store.untrusted(root, "The host daemon asks nobody: run `gruntas trust` in that repository, then send the prompt again."))
+    });
+    // A session another device starts here runs in the mode `gruntas -p`
+    // would with no `--permission-mode` (R-HOST-4): the most specific
+    // `defaultMode`, a repository's once it is trusted. No sandbox's
+    // upgrade: a remote start never runs looser than the default.
+    let mode_permissions = permissions.clone();
+    let mode_for: gruntas_harness::sync::announce::ModeFor = Box::new(move |cwd: &std::path::Path| prompt::resolve_mode(None, &mode_permissions, cwd).map(|(m, _)| m).map_err(|e| (e.code(), e.fix())));
+    let publisher = prompt::publisher(ctx);
+    let sessions_dir = log::sessions_dir(ctx.io.env)?;
+    let credentials = super::providers::credentials_path()?;
+    let env = gruntas_api::home::process_env;
+    let factory: server::Factory = Box::new(move |cwd: &std::path::Path, answers: bool| {
+        // Read again for each directory's host: a provider connected since
+        // the daemon started is one its next directory has.
+        let config = prompt::config_json().map_err(|e| EngineError::new("bad_config", e.fix()))?;
+        let instances = prompt::instances_from(&config).map_err(|e| EngineError::new("bad_config", e.fix()))?;
+        Ok(HostConfig {
+            sessions_dir: sessions_dir.clone(),
+            cwd: cwd.to_path_buf(),
+            registry: Registry::resolve(&instances, &env),
+            gruntas_version: super::VERSION.into(),
+            pricer: prompt::pricer(&env),
+            catalog: prompt::catalog(&env),
+            credentials: credentials.clone(),
+            trust: gate.clone(),
+            publisher: Some(publisher.clone()),
+            permissions: gruntas_harness::permissions::Config { approvals: answers, ..permissions.clone() },
+            agents: prompt::agents_config(&env),
+            session: Default::default(),
+        })
+    });
+    // Automatic sync (R-SYNC-3): every session a turn starts in, bridged
+    // as `gruntas sync host` would, by a supervisor on a thread of its own —
+    // never this one, nor the daemon's. Its checks run per turn, so a
+    // machine that does not sync (or has turned it off) builds nothing and
+    // asks the network nothing (R-SYNC-1).
+    // Each synced session holds descriptors of its own — its daemon
+    // connection's two ends, its relay link, a direct listener, the
+    // registry's connections — beside its own host's, and launchd starts a
+    // daemon with a soft limit of 256 open files: fifty sessions need more
+    // (ticket 98).
+    raise_open_files(OPEN_FILES);
+    let (turns_tx, turns_rx) = gruntas_harness::sync::auto::turn_hook();
+    let bridged = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
+    // New machines asking for a pairing (R-EASE-5): the publisher hands each
+    // refresh's requests to this, and the daemon tells clients its offer.
+    let introduce_flags = ctx.f.clone();
+    let introductions = gruntas_harness::sync::introduce::Introductions::new(Box::new(move || own_ctx(&introduce_flags, |ctx| super::pairing::introducer(ctx)).map_err(|e| (e.code(), gruntas_harness::sync::announce::words(&e)))));
+    let auto = gruntas_harness::sync::auto::Supervisor::spawn(auto_sync(ctx, &socket, log::sessions_dir(ctx.io.env)?, bridged.clone(), announced_store, mode_for, introductions.clone()), turns_rx);
+    let served = server::run(server::Options { socket, idle, gruntas_version: super::VERSION.into(), websocket, turns: Some(turns_tx), bridged: Some(bridged), introductions: Some(introductions), ..Default::default() }, factory).map_err(|e| fail("host_failed", e));
+    // However the daemon ended — idle, `gruntas host stop`, a signal — each
+    // bridge ends its stream and gives its lease back before the process
+    // exits, rather than leaving it to lapse. The daemon's runtime is gone,
+    // and its signal handlers with nothing reading them: SIGTERM and SIGINT
+    // go back to their defaults, so a signal during the grace ends the
+    // process at once — as a second one does while the daemon winds down —
+    // the leases then left to lapse.
+    // SAFETY: setting a disposition to SIG_DFL has no preconditions.
+    unsafe {
+        libc::signal(libc::SIGTERM, libc::SIG_DFL);
+        libc::signal(libc::SIGINT, libc::SIG_DFL);
+    }
+    auto.stop(gruntas_harness::host::SHUTDOWN_GRACE);
+    served
+}
+
+/// The open files the daemon asks for: room for well over fifty synced
+/// sessions, and under macOS's own ceiling for a process (`OPEN_MAX`, 10240).
+const OPEN_FILES: libc::rlim_t = 4096;
+
+/// The soft limit on open files raised to `want`, or the hard limit when
+/// that is lower; never lowered. One that cannot be raised is left: the
+/// daemon runs as before.
+fn raise_open_files(want: libc::rlim_t) {
+    let mut l = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: `l` is a valid rlimit for getrlimit to fill and setrlimit to read.
+    unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut l) != 0 || l.rlim_cur >= want {
+            return;
+        }
+        l.rlim_cur = want.min(l.rlim_max);
+        libc::setrlimit(libc::RLIMIT_NOFILE, &l);
+    }
+}
+
+/// The supervisor's config: the policy and whether sync is set up, read
+/// again for every session (an edit of config.json, a `gruntas sync init`
+/// since the daemon started, holds at the next turn), and each bridge's
+/// options built as `gruntas sync host` builds them. And this host's
+/// announcement of itself (R-HOST-3): its instances checked as `gruntas
+/// status` checks them, their models from the models.dev cache, and the
+/// repositories `trusted` lists. The sessions another device starts here
+/// (R-HOST-4) run in `mode_for`'s mode.
+fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, bridged: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>, trusted: trust::Store, mode_for: gruntas_harness::sync::announce::ModeFor, introductions: Arc<gruntas_harness::sync::introduce::Introductions>) -> gruntas_harness::sync::auto::Config {
+    use gruntas_harness::sync::{announce, auto};
+    let (f, f2, f3, f4) = (ctx.f.clone(), ctx.f.clone(), ctx.f.clone(), ctx.f.clone());
+    let env = gruntas_api::home::process_env;
+    auto::Config {
+        socket: socket.to_path_buf(),
+        sessions,
+        version: super::VERSION.into(),
+        gruntas_home: gruntas_api::home::dir(ctx.io.env).ok(),
+        // A config that does not read is an Err, which is off.
+        policy: Box::new(move || auto::policy(&env, Some(&prompt::config_json().map_err(|e| e.fix())?))),
+        ready: Box::new(move || own_ctx(&f, |ctx| super::synced::ready(ctx)).map_err(|e| format!("{} ({})", e.fix(), e.code()))),
+        build: Box::new(move |session: &str, cwd: &std::path::Path| {
+            own_ctx(&f2, |ctx| {
+                // The workspace as `gruntas sync host` run in the session's own
+                // directory would take it — its repository's config.json
+                // included — not as the daemon's `/` would. `GRUNTAS_TOKEN`
+                // names the key outright, and no config is read for it.
+                if ctx.env("GRUNTAS_TOKEN").is_empty() {
+                    let pinned = crate::config::load(&cwd.display().to_string(), ctx.io.env, &ctx.f.workspace).map_err(|e| fail("bad_config", format!("{e} — fix the file or remove it; `gruntas config show` names every layer")))?;
+                    ctx.f.workspace = pinned.workspace;
+                }
+                super::synced::options(ctx, session, cwd, None)
+            })
+            .map_err(|e| (e.code(), e.fix()))
+        }),
+        bridged,
+        paid_pause: auto::PAID_PAUSE,
+        lease_held_wait: auto::LEASE_HELD_WAIT,
+        parked_recheck: auto::PARKED_RECHECK,
+        announce: Some(announce::Options {
+            every: announce::EVERY,
+            ttl: announce::TTL,
+            online_since_ms: jiff::Timestamp::now().as_millisecond(),
+            keys: Box::new(move |fresh| own_ctx(&f3, |ctx| super::synced::announcer(ctx, fresh)).map_err(|e| (e.code(), announce::words(&e)))),
+            // An instance list that does not read announces none.
+            instances: Box::new(move || own_ctx(&f4, |ctx| super::status::reports(ctx)).map(|(_, registry, reports)| (registry, reports)).unwrap_or_default()),
+            catalog: Box::new(move || std::fs::read(crate::pricing::cache_path(&env)?).ok()),
+            trusted,
+            mode_for,
+            take: take_up(ctx),
+            introductions: Some(introductions),
+        }),
+    }
+}
+
+/// How the daemon runs a take another device asks for (R-HAND-4): this
+/// very binary's `gruntas sync take <session>` in the clone, detached, as the
+/// person would run it here, its output to `takes/<session>.log` under
+/// gruntas's home, made afresh for each take. None when either can't be
+/// found: this host then takes none.
+fn take_up(ctx: &Ctx) -> Option<gruntas_harness::sync::announce::TakeUp> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = gruntas_api::home::dir(ctx.io.env).ok()?.join("takes");
+    Some(Box::new(move |session: &str, cwd: &std::path::Path| {
+        use std::os::unix::fs::DirBuilderExt;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).map_err(|e| format!("{} can't be made: {e}", dir.display()))?;
+        // Its own only, as made, even when it was made looser before.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| format!("{} can't be made private: {e}", dir.display()))?;
+        let log = dir.join(format!("{session}.log"));
+        // An earlier take's line that it moved is never read as this one's.
+        match std::fs::remove_file(&log) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{} can't be replaced: {e}", log.display())),
+        }
+        // Its error as JSON whatever the config says: the daemon reads the fix.
+        let child = daemon::spawn_detached_in(&exe, &["sync", "take", session, "--format", "json"], cwd, &log)?;
+        Ok((child, log))
+    }))
+}
+
+/// `body` run with a context of its own, for a call off the command's own
+/// (the supervisor's, on its thread): the process's environment, no
+/// stdout, and stderr the daemon's — `host.log` — so a line a bridge's
+/// setup says (`no direct path …`) is kept there.
+pub(super) fn own_ctx<R>(f: &super::flags::Flags, body: impl FnOnce(&mut Ctx) -> R) -> R {
+    use super::Io;
+    let (mut out, mut err) = (std::io::sink(), std::io::stderr());
+    let env = |k: &str| std::env::var(k).unwrap_or_default();
+    let mut io = Io { stdout: &mut out, stderr: &mut err, env: &env, tty: false, err_tty: false, stdin_tty: false };
+    let mut ctx = Ctx { io: &mut io, f: f.clone(), format: Format::Json, colour: false, filter: None };
+    body(&mut ctx)
+}
+
+pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
+    let socket = daemon::socket(ctx.io.env).map_err(|e| fail("host_unavailable", e))?;
+    let service = service::path(service::Platform::here(), ctx.io.env).ok().filter(|p| p.is_file());
+    let status: Option<HostStatus> = daemon::status(ctx.io.env, super::VERSION).map_err(engine)?;
+    let data = match &status {
+        Some(s) => json!({ "running": true, "socket": s.socket, "pid": s.pid, "version": s.gruntas_version, "stale": s.gruntas_version != super::VERSION, "uptimeMs": s.uptime_ms, "clients": s.clients.saturating_sub(1), "idleExitMs": s.idle_exit_ms, "websocket": s.websocket, "queuedBytes": s.queued_bytes, "caughtUp": s.caught_up, "sessions": s.sessions, "service": service }),
+        None => json!({ "running": false, "socket": socket, "service": service }),
+    };
+    if ctx.format != Format::Human {
+        let summary = if status.is_some() { "the host daemon is running" } else { "no host daemon is running" };
+        return super::sessions::emit_data(ctx, data, summary.into());
+    }
+    let out = &mut *ctx.io.stdout;
+    match &status {
+        None => {
+            let _ = writeln!(out, "not running — the next `gruntas -p --daemon` starts it");
+            let _ = writeln!(out, "socket   {}", socket.display());
+        }
+        Some(s) => {
+            let running = s.sessions.iter().filter(|x| x.running).count();
+            let _ = writeln!(out, "running  pid {}, gruntas {}, up {}", s.pid, s.gruntas_version, uptime(s.uptime_ms));
+            if s.gruntas_version != super::VERSION {
+                let _ = writeln!(out, "! It runs gruntas {}, and this is {} — `kill {}` once its sessions are done, and the next gruntas starts this one", s.gruntas_version, super::VERSION, s.pid);
+            }
+            let _ = writeln!(out, "socket   {}", s.socket);
+            if let Some(ws) = &s.websocket {
+                let _ = writeln!(out, "ws       ws://{ws} (loopback; token in host.token beside the socket)");
+            }
+            let _ = writeln!(out, "sessions {} ({running} running), {} other client{}", s.sessions.len(), s.clients.saturating_sub(1), if s.clients == 2 { "" } else { "s" });
+            let idle = s.idle_exit_ms.map_or("never — run as a service".into(), |ms| format!("after {} idle", uptime(ms)));
+            let _ = writeln!(out, "exits    {idle}");
+            for x in &s.sessions {
+                let _ = writeln!(out, "  {}{}", x.session_id, if x.running { "  running" } else { "" });
+            }
+        }
+    }
+    if let Some(p) = &service {
+        let _ = writeln!(out, "service  {}", p.display());
+    }
+    Ok(())
+}
+
+fn uptime(ms: u64) -> String {
+    let s = ms / 1000;
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m{:02}s", s / 60, s % 60),
+        _ => format!("{}h{:02}m", s / 3600, s / 60 % 60),
+    }
+}
+
+/// `gruntas host stop`: the daemon asked to exit — refused while a turn runs.
+pub(super) fn stop(ctx: &mut Ctx) -> Result<(), Error> {
+    let stopped = daemon::stop(ctx.io.env, super::VERSION, ctx.f.force).map_err(engine)?;
+    let summary = match stopped {
+        Some(pid) => format!("the host daemon (pid {pid}) has stopped"),
+        None => "no host daemon was running".to_string(),
+    };
+    if ctx.format != Format::Human {
+        return super::sessions::emit_data(ctx, json!({ "stopped": stopped }), summary);
+    }
+    let _ = writeln!(ctx.io.stdout, "{summary}");
+    Ok(())
+}
+
+/// Every frame of the session as stream-json, until its running turn ends.
+pub(super) fn attach(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
+    let [session] = args else {
+        return Err(fail("bad_args", "`gruntas host attach` takes one session id — the sessionId a result names"));
+    };
+    daemon::attach(ctx.io.env, super::VERSION, session, ctx.io.stdout).map_err(engine)
+}
+
+/// `enable`: the service file written, then the service manager told to
+/// start it now and at every login. `disable`: stopped, then removed.
+pub(super) fn enable(ctx: &mut Ctx, on: bool) -> Result<(), Error> {
+    let (file, stopped) = set_service(ctx, on)?;
+    let data = json!({ "enabled": on, "service": file, "stopped": stopped });
+    let summary = if on { format!("the host daemon runs as a service: {}", file.display()) } else { format!("the host service is stopped and {} removed", file.display()) };
+    if ctx.format != Format::Human {
+        return super::sessions::emit_data(ctx, data, summary);
+    }
+    if let Some(pid) = stopped {
+        let _ = writeln!(ctx.io.stdout, "stopped the host daemon gruntas had started (pid {pid}); the service runs it from now on");
+    }
+    let _ = writeln!(ctx.io.stdout, "{summary}");
+    Ok(())
+}
+
+/// What `enable` does, without saying so: the service file, and the pid of
+/// a daemon it let go. The join's offer runs it inside its own answer.
+pub(super) fn set_service(ctx: &mut Ctx, on: bool) -> Result<(std::path::PathBuf, Option<u32>), Error> {
+    let platform = service::Platform::here();
+    let file = service::path(platform, ctx.io.env).map_err(|e| fail("no_home", e))?;
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    if on {
+        let exe = std::env::current_exe().map_err(|e| fail("host_unavailable", format!("gruntas cannot find its own binary: {e}")))?;
+        let text = service::render(platform, &exe, &log_path(ctx)?, ctx.io.env);
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| fail("write_failed", format!("{} could not be made: {e}", dir.display())))?;
+        }
+        std::fs::write(&file, text).map_err(|e| fail("write_failed", format!("{} could not be written: {e}", file.display())))?;
+    }
+    // A daemon started on demand holds the socket the service would bind,
+    // and a service that cannot bind fails its restarts: it is let go
+    // first, once no turn runs in it.
+    // Enabled again: the daemon up is the service's own, which the service
+    // manager restarts — launchd only once it is booted out, since a second
+    // `bootstrap` of a loaded agent fails.
+    let active = on && ran(&service::active(platform, uid));
+    if active && platform == service::Platform::Launchd {
+        let _ = ran(&service::commands(platform, false, &file, uid)[0]);
+    }
+    // Forced: an open client reconnects to the service's daemon.
+    let stopped = if on && !active { daemon::stop(ctx.io.env, super::VERSION, true).map_err(engine)? } else { None };
+    for c in service::commands(platform, on, &file, uid) {
+        let ran = std::process::Command::new(&c[0]).args(&c[1..]).stdin(std::process::Stdio::null()).output();
+        match ran {
+            Ok(o) if o.status.success() => {}
+            // Stopping one that is not loaded is no failure: it is stopped.
+            Ok(_) | Err(_) if !on => {}
+            Ok(o) => return Err(fail("service_failed", format!("`{}` failed: {} — {} is written; fix that and run `gruntas machines always-on on` again", c.join(" "), String::from_utf8_lossy(&o.stderr).trim(), file.display()))),
+            Err(e) => return Err(fail("service_failed", format!("`{}` could not run: {e} — {} is written; start it with your service manager", c.join(" "), file.display()))),
+        }
+    }
+    if on {
+        up(platform, uid, &file)?;
+    }
+    if !on {
+        match std::fs::remove_file(&file) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(fail("write_failed", format!("{} could not be removed: {e}", file.display()))),
+            _ => {}
+        }
+    }
+    Ok((file, stopped))
+}
+
+/// Whether a service manager's command succeeds.
+fn ran(c: &[String]) -> bool {
+    std::process::Command::new(&c[0]).args(&c[1..]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok_and(|s| s.success())
+}
+
+/// Whether the service is up: asked a second after it was started, and
+/// again up to three seconds in, since a unit that cannot run is started,
+/// then fails.
+fn up(platform: service::Platform, uid: u32, file: &std::path::Path) -> Result<(), Error> {
+    let c = service::active(platform, uid);
+    let mut last = String::new();
+    for _ in 0..3 {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        match std::process::Command::new(&c[0]).args(&c[1..]).stdin(std::process::Stdio::null()).output() {
+            Ok(o) if o.status.success() => return Ok(()),
+            Ok(o) => last = String::from_utf8_lossy(&o.stdout).trim().to_string() + String::from_utf8_lossy(&o.stderr).trim(),
+            Err(e) => last = e.to_string(),
+        }
+    }
+    Err(fail("service_failed", format!("the service did not stay up (`{}`: {last}) — {} is written; its log is ~/.gruntas/host.log, or `journalctl --user -u {}`", c.join(" "), file.display(), service::UNIT)))
+}

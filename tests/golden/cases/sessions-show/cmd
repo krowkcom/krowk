@@ -1,9 +1,9 @@
 @fixture harnesses
-krowk sessions import --from all --quiet
-krowk sessions --format url
-krowk sessions show 11111111-1111-4111-8111-111111111111
-krowk sessions show 11111111-1111-4111-8111-111111111111 --thinking
-krowk sessions show 11111111-1111-4111-8111-111111111111 --format human
-krowk sessions show 11111111-1111-4111-8111-111111111111 --format markdown
-krowk sessions show 22222222
-krowk sessions show
+gruntas sessions import --from all --quiet
+gruntas sessions --format url
+gruntas sessions show 11111111-1111-4111-8111-111111111111
+gruntas sessions show 11111111-1111-4111-8111-111111111111 --thinking
+gruntas sessions show 11111111-1111-4111-8111-111111111111 --format human
+gruntas sessions show 11111111-1111-4111-8111-111111111111 --format markdown
+gruntas sessions show 22222222
+gruntas sessions show

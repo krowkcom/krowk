@@ -3,7 +3,7 @@
 //
 // Seven packages come out of one release: five that carry nothing but the two
 // binaries for one platform, and the two launchers people actually name —
-// `@krowk/cli` and `@krowk/mcp` — which depend on all five as optionalDependencies
+// `@gruntas/cli` and `@gruntas/mcp` — which depend on all five as optionalDependencies
 // and use whichever npm decided applies. That is the esbuild pattern.
 //
 // The bytes are the release's bytes, read out of dist/, not a second `cargo build`
@@ -26,22 +26,22 @@ const repo = path.resolve(here, "..");
 // tables are checked against it below, so adding a platform in one place and
 // forgetting the others fails the build instead of the release.
 const PLATFORMS = [
-  { npm: "@krowk/cli-darwin-arm64", goos: "darwin", goarch: "arm64", os: "darwin", cpu: "arm64" },
-  { npm: "@krowk/cli-darwin-x64", goos: "darwin", goarch: "amd64", os: "darwin", cpu: "x64" },
-  { npm: "@krowk/cli-linux-arm64", goos: "linux", goarch: "arm64", os: "linux", cpu: "arm64" },
-  { npm: "@krowk/cli-linux-x64", goos: "linux", goarch: "amd64", os: "linux", cpu: "x64" },
-  { npm: "@krowk/cli-win32-x64", goos: "windows", goarch: "amd64", os: "win32", cpu: "x64" },
+  { npm: "@gruntas/cli-darwin-arm64", goos: "darwin", goarch: "arm64", os: "darwin", cpu: "arm64" },
+  { npm: "@gruntas/cli-darwin-x64", goos: "darwin", goarch: "amd64", os: "darwin", cpu: "x64" },
+  { npm: "@gruntas/cli-linux-arm64", goos: "linux", goarch: "arm64", os: "linux", cpu: "arm64" },
+  { npm: "@gruntas/cli-linux-x64", goos: "linux", goarch: "amd64", os: "linux", cpu: "x64" },
+  { npm: "@gruntas/cli-win32-x64", goos: "windows", goarch: "amd64", os: "win32", cpu: "x64" },
 ];
 
 // The binary names, which are also the artifact ids scripts/dist.sh records.
-const BINARIES = ["krowk", "krowk-mcp"];
+const BINARIES = ["gruntas", "gruntas-mcp"];
 
 // The launchers, in the repo. Their versions and optionalDependencies are
 // stamped on the way out; what is checked in stays at a version that cannot be
 // mistaken for a real one.
 const LAUNCHERS = [
-  { dir: "npm/krowk", name: "@krowk/cli", bin: "bin/krowk.js" },
-  { dir: "npm/mcp", name: "@krowk/mcp", bin: "bin/krowk-mcp.js" },
+  { dir: "npm/cli", name: "@gruntas/cli", bin: "bin/gruntas.js" },
+  { dir: "npm/mcp", name: "@gruntas/mcp", bin: "bin/gruntas-mcp.js" },
 ];
 
 function die(message) {
@@ -97,7 +97,7 @@ if (extra.size > 0) {
 
 for (const launcher of LAUNCHERS) {
   const source = fs.readFileSync(path.join(repo, launcher.dir, launcher.bin), "utf8");
-  const named = new Set(source.match(/@krowk\/[a-z0-9-]+/g) || []);
+  const named = new Set(source.match(/@gruntas\/[a-z0-9-]+/g) || []);
   for (const p of PLATFORMS) {
     if (!named.has(p.npm)) {
       die(launcher.dir + " never mentions " + p.npm + ", so it cannot run there.");
@@ -154,9 +154,9 @@ for (const platform of PLATFORMS) {
       {
         name: platform.npm,
         version,
-        description: "krowk CLI + MCP binaries for " + platform.os + " " + platform.cpu + ".",
+        description: "gruntas CLI + MCP binaries for " + platform.os + " " + platform.cpu + ".",
         homepage: "https://krowk.com",
-        repository: { type: "git", url: "git+https://github.com/krowkcom/krowk.git" },
+        repository: { type: "git", url: "git+https://github.com/gruntas/gruntas.git" },
         license: "MIT",
         os: [platform.os],
         cpu: [platform.cpu],
@@ -171,10 +171,10 @@ for (const platform of PLATFORMS) {
   fs.writeFileSync(
     path.join(dir, "README.md"),
     "# " + platform.npm + "\n\n" +
-      "The `krowk` and `krowk-mcp` binaries for " + platform.os + " " + platform.cpu +
+      "The `gruntas` and `gruntas-mcp` binaries for " + platform.os + " " + platform.cpu +
       ", and nothing else.\n\n" +
-      "Do not install this directly. Install [`@krowk/cli`](https://www.npmjs.com/package/@krowk/cli)\n" +
-      "or [`@krowk/mcp`](https://www.npmjs.com/package/@krowk/mcp) and npm will pick the\n" +
+      "Do not install this directly. Install [`@gruntas/cli`](https://www.npmjs.com/package/@gruntas/cli)\n" +
+      "or [`@gruntas/mcp`](https://www.npmjs.com/package/@gruntas/mcp) and npm will pick the\n" +
       "one that matches the machine.\n\n" +
       "MIT.\n",
   );

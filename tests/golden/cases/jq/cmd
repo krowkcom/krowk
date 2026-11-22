@@ -2,21 +2,21 @@
 # no match prints nothing, and a failure never echoes a credential.
 @registry
 @file a.txt hello
-krowk push a.txt --jq .ok
-krowk push a.txt --jq '.data.artifacts[0].filename'
-krowk push a.txt --jq '.data.artifacts[0] | {filename, byte_size}'
-krowk push a.txt --jq '.data.artifacts[] | select(.byte_size > 100)'
-krowk push a.txt --jq '.data.artifacts[0].byte_size * 2'
-krowk push a.txt --jq '.data.artifacts | length'
-krowk push a.txt --jq 'env'
-krowk push a.txt --jq '$ENV.HOME'
-krowk push a.txt --jq '.data.artifacts[0].filename | tonumber'
-krowk push a.txt --jq 'halt_error'
-krowk push a.txt --jq '.[[['
-krowk push a.txt --jq ''
-krowk push a.txt --jq .ok --format human
-krowk push a.txt --jq .ok --quiet
-krowk bogus --jq .ok
-@tty krowk push a.txt --jq '.data.artifacts[0].filename'
-krowk push a.txt --jq '"\u001b[31mred"'
-@tty krowk push a.txt --jq '"\u001b[31mred"' 
+gruntas push a.txt --jq .ok
+gruntas push a.txt --jq '.data.artifacts[0].filename'
+gruntas push a.txt --jq '.data.artifacts[0] | {filename, byte_size}'
+gruntas push a.txt --jq '.data.artifacts[] | select(.byte_size > 100)'
+gruntas push a.txt --jq '.data.artifacts[0].byte_size * 2'
+gruntas push a.txt --jq '.data.artifacts | length'
+gruntas push a.txt --jq 'env'
+gruntas push a.txt --jq '$ENV.HOME'
+gruntas push a.txt --jq '.data.artifacts[0].filename | tonumber'
+gruntas push a.txt --jq 'halt_error'
+gruntas push a.txt --jq '.[[['
+gruntas push a.txt --jq ''
+gruntas push a.txt --jq .ok --format human
+gruntas push a.txt --jq .ok --quiet
+gruntas bogus --jq .ok
+@tty gruntas push a.txt --jq '.data.artifacts[0].filename'
+gruntas push a.txt --jq '"\u001b[31mred"'
+@tty gruntas push a.txt --jq '"\u001b[31mred"' 

@@ -1,8 +1,8 @@
-@sh d="$HOME/.krowk/cache"; mkdir -p "$d" && printf '%s' '{"p":{"m":{"input":1}}}' > "$d/models.json" && printf '%s' '{"etag":"","fetched_at_ms":1765929600000}' > "$d/models.meta.json"
-krowk doctor --jq .pricing
-@sh d="$HOME/.krowk/cache"; printf '%s' '{"etag":"","fetched_at_ms":1763769600000}' > "$d/models.meta.json"
-krowk doctor --jq .pricing
-@sh d="$HOME/.krowk/cache"; printf '%s' '{"etag":"","fetched_at_ms":1798761600000}' > "$d/models.meta.json"
-krowk doctor --jq .pricing
-@sh d="$HOME/.krowk/cache"; printf 'garbage' > "$d/models.json"
-krowk doctor --jq .pricing
+@sh d="$HOME/.gruntas/cache"; mkdir -p "$d" && printf '%s' '{"p":{"m":{"input":1}}}' > "$d/models.json" && printf '%s' '{"etag":"","fetched_at_ms":1765929600000}' > "$d/models.meta.json"
+gruntas doctor --jq .pricing
+@sh d="$HOME/.gruntas/cache"; printf '%s' '{"etag":"","fetched_at_ms":1763769600000}' > "$d/models.meta.json"
+gruntas doctor --jq .pricing
+@sh d="$HOME/.gruntas/cache"; printf '%s' '{"etag":"","fetched_at_ms":1798761600000}' > "$d/models.meta.json"
+gruntas doctor --jq .pricing
+@sh d="$HOME/.gruntas/cache"; printf 'garbage' > "$d/models.json"
+gruntas doctor --jq .pricing

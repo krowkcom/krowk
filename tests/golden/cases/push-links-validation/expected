@@ -1,46 +1,46 @@
-$ krowk push a.txt --link ftp://x.example --jq .ok
+$ gruntas push a.txt --link ftp://x.example --jq .ok
 stderr:
 false
 exit: 1
 
-$ krowk push a.txt --link "https://a b.example" --jq .ok
+$ gruntas push a.txt --link "https://a b.example" --jq .ok
 stderr:
 false
 exit: 1
 
-$ krowk push a.txt --link https://user:pw@example.com/x --jq .ok
+$ gruntas push a.txt --link https://user:pw@example.com/x --jq .ok
 stderr:
 false
 exit: 1
 
-$ krowk push a.txt --link https://example.com --link-title "line\nbreak" --jq .ok
+$ gruntas push a.txt --link https://example.com --link-title "line\nbreak" --jq .ok
 stdout:
 true
 exit: 0
 
-$ krowk push a.txt --link https://example.com --link-rel fixes --link https://example.org --link-rel spec --jq '.data.run.metadata'
+$ gruntas push a.txt --link https://example.com --link-rel fixes --link https://example.org --link-rel spec --jq '.data.run.metadata'
 stdout:
-{"krowk.client":"krowk-cli/0.0.0-golden","krowk.links":[{"rel":"fixes","url":"https://example.com"},{"rel":"spec","url":"https://example.org"}]}
+{"krowk.client":"gruntas-cli/0.0.0-golden","krowk.links":[{"rel":"fixes","url":"https://example.com"},{"rel":"spec","url":"https://example.org"}]}
 exit: 0
 
-$ krowk push a.txt --link-title orphan --jq .ok
+$ gruntas push a.txt --link-title orphan --jq .ok
 stderr:
 {
   "ok": false,
   "error": {
     "error": "bad_flag",
-    "fix": "--link-title describes the --link before it, and none was given yet — write --link <url> --link-title \"orphan\"; run `krowk help push`",
+    "fix": "--link-title describes the --link before it, and none was given yet — write --link <url> --link-title \"orphan\"; run `gruntas help push`",
     "retryable": false
   }
 }
 exit: 1
 
-$ krowk push a.txt --reference JIRA-1 --reference JIRA-2 --jq '.data.run.metadata'
+$ gruntas push a.txt --reference JIRA-1 --reference JIRA-2 --jq '.data.run.metadata'
 stdout:
-{"krowk.client":"krowk-cli/0.0.0-golden","krowk.references":["JIRA-1","JIRA-2"]}
+{"krowk.client":"gruntas-cli/0.0.0-golden","krowk.references":["JIRA-1","JIRA-2"]}
 exit: 0
 
-$ krowk push a.txt --metadata '{"krowk.caption":"c","n":1}' --jq '.data.artifacts[0].metadata'
+$ gruntas push a.txt --metadata '{"krowk.caption":"c","n":1}' --jq '.data.artifacts[0].metadata'
 stderr:
 {
   "ok": false,
@@ -52,13 +52,13 @@ stderr:
 }
 exit: 1
 
-$ krowk push a.txt --metadata '[1]' --jq .ok
+$ gruntas push a.txt --metadata '[1]' --jq .ok
 stderr:
 false
 exit: 1
 
-$ krowk push a.txt --caption "a caption" --jq '.data.artifacts[0].metadata'
+$ gruntas push a.txt --caption "a caption" --jq '.data.artifacts[0].metadata'
 stdout:
-{"krowk.caption":"a caption","krowk.client":"krowk-cli/0.0.0-golden"}
+{"krowk.caption":"a caption","krowk.client":"gruntas-cli/0.0.0-golden"}
 exit: 0
 

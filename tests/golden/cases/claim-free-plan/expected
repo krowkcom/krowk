@@ -1,4 +1,4 @@
-$ krowk push a.txt
+$ gruntas push a.txt
 stdout:
 {
   "ok": true,
@@ -55,7 +55,7 @@ stdout:
   "breadcrumbs": [
     {
       "action": "keep past expiry",
-      "cmd": "krowk claim <art_1> <claim_1>",
+      "cmd": "gruntas claim <art_1> <claim_1>",
       "description": "this upload is anonymous and expires within the day; claiming it with a key moves it into that key's workspace — a Pro workspace keeps it, a free one gives it another 24 hours. The token is shown once and spent once"
     },
     {
@@ -67,7 +67,7 @@ stdout:
 }
 exit: 0
 
-$ krowk claim {ART} {TOKEN}
+$ gruntas claim {ART} {TOKEN}
 stdout:
 {
   "ok": true,
@@ -128,8 +128,8 @@ stdout:
     },
     {
       "action": "group under a run",
-      "cmd": "krowk artifacts attach <art_1> --run <run>",
-      "description": "a claimed upload belongs to a workspace but to no run, and a run is where the pull request, commit and session are recorded — `krowk runs start` opens one, and its slug goes in place of <run>"
+      "cmd": "gruntas artifacts attach <art_1> --run <run>",
+      "description": "a claimed upload belongs to a workspace but to no run, and a run is where the pull request, commit and session are recorded — `gruntas runs start` opens one, and its slug goes in place of <run>"
     }
   ]
 }

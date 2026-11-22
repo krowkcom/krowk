@@ -2,8 +2,8 @@
 # own, so a `static` lock in a test binary no longer keeps its tests one at a
 # time: the groups and overrides below do.
 
-# A scratch KROWK_HOME for every test (scripts/test_home.sh), so no test
-# makes the developer's own ~/.krowk. Setup scripts are the one way nextest
+# A scratch GRUNTAS_HOME for every test (scripts/test_home.sh), so no test
+# makes the developer's own ~/.gruntas. Setup scripts are the one way nextest
 # sets a variable for every test process; the Makefile does the doctests.
 experimental = ["setup-scripts"]
 
@@ -54,7 +54,7 @@ threads-required = "num-test-threads"
 # about half a minute alone, most of it the clone and the first worktree,
 # neither held to the second.
 [[profile.default.overrides]]
-filter = "package(krowk-harness) & test(=worktree::template::tests::wt11_a_worktree_of_this_repository_takes_under_a_second)"
+filter = "package(gruntas-harness) & test(=worktree::template::tests::wt11_a_worktree_of_this_repository_takes_under_a_second)"
 threads-required = "num-test-threads"
 
 # CI: a test that fails and then passes is reported FLAKY and the job goes on,

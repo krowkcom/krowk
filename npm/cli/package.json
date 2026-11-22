@@ -1,0 +1,39 @@
+{
+  "name": "@gruntas/cli",
+  "version": "0.0.0-unpublished",
+  "description": "A coding agent harness: one session on any machine, model or agent — Claude, GPT, Grok, any OpenAI-compatible model, Claude Code or Codex — synced end-to-end encrypted, with a permalink for everything it produces.",
+  "keywords": [
+    "gruntas",
+    "coding-agent",
+    "agent-harness",
+    "agent",
+    "llm",
+    "cli",
+    "permalink",
+    "screenshot"
+  ],
+  "homepage": "https://krowk.com",
+  "bugs": "https://github.com/gruntas/gruntas/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gruntas/gruntas.git",
+    "directory": "npm/cli"
+  },
+  "license": "MIT",
+  "bin": {
+    "gruntas": "bin/gruntas.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "@gruntas/cli-darwin-arm64": "0.0.0-unpublished",
+    "@gruntas/cli-darwin-x64": "0.0.0-unpublished",
+    "@gruntas/cli-linux-arm64": "0.0.0-unpublished",
+    "@gruntas/cli-linux-x64": "0.0.0-unpublished",
+    "@gruntas/cli-win32-x64": "0.0.0-unpublished"
+  }
+}

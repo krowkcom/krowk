@@ -1,9 +1,9 @@
-$ krowk auth login --token krowk_sk_first
+$ gruntas auth login --token krowk_sk_first
 stdout:
 {
   "ok": true,
   "data": {
-    "path": "<scratch>/home/.krowk/credentials.json",
+    "path": "<scratch>/home/.gruntas/credentials.json",
     "confirmed": true,
     "key_id": "<key_1>",
     "workspace": "<ws_1>"
@@ -12,19 +12,19 @@ stdout:
   "breadcrumbs": [
     {
       "action": "push",
-      "cmd": "krowk push <file>",
+      "cmd": "gruntas push <file>",
       "description": "the key is stored and accepted, so nothing else is needed before uploading; <file> is the path to upload"
     }
   ]
 }
 exit: 0
 
-$ krowk auth login --token krowk_sk_second
+$ gruntas auth login --token krowk_sk_second
 stdout:
 {
   "ok": true,
   "data": {
-    "path": "<scratch>/home/.krowk/credentials.json",
+    "path": "<scratch>/home/.gruntas/credentials.json",
     "confirmed": true,
     "key_id": "<key_2>",
     "workspace": "<ws_2>"
@@ -33,14 +33,14 @@ stdout:
   "breadcrumbs": [
     {
       "action": "push",
-      "cmd": "krowk push <file>",
+      "cmd": "gruntas push <file>",
       "description": "the key is stored and accepted, so nothing else is needed before uploading; <file> is the path to upload"
     }
   ]
 }
 exit: 0
 
-$ krowk workspaces
+$ gruntas workspaces
 stdout:
 {
   "ok": true,
@@ -68,38 +68,38 @@ stdout:
   "breadcrumbs": [
     {
       "action": "switch the default",
-      "cmd": "krowk workspaces use <workspace>",
+      "cmd": "gruntas workspaces use <workspace>",
       "description": "repoints the machine-wide default at another stored key — <workspace> is a name from this list"
     },
     {
       "action": "pin this repository",
-      "cmd": "krowk config set workspace <workspace>",
-      "description": "writes .krowk/config.json at the repository root, so every command run inside it uses that workspace's key whoever runs it — <workspace> is a name from this list"
+      "cmd": "gruntas config set workspace <workspace>",
+      "description": "writes .gruntas/config.json at the repository root, so every command run inside it uses that workspace's key whoever runs it — <workspace> is a name from this list"
     }
   ]
 }
 exit: 0
 
-$ krowk workspaces use {WS1}
+$ gruntas workspaces use {WS1}
 stdout:
 {
   "ok": true,
   "data": {
     "default": "<ws_1>",
-    "path": "<scratch>/home/.krowk/credentials.json"
+    "path": "<scratch>/home/.gruntas/credentials.json"
   },
   "summary": "default workspace is now <ws_1>",
   "breadcrumbs": [
     {
       "action": "check what resolves here",
-      "cmd": "krowk workspaces",
-      "description": "a repo config, KROWK_WORKSPACE or --workspace still outranks the default"
+      "cmd": "gruntas workspaces",
+      "description": "a repo config, GRUNTAS_WORKSPACE or --workspace still outranks the default"
     }
   ]
 }
 exit: 0
 
-$ krowk workspaces
+$ gruntas workspaces
 stdout:
 {
   "ok": true,
@@ -127,19 +127,19 @@ stdout:
   "breadcrumbs": [
     {
       "action": "switch the default",
-      "cmd": "krowk workspaces use <workspace>",
+      "cmd": "gruntas workspaces use <workspace>",
       "description": "repoints the machine-wide default at another stored key — <workspace> is a name from this list"
     },
     {
       "action": "pin this repository",
-      "cmd": "krowk config set workspace <workspace>",
-      "description": "writes .krowk/config.json at the repository root, so every command run inside it uses that workspace's key whoever runs it — <workspace> is a name from this list"
+      "cmd": "gruntas config set workspace <workspace>",
+      "description": "writes .gruntas/config.json at the repository root, so every command run inside it uses that workspace's key whoever runs it — <workspace> is a name from this list"
     }
   ]
 }
 exit: 0
 
-@cat {home}/.krowk/credentials.json
+@cat {home}/.gruntas/credentials.json
 {
   "default": "<ws_1>",
   "workspaces": {
@@ -158,7 +158,7 @@ exit: 0
   }
 }
 
-$ krowk auth verify
+$ gruntas auth verify
 stdout:
 {
   "ok": true,
@@ -175,14 +175,14 @@ stdout:
   "breadcrumbs": [
     {
       "action": "push",
-      "cmd": "krowk push <file>",
+      "cmd": "gruntas push <file>",
       "description": "the key works, so an upload with it lands in that workspace and does not expire; <file> is the path to upload"
     }
   ]
 }
 exit: 0
 
-$ krowk auth verify --workspace {WS2}
+$ gruntas auth verify --workspace {WS2}
 stdout:
 {
   "ok": true,
@@ -199,14 +199,14 @@ stdout:
   "breadcrumbs": [
     {
       "action": "push",
-      "cmd": "krowk push <file>",
+      "cmd": "gruntas push <file>",
       "description": "the key works, so an upload with it lands in that workspace and does not expire; <file> is the path to upload"
     }
   ]
 }
 exit: 0
 
-$ krowk auth verify
+$ gruntas auth verify
 stdout:
 {
   "ok": true,
@@ -223,14 +223,14 @@ stdout:
   "breadcrumbs": [
     {
       "action": "push",
-      "cmd": "krowk push <file>",
+      "cmd": "gruntas push <file>",
       "description": "the key works, so an upload with it lands in that workspace and does not expire; <file> is the path to upload"
     }
   ]
 }
 exit: 0
 
-$ krowk auth verify --workspace {WS1}
+$ gruntas auth verify --workspace {WS1}
 stdout:
 {
   "ok": true,
@@ -247,46 +247,46 @@ stdout:
   "breadcrumbs": [
     {
       "action": "push",
-      "cmd": "krowk push <file>",
+      "cmd": "gruntas push <file>",
       "description": "the key works, so an upload with it lands in that workspace and does not expire; <file> is the path to upload"
     }
   ]
 }
 exit: 0
 
-$ krowk auth verify --workspace <ws_3>
+$ gruntas auth verify --workspace <ws_3>
 stderr:
 {
   "ok": false,
   "error": {
     "error": "no_key_for_workspace",
-    "fix": "no key is stored for workspace <ws_3> — stored: <ws_1>, <ws_2>; run `krowk login` to add one",
+    "fix": "no key is stored for workspace <ws_3> — stored: <ws_1>, <ws_2>; run `gruntas login` to add one",
     "retryable": false
   }
 }
 exit: 3
 
-$ krowk config set workspace {WS2}
+$ gruntas config set workspace {WS2}
 stdout:
 {
   "ok": true,
   "data": {
     "key": "workspace",
     "value": "<ws_2>",
-    "path": "<scratch>/work/.krowk/config.json"
+    "path": "<scratch>/work/.gruntas/config.json"
   },
-  "summary": "workspace = <ws_2> in <scratch>/work/.krowk/config.json",
+  "summary": "workspace = <ws_2> in <scratch>/work/.gruntas/config.json",
   "breadcrumbs": [
     {
       "action": "check the effective configuration",
-      "cmd": "krowk config show",
+      "cmd": "gruntas config show",
       "description": "reports what actually resolves here, which layer wins, and why"
     }
   ]
 }
 exit: 0
 
-$ krowk auth verify
+$ gruntas auth verify
 stdout:
 {
   "ok": true,
@@ -303,19 +303,19 @@ stdout:
   "breadcrumbs": [
     {
       "action": "push",
-      "cmd": "krowk push <file>",
+      "cmd": "gruntas push <file>",
       "description": "the key works, so an upload with it lands in that workspace and does not expire; <file> is the path to upload"
     }
   ]
 }
 exit: 0
 
-$ krowk push a.txt --jq '.data.artifacts[0].file_url'
+$ gruntas push a.txt --jq '.data.artifacts[0].file_url'
 stdout:
 http://<registry>/_storage/weur/<ws_2>/<art_1>/a.txt
 exit: 0
 
-$ krowk workspaces --format human
+$ gruntas workspaces --format human
 stdout:
 Stored keys
   Local workspace — <ws_1> <key_1>  (default)
@@ -323,7 +323,7 @@ Stored keys
 Uploads from here land in <ws_2> (repo config)
 exit: 0
 
-$ @tty krowk workspaces
+$ @tty gruntas workspaces
 tty:
 Stored keys
   Local workspace — <ws_1> <key_1>  \e[2m(default)\e[0m

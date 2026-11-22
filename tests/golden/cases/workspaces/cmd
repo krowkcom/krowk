@@ -1,7 +1,7 @@
 @registry
-krowk workspaces
-krowk workspaces list
-krowk auth login --token krowk_sk_test
-krowk workspaces
-krowk workspaces use nope
-krowk workspaces --format human
+gruntas workspaces
+gruntas workspaces list
+gruntas auth login --token krowk_sk_test
+gruntas workspaces
+gruntas workspaces use nope
+gruntas workspaces --format human

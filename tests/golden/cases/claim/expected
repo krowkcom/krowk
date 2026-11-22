@@ -1,4 +1,4 @@
-$ krowk push a.txt
+$ gruntas push a.txt
 stdout:
 {
   "ok": true,
@@ -55,7 +55,7 @@ stdout:
   "breadcrumbs": [
     {
       "action": "keep past expiry",
-      "cmd": "krowk claim <art_1> <claim_1>",
+      "cmd": "gruntas claim <art_1> <claim_1>",
       "description": "this upload is anonymous and expires within the day; claiming it with a key moves it into that key's workspace — a Pro workspace keeps it, a free one gives it another 24 hours. The token is shown once and spent once"
     },
     {
@@ -67,7 +67,7 @@ stdout:
 }
 exit: 0
 
-$ krowk push a.txt
+$ gruntas push a.txt
 stdout:
 {
   "ok": true,
@@ -124,7 +124,7 @@ stdout:
   "breadcrumbs": [
     {
       "action": "keep past expiry",
-      "cmd": "krowk claim <art_2> <claim_2>",
+      "cmd": "gruntas claim <art_2> <claim_2>",
       "description": "this upload is anonymous and expires within the day; claiming it with a key moves it into that key's workspace — a Pro workspace keeps it, a free one gives it another 24 hours. The token is shown once and spent once"
     },
     {
@@ -136,7 +136,7 @@ stdout:
 }
 exit: 0
 
-$ krowk push a.txt
+$ gruntas push a.txt
 stdout:
 {
   "ok": true,
@@ -193,7 +193,7 @@ stdout:
   "breadcrumbs": [
     {
       "action": "keep past expiry",
-      "cmd": "krowk claim <art_3> <claim_3>",
+      "cmd": "gruntas claim <art_3> <claim_3>",
       "description": "this upload is anonymous and expires within the day; claiming it with a key moves it into that key's workspace — a Pro workspace keeps it, a free one gives it another 24 hours. The token is shown once and spent once"
     },
     {
@@ -205,13 +205,13 @@ stdout:
 }
 exit: 0
 
-$ krowk claim {ART} {TOKEN}
+$ gruntas claim {ART} {TOKEN}
 stderr:
 {
   "ok": false,
   "error": {
     "error": "unauthorized",
-    "fix": "this endpoint needs an API key — run `krowk login --token krowk_sk_...`, or set KROWK_TOKEN",
+    "fix": "this endpoint needs an API key — run `gruntas login --token krowk_sk_...`, or set GRUNTAS_TOKEN",
     "message": "Provide a valid API key as `Authorization: Bearer krowk_sk_...`.",
     "retryable": false,
     "status": 401
@@ -219,7 +219,7 @@ stderr:
 }
 exit: 3
 
-$ krowk claim {ART} {TOKEN}
+$ gruntas claim {ART} {TOKEN}
 stdout:
 {
   "ok": true,
@@ -279,14 +279,14 @@ stdout:
     },
     {
       "action": "group under a run",
-      "cmd": "krowk artifacts attach <art_1> --run <run>",
-      "description": "a claimed upload belongs to a workspace but to no run, and a run is where the pull request, commit and session are recorded — `krowk runs start` opens one, and its slug goes in place of <run>"
+      "cmd": "gruntas artifacts attach <art_1> --run <run>",
+      "description": "a claimed upload belongs to a workspace but to no run, and a run is where the pull request, commit and session are recorded — `gruntas runs start` opens one, and its slug goes in place of <run>"
     }
   ]
 }
 exit: 0
 
-$ krowk claim {ART} {TOKEN}
+$ gruntas claim {ART} {TOKEN}
 stdout:
 {
   "ok": true,
@@ -346,14 +346,14 @@ stdout:
     },
     {
       "action": "group under a run",
-      "cmd": "krowk artifacts attach <art_1> --run <run>",
-      "description": "a claimed upload belongs to a workspace but to no run, and a run is where the pull request, commit and session are recorded — `krowk runs start` opens one, and its slug goes in place of <run>"
+      "cmd": "gruntas artifacts attach <art_1> --run <run>",
+      "description": "a claimed upload belongs to a workspace but to no run, and a run is where the pull request, commit and session are recorded — `gruntas runs start` opens one, and its slug goes in place of <run>"
     }
   ]
 }
 exit: 0
 
-$ krowk claim {ART} <claim_4>
+$ gruntas claim {ART} <claim_4>
 stderr:
 {
   "ok": false,
@@ -367,7 +367,7 @@ stderr:
 }
 exit: 2
 
-$ krowk runs start --title claimed
+$ gruntas runs start --title claimed
 stdout:
 {
   "ok": true,
@@ -376,7 +376,7 @@ stdout:
     "status": "open",
     "started_at": "<time>",
     "metadata": {
-      "krowk.client": "krowk-cli/0.0.0-golden",
+      "krowk.client": "gruntas-cli/0.0.0-golden",
       "vcs.change.title": "claimed"
     }
   },
@@ -384,19 +384,19 @@ stdout:
   "breadcrumbs": [
     {
       "action": "attach uploads",
-      "cmd": "krowk push <file> --run <run_1>",
+      "cmd": "gruntas push <file> --run <run_1>",
       "description": "every push naming this run is grouped under it and inherits the metadata recorded on it; <file> is the path to upload"
     },
     {
       "action": "close",
-      "cmd": "krowk runs finish <run_1>",
+      "cmd": "gruntas runs finish <run_1>",
       "description": "marks the run finished; a run stays open until something says so"
     }
   ]
 }
 exit: 0
 
-$ krowk claim {ART2} {TOKEN2} --run {RUN}
+$ gruntas claim {ART2} {TOKEN2} --run {RUN}
 stdout:
 {
   "ok": true,
@@ -413,7 +413,7 @@ stdout:
         "run": {
           "slug": "<run_1>",
           "metadata": {
-            "krowk.client": "krowk-cli/0.0.0-golden",
+            "krowk.client": "gruntas-cli/0.0.0-golden",
             "vcs.change.title": "claimed"
           },
           "created_at": "<time>"
@@ -466,13 +466,13 @@ stdout:
 }
 exit: 0
 
-$ @tty krowk claim {ART2} {TOKEN2}
+$ @tty gruntas claim {ART2} {TOKEN2}
 tty:
 \e[32m✓\e[0m Claimed a.txt → http://<registry>/a/<art_2>
 \e[2m  5 B · run <run_1> · kept for good\e[0m
 exit: 0
 
-$ krowk artifacts delete {ART3} <claim_4>
+$ gruntas artifacts delete {ART3} <claim_4>
 stderr:
 {
   "ok": false,
@@ -486,7 +486,7 @@ stderr:
 }
 exit: 2
 
-$ krowk artifacts delete {ART3} {TOKEN3}
+$ gruntas artifacts delete {ART3} {TOKEN3}
 stdout:
 {
   "ok": true,
@@ -498,7 +498,7 @@ stdout:
 }
 exit: 0
 
-$ krowk artifacts delete {ART3} {TOKEN3}
+$ gruntas artifacts delete {ART3} {TOKEN3}
 stdout:
 {
   "ok": true,

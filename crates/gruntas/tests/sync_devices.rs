@@ -1,0 +1,522 @@
+//! Sync's devices and sessions against the stand-in registry, on scratch
+//! homes (R-E2E-3, R-SYNC-1, R-SYNC-2, R-RELAY-1): setup on and off the
+//! registry, leases and chunks, signing keys and relay tickets. Adding a
+//! device by pairing is `sync_pairing.rs`.
+
+#![cfg(all(feature = "harness", unix))]
+
+use gruntas_api::client::RequestSigner;
+use gruntas_client::e2e::{self, AccountKey, SessionKey};
+use gruntas_client::keystore::Keystore;
+use gruntas_client::user_key::UserKey;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::Arc;
+
+#[path = "common/device_list.rs"]
+mod device_list;
+use device_list::People;
+
+const TOKEN: &str = "krowk_sk_sync_devices";
+
+fn root(name: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!("gruntas-devices-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for d in ["laptop", "desktop"] {
+        std::fs::create_dir_all(root.join(d)).unwrap();
+    }
+    root.canonicalize().unwrap()
+}
+
+/// gruntas with `home` as HOME and nothing else of this machine's.
+fn attended(home: &Path, api: &str, token: &str, args: &[&str]) -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
+    c.args(args)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", home)
+        .env("GRUNTAS_NO_UPDATE_CHECK", "1")
+        .env("GRUNTAS_API_URL", api)
+        .env("GRUNTAS_TOKEN", token)
+        .current_dir(home)
+        .stdin(Stdio::null());
+    c
+}
+
+/// Sync set up in `home`: an account key and the device's own keys, and
+/// the device alone on the person's device list in the registry, `token`
+/// bound to it — as `gruntas sync init` leaves a machine.
+fn set_up(home: &Path, api: &str, token: &str) -> gruntas_api::Client {
+    let keys = Keystore::new(&home.join(".gruntas"));
+    keys.recover(AccountKey::generate()).unwrap();
+    device_list::start(api, token, &keys, "laptop")
+}
+
+fn uuid(b: &[u8; 16]) -> String {
+    let h = e2e::hex(b);
+    format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
+}
+
+/// R-SYNC-10, R-SYNC-14: a Free person's key is admitted to sync; a
+/// service key is refused every sync call with a fix.
+#[test]
+fn r_sync_14_a_service_key_is_refused_with_a_fix_and_free_is_admitted() {
+    let registry = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), gruntas_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+
+    let refused = gruntas_api::Client::new(&api, "krowk_sk_service_workspace").device_list_all().unwrap_err();
+    assert!(refused.code() == "sync_requires_paid_plan" && refused.fix().contains("`gruntas billing`"), "{refused:?}");
+
+    let free = gruntas_api::Client::new(&api, "krowk_sk_free_workspace").device_list_all();
+    assert!(free.as_ref().err().is_none_or(|e| e.code() != "sync_requires_paid_plan"), "{free:?}");
+}
+
+/// R-SYNC-2: a second device cannot take a lease that is held, and the
+/// holder's stale fence is refused once the lease has moved on.
+#[test]
+fn r_sync_2_a_stale_lease_holders_write_is_refused() {
+    let registry = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), gruntas_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let (ma, mb) = two_machines(&api, "stale-holder");
+    let ((a, client), (b, cb)) = ((&ma.device, &ma.client), (&mb.device, &mb.client));
+    let id: [u8; 16] = e2e::random();
+    let key = SessionKey::generate();
+    let wrapped = e2e::hex(&e2e::wrap_session_key(&key, &id, &UserKey::first()));
+    client.put_sync_session(&uuid(&id), &wrapped, None, Some(&e2e::hex(&e2e::seal_session_index(&key, &id, b"one"))), None).unwrap();
+
+    let held = client.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "production").unwrap();
+    assert_eq!(held.token.len(), 32, "the acquirer, and only it, is handed a token");
+    let refused = cb.acquire_lease(&uuid(&id), &b.id().to_string(), 60, "production").unwrap_err();
+    assert_eq!(refused.code(), "lease_held");
+    assert!(!format!("{:?}", refused.body).contains(&held.token));
+    // Knowing the fence is not holding the lease.
+    assert_eq!(cb.renew_lease(&uuid(&id), &b.id().to_string(), &held.fence.to_string(), 60, "production").unwrap_err().code(), "lease_stale");
+    // Nor is holding its token, for another device: the holder's calls are
+    // signed by the holder.
+    assert_eq!(cb.renew_lease(&uuid(&id), &b.id().to_string(), &held.token, 60, "production").unwrap_err().code(), "lease_stale");
+    let listed = client.list_sync_sessions("", 50).unwrap();
+    assert_eq!(listed.sessions[0].lease.as_ref().unwrap().device, a.id().to_string());
+    assert!(listed.sessions[0].sealed_index.is_empty(), "a listing carries no sealed index");
+
+    let moved = client.renew_lease(&uuid(&id), &b.id().to_string(), &held.token, 60, "production").unwrap();
+    assert!(moved.fence > held.fence && !moved.token.is_empty() && moved.token != held.token);
+
+    let stale = client.put_sync_session(&uuid(&id), &wrapped, None, Some(&e2e::hex(&e2e::seal_session_index(&key, &id, b"two"))), Some(&held.token)).unwrap_err();
+    assert_eq!(stale.code(), "lease_stale");
+    assert!(stale.fix().contains("acquire it again"), "{:?}", stale.body);
+    cb.put_sync_session(&uuid(&id), &wrapped, None, Some(&e2e::hex(&e2e::seal_session_index(&key, &id, b"two"))), Some(&moved.token)).unwrap();
+    // A write that names no index leaves it as it was.
+    cb.put_sync_session(&uuid(&id), &wrapped, None, None, Some(&moved.token)).unwrap();
+    let shown = client.show_sync_session(&uuid(&id)).unwrap();
+    assert_eq!(e2e::open_session_index(&e2e::unhex(&shown.sealed_index).unwrap(), &id, &key).unwrap(), b"two");
+    cb.release_lease(&uuid(&id), &moved.token).unwrap();
+}
+
+/// R-E2E-3: off a terminal, `devices add` and `sync join` refuse — a code
+/// handed to an agent does not add a device — and nothing is made.
+#[test]
+fn r_e2e_3_add_and_join_refuse_without_a_person_at_a_terminal() {
+    let registry = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), gruntas_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let r = root("headless");
+    let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
+    set_up(&laptop, &api, TOKEN);
+
+    for (home, args) in [(&laptop, vec!["devices", "add", "--json"]), (&desktop, vec!["sync", "join", "--json"])] {
+        let out = attended(home, &api, TOKEN, &args).stdout(Stdio::piped()).stderr(Stdio::piped()).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success() && err.contains("confirmation_required") && err.contains("a person at a terminal"), "{err}");
+    }
+    assert!(!desktop.join(".gruntas/device.json").exists(), "join asked for nothing");
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// R-SYNC-2: a chunk is the lease holder's to write. A stale token and a
+/// missing one are both refused with a fix, and nothing is stored.
+#[test]
+fn r_sync_2_a_chunk_with_a_stale_or_missing_lease_token_is_refused() {
+    let registry = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), gruntas_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let (ma, mb) = two_machines(&api, "stale-chunk");
+    let ((a, client), (b, cb)) = ((&ma.device, &ma.client), (&mb.device, &mb.client));
+    let id: [u8; 16] = e2e::random();
+    let key = SessionKey::generate();
+    client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&key, &id, &UserKey::first())), None, None, None).unwrap();
+    let held = client.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "production").unwrap();
+    let moved = client.renew_lease(&uuid(&id), &b.id().to_string(), &held.token, 60, "production").unwrap();
+
+    let sealed = e2e::ChunkSealer::new(&key.clone().into(), id, 0, e2e::NO_PREVIOUS_CHUNK, held.fence).seal(b"a stale holder's turn", false).unwrap();
+    for token in [held.token.as_str(), ""] {
+        let e = cb.put_chunk(&uuid(&id), 0, &sealed, token).unwrap_err();
+        assert_eq!(e.code(), "lease_stale", "{:?}", e.body);
+        assert!(e.fix().contains("acquire it again"), "{:?}", e.body);
+    }
+    assert!(client.list_chunks(&uuid(&id), None, 50).unwrap().chunks.is_empty());
+
+    // Its token, from the device it was handed to, is not the holder's.
+    assert_eq!(client.put_chunk(&uuid(&id), 0, &sealed, &moved.token).unwrap_err().code(), "lease_stale");
+    cb.put_chunk(&uuid(&id), 0, &sealed, &moved.token).unwrap();
+    let again = cb.put_chunk(&uuid(&id), 0, &sealed, &moved.token).unwrap_err();
+    assert_eq!(again.code(), "chunk_exists");
+    // A chunk is no artifact: the listing a push reads does not have it.
+    let artifacts = client.list_artifacts("", 50).unwrap();
+    assert!(artifacts.artifacts.is_empty(), "{artifacts:?}");
+}
+
+/// The stand-in holds the registry's limits: the session cap, the burst
+/// ceiling on creates, and revocation by the dashboard's Revoke.
+#[test]
+fn the_stand_in_models_the_session_cap_the_burst_ceiling_and_revocation() {
+    let config = gruntas_devregistry::Config { max_sessions: 1, ..Default::default() };
+    let registry = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), config).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let (ma, mb) = two_machines(&api, "limits");
+    let (device, mut client) = (&ma.device, ma.client);
+    // A 429 is retried after its Retry-After; the minute is not waited out here.
+    client.sleep = |_| {};
+    let wrapped = |id: &[u8; 16]| e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), id, &UserKey::first()));
+
+    let first: [u8; 16] = e2e::random();
+    client.put_sync_session(&uuid(&first), &wrapped(&first), None, None, None).unwrap();
+    let second: [u8; 16] = e2e::random();
+    assert_eq!(client.put_sync_session(&uuid(&second), &wrapped(&second), None, None, None).unwrap_err().code(), "session_limit_reached");
+
+    // 120 creates a minute, then 429 (two spent above). Each a session of
+    // its own, so no two are the same signed request a moment apart.
+    let refused = (0..125)
+        .find_map(|_| {
+            let id: [u8; 16] = e2e::random();
+            client.put_sync_session(&uuid(&id), &wrapped(&id), None, None, None).err().filter(|e| e.code() != "session_limit_reached")
+        })
+        .expect("the ceiling was met");
+    assert_eq!(refused.code(), "too_many_requests");
+
+    // The dashboard's Revoke: the device is refused, and its key with it,
+    // reads as well as writes.
+    revoke(registry.addr(), &ma.token, &device.id().to_string());
+    assert_eq!(client.acquire_lease(&uuid(&first), &device.id().to_string(), 60, "production").unwrap_err().code(), "unauthorized");
+    assert_eq!(client.show_sync_session(&uuid(&first)).unwrap_err().code(), "unauthorized");
+    // Another of the person's keys, signed by the revoked device, is
+    // refused for the device.
+    let other = gruntas_api::Client::new(&api, &mb.token).signed_by(ma.signer.clone());
+    assert_eq!(other.show_sync_session(&uuid(&first)).unwrap_err().code(), "device_revoked");
+    mb.client.show_sync_session(&uuid(&first)).unwrap();
+}
+
+/// R-SYNC-2, as the stand-in holds it: a pending chunk a displaced holder
+/// declared is not the next holder's to finalize, does not block its index,
+/// and a chunk is at most 64 MiB.
+#[test]
+fn r_sync_2_a_displaced_holders_pending_chunk_is_replaced_not_finalized() {
+    let registry = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), gruntas_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let (ma, mb) = two_machines(&api, "displaced");
+    let ((a, client), (b, cb)) = ((&ma.device, &ma.client), (&mb.device, &mb.client));
+    let id: [u8; 16] = e2e::random();
+    let key = SessionKey::generate();
+    let session = uuid(&id);
+    client.put_sync_session(&session, &e2e::hex(&e2e::wrap_session_key(&key, &id, &UserKey::first())), None, None, None).unwrap();
+
+    // A declares chunk 0 by hand and is displaced before finalizing it.
+    let held = client.acquire_lease(&session, &a.id().to_string(), 60, "production").unwrap();
+    let stale = e2e::ChunkSealer::new(&key.clone().into(), id, 0, e2e::NO_PREVIOUS_CHUNK, held.fence).seal(b"A's", false).unwrap();
+    let declare = |by: &Machine, token: &str, blob: &[u8], size: usize| {
+        let body = serde_json::json!({ "chunk": { "index": 0, "byte_size": size, "checksum": e2e::hex(&sha(blob)), "lease_token": token } });
+        raw_as(registry.addr(), &by.token, Some(&*by.signer), "POST", &format!("/v1/sessions/{session}/chunks"), &body.to_string())
+    };
+    assert!(declare(&ma, &held.token, &stale, stale.len()).starts_with("HTTP/1.1 201"));
+    let moved = client.renew_lease(&session, &b.id().to_string(), &held.token, 60, "production").unwrap();
+    let fin = raw_as(registry.addr(), &mb.token, Some(&*mb.signer), "PUT", &format!("/v1/sessions/{session}/chunks/0/finalization"), &serde_json::json!({ "chunk": { "lease_token": moved.token } }).to_string());
+    assert!(fin.starts_with("HTTP/1.1 409") && fin.contains("lease_stale"), "{fin}");
+
+    // B's own chunk 0 replaces it and lands.
+    let mine = e2e::ChunkSealer::new(&key.clone().into(), id, 0, e2e::NO_PREVIOUS_CHUNK, moved.fence).seal(b"B's", false).unwrap();
+    cb.put_chunk(&session, 0, &mine, &moved.token).unwrap();
+    let listed = client.list_chunks(&session, None, 50).unwrap();
+    assert_eq!(e2e::ChunkReader::new(&key.clone().into(), id).open(&client.read_chunk(&listed.chunks[0]).unwrap()).unwrap(), b"B's");
+
+    let too_big = declare(&mb, &moved.token, b"x", (64 << 20) + 1);
+    assert!(too_big.starts_with("HTTP/1.1 422") && too_big.contains("byte_size"), "{too_big}");
+}
+
+fn sha(b: &[u8]) -> [u8; 32] {
+    e2e::chunk_digest(b)
+}
+
+/// One of the person's machines: its device, the key it holds, a client
+/// acting as it and its signer for raw calls.
+struct Machine {
+    device: e2e::DeviceKey,
+    /// Its signing key's public half, which its list entry carries.
+    signing: [u8; 32],
+    token: String,
+    client: gruntas_api::Client,
+    signer: Arc<dyn RequestSigner>,
+}
+
+/// A machine of the person's, a home of its own under `root`: its device on
+/// the person's device list, and a key of its own that speaks for it, as
+/// `gruntas sync init` or `sync join` leaves one. Its client is signed by the
+/// device's own key (crypto.md → Signed registry requests).
+fn machine(api: &str, people: &mut People, root: &Path, name: &str) -> Machine {
+    let keys = Keystore::new(&root.join(name).join(".gruntas"));
+    let (device, signing) = (keys.device_key().unwrap(), keys.signing_key().unwrap());
+    people.enlist(&keys, name);
+    people.publish(api, TOKEN);
+    let client = people.client(api, TOKEN, people.len() - 1);
+    let public = signing.public().0;
+    let signer = e2e::DeviceSigner::new(device.id(), signing).shared();
+    Machine { device, signing: public, token: device_list::key(TOKEN, name), client, signer }
+}
+
+/// The laptop and the desktop, in that order: the laptop's device starts
+/// the list, and adds the desktop's.
+fn two_machines(api: &str, name: &str) -> (Machine, Machine) {
+    let (mut people, r) = (People::default(), root(name));
+    (machine(api, &mut people, &r, "laptop"), machine(api, &mut people, &r, "desktop"))
+}
+
+/// One request to the stand-in on `token`, signed by `signer` when there is
+/// one, as gruntas-api signs, and its whole answer.
+fn raw_as(addr: std::net::SocketAddr, token: &str, signer: Option<&dyn RequestSigner>, method: &str, path: &str, body: &str) -> String {
+    let signed = signer.map_or(String::new(), |s| {
+        let at = jiff::Timestamp::now().as_millisecond().to_string();
+        let signature = e2e::hex(&s.sign(&gruntas_api::client::signing_input(method, path, &at, body.as_bytes(), &s.device(), &format!("http://{addr}"))));
+        format!("X-Krowk-Device: {}\r\nX-Krowk-Timestamp: {at}\r\nX-Krowk-Signature: {signature}\r\nX-Krowk-Signature-Version: 2\r\n", s.device())
+    });
+    let mut conn = TcpStream::connect(addr).unwrap();
+    write!(conn, "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\n{signed}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+    let mut answer = String::new();
+    conn.read_to_string(&mut answer).unwrap();
+    answer
+}
+
+/// The dashboard's Revoke of `device`, by the person `token` is a key of.
+fn revoke(addr: std::net::SocketAddr, token: &str, device: &str) {
+    let answer = raw_as(addr, token, None, "POST", &format!("/_settings/devices/{device}/revocation"), "");
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+}
+
+/// R-RELAY-1: a device's signing key is the one its list entry carries,
+/// and the relay tickets the registry issues name it. Registering one the
+/// account key's way — which any key of the workspace could call, naming
+/// any key — is gone, so no other key can swap in a key it holds and stand
+/// in the device's relay channels.
+#[test]
+fn r_relay_1_a_signing_key_is_the_lists_and_cannot_be_swapped() {
+    use gruntas_client::relay_ticket;
+    let registry = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), gruntas_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let r = root("signing");
+    let laptop = r.join("laptop");
+    let client = set_up(&laptop, &api, TOKEN);
+    let ks = Keystore::new(&laptop.join(".gruntas"));
+    let device = ks.device().unwrap().unwrap();
+    let held = ks.signing_key().unwrap().public().0;
+    let account = ks.account_id().unwrap().unwrap().to_string();
+    let signer = e2e::DeviceSigner::new(device.id(), ks.signing_key().unwrap()).shared();
+    let id: [u8; 16] = e2e::random();
+    client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), &id, &UserKey::first())), None, None, None).unwrap();
+    let keys = vec![(gruntas_devregistry::TICKET_KID, gruntas_devregistry::ticket_public_key())];
+    let ticketed = || {
+        let t = client.relay_ticket(&uuid(&id), &device.id().to_string(), "production").unwrap();
+        relay_ticket::verify(&t.relay_ticket, &keys, relay_ticket::now()).unwrap().signing_key
+    };
+    assert_eq!(ticketed(), held);
+
+    let swap = serde_json::json!({"device": {"public_key": e2e::hex(&device.public().0), "signing_key": e2e::hex(&[9; 32]), "name": "laptop", "account_key_id": account}});
+    let answer = raw_as(registry.addr(), TOKEN, Some(&*signer), "POST", "/v1/devices", &swap.to_string());
+    assert!(answer.starts_with("HTTP/1.1 410") && answer.contains("sync_reset"), "{answer}");
+    assert_eq!(ticketed(), held, "the tickets still name the list's key");
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// R-RELAY-1: the registry vouches for a device at the relay with tickets
+/// (relay.md → Tickets): a host's comes with the lease, at its fence, and
+/// goes to the new holder at a hand-over; a viewer's is asked for, by a
+/// device of the workspace that is not revoked. Each verifies under the
+/// registry's key and names the device's own signing key.
+#[test]
+fn r_relay_1_leases_and_viewers_are_issued_tickets_the_relay_can_check() {
+    use gruntas_client::relay_ticket;
+    let registry = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), gruntas_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let keys = vec![(gruntas_devregistry::TICKET_KID, gruntas_devregistry::ticket_public_key())];
+    let (ma, mb) = two_machines(&api, "tickets");
+    let ((a, client), (b, cb)) = ((&ma.device, &ma.client), (&mb.device, &mb.client));
+    let id: [u8; 16] = e2e::random();
+    client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), &id, &UserKey::first())), None, None, None).unwrap();
+
+    let held = client.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "development").unwrap();
+    let t = relay_ticket::verify(&held.relay_ticket, &keys, relay_ticket::now()).unwrap();
+    assert_eq!((t.role, t.env, t.fence, t.device, t.signing_key, t.session), (e2e::RELAY_ROLE_HOST, relay_ticket::ENV_DEVELOPMENT, held.fence, a.id().0, ma.signing, id));
+    let moved = client.renew_lease(&uuid(&id), &b.id().to_string(), &held.token, 60, "production").unwrap();
+    let t = relay_ticket::verify(&moved.relay_ticket, &keys, relay_ticket::now()).unwrap();
+    assert_eq!((t.device, t.fence, t.env), (b.id().0, held.fence + 1, relay_ticket::ENV_PRODUCTION), "the new holder's, at the new fence");
+
+    let watch = client.relay_ticket(&uuid(&id), &a.id().to_string(), "production").unwrap();
+    // A ticket is the named device's own to ask for: another device of the
+    // workspace, signing as itself, is refused one in its name.
+    assert_eq!(cb.relay_ticket(&uuid(&id), &a.id().to_string(), "production").unwrap_err().code(), "device_mismatch");
+    let t = relay_ticket::verify(&watch.relay_ticket, &keys, relay_ticket::now()).unwrap();
+    assert_eq!((t.role, t.fence, t.signing_key), (e2e::RELAY_ROLE_VIEWER, 0, ma.signing));
+    assert_eq!(client.relay_ticket(&uuid(&id), &a.id().to_string(), "staging").unwrap_err().code(), "invalid");
+    let other: [u8; 16] = e2e::random();
+    assert_eq!(client.relay_ticket(&uuid(&other), &a.id().to_string(), "production").unwrap_err().status, 404);
+}
+
+/// Ticket 16c, as the stand-in holds it: a call acting as a device is
+/// signed by that device's key. The API key alone — unsigned, or signed by
+/// a key that is not the device's — acquires nothing and mints nothing; a
+/// signed request sent twice, or signed outside five minutes, is refused;
+/// and a revoked device's signed calls are refused.
+#[test]
+fn signed_calls_refuse_the_api_key_alone_a_replay_a_stale_signature_and_a_revoked_device() {
+    let registry = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), gruntas_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let (ma, mb) = two_machines(&api, "signed");
+    let (a, client, signer) = (&ma.device, &ma.client, &ma.signer);
+    let id: [u8; 16] = e2e::random();
+    client.put_sync_session(&uuid(&id), &e2e::hex(&e2e::wrap_session_key(&SessionKey::generate(), &id, &UserKey::first())), None, None, None).unwrap();
+
+    let unsigned = gruntas_api::Client::new(&api, &ma.token);
+    assert_eq!(unsigned.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "production").unwrap_err().code(), "device_signature_missing");
+    let lease = format!("/v1/sessions/{}/lease", uuid(&id));
+    let body = serde_json::json!({ "lease": { "device": a.id().to_string() } }).to_string();
+    assert!(raw_as(registry.addr(), &ma.token, None, "POST", &lease, &body).contains("signature_required"));
+    let stranger = e2e::DeviceSigner::new(a.id(), e2e::SigningKey::generate());
+    assert!(raw_as(registry.addr(), &ma.token, Some(&stranger), "POST", &lease, &body).contains("signature_invalid"));
+    let ticket = format!("/v1/sessions/{}/relay_ticket?device={}", uuid(&id), a.id());
+    assert!(raw_as(registry.addr(), &ma.token, Some(&stranger), "GET", &ticket, "").contains("signature_invalid"));
+
+    // The same signed request twice: the second is a replay.
+    let (addr, origin) = (registry.addr(), registry.url());
+    let v2 = |at: &str, device: &str| gruntas_api::client::signing_input("GET", &ticket, at, b"", device, &origin);
+    let send = |at: &str, lines: &[u8]| {
+        let signature = e2e::hex(&signer.sign(lines));
+        let version = if lines.starts_with(b"krowk/registry/v2\n") { "X-Krowk-Signature-Version: 2\r\n" } else { "" };
+        let mut conn = TcpStream::connect(addr).unwrap();
+        write!(conn, "GET {ticket} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\nX-Krowk-Device: {}\r\nX-Krowk-Timestamp: {at}\r\nX-Krowk-Signature: {signature}\r\n{version}Content-Length: 0\r\nConnection: close\r\n\r\n", ma.token, a.id()).unwrap();
+        let mut answer = String::new();
+        conn.read_to_string(&mut answer).unwrap();
+        answer
+    };
+    let now = || jiff::Timestamp::now().as_millisecond().to_string();
+    let at = now();
+    assert!(send(&at, &v2(&at, &a.id().to_string())).starts_with("HTTP/1.1 200"));
+    assert!(send(&at, &v2(&at, &a.id().to_string())).contains("signature_replayed"));
+    let stale = (jiff::Timestamp::now().as_millisecond() - 6 * 60 * 1000).to_string();
+    assert!(send(&stale, &v2(&stale, &a.id().to_string())).contains("signature_stale"));
+
+    // Ticket 163: a v2 signature names its device, so the laptop's key over
+    // lines naming the desktop is refused under the laptop's own header.
+    // v1's lines, without the version header, are still taken.
+    let at = now();
+    assert!(send(&at, &v2(&at, &mb.device.id().to_string())).contains("signature_invalid"));
+    let at = now();
+    let v1 = format!("krowk/registry/v1\nGET\n{ticket}\n{at}\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    assert!(send(&at, v1.as_bytes()).starts_with("HTTP/1.1 200"));
+
+    // Revoked by the dashboard's Revoke: its own signed calls are refused,
+    // the key it holds revoked with it.
+    revoke(registry.addr(), &ma.token, &a.id().to_string());
+    assert_eq!(client.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "production").unwrap_err().code(), "unauthorized");
+    // Signed by it on another of the person's keys, it is the device that
+    // is refused.
+    let as_revoked = gruntas_api::Client::new(&api, &mb.token).signed_by(signer.clone());
+    assert_eq!(as_revoked.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "production").unwrap_err().code(), "device_revoked");
+}
+
+/// A pasted image's log event, as a host logs it: `item.completed` with the
+/// prompt's `userText`, naming `r`.
+fn image_event(session: &str, r: &gruntas_harness::protocol::ImageRef) -> serde_json::Value {
+    serde_json::json!({"id": "01a0ec7b-4444-7000-8000-000000000001", "sessionId": session, "timeMs": 1, "type": "item.completed", "turnId": "t1", "itemId": "i1", "item": {"kind": "userText", "text": "[Image #1]", "images": [r]}})
+}
+
+/// R-IMG-9, R-IMG-11: the laptop's host keeps a pasted image and puts it in
+/// the registry, sealed under the session key and named by a keyed hash,
+/// before the chunk naming it; the desktop fetches it by that name, opens
+/// it and keeps it, its sha256 the log's. The registry holds nothing under
+/// the image's own hash.
+#[test]
+fn r_img_9_a_hosts_image_reaches_another_device_sealed_under_a_keyed_name() {
+    use gruntas_harness::{images, sync::store};
+    let registry = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), gruntas_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let (ma, mb) = two_machines(&api, "images");
+    let id: [u8; 16] = e2e::random();
+    let session = uuid(&id);
+    let key = SessionKey::generate();
+    let keys: e2e::SessionKeys = key.clone().into();
+    let wrapped = e2e::hex(&e2e::wrap_session_key(&key, &id, &UserKey::first()));
+    ma.client.put_sync_session(&session, &wrapped, None, None, None).unwrap();
+    let held = ma.client.acquire_lease(&session, &ma.device.id().to_string(), 60, "production").unwrap();
+
+    let r = root("images-dirs");
+    let (on_laptop, on_desktop) = (r.join("laptop").join(&session), r.join("desktop").join(&session));
+    let png = [&b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01"[..], b"a pasted screenshot"].concat();
+    let kept = images::save(&on_laptop, &[images::Decoded { number: 1, media_type: "image/png", bytes: png.clone().into() }]).unwrap().remove(0);
+    let sha = kept.sha256.clone().unwrap();
+    assert!(!store::fetch_image(&mb.client, &keys, &session, &on_desktop, &kept).unwrap(), "not yet: nothing put");
+
+    let laptop = Arc::new(ma.client);
+    let mut w = store::Writer::take_up(laptop.clone(), keys.clone(), &session, wrapped, store::Index::default(), held.fence).unwrap().with_images(on_laptop);
+    w.push(image_event(&session, &kept));
+    w.flush(&held.token).unwrap();
+    assert_eq!(laptop.list_chunks(&session, None, 10).unwrap().chunks.len(), 1);
+
+    assert!(store::fetch_image(&mb.client, &keys, &session, &on_desktop, &kept).unwrap());
+    let fetched = std::fs::read(images::path(&on_desktop, &kept).unwrap()).unwrap();
+    assert_eq!((images::sha256(&fetched), fetched), (sha.clone(), png.clone()), "the desktop's own copy, under the same name");
+    let name = e2e::image_name(&keys, &e2e::unhex(&sha).unwrap().try_into().unwrap());
+    let sealed = mb.client.get_image_object(&session, &name).unwrap();
+    assert_eq!(sealed.len(), png.len() + e2e::IMAGE_OVERHEAD, "the registry learns the size");
+    assert!(!sealed.windows(8).any(|w| png.windows(8).any(|p| p == w)), "and none of the bytes");
+    assert_eq!(mb.client.get_image_object(&session, &sha).unwrap_err().status, 404, "nor the image's hash");
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// R-IMG-12: a session moving to a machine fetches the images its log names
+/// before the log is written back, so the first turn there sends them; one
+/// the registry lacks fails the restore, and one logged with no hash is
+/// passed over.
+#[test]
+fn r_img_12_a_move_fetches_the_images_the_log_names_and_fails_without_them() {
+    use gruntas_harness::{images, sync::{handoff, store}};
+    let registry = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), gruntas_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let (ma, mb) = two_machines(&api, "move-images");
+    let id: [u8; 16] = e2e::random();
+    let session = uuid(&id);
+    let key = SessionKey::generate();
+    let keys: e2e::SessionKeys = key.clone().into();
+    let wrapped = e2e::hex(&e2e::wrap_session_key(&key, &id, &UserKey::first()));
+    ma.client.put_sync_session(&session, &wrapped, None, None, None).unwrap();
+    let held = ma.client.acquire_lease(&session, &ma.device.id().to_string(), 60, "production").unwrap();
+
+    let r = root("move-images-dirs");
+    let (on_a, on_b) = (r.join("a").join(&session), r.join("b").join(&session));
+    let png = [&b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01"[..], b"before the move"].concat();
+    let kept = images::save(&on_a, &[images::Decoded { number: 1, media_type: "image/png", bytes: png.clone().into() }]).unwrap().remove(0);
+    let old = gruntas_harness::protocol::ImageRef { number: 2, media_type: "image/png".into(), file: "2-abc.png".into(), sha256: None };
+    let events = vec![image_event(&session, &kept), image_event(&session, &old)];
+
+    // Nothing put yet: the restore fails, and B holds no image.
+    let err = handoff::fetch_images(&mb.client, &keys, &session, &on_b, &events).unwrap_err();
+    assert!(err.contains("image #1") && err.contains("host it again where it was"), "{err}");
+    assert!(images::path(&on_b, &kept).is_some_and(|p| !p.exists()));
+
+    let laptop = Arc::new(ma.client);
+    let mut w = store::Writer::take_up(laptop, keys.clone(), &session, wrapped, store::Index::default(), held.fence).unwrap().with_images(on_a);
+    w.push(events[0].clone());
+    w.flush(&held.token).unwrap();
+
+    handoff::fetch_images(&mb.client, &keys, &session, &on_b, &events).unwrap();
+    let mut loaded = images::Loaded::default();
+    images::load(&on_b, &[&kept], true, &mut loaded);
+    let sent = images::sent(std::slice::from_ref(&kept), &loaded, &mut Default::default());
+    assert!(sent[0].2.is_some() && sent[0].1 == "[Image #1]", "B sends the earlier image: {sent:?}");
+    let _ = std::fs::remove_dir_all(&r);
+}

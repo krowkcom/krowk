@@ -1,4 +1,4 @@
-$ krowk push a.txt
+$ gruntas push a.txt
 stdout:
 {
   "ok": true,
@@ -15,7 +15,7 @@ stdout:
         "run": {
           "slug": "<run_1>",
           "metadata": {
-            "krowk.client": "krowk-cli/0.0.0-golden"
+            "krowk.client": "gruntas-cli/0.0.0-golden"
           },
           "created_at": "<time>"
         },
@@ -40,7 +40,7 @@ stdout:
         "expires_at": "<time>",
         "created_at": "<time>",
         "metadata": {
-          "krowk.client": "krowk-cli/0.0.0-golden"
+          "krowk.client": "gruntas-cli/0.0.0-golden"
         }
       }
     ],
@@ -50,7 +50,7 @@ stdout:
       "started_at": "<time>",
       "finished_at": "<time>",
       "metadata": {
-        "krowk.client": "krowk-cli/0.0.0-golden"
+        "krowk.client": "gruntas-cli/0.0.0-golden"
       }
     }
   },

@@ -1,0 +1,27 @@
+[package]
+name = "gruntas-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.11"
+# ~3.4: the transport the quiet limit wraps (R-REG-1) is ureq's `unversioned`
+# API, which a minor release may change.
+ureq = { version = "~3.4", default-features = false, features = ["rustls", "platform-verifier", "json"] }
+jiff = { version = "0.2", default-features = false, features = ["std"] }
+
+[target.'cfg(unix)'.dependencies]
+# getuid: a home owned by another user is refused. Already linked by the CLI.
+libc = "0.2"
+
+[dev-dependencies]
+# The stand-in registry, served in-process for the integration tests.
+gruntas-devregistry = { path = "../gruntas-devregistry" }
+# A device list and a device's signer for the signed calls' tests; linked
+# already, through the stand-in.
+gruntas-client = { path = "../gruntas-client" }

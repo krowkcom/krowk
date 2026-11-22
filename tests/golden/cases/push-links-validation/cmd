@@ -1,13 +1,13 @@
 @registry
-@env KROWK_TOKEN=krowk_sk_test
+@env GRUNTAS_TOKEN=krowk_sk_test
 @file a.txt hello
-krowk push a.txt --link ftp://x.example --jq .ok
-krowk push a.txt --link "https://a b.example" --jq .ok
-krowk push a.txt --link https://user:pw@example.com/x --jq .ok
-krowk push a.txt --link https://example.com --link-title "line\nbreak" --jq .ok
-krowk push a.txt --link https://example.com --link-rel fixes --link https://example.org --link-rel spec --jq '.data.run.metadata'
-krowk push a.txt --link-title orphan --jq .ok
-krowk push a.txt --reference JIRA-1 --reference JIRA-2 --jq '.data.run.metadata'
-krowk push a.txt --metadata '{"krowk.caption":"c","n":1}' --jq '.data.artifacts[0].metadata'
-krowk push a.txt --metadata '[1]' --jq .ok
-krowk push a.txt --caption "a caption" --jq '.data.artifacts[0].metadata' 
+gruntas push a.txt --link ftp://x.example --jq .ok
+gruntas push a.txt --link "https://a b.example" --jq .ok
+gruntas push a.txt --link https://user:pw@example.com/x --jq .ok
+gruntas push a.txt --link https://example.com --link-title "line\nbreak" --jq .ok
+gruntas push a.txt --link https://example.com --link-rel fixes --link https://example.org --link-rel spec --jq '.data.run.metadata'
+gruntas push a.txt --link-title orphan --jq .ok
+gruntas push a.txt --reference JIRA-1 --reference JIRA-2 --jq '.data.run.metadata'
+gruntas push a.txt --metadata '{"krowk.caption":"c","n":1}' --jq '.data.artifacts[0].metadata'
+gruntas push a.txt --metadata '[1]' --jq .ok
+gruntas push a.txt --caption "a caption" --jq '.data.artifacts[0].metadata' 

@@ -1,4 +1,4 @@
-$ krowk doctor --jq .pricing
+$ gruntas doctor --jq .pricing
 stdout:
 {"age_days":15,"message":"models.dev prices fetched 2025-12-17, <ago>","name":"pricing","status":"pass"}
 stderr:
@@ -12,9 +12,9 @@ stderr:
 }
 exit: 1
 
-$ krowk doctor --jq .pricing
+$ gruntas doctor --jq .pricing
 stdout:
-{"age_days":40,"hint":"run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day","message":"models.dev prices fetched 2025-11-22, <ago>","name":"pricing","status":"warn"}
+{"age_days":40,"hint":"run `gruntas pricing refresh`, or `gruntas sessions sync`, which refreshes prices once a day","message":"models.dev prices fetched 2025-11-22, <ago>","name":"pricing","status":"warn"}
 stderr:
 {
   "ok": false,
@@ -26,9 +26,9 @@ stderr:
 }
 exit: 1
 
-$ krowk doctor --jq .pricing
+$ gruntas doctor --jq .pricing
 stdout:
-{"hint":"run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day","message":"models.dev prices fetched 2027-01-01, which is in the future — this machine's clock is off","name":"pricing","status":"warn"}
+{"hint":"run `gruntas pricing refresh`, or `gruntas sessions sync`, which refreshes prices once a day","message":"models.dev prices fetched 2027-01-01, which is in the future — this machine's clock is off","name":"pricing","status":"warn"}
 stderr:
 {
   "ok": false,
@@ -40,9 +40,9 @@ stderr:
 }
 exit: 1
 
-$ krowk doctor --jq .pricing
+$ gruntas doctor --jq .pricing
 stdout:
-{"hint":"run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day","message":"the price cache holds no prices — the models.dev snapshot 2026-09-10 embedded in this build prices everything","name":"pricing","status":"warn"}
+{"hint":"run `gruntas pricing refresh`, or `gruntas sessions sync`, which refreshes prices once a day","message":"the price cache holds no prices — the models.dev snapshot 2026-09-10 embedded in this build prices everything","name":"pricing","status":"warn"}
 stderr:
 {
   "ok": false,

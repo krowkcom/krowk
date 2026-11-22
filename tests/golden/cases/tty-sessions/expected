@@ -1,13 +1,13 @@
-$ @tty krowk sessions
+$ @tty gruntas sessions
 tty:
-No sessions yet — `krowk sessions import --from all` brings in the ones your agents keep.
+No sessions yet — `gruntas sessions import --from all` brings in the ones your agents keep.
 exit: 0
 
-$ krowk sessions import --from all --quiet
+$ gruntas sessions import --from all --quiet
 stdout:
 {
   "dry_run": false,
-  "store": "<scratch>/home/.krowk/sessions/krowk.db",
+  "store": "<scratch>/home/.gruntas/sessions/gruntas.db",
   "providers": [
     {
       "provider": "claude",
@@ -83,13 +83,13 @@ stdout:
 }
 exit: 0
 
-$ @tty krowk sessions
+$ @tty gruntas sessions
 tty:
 \e[31m✗\e[0m \e[1mNothing was selected and nothing was changed.\e[0m
 \e[2m  Code: selection_cancelled\e[0m
 exit: 1
 
-$ @tty krowk sessions show <uuid_1>
+$ @tty gruntas sessions show <uuid_1>
 tty:
 \e[31m✗\e[0m \e[1mStore: "<uuid_1>" is ambiguous (2 sessions):
   <uuid_2>  claude
@@ -97,11 +97,11 @@ tty:
 \e[2m  Code: ambiguous_session\e[0m
 exit: 1
 
-$ @tty krowk sessions rebuild
+$ @tty gruntas sessions rebuild
 tty:
-\e[31m✗\e[0m \e[1mRebuilding deletes <scratch>/home/.krowk/sessions/krowk.db and re-imports every transcript.\e[0m
-\e[2m  Try:\e[0m \e[36mkrowk sessions rebuild --yes\e[0m
-\e[2m  Run `krowk sessions rebuild --yes` to confirm when nobody is at a terminal to ask.\e[0m
+\e[31m✗\e[0m \e[1mRebuilding deletes <scratch>/home/.gruntas/sessions/gruntas.db and re-imports every transcript.\e[0m
+\e[2m  Try:\e[0m \e[36mgruntas sessions rebuild --yes\e[0m
+\e[2m  Run `gruntas sessions rebuild --yes` to confirm when nobody is at a terminal to ask.\e[0m
 \e[2m  Code: confirmation_required\e[0m
 exit: 1
 
