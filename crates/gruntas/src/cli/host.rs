@@ -402,5 +402,5 @@ fn up(platform: service::Platform, uid: u32, file: &std::path::Path) -> Result<(
             Err(e) => last = e.to_string(),
         }
     }
-    Err(fail("service_failed", format!("the service did not stay up (`{}`: {last}) — {} is written; its log is ~/.krowk/host.log, or `journalctl --user -u {}`", c.join(" "), file.display(), service::UNIT)))
+    Err(fail("service_failed", format!("the service did not stay up (`{}`: {last}) — {} is written; its log is ~/.gruntas/host.log, or `journalctl --user -u {}`", c.join(" "), file.display(), service::UNIT)))
 }

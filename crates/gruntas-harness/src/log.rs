@@ -3,8 +3,8 @@
 //! Each session is a directory in krowk's home, beside krowk.db:
 //!
 //! ```text
-//! ~/.krowk/sessions/<session-id>/events.jsonl   the log
-//! ~/.krowk/sessions/<session-id>/context.jsonl  each turn's system prompt and tools
+//! ~/.gruntas/sessions/<session-id>/events.jsonl  the log
+//! ~/.gruntas/sessions/<session-id>/context.jsonl each turn's system prompt and tools
 //! ```
 //!
 //! `events.jsonl` is append-only: one `LogEvent` per line, never rewritten.

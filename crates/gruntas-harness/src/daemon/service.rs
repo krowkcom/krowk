@@ -1,4 +1,4 @@
-//! `krowk machines always-on on`: the daemon as a service of the user's own — a
+//! `gruntas machines always-on on`: the daemon as a service of the user's own — a
 //! systemd user unit on Linux, a launchd agent on macOS (R-HOST-2) — for a
 //! machine that is always on and reached from other devices. Run that way
 //! it has no idle window (`GRUNTAS_HOST_IDLE=0`): the service manager starts
@@ -16,8 +16,8 @@
 
 use std::path::{Path, PathBuf};
 
-pub const UNIT: &str = "krowk-host.service";
-pub const LABEL: &str = "com.krowk.host";
+pub const UNIT: &str = "gruntas-host.service";
+pub const LABEL: &str = "com.gruntas.host";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
@@ -48,7 +48,7 @@ pub fn path(platform: Platform, env: &dyn Fn(&str) -> String) -> Result<PathBuf,
     })
 }
 
-/// The variables the service runs with: no idle exit, and krowk's home
+/// The variables the service runs with: no idle exit, and gruntas's home
 /// when it is not the default.
 fn environment(env: &dyn Fn(&str) -> String) -> Vec<(&'static str, String)> {
     let mut vars = vec![("GRUNTAS_HOST_IDLE", "0".to_string())];
@@ -76,9 +76,9 @@ fn quote(s: &str) -> String {
 fn systemd(exe: &Path, env: &dyn Fn(&str) -> String) -> String {
     let vars: String = environment(env).iter().map(|(k, v)| format!("Environment={}\n", quote(&format!("{k}={v}")))).collect();
     format!(
-        "# Written by `krowk machines always-on on`; `krowk machines always-on off` removes it.\n\
+        "# Written by `gruntas machines always-on on`; `gruntas machines always-on off` removes it.\n\
          [Unit]\n\
-         Description=krowk host: agent sessions that outlive the terminal\n\
+         Description=gruntas host: agent sessions that outlive the terminal\n\
          \n\
          [Service]\n\
          Type=simple\n\
@@ -103,7 +103,7 @@ fn launchd(exe: &Path, log: &Path, env: &dyn Fn(&str) -> String) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-         <!-- Written by `krowk machines always-on on`; `krowk machines always-on off` removes it. -->\n\
+         <!-- Written by `gruntas machines always-on on`; `gruntas machines always-on off` removes it. -->\n\
          <plist version=\"1.0\">\n\
          <dict>\n\
          \t<key>Label</key>\n\
@@ -172,30 +172,30 @@ mod tests {
 
     #[test]
     fn r_host_2_a_systemd_user_unit_runs_the_daemon_with_no_idle_exit() {
-        assert_eq!(path(Platform::Systemd, &env).unwrap(), Path::new("/home/ada/.config/systemd/user/krowk-host.service"));
+        assert_eq!(path(Platform::Systemd, &env).unwrap(), Path::new("/home/ada/.config/systemd/user/gruntas-host.service"));
         let unit = render(Platform::Systemd, Path::new("/opt/my krowk/krowk"), Path::new("/x.log"), &env);
         assert!(unit.contains("\nExecStart=\"/opt/my krowk/krowk\" host serve\n"), "{unit}");
         assert!(unit.contains("\nEnvironment=\"GRUNTAS_HOST_IDLE=0\"\n"), "{unit}");
         // A `%` is a specifier to systemd: doubled, it is a `%`.
         assert!(unit.contains("\nEnvironment=\"GRUNTAS_HOME=/srv/krowk 100%%\"\n"), "{unit}");
         assert!(unit.contains("\nWantedBy=default.target\n"), "{unit}");
-        assert_eq!(commands(Platform::Systemd, true, Path::new("/f"), 501)[1], ["systemctl", "--user", "enable", "--now", "krowk-host.service"]);
+        assert_eq!(commands(Platform::Systemd, true, Path::new("/f"), 501)[1], ["systemctl", "--user", "enable", "--now", "gruntas-host.service"]);
         let xdg = |k: &str| if k == "XDG_CONFIG_HOME" { "/cfg".into() } else { env(k) };
-        assert_eq!(path(Platform::Systemd, &xdg).unwrap(), Path::new("/cfg/systemd/user/krowk-host.service"));
+        assert_eq!(path(Platform::Systemd, &xdg).unwrap(), Path::new("/cfg/systemd/user/gruntas-host.service"));
     }
 
     #[test]
     fn r_host_2_a_launchd_agent_runs_the_daemon_with_no_idle_exit() {
         let file = path(Platform::Launchd, &env).unwrap();
-        assert_eq!(file, Path::new("/home/ada/Library/LaunchAgents/com.krowk.host.plist"));
-        let plist = render(Platform::Launchd, Path::new("/opt/k&k/krowk"), Path::new("/home/ada/.krowk/host.log"), &env);
-        assert!(plist.contains("<string>com.krowk.host</string>"), "{plist}");
+        assert_eq!(file, Path::new("/home/ada/Library/LaunchAgents/com.gruntas.host.plist"));
+        let plist = render(Platform::Launchd, Path::new("/opt/k&k/krowk"), Path::new("/home/ada/.gruntas/host.log"), &env);
+        assert!(plist.contains("<string>com.gruntas.host</string>"), "{plist}");
         assert!(plist.contains("<string>/opt/k&amp;k/krowk</string>\n\t\t<string>host</string>\n\t\t<string>serve</string>"), "{plist}");
         assert!(plist.contains("<key>GRUNTAS_HOST_IDLE</key>\n\t\t<string>0</string>"), "{plist}");
-        assert!(plist.contains("<key>StandardErrorPath</key>\n\t<string>/home/ada/.krowk/host.log</string>"), "{plist}");
+        assert!(plist.contains("<key>StandardErrorPath</key>\n\t<string>/home/ada/.gruntas/host.log</string>"), "{plist}");
         assert_eq!(commands(Platform::Launchd, true, &file, 501), [["launchctl", "bootstrap", "gui/501", file.to_str().unwrap()]]);
         assert_eq!(commands(Platform::Launchd, false, &file, 501)[0][1], "bootout");
-        assert_eq!(active(Platform::Launchd, 501), ["launchctl", "print", "gui/501/com.krowk.host"]);
-        assert_eq!(active(Platform::Systemd, 501), ["systemctl", "--user", "is-active", "krowk-host.service"]);
+        assert_eq!(active(Platform::Launchd, 501), ["launchctl", "print", "gui/501/com.gruntas.host"]);
+        assert_eq!(active(Platform::Systemd, 501), ["systemctl", "--user", "is-active", "gruntas-host.service"]);
     }
 }

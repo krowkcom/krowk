@@ -228,7 +228,7 @@ fn rollover_check(ctx: &Ctx) -> Value {
     if ignored.is_empty() {
         return json!({ "name": "rollover", "status": "pass", "message": "rolloverOrder has nothing ignored" });
     }
-    json!({ "name": "rollover", "status": "warn", "message": ignored.join("; "), "ignored": ignored, "hint": "edit rolloverOrder in ~/.krowk/config.json: list instances of one kind, without a model" })
+    json!({ "name": "rollover", "status": "warn", "message": ignored.join("; "), "ignored": ignored, "hint": "edit rolloverOrder in ~/.gruntas/config.json: list instances of one kind, without a model" })
 }
 
 fn registry_mode(ctx: &Ctx, client: &Client) -> &'static str {

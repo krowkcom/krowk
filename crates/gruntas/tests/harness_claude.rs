@@ -522,7 +522,7 @@ fn r_sub_7_claude_codes_parallel_agents_are_child_sessions_their_prompt_first_an
     // The parent's own spend still counts each agent's calls, once.
     assert!(parent.iter().any(|e| e["type"] == "subagent.response"));
     assert_eq!(listed_children(&b, &session), kids, "`krowk -p` lists them under it at once");
-    std::fs::remove_file(b.data().join("sessions/krowk.db")).unwrap();
+    std::fs::remove_file(b.data().join("sessions/gruntas.db")).unwrap();
     let out = b.krowk(&["sessions", "rebuild", "--yes"], &[]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(listed_children(&b, &session), kids, "the children hang from the parent again");

@@ -1,7 +1,7 @@
 //! Provider-side usage ledgers: what a provider metered, read beside the
 //! transcripts so an execution the client never saw still counts.
 //!
-//! A ledger is a JSONL file in `~/.krowk/ledger/<name>.jsonl` (krowk's home),
+//! A ledger is a JSONL file in `~/.gruntas/ledger/<name>.jsonl` (krowk's home),
 //! one metered execution per line, in the provider's words:
 //!
 //! ```json
@@ -251,7 +251,7 @@ mod tests {
     fn a_ledger_reads_one_turn_per_execution_and_refuses_what_it_cannot_count() {
         let (tmp, env) = home("read");
         assert!(Ledger.discover(&env).unwrap().is_empty(), "no directory is no ledger");
-        let dir = tmp.0.join(".krowk/ledger");
+        let dir = tmp.0.join(".gruntas/ledger");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("zen.jsonl"),

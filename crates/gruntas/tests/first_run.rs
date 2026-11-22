@@ -196,7 +196,7 @@ fn a_fresh_home_signs_in_registers_for_sync_and_then_connects_a_model() {
     assert!(b.keystore().device_list().unwrap().is_some_and(|c| c.recovery().is_some()), "the kit is on the list");
     let state = b.state();
     assert!(state["always_on_asked"] == true && state["kit_offered"] == true, "{state}");
-    assert!(!b.root.join("home/.config/systemd/user/krowk-host.service").exists(), "declined: nothing installed");
+    assert!(!b.root.join("home/.config/systemd/user/gruntas-host.service").exists(), "declined: nothing installed");
     assert!(!t.text().contains(REMINDER), "a kit: no reminder");
 
     // Set up: the overview alone.
@@ -229,10 +229,10 @@ fn later_at_the_kit_is_not_asked_again_and_the_reminder_follows_while_there_is_o
     says(&t, "Later: `krowk machines recovery` makes one when you want it.");
     says(&t, REMINDER);
     ends(&mut t);
-    let unit = std::fs::read_to_string(b.root.join("home/.config/systemd/user/krowk-host.service")).unwrap_or_default();
+    let unit = std::fs::read_to_string(b.root.join("home/.config/systemd/user/gruntas-host.service")).unwrap_or_default();
     assert!(unit.contains("GRUNTAS_HOST_IDLE=0"), "a yes installs the service: {unit}");
     let log = std::fs::read_to_string(b.root.join("systemctl.log")).unwrap_or_default();
-    assert!(log.contains("--user enable --now krowk-host.service"), "{log}");
+    assert!(log.contains("--user enable --now gruntas-host.service"), "{log}");
     assert!(b.keystore().device_list().unwrap().is_some_and(|c| c.recovery().is_none()), "later: no kit");
 
     // The next run: reminded again, never offered the kit again; piped too.
