@@ -5,7 +5,8 @@ name: Release
 # five platforms in parallel (dist.yml), rebuilds one platform on a second
 # runner and refuses to go on unless the bytes match, signs the checksums and
 # the SBOMs, opens the GitHub Release with all of it on it, and publishes the
-# seven npm packages with provenance. SECURITY.md says how to verify each.
+# seven npm packages with provenance and, for a stable release, server.json to
+# the MCP registry. SECURITY.md says how to verify each.
 #
 # Three components, deliberately: the moving major tag this workflow pushes at
 # the end is also `v*`, and a release run for `v0` would cut a release of
@@ -496,8 +497,8 @@ jobs:
         run: node npm/publish.mjs
 
       # The moving major tag, so `uses: gruntas/gruntas@v0` follows the 0.x line
-      # instead of freezing a workflow on one patch release. It moves last, once
-      # the release exists and npm carries the packages: a tag pointing at bytes
+      # instead of freezing a workflow on one patch release. It moves once the
+      # release exists and npm carries the packages: a tag pointing at bytes
       # nobody can download yet is worse than a tag that lags by a minute.
       #
       # Pushed through the API rather than git, because the checkout above keeps
@@ -521,3 +522,46 @@ jobs:
             || gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
               -f ref="refs/tags/$major" -f sha="$GITHUB_SHA" >/dev/null
           echo "\`$major\` now points at $GITHUB_REF_NAME." >> "$GITHUB_STEP_SUMMARY"
+
+      # The MCP registry entry, io.github.gruntas/gruntas, from server.json as
+      # main has it (the check job held its versions to the tag). The registry
+      # checks that npm carries @gruntas/mcp at that version naming this entry,
+      # so it goes after npm; and last, so a registry that refuses it fails
+      # this job visibly with the release, npm and the major tag already done,
+      # and nothing is taken back. Re-running the job, whose steps above each
+      # finish what is half done, publishes it then. A prerelease keeps the
+      # entry where it was.
+      #
+      # mcp-publisher is pinned and checked against its Sigstore signature, as
+      # the registry's GitHub Actions guide does. `login github-oidc` trades
+      # this job's OIDC token (id-token: write, above) for a registry token
+      # for io.github.gruntas/*, so no secret is stored.
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        if: ${{ !contains(needs.check.outputs.version, '-') }}
+        with:
+          cosign-release: v3.1.3
+
+      - name: Download mcp-publisher
+        if: ${{ !contains(needs.check.outputs.version, '-') }}
+        env:
+          MCP_PUBLISHER_VERSION: v1.8.13
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          archive=mcp-publisher_linux_amd64.tar.gz
+          base="https://github.com/modelcontextprotocol/registry/releases/download/$MCP_PUBLISHER_VERSION"
+          curl -fsSL --output "$archive" "$base/$archive"
+          curl -fsSL --output "$archive.sigstore.json" "$base/$archive.sigstore.json"
+          cosign verify-blob --bundle "$archive.sigstore.json" \
+            --certificate-identity "https://github.com/modelcontextprotocol/registry/.github/workflows/release.yml@refs/tags/$MCP_PUBLISHER_VERSION" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$archive"
+          tar -xzf "$archive" mcp-publisher
+
+      - name: Publish to the MCP registry
+        if: ${{ !contains(needs.check.outputs.version, '-') }}
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/mcp-publisher" login github-oidc
+          "$RUNNER_TEMP/mcp-publisher" publish
+          echo "\`io.github.gruntas/gruntas\` $(jq -r .version server.json) is on the MCP registry." >> "$GITHUB_STEP_SUMMARY"
