@@ -9,7 +9,7 @@ use std::net::TcpListener;
 use std::process::{Command, Output};
 
 fn billing(home: &std::path::Path, api: &str, token: &str, format: &str) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_krowk"))
+    Command::new(env!("CARGO_BIN_EXE_gruntas"))
         .args(["billing", "--no-browser", "--format", format])
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())

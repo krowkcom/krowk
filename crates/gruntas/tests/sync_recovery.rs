@@ -44,7 +44,7 @@ fn krowk(home: &Path, api: &str, token: &str, args: &[&str], answers: &str, inpu
 
 /// `krowk`, with `env` set as well.
 fn krowk_with(home: &Path, api: &str, token: &str, args: &[&str], answers: &str, input: &str, env: &[(&str, &str)]) -> Output {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
+    let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
     c.args(args)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")

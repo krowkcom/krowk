@@ -57,7 +57,7 @@ impl Sandbox {
     }
 
     fn command(&self, args: &[&str], env: &[(&str, &str)]) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
         c.args(args)
             .env_clear()
             .env("PATH", format!("{}:/usr/bin:/bin", self.root.join("bin").display()))

@@ -1,4 +1,4 @@
-//! `krowk upgrade`, and the notice that a newer release exists — said as
+//! `gruntas upgrade`, and the notice that a newer release exists — said as
 //! often as the gap is worth: a major release once and once more a week
 //! later, a minor once, a patch never, a security fix daily until it is
 //! installed (canon, harness.md → Update notice). Which installer put this binary here decides how: a source build and an
@@ -15,13 +15,13 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-const RELEASE_API: &str = "https://api.github.com/repos/krowkcom/krowk/releases/latest";
+const RELEASE_API: &str = "https://api.github.com/repos/gruntas/gruntas/releases/latest";
 /// The recent releases, for the check: a security fix in one skipped counts
 /// as much as one in the newest. A hundred is GitHub's most to a page; a
 /// krowk further behind than that is a major release behind regardless.
-const RELEASES_API: &str = "https://api.github.com/repos/krowkcom/krowk/releases?per_page=100";
+const RELEASES_API: &str = "https://api.github.com/repos/gruntas/gruntas/releases?per_page=100";
 const DAY: i64 = 24 * 3600;
-const RELEASE_DOWNLOAD: &str = "https://github.com/krowkcom/krowk/releases/download";
+const RELEASE_DOWNLOAD: &str = "https://github.com/gruntas/gruntas/releases/download";
 
 /// A release version: three numbers. `dev`, `0.9.0-12-gabc` and the golden
 /// stamp are source builds, and nothing here touches a build git owns.
@@ -131,7 +131,7 @@ pub(crate) fn upgrade(ctx: &mut Ctx) -> Result<(), Error> {
     if !is_release(VERSION) {
         return Err(fail(
             "not_upgradable",
-            format!("this build came from source (version {VERSION}) — upgrade with `git pull && make install`, or `cargo install --locked --git https://github.com/krowkcom/krowk --features sessions krowk`"),
+            format!("this build came from source (version {VERSION}) — upgrade with `git pull && make install`, or `cargo install --locked --git https://github.com/gruntas/gruntas --features harness gruntas`"),
         ));
     }
     let latest = latest_version(Duration::from_secs(10))?;
@@ -146,19 +146,19 @@ pub(crate) fn upgrade(ctx: &mut Ctx) -> Result<(), Error> {
         }
     }
     if !version_less(VERSION, &latest) {
-        return report(ctx, json!({ "upgraded": false, "version": VERSION, "latest": latest }), &format!("krowk {VERSION} is the latest release"));
+        return report(ctx, json!({ "upgraded": false, "version": VERSION, "latest": latest }), &format!("gruntas {VERSION} is the latest release"));
     }
     let exe = std::env::current_exe()
         .and_then(|e| e.canonicalize())
         .map_err(|e| fail("not_upgradable", format!("could not find this binary to replace it: {e}")))?;
     if exe.components().any(|c| c.as_os_str() == "node_modules") {
-        return Err(fail("not_upgradable", "this krowk was installed by npm, which owns its files — run `npm install -g @krowk/cli@latest`"));
+        return Err(fail("not_upgradable", "this gruntas was installed by npm, which owns its files — run `npm install -g @gruntas/cli@latest`"));
     }
     if cfg!(windows) {
         return Err(fail(
             "not_upgradable",
             format!(
-                "krowk does not replace itself on Windows — run `npm install -g @krowk/cli@latest`, or unpack the release archive over this binary: {RELEASE_DOWNLOAD}/v{latest}"
+                "gruntas does not replace itself on Windows — run `npm install -g @gruntas/cli@latest`, or unpack the release archive over this binary: {RELEASE_DOWNLOAD}/v{latest}"
             ),
         ));
     }
@@ -179,7 +179,7 @@ fn report(ctx: &mut Ctx, data: Value, human: &str) -> Result<(), Error> {
 /// names the Go build's upgrader asks for, so an install of either upgrades
 /// into the other. An upgrade stays on the build it is (R-PKG-3): the lean
 /// build, which an installer put in a container or on a CI runner, into
-/// `krowk-lean_…`; anything with the session store into the full build,
+/// `gruntas-lean_…`; anything with the session store into the full build,
 /// under the name every earlier release used.
 fn archive_name(version: &str) -> String {
     let os = if cfg!(target_os = "macos") { "darwin" } else { std::env::consts::OS };
@@ -188,7 +188,7 @@ fn archive_name(version: &str) -> String {
         "aarch64" => "arm64",
         other => other,
     };
-    let name = if cfg!(feature = "sessions") { "krowk" } else { "krowk-lean" };
+    let name = if cfg!(feature = "sessions") { "gruntas" } else { "gruntas-lean" };
     format!("{name}_{version}_{os}_{arch}.tar.gz")
 }
 
@@ -204,7 +204,7 @@ fn self_upgrade(dest: &Path, version: &str) -> Result<Vec<String>, Error> {
         fail(
             "unverified_release",
             format!(
-                "checksums.txt on release v{version} is not signed by krowk's release workflow: {why} — nothing was installed. If this krowk is older than a change to Sigstore's keys, install cosign (https://docs.sigstore.dev/cosign/system_config/installation/) and reinstall with `curl -fsSL https://krowk.com/install | GRUNTAS_REQUIRE_SIGNATURE=1 bash`, which checks the signature with it, or verify the release by hand (SECURITY.md → Verifying a release)"
+                "checksums.txt on release v{version} is not signed by gruntas's release workflow: {why} — nothing was installed. If this gruntas is older than a change to Sigstore's keys, install cosign (https://docs.sigstore.dev/cosign/system_config/installation/) and reinstall with `curl -fsSL https://krowk.com/install | GRUNTAS_REQUIRE_SIGNATURE=1 bash`, which checks the signature with it, or verify the release by hand (SECURITY.md → Verifying a release)"
             ),
         )
     })?;
@@ -227,7 +227,7 @@ fn self_upgrade(dest: &Path, version: &str) -> Result<Vec<String>, Error> {
     for entry in entries.entries().map_err(unreadable)? {
         let mut entry = entry.map_err(unreadable)?;
         let name = entry.path().ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_default();
-        if !entry.header().entry_type().is_file() || !matches!(name.as_str(), "krowk" | "krowk-mcp") {
+        if !entry.header().entry_type().is_file() || !matches!(name.as_str(), "gruntas" | "gruntas-mcp") {
             continue;
         }
         let target = dest.join(&name);
@@ -237,7 +237,7 @@ fn self_upgrade(dest: &Path, version: &str) -> Result<Vec<String>, Error> {
         replaced.push(target.display().to_string());
     }
     if replaced.is_empty() {
-        return Err(fail("malformed_response", format!("{archive} holds no krowk binary — nothing was installed")));
+        return Err(fail("malformed_response", format!("{archive} holds no gruntas binary — nothing was installed")));
     }
     Ok(replaced)
 }
@@ -400,7 +400,7 @@ pub(crate) fn maybe_notify(ctx: &mut Ctx) {
     let now = jiff::Timestamp::now();
     let Some(n) = newer(&state, VERSION, now).filter(|n| n.due) else { return };
     let what = if n.security { "with a security fix " } else { "" };
-    let _ = writeln!(ctx.io.stderr, "krowk {} is available {what}(this is {VERSION}) — run `krowk upgrade`", n.latest);
+    let _ = writeln!(ctx.io.stderr, "gruntas {} is available {what}(this is {VERSION}) — run `gruntas upgrade`", n.latest);
     mark_shown(&mut state, &n.line, now);
     write_state(&path, &state);
 }
@@ -413,7 +413,7 @@ mod tests {
     fn only_three_numbers_are_a_release_and_order_is_numeric() {
         assert!(is_release("1.2.3") && !is_release("dev") && !is_release("0.0.0-golden") && !is_release("0.9.0-12-gabc"));
         assert!(version_less("1.9.0", "1.10.0") && !version_less("1.10.0", "1.9.0") && !version_less("dev", "9.9.9"));
-        let build = if cfg!(feature = "sessions") { "krowk" } else { "krowk-lean" };
+        let build = if cfg!(feature = "sessions") { "gruntas" } else { "gruntas-lean" };
         assert!(archive_name("1.2.3").starts_with(&format!("{build}_1.2.3_")) && archive_name("1.2.3").ends_with(".tar.gz"));
     }
 

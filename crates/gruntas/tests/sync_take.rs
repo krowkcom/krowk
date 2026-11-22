@@ -57,7 +57,7 @@ fn r_inst_5_take_refuses_with_a_fix_when_the_sessions_instance_is_missing_and_th
     w.push(serde_json::json!({"id": "01a0ec7b-1111-7000-8000-0000000000e1", "type": "turn.started", "turnId": "t", "model": {"instance": "work-claude", "model": "claude-sonnet-4-6"}}));
     w.checkpoint(None, &lease.token).unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_krowk"))
+    let out = Command::new(env!("CARGO_BIN_EXE_gruntas"))
         .args(["sync", "take", &id])
         .env_clear()
         .env("PATH", "/usr/bin:/bin")

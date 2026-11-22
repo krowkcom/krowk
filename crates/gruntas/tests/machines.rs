@@ -17,7 +17,7 @@ fn home(name: &str) -> PathBuf {
 }
 
 fn krowk(home: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_krowk"))
+    Command::new(env!("CARGO_BIN_EXE_gruntas"))
         .args(args)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")

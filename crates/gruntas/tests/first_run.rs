@@ -49,7 +49,7 @@ impl Sandbox {
     /// `krowk args…` on this home, signing in at the stand-in registry
     /// `api`; headless, so no real browser opens.
     fn command(&self, api: &str, args: &[&str]) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
         c.args(args)
             .env_clear()
             .env("PATH", format!("{}:/usr/bin:/bin", self.root.join("bin").display()))
@@ -283,7 +283,7 @@ fn using_krowk_locally_is_not_offered_again_and_krowk_login_runs_the_account_ste
 /// key `krowk_sk_first#laptop`.
 fn first_machine(name: &str, api: &str) -> Sandbox {
     let other = Sandbox::new(name);
-    let out = Command::new(env!("CARGO_BIN_EXE_krowk"))
+    let out = Command::new(env!("CARGO_BIN_EXE_gruntas"))
         .args(["sync", "init", "--save"])
         .arg(other.root.join("kit"))
         .env_clear()

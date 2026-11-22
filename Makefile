@@ -4,7 +4,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v/
 
 .PHONY: build test test-build test-run test-doc lint lint-lean lint-sessions lint-harness check check-build check-run quick-check signoff install dev mock clean dist release-check golden golden-build golden-device golden-full golden-run golden-update bin/devregistry schema codex-schema codex-schema-update lean-deps bench
 
-build: ## Build target/release/krowk (the full build) and krowk-mcp
+build: ## Build target/release/gruntas (the full build) and gruntas-mcp
 	GRUNTAS_VERSION=$(VERSION) cargo build --release -p gruntas --features harness
 
 # With `harness`, which implies `sessions`: every test either build runs.
@@ -95,16 +95,16 @@ lean-deps: ## Hold the agent build to its dependency list
 # release profile and failed on the first one broken. The same table CI prints
 # in the job summary. Both builds are stamped with one version so a size is
 # the code's, not the length of `git describe`; each is copied out before the
-# next overwrites target/release/krowk (rm first, for the macOS inode reason
+# next overwrites target/release/gruntas (rm first, for the macOS inode reason
 # at bin/devregistry below).
 BENCH_DIR := target/bench
 BENCH_VERSION := 0.0.0-bench
 
 bench: ## Hold the release builds to the performance and size budgets
-	GRUNTAS_VERSION=$(BENCH_VERSION) cargo build --release --locked -p gruntas --bin krowk
-	mkdir -p $(BENCH_DIR) && rm -f $(BENCH_DIR)/krowk-lean && cp target/release/krowk $(BENCH_DIR)/krowk-lean
-	GRUNTAS_VERSION=$(BENCH_VERSION) cargo build --release --locked -p gruntas --bin krowk --features harness
-	rm -f $(BENCH_DIR)/krowk-full && cp target/release/krowk $(BENCH_DIR)/krowk-full
+	GRUNTAS_VERSION=$(BENCH_VERSION) cargo build --release --locked -p gruntas --bin gruntas
+	mkdir -p $(BENCH_DIR) && rm -f $(BENCH_DIR)/krowk-lean && cp target/release/gruntas $(BENCH_DIR)/krowk-lean
+	GRUNTAS_VERSION=$(BENCH_VERSION) cargo build --release --locked -p gruntas --bin gruntas --features harness
+	rm -f $(BENCH_DIR)/krowk-full && cp target/release/gruntas $(BENCH_DIR)/krowk-full
 	cargo run --profile bench-tool --locked -p gruntas-bench -- --budgets crates/gruntas-bench/budgets.toml \
 		--lean $(BENCH_DIR)/krowk-lean --full $(BENCH_DIR)/krowk-full --work $(BENCH_DIR)/work $(BENCH_FLAGS)
 	# R-LAG-2/3/9's load with the flood unpaced, which only an optimized
@@ -132,28 +132,28 @@ codex-schema: ## Fail when the pinned codex app-server schema is stale against t
 codex-schema-update: ## Re-pin the codex app-server schema from the Codex installed
 	scripts/codex_schema.sh --update
 
-install: ## Install krowk and krowk-mcp into ~/.cargo/bin
+install: ## Install gruntas and gruntas-mcp into ~/.cargo/bin
 	GRUNTAS_VERSION=$(VERSION) cargo install --locked --path crates/gruntas --features harness
 
-# `krowk` on the PATH as a link into this checkout's target/quick, so every
+# `gruntas` on the PATH as a link into this checkout's target/quick, so every
 # later `make dev` (or `cargo build --profile quick -p gruntas --features
 # harness`) is live at once, with no copy. The links follow the checkout
 # `make dev` last ran in; `make install` puts real copies back.
 DEV_BIN_DIR ?= $(HOME)/.cargo/bin
 
-dev: ## Fast build, linked into ~/.cargo/bin: the latest krowk from this checkout
+dev: ## Fast build, linked into ~/.cargo/bin: the latest gruntas from this checkout
 	GRUNTAS_VERSION=$(VERSION) cargo build --profile quick -p gruntas --features harness
 	mkdir -p "$(DEV_BIN_DIR)"
-	for b in krowk krowk-mcp; do ln -sfn "$(CURDIR)/target/quick/$$b" "$(DEV_BIN_DIR)/$$b"; done
-	@echo "$(DEV_BIN_DIR)/krowk -> $(CURDIR)/target/quick/krowk"
+	for b in gruntas gruntas-mcp; do ln -sfn "$(CURDIR)/target/quick/$$b" "$(DEV_BIN_DIR)/$$b"; done
+	@echo "$(DEV_BIN_DIR)/gruntas -> $(CURDIR)/target/quick/gruntas"
 
 mock: ## Local stand-in for api.krowk.com on :8787
 	cargo run --release -p gruntas-devregistry --bin devregistry
 
 release-check: ## Validate the release layout, the npm launchers and the installer, offline
 	bash -n scripts/dist.sh
-	node --check npm/krowk/bin/krowk.js
-	node --check npm/mcp/bin/krowk-mcp.js
+	node --check npm/cli/bin/gruntas.js
+	node --check npm/mcp/bin/gruntas-mcp.js
 	node scripts/descriptions_check.mjs
 	# The installer downloads what this file produces, so it belongs to the
 	# release pipeline rather than to `check`: it needs python3,
@@ -193,9 +193,9 @@ GOLDEN_VERSION := 0.0.0-golden
 # build has a target directory of its own, so the two build at once and
 # $(GOLDEN_DIR) holds the device build `golden-update` expects. The cases'
 # own test binary builds apart from `test-build`'s too, so neither waits on
-# the other's lock. Both runs take krowk-mcp from the device build.
+# the other's lock. Both runs take gruntas-mcp from the device build.
 GOLDEN_TEST := CARGO_TARGET_DIR=$(CURDIR)/target/golden-tests cargo test -p gruntas-golden
-GOLDEN_FULL := target/golden-full/$(GOLDEN_PROFILE)/krowk
+GOLDEN_FULL := target/golden-full/$(GOLDEN_PROFILE)/gruntas
 
 golden: golden-build golden-run ## Hold the build to tests/golden/cases
 
@@ -209,9 +209,9 @@ golden-full:
 	GRUNTAS_VERSION=$(GOLDEN_VERSION) CARGO_TARGET_DIR=$(CURDIR)/target/golden-full cargo build --profile $(GOLDEN_PROFILE) -p gruntas --features harness
 
 golden-run:
-	GRUNTAS_BIN=$(GOLDEN_DIR)/krowk GRUNTAS_MCP_BIN=$(GOLDEN_DIR)/krowk-mcp $(GOLDEN_TEST)
-	GOLDEN_CASES=cases-full GRUNTAS_BIN=$(GOLDEN_FULL) GRUNTAS_MCP_BIN=$(GOLDEN_DIR)/krowk-mcp $(GOLDEN_TEST)
+	GRUNTAS_BIN=$(GOLDEN_DIR)/gruntas GRUNTAS_MCP_BIN=$(GOLDEN_DIR)/gruntas-mcp $(GOLDEN_TEST)
+	GOLDEN_CASES=cases-full GRUNTAS_BIN=$(GOLDEN_FULL) GRUNTAS_MCP_BIN=$(GOLDEN_DIR)/gruntas-mcp $(GOLDEN_TEST)
 
 golden-update: bin/devregistry ## Re-record tests/golden/cases after an intended output change
 	GRUNTAS_VERSION=$(GOLDEN_VERSION) cargo build --profile $(GOLDEN_PROFILE) -p gruntas --features sessions
-	GOLDEN_UPDATE=1 GRUNTAS_BIN=$(GOLDEN_DIR)/krowk GRUNTAS_MCP_BIN=$(GOLDEN_DIR)/krowk-mcp cargo test -p gruntas-golden
+	GOLDEN_UPDATE=1 GRUNTAS_BIN=$(GOLDEN_DIR)/gruntas GRUNTAS_MCP_BIN=$(GOLDEN_DIR)/gruntas-mcp cargo test -p gruntas-golden

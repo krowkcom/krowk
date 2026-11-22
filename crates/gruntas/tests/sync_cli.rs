@@ -251,7 +251,7 @@ impl Drop for World {
 
 impl Machine {
     fn command(&self, args: &[&str]) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
         c.args(args).env_clear().envs(self.env.iter().map(|(k, v)| (k, v))).current_dir(&self.repo);
         c
     }
@@ -1029,7 +1029,7 @@ fn r_sync_1_a_machine_without_sync_makes_no_sync_call() {
     let ((api, api_seen), (relay, relay_seen)) = (counting(), counting());
     let (repo, env, run) = w.bare("bare", &format!("http://{api}/v1"), &format!("ws://{relay}"));
     let command = |args: &[&str]| {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
         c.args(args).env_clear().envs(env.iter().map(|(k, v)| (k, v))).current_dir(&repo).stdin(Stdio::null());
         c
     };
@@ -1551,7 +1551,7 @@ struct Mcp {
 
 impl Mcp {
     fn start(m: &Machine) -> Mcp {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_krowk-mcp")).env_clear().envs(m.env.iter().map(|(k, v)| (k, v))).current_dir(&m.repo).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_gruntas-mcp")).env_clear().envs(m.env.iter().map(|(k, v)| (k, v))).current_dir(&m.repo).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
         let (tx, out) = mpsc::channel();

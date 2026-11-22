@@ -1,7 +1,7 @@
 //! Black-box cases for any krowk binary: what it printed, how it exited, and
 //! what it left on disk.
 //!
-//! The binary under test is `$GRUNTAS_BIN`, defaulting to target/release/krowk;
+//! The binary under test is `$GRUNTAS_BIN`, defaulting to target/release/gruntas;
 //! `make golden` passes the one it built, on `$GOLDEN_PROFILE`.
 //! Each case's transcript is held byte for byte:
 //!
@@ -35,7 +35,7 @@
 //!     @ls path                  print a directory tree into the transcript
 //!     @sh command               run /bin/sh -c in work/ for setup; not recorded ({case} expands too)
 //!     krowk args...             run the binary; shell-style quoting
-//!     krowk-mcp args...         run $GRUNTAS_MCP_BIN, default target/release/krowk-mcp
+//!     krowk-mcp args...         run $GRUNTAS_MCP_BIN, default target/release/gruntas-mcp
 //!     @let NAME .path[0].to     capture a value from the previous command's stdout (JSON,
 //!                               before masking); {NAME} expands in every later line
 //!     @tty krowk args...        run with stdout and stderr on one pseudo-terminal, to see
@@ -95,8 +95,8 @@ fn bin_from(var: &str, default: &str) -> PathBuf {
 
 #[test]
 fn golden() {
-    let krowk = bin_from("GRUNTAS_BIN", "target/release/krowk");
-    let mcp = std::env::var_os("GRUNTAS_MCP_BIN").map(PathBuf::from).unwrap_or_else(|| workspace_path("target/release/krowk-mcp"));
+    let krowk = bin_from("GRUNTAS_BIN", "target/release/gruntas");
+    let mcp = std::env::var_os("GRUNTAS_MCP_BIN").map(PathBuf::from).unwrap_or_else(|| workspace_path("target/release/gruntas-mcp"));
     let mcp = if mcp.is_relative() { workspace_path(&mcp.to_string_lossy()) } else { mcp };
     // The version is compared like any other output, so a binary stamped with
     // anything else fails most cases with diffs that never mention why.
