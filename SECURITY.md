@@ -100,7 +100,7 @@ To check a download, with [cosign](https://docs.sigstore.dev/cosign/system_confi
 3 or later:
 
 ```bash
-tag=v0.1.0   # the release you downloaded
+tag=vX.Y.Z   # the gruntas release you downloaded
 cosign verify-blob checksums.txt --bundle checksums.txt.sigstore.json \
   --certificate-identity "https://github.com/gruntas/gruntas/.github/workflows/release.yml@refs/tags/$tag" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
@@ -111,7 +111,9 @@ sha256sum --check --ignore-missing checksums.txt
 
 The first command proves the checksums came from this repository's release
 workflow, run by pushing that tag; the second that your archive is one of
-them. An SBOM verifies the same way, with its own bundle. The npm packages
+them. An SBOM verifies the same way, with its own bundle. Releases from before the
+rename were signed as `krowkcom/krowk`, with `krowk_*` archives: verify those
+with `krowkcom/krowk` in both places above. The npm packages
 are published with npm provenance (npm 9.5 or later), which `npm audit
 signatures` checks.
 
