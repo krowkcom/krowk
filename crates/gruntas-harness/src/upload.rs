@@ -49,7 +49,7 @@ where
 {
     let (session, text_len, images) = match &cmd {
         Command::Prompt { session_id, text, images, .. } => (session_id.clone(), text.len(), images),
-        Command::Steer { session_id, text, images } => (Some(session_id.clone()), text.len(), images),
+        Command::Steer { session_id, text, images, .. } => (Some(session_id.clone()), text.len(), images),
         _ => return Ok(cmd),
     };
     if images.iter().all(|i| i.data.is_empty()) {
@@ -79,9 +79,9 @@ where
     }
     say(out, String::new());
     let by_name = |images: &[crate::protocol::ImageInput]| images.iter().map(|i| crate::protocol::ImageInput { data: if i.sha256.is_some() { String::new() } else { i.data.clone() }, ..i.clone() }).collect::<Vec<_>>();
-    Ok(match cmd {
-        Command::Prompt { session_id, text, images, model, permission_mode, toolset, effort, rollover, budget } => Command::Prompt { session_id, text, images: by_name(&images), model, permission_mode, toolset, effort, rollover, budget },
-        Command::Steer { session_id, text, images } => Command::Steer { session_id, text, images: by_name(&images) },
-        other => other,
-    })
+    let mut cmd = cmd;
+    if let Command::Prompt { images, .. } | Command::Steer { images, .. } = &mut cmd {
+        *images = by_name(images);
+    }
+    Ok(cmd)
 }

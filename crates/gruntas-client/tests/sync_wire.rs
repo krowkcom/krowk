@@ -24,7 +24,7 @@ fn round_trip<T: Serialize + DeserializeOwned>(json: &str) -> T {
 /// last event it holds (none: everything), a handoff to its own device.
 #[test]
 fn r_client_1_each_viewer_frame_is_the_json_the_host_reads() {
-    let interrupt = Command::Interrupt { session_id: SESSION.into() };
+    let interrupt = Command::Interrupt { session_id: SESSION.into(), origin: None };
     let command = format!(r#"{{"type":"command","id":"c1","command":{{"type":"interrupt","sessionId":"{SESSION}"}}}}"#);
     let ViewerFrame::Command(Remote { id, command: c }) = round_trip(&command) else { panic!("not a command") };
     assert_eq!((id.as_str(), c), ("c1", interrupt.clone()));
@@ -137,5 +137,54 @@ fn r_client_1_uuid_gives_a_session_ids_bytes_and_zeros_for_anything_else() {
     assert_eq!(uuid(&SESSION.replace('-', "")), uuid(SESSION));
     for bad in ["x", "", "01a0f731-f1c0-7000-92d7-64b247e5178g", "01a0f731-f1c0-7000-92d7-64b247e517"] {
         assert_eq!(uuid(bad), [0; 16], "{bad}");
+    }
+}
+
+/// R-SEC-3 (D7): every steering command carries an optional origin, and a
+/// frame from an older peer without one still decodes; R-SEC-2: a start
+/// record's attendance is optional the same way.
+#[test]
+fn r_sec_3_each_steering_command_carries_an_optional_origin() {
+    use gruntas_client::protocol::{Attendance, LogBody, Origin, OriginKind};
+    let origin = r#","origin":{"kind":"agent","sessionId":"01a0f731-f1c0-7000-92d7-64b247e51782","device":"laptop"}"#;
+    let want = Origin { kind: OriginKind::Agent, session_id: Some("01a0f731-f1c0-7000-92d7-64b247e51782".into()), device: Some("laptop".into()) };
+    let model = r#"{"instance":"claude","model":"sonnet"}"#;
+    let bodies = [
+        format!(r#""type":"prompt","sessionId":"{SESSION}","text":"go","permissionMode":"default""#),
+        format!(r#""type":"interrupt","sessionId":"{SESSION}""#),
+        format!(r#""type":"steer","sessionId":"{SESSION}","text":"go on""#),
+        format!(r#""type":"approve","sessionId":"{SESSION}","requestId":"r1","decision":"allow""#),
+        format!(r#""type":"switchModel","sessionId":"{SESSION}","model":{model}"#),
+    ];
+    for body in bodies {
+        let with = format!("{{{body}{origin}}}");
+        let c: Command = serde_json::from_str(&with).unwrap_or_else(|e| panic!("{with}: {e}"));
+        let json = serde_json::to_value(&c).unwrap();
+        assert_eq!(json["origin"], serde_json::from_str::<serde_json::Value>(&origin[10..]).unwrap(), "{with}");
+        let got = match c.clone() {
+            Command::Prompt { origin, .. } | Command::Interrupt { origin, .. } | Command::Steer { origin, .. } | Command::Approve { origin, .. } | Command::SwitchModel { origin, .. } => origin,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(got, Some(Box::new(want.clone())));
+        // Absent: an older peer's frame decodes, and writes no origin.
+        let bare = format!("{{{body}}}");
+        let c: Command = serde_json::from_str(&bare).unwrap_or_else(|e| panic!("{bare}: {e}"));
+        assert!(serde_json::to_value(&c).unwrap().get("origin").is_none(), "{bare}");
+    }
+    // A person's origin names no session.
+    let person: Origin = serde_json::from_str(r#"{"kind":"person","device":"phone"}"#).unwrap();
+    assert_eq!((person.kind, person.session_id), (OriginKind::Person, None));
+
+    // A prompt that starts a session says whether anyone is at it.
+    let c: Command = serde_json::from_str(r#"{"type":"prompt","text":"go","permissionMode":"default","attendance":"unattended"}"#).unwrap();
+    assert!(matches!(c, Command::Prompt { attendance: Some(Attendance::Unattended), .. }));
+
+    let started = |extra: &str| format!(r#"{{"type":"session.started","cwd":"/r","krowkVersion":"1","protocolVersion":1{extra}}}"#);
+    for (extra, want) in [(r#","attendance":"attended""#, Some(Attendance::Attended)), (r#","attendance":"unattended""#, Some(Attendance::Unattended)), ("", None)] {
+        let json = started(extra);
+        let LogBody::SessionStarted { attendance, .. } = serde_json::from_str(&json).unwrap_or_else(|e| panic!("{json}: {e}")) else { panic!("not a start record") };
+        assert_eq!(attendance, want, "{json}");
+        let again = serde_json::to_string(&serde_json::from_str::<LogBody>(&json).unwrap()).unwrap();
+        assert_eq!(again.contains("attendance"), want.is_some(), "{again}");
     }
 }

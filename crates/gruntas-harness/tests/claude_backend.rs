@@ -157,7 +157,7 @@ fn prompt_within(session_id: Option<&str>, text: &str, model: &str, mode: Permis
         permission_mode: mode,
         toolset: None,
         effort: None,
-        budget,
+        budget, attendance: None, origin: None,
     }
 }
 
@@ -338,7 +338,7 @@ fn r_back_1_an_interrupt_stops_the_turn_and_the_session_continues() {
                     if matches!(line, StreamLine::Live(LiveEvent::ItemDelta { .. })) && !interrupted {
                         interrupted = true;
                         let (itx, _irx) = mpsc::channel(1);
-                        host.execute(Command::Interrupt { session_id: session.clone().unwrap() }, itx).await.unwrap();
+                        host.execute(Command::Interrupt { session_id: session.clone().unwrap(), origin: None }, itx).await.unwrap();
                     }
                 }
                 r = &mut exec => break r.unwrap().unwrap(),
@@ -896,7 +896,7 @@ fn a_renamed_instance_keeps_its_session_process() {
             ..Default::default()
         };
         host.set_registry_renamed(Registry::resolve(&cfg, &home.env()), "claude:work", "claude:personal");
-        let (lines, r) = run(&host, Command::Prompt { session_id: Some(sid.clone()), text: "again".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None }).await;
+        let (lines, r) = run(&host, Command::Prompt { session_id: Some(sid.clone()), text: "again".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None }).await;
         let r = r.unwrap().unwrap();
         assert_eq!((r.status, r.model.instance.as_str()), (TurnStatus::Completed, "claude:personal"), "{lines:?}");
         let (_, r) = run(&host, prompt(Some(&sid), "old name", "claude:work/sonnet", PermissionMode::Default)).await;
@@ -1238,7 +1238,7 @@ async fn run_steered(host: &Host, cmd: Command, text: &str, when: impl Fn(&[Stre
                     if !steered && when(&lines) {
                         steered = true;
                         let (stx, _srx) = mpsc::channel(8);
-                        host.execute(Command::Steer { session_id: session.clone(), text: text.into(), images: Vec::new() }, stx).await.unwrap();
+                        host.execute(Command::Steer { session_id: session.clone(), text: text.into(), images: Vec::new(), origin: None }, stx).await.unwrap();
                     }
                 }
                 None => break,
@@ -1336,7 +1336,7 @@ fn r_steer_1_an_interrupted_turn_hands_back_steering_claude_code_never_read() {
         let mut steered = false;
         let mut interrupted = false;
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(20));
-        let steer = |session: &str, text: &str| Command::Steer { session_id: session.into(), text: text.into(), images: Vec::new() };
+        let steer = |session: &str, text: &str| Command::Steer { session_id: session.into(), text: text.into(), images: Vec::new(), origin: None };
         let result = loop {
             tokio::select! {
                 biased;
@@ -1357,7 +1357,7 @@ fn r_steer_1_an_interrupted_turn_hands_back_steering_claude_code_never_read() {
                     if std::fs::read_to_string(&log).unwrap_or_default().lines().any(|l| l.starts_with("in ") && l.contains(r#""content":"first""#)) {
                         interrupted = true;
                         let (stx, _srx) = mpsc::channel(8);
-                        host.execute(Command::Interrupt { session_id: session.clone() }, stx.clone()).await.unwrap();
+                        host.execute(Command::Interrupt { session_id: session.clone(), origin: None }, stx.clone()).await.unwrap();
                         host.execute(steer(&session, "second"), stx).await.unwrap();
                     }
                 }
@@ -1391,7 +1391,7 @@ fn r_steer_1_steering_given_up_on_after_the_result_is_cancelled_and_only_what_wa
         let mut session = String::new();
         let (mut first, mut second) = (false, false);
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(20));
-        let steer = |session: &str, text: &str| Command::Steer { session_id: session.into(), text: text.into(), images: Vec::new() };
+        let steer = |session: &str, text: &str| Command::Steer { session_id: session.into(), text: text.into(), images: Vec::new(), origin: None };
         let result = loop {
             tokio::select! {
                 biased;
@@ -1494,13 +1494,13 @@ fn r_sub_7_a_claude_agents_child_session_is_held_as_running_while_the_agent_runs
         let out = || mpsc::channel(64).0;
         for kid in &kids {
             assert_eq!(code(host.execute(prompt(Some(kid), "hello", "claude:work/sonnet", PermissionMode::Default), out()).await).as_deref(), Some("session_busy"), "{kid}");
-            assert_eq!(code(host.execute(Command::Steer { session_id: kid.clone(), text: "not you".into(), images: Vec::new() }, out()).await).as_deref(), Some("not_steerable"), "{kid}");
+            assert_eq!(code(host.execute(Command::Steer { session_id: kid.clone(), text: "not you".into(), images: Vec::new(), origin: None }, out()).await).as_deref(), Some("not_steerable"), "{kid}");
         }
         let r = turn.await.unwrap().unwrap().unwrap();
         assert_eq!(r.status, TurnStatus::Completed, "the parent's turn is untouched: {:?}", r.error);
         drain.await.unwrap();
         for kid in &kids {
-            assert_eq!(code(host.execute(Command::Interrupt { session_id: kid.clone() }, out()).await).as_deref(), Some("no_running_turn"), "{kid} let go once it ended");
+            assert_eq!(code(host.execute(Command::Interrupt { session_id: kid.clone(), origin: None }, out()).await).as_deref(), Some("no_running_turn"), "{kid} let go once it ended");
         }
         host.shutdown().await;
     });
@@ -1551,7 +1551,7 @@ fn r_sub_9_a_claude_agents_request_is_forgotten_with_the_agent_when_its_turn_is_
             // The turn is dropped here, its request never answered.
         };
         host.shutdown().await;
-        let answer = Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() };
+        let answer = Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new(), origin: None };
         let e = host.execute(answer, mpsc::channel(1).0).await.unwrap_err();
         assert!(e.message.contains("has no approval request"), "forgotten, not left waiting: {}", e.message);
     }));
@@ -1579,7 +1579,7 @@ fn r_sub_9_a_claude_agents_status_follows_its_tools_tokens_and_end_and_its_appro
             let mut lines: Vec<StreamLine> = Vec::new();
             while let Some(l) = rx.recv().await {
                 if let StreamLine::Live(LiveEvent::ApprovalRequested(req)) = &l {
-                    let answer = |session_id: &str| Command::Approve { session_id: session_id.into(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() };
+                    let answer = |session_id: &str| Command::Approve { session_id: session_id.into(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new(), origin: None };
                     let parent = lines.iter().find_map(|l| if let StreamLine::Log(LogEvent { session_id, body: LogBody::SubagentStarted { .. }, .. }) = l { Some(session_id.clone()) } else { None }).unwrap();
                     let refused = host.execute(answer(&parent), mpsc::channel(1).0).await.unwrap_err();
                     assert_eq!(refused.code, "no_approval_request", "not the parent's to answer");
@@ -1653,7 +1653,7 @@ fn r_sub_7_a_background_agent_ending_between_turns_ends_its_child_and_lets_it_go
         let kid = kid.expect("the background agent is a child");
         let out = || mpsc::channel(64).0;
         let code = |r: Result<Option<RunResult>, gruntas_harness::engine::EngineError>| r.err().map(|e| e.code);
-        assert_eq!(code(host.execute(Command::Steer { session_id: kid.clone(), text: "not you".into(), images: Vec::new() }, out()).await).as_deref(), Some("not_steerable"), "running on past its turn");
+        assert_eq!(code(host.execute(Command::Steer { session_id: kid.clone(), text: "not you".into(), images: Vec::new(), origin: None }, out()).await).as_deref(), Some("not_steerable"), "running on past its turn");
         // Between turns: its end, to the watchers, as the child's.
         let mut ended = (false, false);
         while ended != (true, true) {
@@ -1663,7 +1663,7 @@ fn r_sub_7_a_background_agent_ending_between_turns_ends_its_child_and_lets_it_go
                 _ => {}
             }
         }
-        assert_eq!(code(host.execute(Command::Interrupt { session_id: kid.clone() }, out()).await).as_deref(), Some("no_running_turn"), "let go once it ended");
+        assert_eq!(code(host.execute(Command::Interrupt { session_id: kid.clone(), origin: None }, out()).await).as_deref(), Some("no_running_turn"), "let go once it ended");
         let log = home.events(&kid);
         assert!(matches!(log.last().map(|e| &e.body), Some(LogBody::TurnCompleted { status: TurnStatus::Completed, .. })), "{log:?}");
         host.shutdown().await;
@@ -1722,7 +1722,7 @@ async fn stop_the_sleeper(host: &Host, sleeper: &str) -> (Vec<StreamLine>, RunRe
             if let StreamLine::Log(LogEvent { body: LogBody::SubagentStarted { subagent_session_id, backend_id: Some(b), .. }, .. }) = &l
                 && b == sleeper
             {
-                answer = Some(host.execute(Command::Interrupt { session_id: subagent_session_id.clone() }, mpsc::channel(8).0).await);
+                answer = Some(host.execute(Command::Interrupt { session_id: subagent_session_id.clone(), origin: None }, mpsc::channel(8).0).await);
             }
             lines.push(l);
         }
@@ -1786,7 +1786,7 @@ fn r_sub_10_an_agent_waiting_on_an_approval_is_stopped_and_its_question_taken_ba
             while let Some(l) = rx.recv().await {
                 if let StreamLine::Live(LiveEvent::ApprovalRequested(req)) = &l {
                     // Nobody answers it: the agent is stopped instead.
-                    answer = Some(host.execute(Command::Interrupt { session_id: req.session_id.clone() }, mpsc::channel(8).0).await);
+                    answer = Some(host.execute(Command::Interrupt { session_id: req.session_id.clone(), origin: None }, mpsc::channel(8).0).await);
                 }
                 lines.push(l);
             }
@@ -1863,14 +1863,14 @@ fn r_sub_10_a_sibling_stopped_while_an_agents_question_waits_ends_once_it_is_ans
             while let Some(l) = rx.recv().await {
                 if let StreamLine::Live(LiveEvent::ApprovalRequested(req)) = &l {
                     let kid = kid_of(&lines, &reader);
-                    let stop = host.execute(Command::Interrupt { session_id: kid }, mpsc::channel(8).0);
+                    let stop = host.execute(Command::Interrupt { session_id: kid, origin: None }, mpsc::channel(8).0);
                     let approve = async {
                         // Written to Claude Code while the question waits;
                         // then the person answers.
                         while !std::fs::read_to_string(&fake_log).unwrap_or_default().lines().any(|l| l.starts_with("stop_task ")) {
                             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                         }
-                        let a = Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() };
+                        let a = Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new(), origin: None };
                         host.execute(a, mpsc::channel(1).0).await.unwrap();
                     };
                     answer = Some(tokio::join!(stop, approve).0);
@@ -1934,7 +1934,7 @@ fn r_sub_10_a_background_claude_agent_is_stopped_between_turns() {
         assert_eq!(r.unwrap().unwrap().status, TurnStatus::Completed);
         let kid = kid_of(&lines, "a_bg_1");
         let out = || mpsc::channel(64).0;
-        assert!(matches!(host.execute(Command::Interrupt { session_id: kid.clone() }, out()).await, Ok(None)));
+        assert!(matches!(host.execute(Command::Interrupt { session_id: kid.clone(), origin: None }, out()).await, Ok(None)));
         let mut ended = (false, false);
         while ended != (true, true) {
             match watch.recv().await.expect("the host is watched") {
@@ -1943,7 +1943,7 @@ fn r_sub_10_a_background_claude_agent_is_stopped_between_turns() {
                 _ => {}
             }
         }
-        let e = host.execute(Command::Interrupt { session_id: kid.clone() }, out()).await.unwrap_err();
+        let e = host.execute(Command::Interrupt { session_id: kid.clone(), origin: None }, out()).await.unwrap_err();
         assert_eq!(e.code, "no_running_turn", "let go once it ended");
         host.shutdown().await;
     }));

@@ -155,7 +155,7 @@ fn rt() -> tokio::runtime::Runtime {
 
 fn prompt(session_id: Option<&str>, text: &str, model: &str, mode: PermissionMode) -> Command {
     let (instance, model) = model.split_once('/').unwrap();
-    Command::Prompt { session_id: session_id.map(String::from), text: text.into(), images: Vec::new(), model: Some(ModelRef { instance: instance.into(), model: model.into() }), permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None }
+    Command::Prompt { session_id: session_id.map(String::from), text: text.into(), images: Vec::new(), model: Some(ModelRef { instance: instance.into(), model: model.into() }), permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None }
 }
 
 type Outcome = Result<Option<RunResult>, gruntas_harness::engine::EngineError>;
@@ -357,7 +357,7 @@ fn r_back_5_a_new_host_resumes_the_codex_thread_the_log_names() {
     // A new gruntas: a new process, on the thread the log holds.
     rt().block_on(async {
         let host = h.host(vec![("codex:team", h.instance(&home, Some("tool_use.jsonl"), &[]))], trust::allow_all());
-        let (_, r) = run(&host, Command::Prompt { session_id: Some(session.clone()), text: "and now?".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None }).await;
+        let (_, r) = run(&host, Command::Prompt { session_id: Some(session.clone()), text: "and now?".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None }).await;
         let r = r.unwrap().unwrap();
         assert_eq!((r.status, r.result.as_str(), r.model.instance.as_str()), (TurnStatus::Completed, "Still one file.", "codex:team"), "the session's model, on the same instance");
         host.shutdown().await;
@@ -434,7 +434,7 @@ fn r_back_3_steering_reaches_the_running_codex_turn_and_none_is_lost() {
                 _ => return,
             };
             let (tx, _rx) = mpsc::channel(8);
-            host.execute(Command::Steer { session_id: session.into(), text: text.into(), images: Vec::new() }, tx).await.unwrap();
+            host.execute(Command::Steer { session_id: session.into(), text: text.into(), images: Vec::new(), origin: None }, tx).await.unwrap();
         })
         .await;
         let r = r.unwrap().unwrap();
@@ -460,7 +460,7 @@ fn r_back_3_an_interrupt_mid_turn_keeps_what_arrived_and_the_session_goes_on() {
         let (_, r) = run_with(&host, prompt(None, "count for a long time", "codex:team/gpt-5.5", PermissionMode::Default), async |host: &Host, session: &str, n: usize| {
             if n == 1 {
                 let (tx, _rx) = mpsc::channel(8);
-                host.execute(Command::Interrupt { session_id: session.into() }, tx).await.unwrap();
+                host.execute(Command::Interrupt { session_id: session.into(), origin: None }, tx).await.unwrap();
             }
         })
         .await;
@@ -610,13 +610,13 @@ fn r_sub_10_a_codex_childs_approval_is_its_own_and_stopping_another_interrupts_i
             let mut stopped = None;
             while let Some(l) = rx.recv().await {
                 if let StreamLine::Live(LiveEvent::ApprovalRequested(req)) = &l {
-                    let answer = |session_id: &str| Command::Approve { session_id: session_id.into(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() };
+                    let answer = |session_id: &str| Command::Approve { session_id: session_id.into(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new(), origin: None };
                     let parent = lines.iter().find_map(|l| if let StreamLine::Log(LogEvent { session_id, body: LogBody::SubagentStarted { .. }, .. }) = l { Some(session_id.clone()) } else { None }).unwrap();
                     let refused = host.execute(answer(&parent), mpsc::channel(1).0).await.unwrap_err();
                     assert_eq!(refused.code, "no_approval_request", "not the parent's to answer");
                     // Turing stopped while Ada's question waits: written at
                     // once, answered once the question is.
-                    let stop = host.execute(Command::Interrupt { session_id: kid_of(&lines, TURING.0) }, mpsc::channel(8).0);
+                    let stop = host.execute(Command::Interrupt { session_id: kid_of(&lines, TURING.0), origin: None }, mpsc::channel(8).0);
                     tokio::pin!(stop);
                     let written = async {
                         while !h.fake_log().contains("interrupt-of ") {
@@ -696,7 +696,7 @@ fn r_sub_10_a_codex_child_waiting_on_its_approval_is_stopped_and_its_question_ta
             while let Some(l) = rx.recv().await {
                 if let StreamLine::Live(LiveEvent::ApprovalRequested(req)) = &l {
                     // Nobody answers it: the child asking is stopped instead.
-                    stopped = Some(host.execute(Command::Interrupt { session_id: req.session_id.clone() }, mpsc::channel(8).0).await);
+                    stopped = Some(host.execute(Command::Interrupt { session_id: req.session_id.clone(), origin: None }, mpsc::channel(8).0).await);
                 }
                 lines.push(l);
             }
@@ -885,7 +885,7 @@ fn r_back_3_every_message_gruntas_sends_and_codex_answers_matches_the_pinned_sch
             let (_, r) = run_with(&host, prompt(None, "hi", "codex:team/gpt-5.5", mode), async |host: &Host, session: &str, n: usize| {
                 if scenario == "interrupt.jsonl" && n == 1 {
                     let (tx, _rx) = mpsc::channel(8);
-                    host.execute(Command::Interrupt { session_id: session.into() }, tx).await.unwrap();
+                    host.execute(Command::Interrupt { session_id: session.into(), origin: None }, tx).await.unwrap();
                 }
             })
             .await;

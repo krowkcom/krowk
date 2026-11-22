@@ -222,6 +222,28 @@ fn r_pres_6_stderr_in_a_file_gets_no_report_and_stdout_is_the_same_either_way() 
     }
 }
 
+/// R-SEC-2 (D5): `gruntas -p` with no terminal on its input starts an
+/// unattended session, and one with a terminal an attended one, the start
+/// record saying which.
+#[cfg(unix)]
+#[test]
+fn r_sec_2_gruntas_p_records_whether_a_terminal_is_there() {
+    let attendance = |out: &str| -> Option<String> {
+        let root = out.lines().filter_map(|l| serde_json::from_str::<Value>(&l[l.find('{')?..]).ok()).find(|l| l["type"] == "session.started").unwrap_or_else(|| panic!("no start record on the stream (a terminal prefixes its first line with a report): {out}"));
+        root["attendance"].as_str().map(String::from)
+    };
+    let args = ["-p", "hi", "--model", "claude/sonnet", "--output-format", "stream-json"];
+    let b = Sandbox::new("sec2-piped");
+    b.claude(Some(&fake::answer(SUMMARY)));
+    assert_eq!(attendance(&b.ok(&args)).as_deref(), Some("unattended"));
+
+    let b = Sandbox::new("sec2-tty");
+    b.claude(Some(&fake::answer(SUMMARY)));
+    let mut t = pty::Pty::spawn(b.command(&args), 200, 24);
+    assert!(t.wait(std::time::Duration::from_secs(30)).expect("gruntas -p exits").success(), "{}", t.text());
+    assert_eq!(attendance(&t.text()).as_deref(), Some("attended"), "{}", t.text());
+}
+
 /// JSON lines with what no two runs share masked.
 #[cfg(unix)]
 fn steady(out: &str) -> String {

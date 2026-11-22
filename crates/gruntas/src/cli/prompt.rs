@@ -165,7 +165,9 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     // Its first line with text: a prompt piped in may open on a blank one.
     let topic = prompt.trim_start().lines().next().unwrap_or_default().to_string();
     report(ctx, State::Working, &topic);
-    let opts = headless::Options { prompt, images, resume, model, permission_mode, toolset, effort, rollover, budget, format, worktree };
+    // D5: `-p` with no terminal on its input is nobody's session to watch.
+    let attendance = if std::io::stdin().is_terminal() { gruntas_harness::protocol::Attendance::Attended } else { gruntas_harness::protocol::Attendance::Unattended };
+    let opts = headless::Options { prompt, images, resume, model, permission_mode, toolset, effort, rollover, budget, attendance, format, worktree };
     let ran = turn(ctx, cfg, opts);
     match &ran {
         Ok(()) => report(ctx, State::Done, &topic),

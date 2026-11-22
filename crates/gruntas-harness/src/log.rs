@@ -18,7 +18,7 @@
 //! interleaved. Directories are 0700 and files 0600 — a log holds what an
 //! agent was told and read, secrets included.
 
-use crate::protocol::{ContextRecord, Item, LogBody, LogEvent, PROTOCOL_VERSION};
+use crate::protocol::{Attendance, ContextRecord, Item, LogBody, LogEvent, PROTOCOL_VERSION};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
@@ -87,13 +87,14 @@ impl SessionLog {
     /// finds what a session's subagents spent. `agent` is the definition the
     /// subagent runs, when it runs one.
     pub fn create_child(sessions: &Path, cwd: &Path, gruntas_version: &str, parent: Option<&str>, agent: Option<&str>) -> Result<(SessionLog, LogEvent), LogError> {
-        SessionLog::create_as(sessions, gruntas_store::new_id(), cwd, gruntas_version, parent, agent)
+        SessionLog::create_as(sessions, gruntas_store::new_id(), cwd, gruntas_version, parent, agent, None)
     }
 
     /// `create_child` under an id the caller chose (`gruntas_store::new_id`):
     /// a subagent's worktree is locked in its session's name before the
     /// session is made.
-    pub fn create_as(sessions: &Path, session_id: String, cwd: &Path, gruntas_version: &str, parent: Option<&str>, agent: Option<&str>) -> Result<(SessionLog, LogEvent), LogError> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_as(sessions: &Path, session_id: String, cwd: &Path, gruntas_version: &str, parent: Option<&str>, agent: Option<&str>, attendance: Option<Attendance>) -> Result<(SessionLog, LogEvent), LogError> {
         let dir = sessions.join(&session_id);
         private_dir(&dir).map_err(|e| io(format_args!("create {}", dir.display()), e))?;
         let mut log = SessionLog::open_files(session_id.clone(), dir)?;
@@ -108,6 +109,7 @@ impl SessionLog {
                 protocol_version: PROTOCOL_VERSION,
                 parent_session_id: parent.map(String::from),
                 agent: agent.map(String::from),
+                attendance,
             },
         };
         log.write(&root)?;
@@ -183,9 +185,10 @@ impl SessionLog {
     // thread there would outlive the work and wake the idle process.
 
     /// `create_as`, off the thread.
-    pub async fn create_child_off(sessions: &Path, session_id: &str, cwd: &Path, gruntas_version: &str, parent: Option<&str>, agent: Option<&str>) -> Result<(SessionLog, LogEvent), LogError> {
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_child_off(sessions: &Path, session_id: &str, cwd: &Path, gruntas_version: &str, parent: Option<&str>, agent: Option<&str>, attendance: Option<Attendance>) -> Result<(SessionLog, LogEvent), LogError> {
         let (sessions, id, cwd, v, parent, agent) = (sessions.to_path_buf(), session_id.to_string(), cwd.to_path_buf(), gruntas_version.to_string(), parent.map(String::from), agent.map(String::from));
-        off(move || SessionLog::create_as(&sessions, id, &cwd, &v, parent.as_deref(), agent.as_deref())).await
+        off(move || SessionLog::create_as(&sessions, id, &cwd, &v, parent.as_deref(), agent.as_deref(), attendance)).await
     }
 
     /// `open`, off the thread.

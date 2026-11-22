@@ -1424,7 +1424,7 @@ impl Moving {
         let keys = Keystore::new(&self.c.home.join(".gruntas")).user_keys().unwrap().unwrap();
         let chain = w.people.lock().unwrap().chain().clone();
         let id = format!("0190f3c1-8a2b-4c4d-9e5f-{n:012x}");
-        let take = HostCommand::Take { session_id: self.session.clone(), cwd: cwd.display().to_string() };
+        let take = HostCommand::Take { session_id: self.session.clone(), cwd: cwd.display().to_string(), origin: None  };
         let sealed = host_command::seal_command(&take, &id, c, b, &keys, chain.generation()).unwrap();
         self.c.api.send_host_command(&b.to_string(), &id, &sealed).unwrap();
         // B sees it at its next refresh, within 10 s, and the take waits on

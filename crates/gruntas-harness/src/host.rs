@@ -668,7 +668,7 @@ impl Host {
                 tokio::task::spawn_blocking(move || images::put(&dir, session_id.as_deref(), &sha256, &media_type, &data)).await.map_err(|e| EngineError::new("log_failed", e.to_string()))??;
                 Ok(None)
             }
-            Command::Prompt { session_id, text, images, model, permission_mode, toolset, effort, rollover, budget } => {
+            Command::Prompt { session_id, text, images, model, permission_mode, toolset, effort, rollover, budget, attendance, origin } => {
                 // Images named by hash are the ones `putImage` kept: a missing
                 // one refuses the prompt before anything is logged.
                 let (dir, id) = (shared.cfg.sessions_dir.clone(), session_id.clone());
@@ -677,13 +677,17 @@ impl Host {
                     false => images,
                 };
                 let images = images::decode(&images)?;
-                shared.prompt(session_id.as_deref(), (text, images), model, permission_mode, toolset.as_deref(), effort, rollover, budget.unwrap_or_default(), out).await.map(Some)
+                // What a new session's start record says of how it started: the
+                // sender's word for attendance, and the sending session, if an
+                // agent, as its parent.
+                let begin = Begin { attendance, parent: origin.and_then(|o| o.session_id.filter(|_| o.kind == crate::protocol::OriginKind::Agent)) };
+                shared.prompt(session_id.as_deref(), (text, images), model, permission_mode, toolset.as_deref(), effort, rollover, budget.unwrap_or_default(), &begin, out).await.map(Some)
             }
             // A subagent's session is a running turn like any other, so it
             // is interrupted alone, by its own id (R-SUB-2); a backend's
             // agent by asking its backend to stop it, which ends its child
             // as the backend then says (R-SUB-10).
-            Command::Interrupt { session_id } => {
+            Command::Interrupt { session_id, .. } => {
                 let task = {
                     let running = shared.running.lock().unwrap_or_else(|e| e.into_inner());
                     match running.get(&session_id) {
@@ -703,7 +707,7 @@ impl Host {
             }
             // Queued for the engine's next step; it comes back in the log as
             // a `userText` item where the turn took it.
-            Command::Steer { session_id, text, images } => {
+            Command::Steer { session_id, text, images, .. } => {
                 if text.trim().is_empty() {
                     return Err(EngineError::new("empty_prompt", "the steering text is empty"));
                 }
@@ -738,15 +742,24 @@ impl Host {
             // Whichever client answers first decides; the turn that asked
             // tells every client it was answered (`approval.resolved`). A
             // subagent's request is answered under the subagent's session.
-            Command::Approve { session_id, request_id, decision, answers } => {
+            Command::Approve { session_id, request_id, decision, answers, .. } => {
                 shared.approvals.answer(&session_id, &request_id, decision, answers).map_err(|e| EngineError::new("no_approval_request", e))?;
                 Ok(None)
             }
-            Command::SwitchModel { session_id, model } => shared.switch_model(session_id.as_deref(), model, out).await.map(|()| None),
+            Command::SwitchModel { session_id, model, .. } => shared.switch_model(session_id.as_deref(), model, out).await.map(|()| None),
             Command::Continue { session_id, budget } => shared.unprompted(&session_id, budget.unwrap_or_default(), &out, true).await.map(Some),
             Command::Fork { .. } => Err(EngineError::new("not_implemented", "this command is part of the protocol but not served by this build yet")),
         }
     }
+}
+
+/// What a prompt says of how its new session started, for the session's
+/// start record. Ignored when the prompt is for an existing session.
+#[derive(Debug, Default)]
+struct Begin {
+    attendance: Option<crate::protocol::Attendance>,
+    /// The session that sent the prompt: the new session's parent.
+    parent: Option<String>,
 }
 
 /// One turn, settled: the log it appends to, what the branch so far says,
@@ -932,7 +945,7 @@ impl Shared {
         let Some((instance, pending)) = waiting else {
             return Err(EngineError::new("nothing_pending", format!("session {session_id} has no turn its backend began by itself waiting — send a prompt instead")));
         };
-        let mut plan = self.settle(Some(session_id), (crate::claude::unprompted(&pending.reason), Vec::new()), None, PermissionMode::Default, None, None, None, limits, out, &[], None, Some((&instance, pending.mode))).await?;
+        let mut plan = self.settle(Some(session_id), (crate::claude::unprompted(&pending.reason), Vec::new()), None, PermissionMode::Default, None, None, None, limits, &Begin::default(), out, &[], None, Some((&instance, pending.mode))).await?;
         plan.announce = announce;
         self.turn(plan, out.clone()).await.map(|(r, _)| r)
     }
@@ -955,6 +968,7 @@ impl Shared {
         effort: Option<Effort>,
         rollover: Option<Rollover>,
         limits: BudgetLimits,
+        begin: &Begin,
         out: mpsc::Sender<StreamLine>,
     ) -> Result<RunResult, EngineError> {
         // A turn the session's backend began by itself, and nobody has run,
@@ -969,7 +983,7 @@ impl Shared {
         let mut rolling: Option<Rolling> = None;
         let mut limited: Option<RunResult> = None;
         loop {
-            let r = match self.settle(session.as_deref(), (text.clone(), images.clone()), model.clone(), permission_mode, toolset, effort, rollover, limits, &out, &tried, rolling.clone(), None).await {
+            let r = match self.settle(session.as_deref(), (text.clone(), images.clone()), model.clone(), permission_mode, toolset, effort, rollover, limits, begin, &out, &tried, rolling.clone(), None).await {
                 Ok(plan) => self.turn(plan, out.clone()).await,
                 Err(e) => Err(e),
             };
@@ -1275,6 +1289,7 @@ impl Shared {
         effort: Option<Effort>,
         rollover: Option<Rollover>,
         limits: BudgetLimits,
+        begin: &Begin,
         out: &mpsc::Sender<StreamLine>,
         tried: &[String],
         rolling: Option<Rolling>,
@@ -1377,7 +1392,7 @@ impl Shared {
                 };
                 #[cfg(feature = "test-hooks")]
                 held(HoldAt::Open).await;
-                let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &id, &self.cfg.cwd, &self.cfg.gruntas_version, None, None).await.map_err(log_failure)?;
+                let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &id, &self.cfg.cwd, &self.cfg.gruntas_version, begin.parent.as_deref(), None, begin.attendance).await.map_err(log_failure)?;
                 // WT9: what kept worktrees left behind, cleared at most
                 // once a day, on a thread of its own the session never
                 // waits for.
@@ -2315,7 +2330,7 @@ impl Writer<'_> {
     async fn child_started(&mut self, session_id: &str, task_id: String, call_id: String, description: String, agent: Option<String>, model: &ModelRef) -> Result<(), EngineError> {
         let Some(k) = &self.kids else { return Ok(()) };
         let child = gruntas_store::new_id();
-        let (mut log, root) = match SessionLog::create_child_off(&k.sessions_dir, &child, &k.cwd, &k.gruntas_version, Some(session_id), agent.as_deref()).await {
+        let (mut log, root) = match SessionLog::create_child_off(&k.sessions_dir, &child, &k.cwd, &k.gruntas_version, Some(session_id), agent.as_deref(), None).await {
             Ok(made) => made,
             Err(e) => {
                 self.child_lost(session_id, &description, e, None).await;

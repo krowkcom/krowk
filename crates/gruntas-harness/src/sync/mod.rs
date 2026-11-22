@@ -211,7 +211,7 @@ pub fn interrupt(o: viewer::Options, wait: Duration) -> Result<(), String> {
                 _ => return Err(format!("the host of session {session} did not answer in {} seconds, so its turn was not interrupted", wait.as_secs())),
             }
         }
-        v.commands.send(crate::protocol::Command::Interrupt { session_id: session }).map_err(|_| "the interrupt could not be sent".to_string())?;
+        v.commands.send(crate::protocol::Command::Interrupt { session_id: session, origin: None }).map_err(|_| "the interrupt could not be sent".to_string())?;
         tokio::time::sleep(Duration::from_secs(1)).await;
         Ok(())
     })
@@ -246,17 +246,17 @@ pub fn typed(session: &str, line: String) -> Result<Typed, String> {
         "approve" => ApprovalDecision::Allow,
         "allow-session" => ApprovalDecision::AllowSession,
         "deny" => ApprovalDecision::Deny,
-        "interrupt" if arg.is_empty() => return Ok(Typed::Command(Command::Interrupt { session_id })),
+        "interrupt" if arg.is_empty() => return Ok(Typed::Command(Command::Interrupt { session_id, origin: None })),
         // One of the session's subagents, by the id its `subagent.started`
         // line names (R-SUB-12): the host refuses any other.
-        "interrupt" if crate::log::valid_id(arg) => return Ok(Typed::Command(Command::Interrupt { session_id: arg.to_string() })),
-        "steer" if !arg.is_empty() => return Ok(Typed::Command(Command::Steer { session_id, text: arg.to_string(), images: Vec::new() })),
+        "interrupt" if crate::log::valid_id(arg) => return Ok(Typed::Command(Command::Interrupt { session_id: arg.to_string(), origin: None })),
+        "steer" if !arg.is_empty() => return Ok(Typed::Command(Command::Steer { session_id, text: arg.to_string(), images: Vec::new(), origin: None })),
         "interrupt" | "steer" => return Err(format!("`/{word}` is `/interrupt` alone or with a subagent's session id, or `/steer TEXT`")),
         // The `<instance>/<id>` form `--model` takes: the instances are the
         // host's, so the host checks the model against its own (R-CRED-1).
         "model" => {
             return match arg.split_once('/') {
-                Some((instance, model)) if !instance.is_empty() && !model.is_empty() && !arg.contains(char::is_whitespace) => Ok(Typed::Command(Command::SwitchModel { session_id: Some(session_id), model: crate::protocol::ModelRef { instance: instance.into(), model: model.into() } })),
+                Some((instance, model)) if !instance.is_empty() && !model.is_empty() && !arg.contains(char::is_whitespace) => Ok(Typed::Command(Command::SwitchModel { session_id: Some(session_id), model: crate::protocol::ModelRef { instance: instance.into(), model: model.into() }, origin: None })),
                 _ => Err("`/model` takes the model as `<instance>/<id>`, e.g. `/model anthropic/claude-opus-5-5`".into()),
             };
         }
@@ -267,13 +267,13 @@ pub fn typed(session: &str, line: String) -> Result<Typed, String> {
     if arg.is_empty() || arg.contains(char::is_whitespace) {
         return Err(format!("`/{word}` takes the requestId an approval.requested line names"));
     }
-    Ok(Typed::Command(Command::Approve { session_id, request_id: arg.to_string(), decision, answers: Vec::new() }))
+    Ok(Typed::Command(Command::Approve { session_id, request_id: arg.to_string(), decision, answers: Vec::new(), origin: None }))
 }
 
 /// A prompt from `gruntas sync attach`: the session's model, settings and
 /// mode, the host's to choose.
 fn prompt(session: &str, text: String) -> crate::protocol::Command {
-    crate::protocol::Command::Prompt { session_id: Some(session.to_string()), text, images: Vec::new(), model: None, permission_mode: Default::default(), toolset: None, effort: None, rollover: None, budget: None }
+    crate::protocol::Command::Prompt { session_id: Some(session.to_string()), text, images: Vec::new(), model: None, permission_mode: Default::default(), toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None }
 }
 
 /// A prompt of the images at `paths`: the first `put_image` and the others,
@@ -288,8 +288,8 @@ fn with_images(session: &str, paths: &[std::path::PathBuf]) -> Result<(crate::pr
     for i in &mut inputs {
         i.data.clear();
     }
-    let Command::Prompt { session_id, model, permission_mode, toolset, effort, rollover, budget, .. } = prompt(session, names.trim_end().to_string()) else { unreachable!() };
-    Ok((first, rest, Command::Prompt { session_id, text: names.trim_end().to_string(), images: inputs, model, permission_mode, toolset, effort, rollover, budget }))
+    let Command::Prompt { session_id, model, permission_mode, toolset, effort, rollover, budget, attendance, origin, .. } = prompt(session, names.trim_end().to_string()) else { unreachable!() };
+    Ok((first, rest, Command::Prompt { session_id, text: names.trim_end().to_string(), images: inputs, model, permission_mode, toolset, effort, rollover, budget, attendance, origin }))
 }
 
 /// `gruntas sync attach`: follows a synced session, writing each update as
@@ -505,7 +505,7 @@ impl Offered {
     /// was not prompted from here, another device's.
     fn switch(&mut self, session: &str) -> Result<(crate::protocol::Command, Option<crate::protocol::Command>), String> {
         let (turn, offer) = self.offer.take().ok_or("no switch offer is waiting")?;
-        let switch = crate::protocol::Command::SwitchModel { session_id: Some(session.to_string()), model: offer.to.clone() };
+        let switch = crate::protocol::Command::SwitchModel { session_id: Some(session.to_string()), model: offer.to.clone(), origin: None };
         let asked = self.asked.iter().find(|(t, _)| *t == turn).map(|(_, text)| text);
         // An early offer's turn succeeded: nothing is sent again (D10).
         let again = self.last_prompt.clone().filter(|p| !offer.early && asked == Some(p));
@@ -624,11 +624,11 @@ mod tests {
             let Ok(Command::Approve { session_id, request_id, decision, .. }) = t(line) else { panic!("{line}") };
             assert_eq!((session_id.as_str(), request_id.as_str(), decision), ("s", "r1", want), "{line}");
         }
-        assert!(matches!(t("/interrupt"), Ok(Command::Interrupt { session_id }) if session_id == "s"));
+        assert!(matches!(t("/interrupt"), Ok(Command::Interrupt { session_id, origin: None }) if session_id == "s"));
         let child = "01a0ec7b-0000-7000-8000-00000000c41d";
-        assert!(matches!(t(&format!("/interrupt {child}")), Ok(Command::Interrupt { session_id }) if session_id == child), "R-SUB-12: a subagent, by its id");
+        assert!(matches!(t(&format!("/interrupt {child}")), Ok(Command::Interrupt { session_id, origin: None }) if session_id == child), "R-SUB-12: a subagent, by its id");
         assert!(matches!(t("/steer go on"), Ok(Command::Steer { text, .. }) if text == "go on"));
-        let Ok(Command::SwitchModel { session_id, model }) = t("/model mock/other") else { panic!("/model") };
+        let Ok(Command::SwitchModel { session_id, model, .. }) = t("/model mock/other") else { panic!("/model") };
         assert_eq!((session_id.as_deref(), model.to_string().as_str()), (Some("s"), "mock/other"));
         for bad in ["/approve", "/deny a b", "/interrupt now", "/steer", "/model", "/model opus", "/model /x", "/model a/", "/model a/b c"] {
             assert!(t(bad).is_err(), "{bad}");
@@ -685,7 +685,7 @@ mod tests {
         assert!(o.switch("s").is_err(), "another session's offer is not this one's");
         o.saw("s", &offered("s", "t1"));
         let (switch, again) = o.switch("s").unwrap();
-        let Command::SwitchModel { session_id, model } = &switch else { panic!("{switch:?}") };
+        let Command::SwitchModel { session_id, model, .. } = &switch else { panic!("{switch:?}") };
         assert_eq!((session_id.as_deref(), model.instance.as_str()), (Some("s"), "b"));
         assert_eq!(prompt_text(Typed::Command(again.clone().unwrap())), "do the thing", "the turn's first text, not what followed it");
         assert!(o.switch("s").is_err(), "taken once");
