@@ -35,9 +35,12 @@ jobs:
           persist-credentials: false
 
       # vYYYY.M.N or vYYYY.M.N-rcK, with no leading zero in the month or N;
-      # any other tag stops here, before anything is built or published.
+      # any other tag stops here, before anything is built or published. The
+      # bare assignment is what fails the step: inside `echo` it would not.
       - id: version
-        run: echo "version=$(scripts/release_tag.sh "$GITHUB_REF_NAME")" >> "$GITHUB_OUTPUT"
+        run: |
+          v=$(scripts/release_tag.sh "$GITHUB_REF_NAME")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
 
       # The release notes are the tag's CHANGELOG.md section, written for the
       # people upgrading, rather than a list of every commit.

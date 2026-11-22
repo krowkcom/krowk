@@ -29,7 +29,10 @@ fn r_rel_1_a_release_tag_is_a_calendar_version_with_no_leading_zero() {
 #[test]
 fn r_rel_3_the_floating_tag_is_v0_and_the_release_starts_at_the_tag_check() {
     let release = std::fs::read_to_string(root().join(".github/workflows/release.yml")).expect("release.yml");
-    assert!(release.contains(r#"run: echo "version=$(scripts/release_tag.sh "$GITHUB_REF_NAME")" >> "$GITHUB_OUTPUT""#), "the check job's version comes from the tag check");
+    assert!(
+        release.contains("          v=$(scripts/release_tag.sh \"$GITHUB_REF_NAME\")\n          echo \"version=$v\" >> \"$GITHUB_OUTPUT\""),
+        "the check job's version comes from the tag check, in a bare assignment so a refused tag fails the step"
+    );
     let step = &release[release.find("- name: Move the v0 tag").expect("a step that moves v0")..];
     assert!(step.contains("git/refs/tags/v0\"") && step.contains("\"refs/tags/v0\""), "the step names v0");
     assert!(!step.contains("%%."), "the tag is not derived from the version");
