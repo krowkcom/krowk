@@ -841,7 +841,7 @@ mod delegation {
 use delegation::{collect, delegate, machines};
 
 fn tool_schemas() -> Value {
-    let slug = "Artifact slug, e.g. art_9f3c2e1a7b04d6c8e5f1a2b3 — or any link carrying it, like https://krowk.com/a/art_9f3c2e1a7b04d6c8e5f1a2b3.";
+    let slug = "Artifact slug, e.g. art_9f3c2e1a7b04d6c8e5f1a2b3 — or any link carrying it, like https://gruntas.com/a/art_9f3c2e1a7b04d6c8e5f1a2b3.";
     #[cfg_attr(not(all(feature = "harness", unix)), allow(unused_mut))]
     let mut tools = json!([
         {

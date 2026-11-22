@@ -2,7 +2,7 @@
   "name": "gruntas",
   "owner": {
     "name": "Gruntas",
-    "url": "https://krowk.com"
+    "url": "https://gruntas.com"
   },
   "metadata": {
     "description": "Gruntas, the coding agent harness, for Claude Code."
@@ -15,7 +15,7 @@
       "author": { "name": "Gruntas" },
       "category": "development",
       "source": "./",
-      "homepage": "https://krowk.com",
+      "homepage": "https://gruntas.com",
       "license": "MIT"
     }
   ]

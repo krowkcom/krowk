@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # install.sh — put gruntas and gruntas-mcp on this machine.
 #
-#   curl -fsSL https://krowk.com/install | bash
+#   curl -fsSL https://gruntas.com/install | bash
 #
 # Both binaries come down together because scripts/dist.sh ships them in one
 # archive: an agent container that wants gruntas usually wants gruntas-mcp too, and
@@ -19,7 +19,7 @@
 # GRUNTAS_LEAN=1 asks for the lean build anywhere; `--full` or GRUNTAS_LEAN=0 for
 # the full one:
 #
-#   curl -fsSL https://krowk.com/install | bash -s -- --lean
+#   curl -fsSL https://gruntas.com/install | bash -s -- --lean
 #
 # There is no wizard at the end and nothing to log into. A keyless push works the
 # moment the binary lands, so the last thing this script does is say what to run,
@@ -1001,7 +1001,7 @@ next_steps() {
 }
 
 usage() {
-  echo "usage: install.sh [--lean | --full]    (piped: curl -fsSL https://krowk.com/install | bash -s -- --lean)"
+  echo "usage: install.sh [--lean | --full]    (piped: curl -fsSL https://gruntas.com/install | bash -s -- --lean)"
 }
 
 main() {

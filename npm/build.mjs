@@ -155,7 +155,7 @@ for (const platform of PLATFORMS) {
         name: platform.npm,
         version,
         description: "gruntas CLI + MCP binaries for " + platform.os + " " + platform.cpu + ".",
-        homepage: "https://krowk.com",
+        homepage: "https://gruntas.com",
         repository: { type: "git", url: "git+https://github.com/gruntas/gruntas.git" },
         license: "MIT",
         os: [platform.os],

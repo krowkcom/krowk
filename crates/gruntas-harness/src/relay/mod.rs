@@ -227,7 +227,7 @@ pub const WINDOW: u64 = crate::daemon::ws::WINDOW;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub roster: Roster,
-    /// The origin devices sign (`ws://127.0.0.1:7790`, `wss://relay.krowk.com`):
+    /// The origin devices sign (`ws://127.0.0.1:7790`, `wss://relay.gruntas.com`):
     /// what they dialed. Without it, `ws://` and the request's `Host` —
     /// for loopback only, since a relay that trusts the `Host` a client
     /// sends lets a relay in the middle pass its challenge through
