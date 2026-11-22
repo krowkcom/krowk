@@ -33,6 +33,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
   is renamed (`KROWK_TOKEN` is `GRUNTAS_TOKEN`, `KROWK_HOME` is
   `GRUNTAS_HOME`, and so on, the installer's and the Action's too); the old
   names are no longer read, so rename them in your shell profile and CI.
+  Worktree setup commands get `GRUNTAS_PORT_BASE`, `GRUNTAS_PROJECT_ROOT`
+  and `GRUNTAS_WORKTREE_PATH`, so update setup scripts that use the old
+  names. JSON output that names a variable (`token_source`, the API URL's
+  source) names the new one. With always-on set, run
+  `krowk machines always-on on` again so the service file sets the new names.
 
 ### Changed
 
