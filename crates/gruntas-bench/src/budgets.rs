@@ -332,7 +332,7 @@ mod tests {
         ] {
             assert_eq!(find(id).status, Status::Enforced, "{id} is measurable now, so it is enforced");
         }
-        let lean = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../krowk/lean-deps.txt")).unwrap();
+        let lean = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../gruntas/lean-deps.txt")).unwrap();
         assert_eq!(find("lean.deps").max.for_target("any"), Some(lean.lines().count() as f64), "lean.deps is lean-deps.txt's length");
     }
 }
