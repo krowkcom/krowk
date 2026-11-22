@@ -777,7 +777,9 @@ impl Answers {
     async fn tool_call(&self, params: &Value, asking: Asking<'_>) -> Value {
         let namespace = params.get("namespace").and_then(Value::as_str).unwrap_or_default();
         let tool = str_of(params, "tool");
-        if namespace != bridge::SERVER {
+        // A thread started before the rename keeps the namespace it was
+        // given then: Codex resumes a thread with its own dynamic tools.
+        if gruntas_store::current_name(namespace) != bridge::SERVER {
             return json!({"contentItems": [{"type": "inputText", "text": format!("krowk has no tool {tool:?} in the namespace {namespace:?} — its tools are in {:?}", bridge::SERVER)}], "success": false});
         }
         let env = BridgeEnv {
@@ -1804,6 +1806,8 @@ mod tests {
         assert_eq!(a["success"], true);
         let text = a["contentItems"][0]["text"].as_str().unwrap();
         assert!(text.contains("krowk session: s-1") && text.contains("instance: codex:team") && text.contains("backend: codex-app-server"), "{text}");
+        let resumed = json!({"threadId": "th", "turnId": "tu", "callId": "c", "namespace": "krowk", "tool": "session_info", "arguments": {}});
+        assert_eq!(ask.answer("item/tool/call", &resumed, &mut t, None).await.unwrap()["success"], true, "a thread started before the rename keeps its namespace");
         assert_eq!(ask.answer("item/tool/call", &json!({"namespace": "other", "tool": "x", "arguments": {}}), &mut t, None).await.unwrap()["success"], false);
         assert_eq!(ask.answer("item/commandExecution/requestApproval", &json!({"itemId": "c1"}), &mut t, None).await.unwrap()["decision"], "decline");
         assert!(t.declined["c1"].contains("needs approval"), "the reason is kept for the call's result");

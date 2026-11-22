@@ -4,7 +4,7 @@ Live recordings of `claude` 2.1.289 (Claude Code), for what the fake
 `claude` beside them can't settle: what Claude Code itself does. Each line is
 `>> ` and what was written to its stdin, or `<< ` and what it printed, in the
 order they happened. In the steering recordings (`steer_*.txt`) the control
-protocol (`initialize`, the `krowk` MCP server's handshake, `can_use_tool`
+protocol (`initialize`, the `gruntas` MCP server's handshake, `can_use_tool`
 answered allow) is left out, and so are the `init` line's skills, plugins
 and memory path; the session id is `{{SESSION}}` and the working directory
 `{{CWD}}`, as in the scenarios.
@@ -43,7 +43,7 @@ Recorded with the same `claude` 2.1.289 and the same command, on
 `claude-haiku-4-5-20251001`, with `forwardSubagentText: true` in the
 `initialize` request so an agent's own lines reach the stream. Unlike the
 steering recordings, every control line is kept, in both directions:
-`initialize`, the `krowk` MCP server's handshake (answered with no tools),
+`initialize`, the `gruntas` MCP server's handshake (answered with no tools),
 the paste guard's `hook_callback` (answered `{}`), `can_use_tool` (answered
 allow) and `stop_task`. Trimmed: the `initialize` answer keeps only
 `models`, `capabilities`, `current_permission_mode` and `hooks_applied`

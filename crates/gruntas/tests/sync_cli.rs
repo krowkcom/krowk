@@ -1619,12 +1619,12 @@ fn alloc_08_krowk_mcp_delegates_collects_and_lands_the_result() {
     let w = World::new("delegate");
     let (_a, b, _serve) = allocating(&w);
     let mut mcp = Mcp::start(&b);
-    let (said, err, started) = mcp.call("krowk_delegate", serde_json::json!({"task": DELEGATED, "host": "a"}));
+    let (said, err, started) = mcp.call("gruntas_delegate", serde_json::json!({"task": DELEGATED, "host": "a"}));
     assert!(!err, "{said}");
     let id = started["task_id"].as_str().unwrap_or_else(|| panic!("a task id: {started}")).to_string();
-    let (said, err, _) = mcp.call("krowk_collect", serde_json::json!({"task_id": id, "wait_seconds": 0}));
+    let (said, err, _) = mcp.call("gruntas_collect", serde_json::json!({"task_id": id, "wait_seconds": 0}));
     assert!(!err && said.contains("still running"), "{said}");
-    let (said, err, done) = mcp.call("krowk_collect", serde_json::json!({"task_id": id}));
+    let (said, err, done) = mcp.call("gruntas_collect", serde_json::json!({"task_id": id}));
     assert!(!err, "{said}");
     assert_eq!(done["machine"], "a", "{done}");
     assert_eq!(std::fs::read_to_string(b.repo.join("delegated.txt")).unwrap(), "", "the change is in B's working tree");
@@ -1646,14 +1646,14 @@ fn mid_work(m: &Machine) -> String {
     git(&["rev-parse", "HEAD"])
 }
 
-/// krowk_machines is `krowk machines --json`: the same machines with the
+/// gruntas_machines is `krowk machines --json`: the same machines with the
 /// same fields (their readings move, so the values are not compared).
 #[test]
 fn krowk_mcp_machines_lists_what_krowk_machines_json_does() {
     let w = World::new("mcp-machines");
     let (_a, b, _serve) = allocating(&w);
     let mut mcp = Mcp::start(&b);
-    let (said, err, got) = mcp.call("krowk_machines", serde_json::json!({}));
+    let (said, err, got) = mcp.call("gruntas_machines", serde_json::json!({}));
     assert!(!err, "{said}");
     let cli: serde_json::Value = serde_json::from_slice(&b.command(&["machines", "--json"]).stdin(Stdio::null()).output().unwrap().stdout).unwrap();
     let shape = |v: &serde_json::Value| -> Vec<(String, Vec<String>)> { v["machines"].as_array().unwrap().iter().map(|m| (m["name"].as_str().unwrap().to_string(), m.as_object().unwrap().keys().cloned().collect())).collect() };
@@ -1671,10 +1671,10 @@ fn krowk_mcp_runs_a_task_pinned_here_in_a_worktree() {
     std::fs::write(b.home.join(".gruntas/trusted.json"), serde_json::json!({"directories": [b.repo]}).to_string()).unwrap();
     std::fs::write(b.home.join(".gruntas/config.json"), serde_json::json!({"permissions": {"defaultMode": "acceptEdits"}}).to_string()).unwrap();
     let mut mcp = Mcp::start(&b);
-    let (said, err, started) = mcp.call("krowk_delegate", serde_json::json!({"task": DELEGATED, "host": "b"}));
+    let (said, err, started) = mcp.call("gruntas_delegate", serde_json::json!({"task": DELEGATED, "host": "b"}));
     assert!(!err, "{said}");
     let id = started["task_id"].as_str().unwrap().to_string();
-    let (said, err, done) = mcp.call("krowk_collect", serde_json::json!({"task_id": id}));
+    let (said, err, done) = mcp.call("gruntas_collect", serde_json::json!({"task_id": id}));
     assert!(!err, "{said}");
     assert_eq!(done["machine"], "b", "pinned here: {done}");
     assert_eq!(std::fs::read_to_string(b.repo.join("delegated.txt")).unwrap(), "", "{said}");
@@ -1691,10 +1691,10 @@ fn alloc_10_with_this_machine_busy_krowk_mcp_runs_the_task_on_the_other() {
     mid_work(&b);
     let _ci = all_build_slots(&b);
     let mut mcp = Mcp::start(&b);
-    let (said, err, started) = mcp.call("krowk_delegate", serde_json::json!({"task": DELEGATED}));
+    let (said, err, started) = mcp.call("gruntas_delegate", serde_json::json!({"task": DELEGATED}));
     assert!(!err, "{said}");
     let id = started["task_id"].as_str().unwrap().to_string();
-    let (said, err, done) = mcp.call("krowk_collect", serde_json::json!({"task_id": id}));
+    let (said, err, done) = mcp.call("gruntas_collect", serde_json::json!({"task_id": id}));
     assert!(!err, "{said}");
     assert_eq!(done["machine"], "a", "B is busy, so A: {done}");
     assert!(said.contains("build slots in use"), "why A: {said}");
@@ -1710,14 +1710,14 @@ fn alloc_10_a_target_that_drops_mid_task_fails_naming_it() {
     let w = World::new("dropped");
     let (a, b, serve) = allocating(&w);
     let mut mcp = Mcp::start(&b);
-    let (said, err, started) = mcp.call("krowk_delegate", serde_json::json!({"task": TEN_MINUTE_TASK, "host": "a"}));
+    let (said, err, started) = mcp.call("gruntas_delegate", serde_json::json!({"task": TEN_MINUTE_TASK, "host": "a"}));
     assert!(!err, "{said}");
     let id = started["task_id"].as_str().unwrap().to_string();
     // Mid-task: once A has started it, not while it is still being placed
     // (a machine gone before it answers is one that did not take it).
     let since = Instant::now();
     loop {
-        let (said, _, _) = mcp.call("krowk_collect", serde_json::json!({"task_id": id, "wait_seconds": 2}));
+        let (said, _, _) = mcp.call("gruntas_collect", serde_json::json!({"task_id": id, "wait_seconds": 2}));
         assert!(said.contains("still running"), "{said}");
         if said.contains("running on a") {
             break;
@@ -1727,7 +1727,7 @@ fn alloc_10_a_target_that_drops_mid_task_fails_naming_it() {
     drop(serve);
     let _ = a.command(&["host", "stop", "--force"]).stdout(Stdio::null()).stderr(Stdio::null()).status();
     let dropped = Instant::now();
-    let (said, err, _) = mcp.call("krowk_collect", serde_json::json!({"task_id": id}));
+    let (said, err, _) = mcp.call("gruntas_collect", serde_json::json!({"task_id": id}));
     assert!(err && said.contains("a went offline mid-task; its work is in a worktree there."), "{said}");
     assert!(dropped.elapsed() < Duration::from_secs(120), "within the offline limit and a margin: {:?}", dropped.elapsed());
 }

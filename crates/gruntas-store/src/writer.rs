@@ -696,7 +696,7 @@ mod tests {
         let listed = crate::list_sessions(&conn, "gruntas", "", -1).unwrap();
         assert_eq!(listed.len(), 2, "--harness gruntas lists both");
         assert!(listed.iter().all(|r| r.harness == "gruntas"), "and reads krowk as gruntas: {listed:?}");
-        assert_eq!(crate::list_sessions(&conn, "krowk", "", -1).unwrap().len(), 1, "the old name alone matches only what still holds it");
+        assert_eq!(crate::list_sessions(&conn, "krowk", "", -1).unwrap().len(), 2, "the old name is the same harness");
         let id = listed.iter().find(|r| r.foreign_session_id == "s9").unwrap().id.clone();
         let detail = crate::load_session_detail(&conn, &id).unwrap().session;
         assert_eq!((detail.harness.as_str(), detail.binding_provider.as_str()), ("gruntas", "gruntas"));

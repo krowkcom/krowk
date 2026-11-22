@@ -150,7 +150,7 @@ pub fn list_sessions(conn: &Connection, harness: &str, worktree: &str, limit: i6
     };
     let mut stmt = conn.prepare(SESSION_LIST).map_err(|e| other("list sessions", e))?;
     let rows = stmt
-        .query_map(rusqlite::params![harness, worktree, limit, former_name(harness)], |r| {
+        .query_map(rusqlite::params![current_name(harness), worktree, limit, former_name(current_name(harness))], |r| {
             let mut row = SessionRow {
                 id: r.get(0)?,
                 title: r.get(1)?,

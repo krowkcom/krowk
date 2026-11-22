@@ -69,7 +69,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **What agents and integrations see is gruntas.** The MCP server is
   `gruntas`, its tools `gruntas_push`, `gruntas_list_artifacts`,
   `gruntas_get_artifact`, `gruntas_claim_artifact`, `gruntas_get_run` and
-  `gruntas_verify_key`; inside a session the bridge's tools are
+  `gruntas_verify_key` (and `gruntas_delegate`, `gruntas_collect` and
+  `gruntas_machines` in the agent build); inside a session the bridge's tools are
   `mcp__gruntas__*`, so allow rules naming `mcp__krowk__*` need renaming.
   The Claude Code plugin reinstalls as `gruntas@gruntas` (running
   `npx -y @gruntas/mcp`), the skill is `gruntas`, the Gemini extension and
