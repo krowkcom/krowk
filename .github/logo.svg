@@ -1,7 +1,7 @@
-<!-- The Krowk mark, matching the favicon: the same glyph path as the website's
-     Logo.vue on a full-bleed black plate with square corners. Literal colours,
-     because a README image cannot inherit currentColor. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="56" height="56">
-  <rect width="256" height="256" fill="#000"/>
-  <path d="M98 128H158V158H98V188H68V68H98V128ZM188 188H158V158H188V188ZM188 128H158V68H188V128Z" fill="#fff"/>
+<!-- The Gruntas mark: the pixel-G monogram on a full-bleed plate with square
+     corners. Literal colours, because a README image cannot inherit
+     currentColor. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect width="256" height="256" fill="#0B0A09"/>
+  <path d="M68 68H188V98H98V158H128V128H188V188H68Z" fill="#FCFCFB"/>
 </svg>
