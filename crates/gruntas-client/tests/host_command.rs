@@ -93,7 +93,7 @@ fn chain_without(w: &World, gone: &K) -> Chain {
 }
 
 fn start() -> HostCommand {
-    HostCommand::Start { cwd: "/home/someone/secret-project".into(), model: ModelRef { instance: "anthropic".into(), model: "claude-opus-5-5".into() }, prompt: "fix the secret-flaky test".into() }
+    HostCommand::Start { cwd: "/home/someone/secret-project".into(), model: ModelRef { instance: "anthropic".into(), model: "claude-opus-5-5".into() }, prompt: "fix the secret-flaky test".into(), sending_session: None }
 }
 
 #[test]
@@ -177,7 +177,7 @@ fn r_host_4_a_commands_extra_fields_are_dropped_unread() {
     let json = br#"{"type":"start","cwd":"/w","model":{"instance":"anthropic","model":"m"},"prompt":"hi","permissionMode":"unhinged","toolset":"grok","effort":"max","budget":{"maxUsd":1000}}"#;
     let sealed = e2e::seal_to_person(&keys(1), 1, Label::HostCommand, &host_command::binding(ID, &w.phone.id(), &w.host.id()), json).unwrap();
     let opened = host_command::open_command(&sealed, ID, &w.phone.id(), &w.host.id(), &keys(1), &chain(&w)).unwrap().unwrap();
-    assert_eq!(opened, HostCommand::Start { cwd: "/w".into(), model: ModelRef { instance: "anthropic".into(), model: "m".into() }, prompt: "hi".into() });
+    assert_eq!(opened, HostCommand::Start { cwd: "/w".into(), model: ModelRef { instance: "anthropic".into(), model: "m".into() }, prompt: "hi".into(), sending_session: None });
 }
 
 #[test]
@@ -198,7 +198,7 @@ fn r_host_4_an_unknown_command_is_answered_unknown_command() {
 fn r_host_4_a_command_past_what_the_registry_carries_is_refused_on_seal() {
     let w = world();
     let HostCommand::Start { cwd, model, .. } = start() else { unreachable!() };
-    let long = HostCommand::Start { cwd, model, prompt: "x".repeat(host_command::MAX_SEALED) };
+    let long = HostCommand::Start { cwd, model, prompt: "x".repeat(host_command::MAX_SEALED), sending_session: None };
     let e = host_command::seal_command(&long, ID, &w.phone.id(), &w.host.id(), &keys(1), 1).unwrap_err();
     assert!(e.contains("shorten the prompt"), "{e}");
 }
@@ -224,7 +224,7 @@ fn r_host_4_a_long_refusal_is_cut_to_fit_what_the_registry_carries() {
 fn r_hand_4_a_take_and_its_answer_open_on_the_other_side() {
     let w = world();
     let c = chain(&w);
-    let take = HostCommand::Take { session_id: "0190f3c2-0000-7000-8000-000000000001".into(), cwd: "/home/someone/clone".into() };
+    let take = HostCommand::Take { session_id: "0190f3c2-0000-7000-8000-000000000001".into(), cwd: "/home/someone/clone".into(), origin: None };
     let sealed = host_command::seal_command(&take, ID, &w.phone.id(), &w.host.id(), &keys(1), 1).unwrap();
     assert_eq!(host_command::open_command(&sealed, ID, &w.phone.id(), &w.host.id(), &keys(1), &c).unwrap(), Ok(take.clone()));
     let taken = HostAnswer::Taken { session_id: "0190f3c2-0000-7000-8000-000000000001".into() };
@@ -234,7 +234,7 @@ fn r_hand_4_a_take_and_its_answer_open_on_the_other_side() {
     let seal = |json: &[u8]| e2e::seal_to_person(&keys(1), 1, Label::HostCommand, &host_command::binding(ID, &w.phone.id(), &w.host.id()), json).unwrap();
     let open = |sealed: &[u8]| host_command::open_command(sealed, ID, &w.phone.id(), &w.host.id(), &keys(1), &c).unwrap();
     let extra = br#"{"type":"take","sessionId":"0190f3c2-0000-7000-8000-000000000001","cwd":"/w","permissionMode":"unhinged"}"#;
-    assert_eq!(open(&seal(extra)), Ok(HostCommand::Take { session_id: "0190f3c2-0000-7000-8000-000000000001".into(), cwd: "/w".into() }));
+    assert_eq!(open(&seal(extra)), Ok(HostCommand::Take { session_id: "0190f3c2-0000-7000-8000-000000000001".into(), cwd: "/w".into(), origin: None }));
     for bad in [br#"{"type":"take","sessionId":"--help","cwd":"/w"}"#.as_slice(), br#"{"type":"take","cwd":"/w"}"#] {
         let Err(HostAnswer::Refused { code, .. }) = open(&seal(bad)) else { panic!("opened") };
         assert_eq!(code, "bad_command");
@@ -249,6 +249,7 @@ fn run(from: &DeviceId) -> HostCommand {
         job: JobRef { session: "0190f3c2-0000-7000-8000-000000000001".into(), transport: "art_0123456789abcdef".into(), key: "ab".repeat(32) },
         budget: BudgetLimits { max_usd: Some(2.5), max_tokens: None },
         requested_by: from.to_string(),
+        sending_session: None,
         permission_mode: Some(PermissionMode::Plan),
         not_after_ms: 1_790_000_030_000,
     })
@@ -327,4 +328,35 @@ fn alloc_05_a_runs_mode_only_narrows_the_hosts() {
 fn r_alloc_3_a_transport_is_held_to_its_shape() {
     assert!(host_command::slug_shaped("art_0123") && !host_command::slug_shaped("../x") && !host_command::slug_shaped(""));
     assert!(host_command::key_shaped(&"ab".repeat(32)) && !host_command::key_shaped(&"zz".repeat(32)) && !host_command::key_shaped("ab"));
+}
+
+/// R-SEC-3 (D4, D7): a `start` and a `run` may name the session that sent
+/// them, a `take` its origin; each opens without them, as an older sender
+/// wrote it.
+#[test]
+fn r_sec_3_a_host_command_may_name_its_sending_session_and_origin() {
+    use gruntas_client::protocol::{Origin, OriginKind};
+    let w = world();
+    let c = chain(&w);
+    let opened = |json: &str| {
+        let sealed = e2e::seal_to_person(&keys(1), 1, Label::HostCommand, &host_command::binding(ID, &w.phone.id(), &w.host.id()), json.as_bytes()).unwrap();
+        match host_command::open_command(&sealed, ID, &w.phone.id(), &w.host.id(), &keys(1), &c) {
+            Ok(Ok(c)) => c,
+            other => panic!("{json}: {other:?}"),
+        }
+    };
+    let s = "0190f3c2-0000-7000-8000-0000000000aa";
+    let start = format!(r#"{{"type":"start","cwd":"/w","model":{{"instance":"anthropic","model":"m"}},"prompt":"hi","sendingSession":"{s}"}}"#);
+    assert!(matches!(opened(&start), HostCommand::Start { sending_session: Some(ref x), .. } if x == s));
+    let take = format!(r#"{{"type":"take","sessionId":"{s}","cwd":"/w","origin":{{"kind":"agent","sessionId":"{s}","device":"laptop"}}}}"#);
+    let want = Origin { kind: OriginKind::Agent, session_id: Some(s.into()), device: Some("laptop".into()) };
+    assert!(matches!(opened(&take), HostCommand::Take { origin: Some(ref o), .. } if *o == want));
+    let HostCommand::Run(mut task) = run(&w.phone.id()) else { unreachable!() };
+    task.sending_session = Some(s.into());
+    let json = serde_json::to_value(HostCommand::Run(task.clone())).unwrap();
+    assert_eq!(json["sendingSession"], s);
+    assert!(matches!(opened(&json.to_string()), HostCommand::Run(t) if t.sending_session.as_deref() == Some(s)));
+    // Absent: a `run` of an older supervisor opens, and writes no field.
+    task.sending_session = None;
+    assert!(serde_json::to_value(HostCommand::Run(task)).unwrap().get("sendingSession").is_none());
 }

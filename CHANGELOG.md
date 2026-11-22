@@ -150,6 +150,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **Sessions record whether anyone is at them, and steering commands say
+  where they came from.** A new session's start record notes whether a
+  person is attending it: `gruntas -p` without a terminal on its input, a
+  session another device starts on a host (`gruntas sync new --host`) and a
+  delegated task are unattended; everything else is attended. Commands that
+  act on an existing session (a prompt, steer, interrupt, approval, model
+  switch, take) can carry an origin (person or agent, the sending session,
+  the device), and a command that starts a session on a host can name the
+  session that sent it, which becomes the new session's parent. All of it
+  is optional on the wire, so older gruntas still read the new frames. Nothing
+  enforces anything on it yet: this is the record the steering limits build
+  on.
+
 - **`krowk trust` grants, revokes and lists repo trust.** `krowk trust
   [<path>]` trusts the repository `<path>` (default: the current directory)
   is in, so `krowk -p`, the host and `sync take` may run its hooks and MCP

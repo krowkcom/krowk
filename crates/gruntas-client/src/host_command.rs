@@ -16,7 +16,7 @@
 
 use crate::device_chain::{Chain, Kind};
 use crate::e2e::{self, DeviceId, Label};
-use crate::protocol::{BudgetLimits, ModelRef, PermissionMode};
+use crate::protocol::{BudgetLimits, ModelRef, Origin, PermissionMode};
 use crate::user_key::UserKeys;
 use serde::{Deserialize, Serialize};
 
@@ -44,11 +44,27 @@ pub const MAX_CODE: usize = 64;
 pub enum HostCommand {
     /// A new session in `cwd`, one of the directories the host announced,
     /// its first turn `prompt` on `model`.
-    Start { cwd: String, model: ModelRef, prompt: String },
+    ///
+    /// `sending_session` is the session that sent it, when an agent did
+    /// (D4): the started session records it as its parent. Absent, the
+    /// started session has no parent.
+    Start {
+        cwd: String,
+        model: ModelRef,
+        prompt: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sending_session: Option<String>,
+    },
     /// Session `session_id`, held by another host, moved here into `cwd`,
     /// one of the directories the host announced and a clone of the
     /// session's repository: what `gruntas sync take` there does.
-    Take { session_id: String, cwd: String },
+    /// `origin` is where the take came from (D7).
+    Take {
+        session_id: String,
+        cwd: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<Origin>,
+    },
     /// A task a supervisor hands this host (R-ALLOC-3, D8–D14): run once,
     /// in a fresh worktree of the host's own clone of `origin`, from the
     /// sealed job. Answered `started` with the child session's id, or
@@ -79,6 +95,10 @@ pub struct RunTask {
     /// The supervisor's device, in hex. The host refuses a `run` whose
     /// `requestedBy` is not the device it came from.
     pub requested_by: String,
+    /// The session that delegated the task, when an agent did (D4): the
+    /// child records it as its parent. Absent, the child has no parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sending_session: Option<String>,
     /// A mode stricter than the host's own for the directory, when the
     /// supervisor asks for one. Never looser (D13): the host runs the
     /// stricter of its own and this.

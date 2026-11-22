@@ -834,7 +834,7 @@ pub(super) fn new_session(ctx: &mut Ctx, args: &[String], form: &str) -> Result<
     let model = startable(&name, announced.as_ref(), &cwd, &ctx.f.model, now)?;
 
     let id = command_id();
-    let start = HostCommand::Start { cwd, model, prompt };
+    let start = HostCommand::Start { cwd, model, prompt, sending_session: None };
     let sealed = host_command::seal_command(&start, &id, &k.device, &to, &k.user, k.chain.generation()).map_err(|e| {
         // Only the two bounds say how long; anything else is the seal's own.
         let long = e.starts_with("the prompt is") || e.starts_with("the command seals to");

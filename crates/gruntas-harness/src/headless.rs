@@ -56,6 +56,9 @@ pub struct Options {
     pub rollover: Option<crate::protocol::Rollover>,
     /// `--max-usd` and `--max-tokens`: what the session may spend.
     pub budget: Option<crate::protocol::BudgetLimits>,
+    /// Whether a person is at this run, recorded in the start record of a
+    /// session it starts: attended with a terminal, unattended without one.
+    pub attendance: crate::protocol::Attendance,
     pub format: OutputFormat,
     /// `--worktree` (WT6): the worktree the session works in, finished
     /// once the run is over (`worktree::InUse::finish`) and before the
@@ -160,7 +163,7 @@ async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> 
     // A resumed session's id is known up front; a new one's arrives with
     // its root event.
     let mut session_id: Option<String> = opts.resume.clone();
-    let cmd = Command::Prompt { session_id: opts.resume, text: opts.prompt, images: opts.images, model: opts.model, permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, rollover: opts.rollover, budget: opts.budget };
+    let cmd = Command::Prompt { session_id: opts.resume, text: opts.prompt, images: opts.images, model: opts.model, permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, rollover: opts.rollover, budget: opts.budget, attendance: Some(opts.attendance), origin: None };
     let remote = host.remote();
     let sink = tx.clone();
     let exec = async {
@@ -233,7 +236,7 @@ async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> 
             && let Some(id) = &session_id
         {
             let (itx, _irx) = mpsc::channel(1);
-            if host.execute(Command::Interrupt { session_id: id.clone() }, itx).await.is_ok() {
+            if host.execute(Command::Interrupt { session_id: id.clone(), origin: None }, itx).await.is_ok() {
                 want_interrupt = false;
             }
         }

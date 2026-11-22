@@ -373,6 +373,17 @@
                 "null"
               ]
             },
+            "attendance": {
+              "description": "Whether a person is at the session, set by the path that started\nit. Absent in an older session's record: attended.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Attendance"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "type": {
               "type": "string",
               "const": "session.started"
@@ -917,6 +928,14 @@
             "durationMs"
           ]
         }
+      ]
+    },
+    "Attendance": {
+      "description": "Whether a person is at a session: the start path that makes the session\nrecords it, never inferred from other flags (such as whether the client\nanswers approvals). Unattended is a session gruntas started headless on\nsomeone's behalf — a launcher worker, a session a host command starts\n(`sync new --host`, delegation), `-p` without a terminal; every other\nsession is attended. A session whose record says nothing (an older\ngruntas started it) counts as attended.",
+      "type": "string",
+      "enum": [
+        "attended",
+        "unattended"
       ]
     },
     "ModelRef": {

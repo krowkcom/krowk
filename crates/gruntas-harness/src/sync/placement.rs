@@ -848,7 +848,7 @@ impl Placer {
             let to = &all[i].announcement;
             let name = to.name.clone();
             let not_after_ms = now_ms() + t.answer_wait.as_millis() as i64;
-            let run = RunTask { origin: origin.clone(), model: model.clone(), job: job.clone(), budget: spec.budget, requested_by: f.device(), permission_mode: spec.permission_mode, not_after_ms };
+            let run = RunTask { origin: origin.clone(), model: model.clone(), job: job.clone(), budget: spec.budget, requested_by: f.device(), sending_session: (!own).then(|| store.session.clone()), permission_mode: spec.permission_mode, not_after_ms };
             match f.send_run(to, &run, t.answer_wait + t.answer_grace) {
                 Ok(Some(HostAnswer::Started { session_id })) if crate::log::valid_id(&session_id) && !in_time_within(not_after_ms, now_ms(), t.answer_grace) => {
                     // Placement has moved on by now (D11): this child

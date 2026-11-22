@@ -121,12 +121,12 @@ mod tests {
 
     /// A command told apart by `n`.
     fn stop(n: usize) -> Command {
-        Command::Interrupt { session_id: n.to_string() }
+        Command::Interrupt { session_id: n.to_string(), origin: None }
     }
 
     fn of(r: &Remote) -> String {
         match &r.command {
-            Command::Interrupt { session_id } => session_id.clone(),
+            Command::Interrupt { session_id, .. } => session_id.clone(),
             c => panic!("not a test command: {c:?}"),
         }
     }

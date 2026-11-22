@@ -133,7 +133,7 @@ impl Home {
 
     fn prompt(&self, text: &str) -> Command {
         let model = ModelRef { instance: "claude".into(), model: "sonnet".into() };
-        Command::Prompt { session_id: None, text: text.into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None }
+        Command::Prompt { session_id: None, text: text.into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None }
     }
 }
 
@@ -588,7 +588,7 @@ fn r_proto_1_an_interrupt_is_answered_while_the_turns_stream_is_full() {
             _ = &mut exec => panic!("ended early"),
         }
         let (itx, _irx) = mpsc::channel(1);
-        tokio::time::timeout(Duration::from_secs(3), c.execute(Command::Interrupt { session_id: session }, itx)).await.expect("answered, not stuck behind the stream").unwrap();
+        tokio::time::timeout(Duration::from_secs(3), c.execute(Command::Interrupt { session_id: session, origin: None }, itx)).await.expect("answered, not stuck behind the stream").unwrap();
         // Drained, the turn ends interrupted, its lines all there.
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
         let r = exec.await.unwrap().unwrap();
@@ -717,7 +717,7 @@ fn r_proto_1_a_new_sessions_stream_is_bound_by_its_command_and_leave_stops_the_r
         // B runs another turn in S while A starts a new session.
         let b = home.client().await;
         let resume = |text: &str| match home.prompt(text) {
-            Command::Prompt { model, permission_mode, .. } => Command::Prompt { session_id: Some(s.clone()), text: text.into(), images: Vec::new(), model, permission_mode, toolset: None, effort: None, rollover: None, budget: None },
+            Command::Prompt { model, permission_mode, .. } => Command::Prompt { session_id: Some(s.clone()), text: text.into(), images: Vec::new(), model, permission_mode, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None },
             _ => unreachable!(),
         };
         let (btx, _brx) = mpsc::channel(1024);
@@ -996,7 +996,7 @@ fn r_host_1_status_running_agrees_with_a_prompt_refused_as_busy() {
         let (tx, _rx) = mpsc::channel(1024);
         let s = a.execute(home.prompt("hi"), tx).await.unwrap().unwrap().session_id;
         let resume = |text: &str| match home.prompt(text) {
-            Command::Prompt { model, permission_mode, .. } => Command::Prompt { session_id: Some(s.clone()), text: text.into(), images: Vec::new(), model, permission_mode, toolset: None, effort: None, rollover: None, budget: None },
+            Command::Prompt { model, permission_mode, .. } => Command::Prompt { session_id: Some(s.clone()), text: text.into(), images: Vec::new(), model, permission_mode, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None },
             _ => unreachable!(),
         };
         let running = |st: gruntas_harness::protocol::HostStatus| st.sessions.into_iter().find(|x| x.session_id == s).map(|x| x.running);
