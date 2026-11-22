@@ -1,6 +1,6 @@
 # CI and agent environments name the run's context without a checkout.
 @registry
-@env KROWK_TOKEN=krowk_sk_test
+@env GRUNTAS_TOKEN=krowk_sk_test
 @file a.txt hello
 @env GITHUB_ACTIONS=true
 @env GITHUB_REPOSITORY=krowkcom/golden
@@ -22,9 +22,9 @@ krowk push a.txt --jq '.data.artifacts[0].metadata'
 @unenv ANTHROPIC_MODEL
 @env CURSOR_TRACE_ID=trace-1
 krowk push a.txt --jq '.data.artifacts[0].metadata'
-@env KROWK_AGENT=my-agent
-@env KROWK_MODEL=gpt-5.5
-@env KROWK_SESSION=s-9
+@env GRUNTAS_AGENT=my-agent
+@env GRUNTAS_MODEL=gpt-5.5
+@env GRUNTAS_SESSION=s-9
 krowk push a.txt --jq '.data.artifacts[0].metadata'
 krowk push a.txt --jq '.data.run.metadata'
 krowk doctor

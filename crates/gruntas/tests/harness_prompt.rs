@@ -73,7 +73,7 @@ impl Sandbox {
             .env_clear()
             .env("PATH", self.path())
             .env("HOME", self.root.join("home"))
-            .env("KROWK_NO_UPDATE_CHECK", "1")
+            .env("GRUNTAS_NO_UPDATE_CHECK", "1")
             .env("FAKE_CLAUDE_LOG", self.root.join("fake.log"))
             .current_dir(self.root.join("repo"))
             .stdin(Stdio::null());

@@ -202,14 +202,14 @@ impl World {
         let mut env = vec![
             ("HOME".into(), home.display().to_string()),
             ("XDG_RUNTIME_DIR".into(), run.display().to_string()),
-            ("KROWK_NO_UPDATE_CHECK".into(), "1".into()),
-            ("KROWK_HOST_IDLE".into(), "5".into()),
-            ("KROWK_API_URL".into(), self.api.clone()),
-            ("KROWK_TOKEN".into(), device_list::key(TOKEN, name)),
-            ("KROWK_RELAY_URL".into(), self.relay.clone()),
+            ("GRUNTAS_NO_UPDATE_CHECK".into(), "1".into()),
+            ("GRUNTAS_HOST_IDLE".into(), "5".into()),
+            ("GRUNTAS_API_URL".into(), self.api.clone()),
+            ("GRUNTAS_TOKEN".into(), device_list::key(TOKEN, name)),
+            ("GRUNTAS_RELAY_URL".into(), self.relay.clone()),
             // No tailscaled unless a test fakes one: never the one this
             // machine may run.
-            ("KROWK_TAILSCALE_SOCKET".into(), run.join("no-tailscaled.sock").display().to_string()),
+            ("GRUNTAS_TAILSCALE_SOCKET".into(), run.join("no-tailscaled.sock").display().to_string()),
         ];
         env.extend(self.claude(&home, &repo));
         Machine { home, repo, run, env, api }
@@ -231,12 +231,12 @@ impl World {
         let mut env = vec![
             ("HOME".into(), home.display().to_string()),
             ("XDG_RUNTIME_DIR".into(), run.display().to_string()),
-            ("KROWK_NO_UPDATE_CHECK".into(), "1".into()),
-            ("KROWK_HOST_IDLE".into(), "5".into()),
-            ("KROWK_API_URL".into(), api.into()),
-            ("KROWK_TOKEN".into(), device_list::key(TOKEN, name)),
-            ("KROWK_RELAY_URL".into(), relay.into()),
-            ("KROWK_TAILSCALE_SOCKET".into(), run.join("no-tailscaled.sock").display().to_string()),
+            ("GRUNTAS_NO_UPDATE_CHECK".into(), "1".into()),
+            ("GRUNTAS_HOST_IDLE".into(), "5".into()),
+            ("GRUNTAS_API_URL".into(), api.into()),
+            ("GRUNTAS_TOKEN".into(), device_list::key(TOKEN, name)),
+            ("GRUNTAS_RELAY_URL".into(), relay.into()),
+            ("GRUNTAS_TAILSCALE_SOCKET".into(), run.join("no-tailscaled.sock").display().to_string()),
         ];
         env.extend(self.claude(&home, &repo));
         (repo, env, run)
@@ -687,7 +687,7 @@ fn sync_host_refuses_when_the_registry_cannot_give_it_the_device_list() {
     let dead_api = format!("http://{}/v1", dead.local_addr().unwrap());
     drop(dead);
     let started = Instant::now();
-    let out = a.command(&["sync", "host", id]).env("KROWK_API_URL", &dead_api).stdin(Stdio::null()).output().unwrap();
+    let out = a.command(&["sync", "host", id]).env("GRUNTAS_API_URL", &dead_api).stdin(Stdio::null()).output().unwrap();
     assert!(started.elapsed() < Duration::from_secs(60), "it did not wait: {:?}", started.elapsed());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success() && err.contains("device list"), "refused, and says why: {err}");
@@ -717,7 +717,7 @@ fn sync_host_takes_the_id_an_older_store_listed_a_session_under() {
     let dead = TcpListener::bind("127.0.0.1:0").unwrap();
     let dead_api = format!("http://{}/v1", dead.local_addr().unwrap());
     drop(dead);
-    let out = a.command(&["sync", "host", &store_id]).env("KROWK_API_URL", &dead_api).stdin(Stdio::null()).output().unwrap();
+    let out = a.command(&["sync", "host", &store_id]).env("GRUNTAS_API_URL", &dead_api).stdin(Stdio::null()).output().unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!err.contains("no session"), "the store's id names the log: {err}");
     assert!(!out.status.success() && err.contains("device list"), "it got as far as the registry: {err}");
@@ -745,8 +745,8 @@ fn tailscaled(dir: &std::path::Path, status: serde_json::Value) -> PathBuf {
 
 fn on_tailscale(m: &mut Machine, status: serde_json::Value) {
     let socket = tailscaled(&m.run, status);
-    m.env.retain(|(k, _)| k != "KROWK_TAILSCALE_SOCKET");
-    m.env.push(("KROWK_TAILSCALE_SOCKET".into(), socket.display().to_string()));
+    m.env.retain(|(k, _)| k != "GRUNTAS_TAILSCALE_SOCKET");
+    m.env.push(("GRUNTAS_TAILSCALE_SOCKET".into(), socket.display().to_string()));
 }
 
 /// Ticket 43: on a tailnet with no tags and no policy, `krowk machines` on B
@@ -817,9 +817,9 @@ fn r_net_1_sync_host_goes_direct_with_the_ticket_keys_the_registry_publishes() {
     let mut a = w.machine("a");
     let b = w.machine("b");
     let socket = fake_tailscaled(&a.run, "Running");
-    a.env.retain(|(k, _)| k != "KROWK_TAILSCALE_SOCKET");
-    a.env.push(("KROWK_TAILSCALE_SOCKET".into(), socket.display().to_string()));
-    assert!(!a.env.iter().any(|(k, _)| k == "KROWK_RELAY_TICKET_KEYS"));
+    a.env.retain(|(k, _)| k != "GRUNTAS_TAILSCALE_SOCKET");
+    a.env.push(("GRUNTAS_TAILSCALE_SOCKET".into(), socket.display().to_string()));
+    assert!(!a.env.iter().any(|(k, _)| k == "GRUNTAS_RELAY_TICKET_KEYS"));
     let kept = a.home.join(".krowk/cache/relay-ticket-keys.json");
     std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
@@ -845,8 +845,8 @@ fn r_net_1_with_tailscale_stopped_the_host_says_why_in_one_line_and_goes_by_the_
     let mut a = w.machine("a");
     let b = w.machine("b");
     let socket = fake_tailscaled(&a.run, "Stopped");
-    a.env.retain(|(k, _)| k != "KROWK_TAILSCALE_SOCKET");
-    a.env.push(("KROWK_TAILSCALE_SOCKET".into(), socket.display().to_string()));
+    a.env.retain(|(k, _)| k != "GRUNTAS_TAILSCALE_SOCKET");
+    a.env.push(("GRUNTAS_TAILSCALE_SOCKET".into(), socket.display().to_string()));
 
     let (host, session) = hosted(&w, &a);
     let mut view = Running::spawn(b.command(&["sync", "attach", &session]));
@@ -859,7 +859,7 @@ fn r_net_1_with_tailscale_stopped_the_host_says_why_in_one_line_and_goes_by_the_
     assert!(!a.home.join(".krowk/cache/relay-ticket-keys.json").exists(), "no keys fetched");
 }
 
-/// Ticket 42: `KROWK_RELAY_TICKET_KEYS` still wins over the registry's
+/// Ticket 42: `GRUNTAS_RELAY_TICKET_KEYS` still wins over the registry's
 /// keys, for a stand-in registry: keys that are not the registry's let no
 /// viewer onto the direct path, though the registry publishes its own.
 #[test]
@@ -870,9 +870,9 @@ fn r_net_1_krowk_relay_ticket_keys_overrides_the_published_keys() {
     let socket = fake_tailscaled(&a.run, "Running");
     let keys = a.run.join("keys.json");
     std::fs::write(&keys, format!(r#"{{"ticketKeys": {{"{}": "{}"}}}}"#, e2e::hex(&gruntas_devregistry::TICKET_KID), "ab".repeat(32))).unwrap();
-    a.env.retain(|(k, _)| k != "KROWK_TAILSCALE_SOCKET");
-    a.env.push(("KROWK_TAILSCALE_SOCKET".into(), socket.display().to_string()));
-    a.env.push(("KROWK_RELAY_TICKET_KEYS".into(), keys.display().to_string()));
+    a.env.retain(|(k, _)| k != "GRUNTAS_TAILSCALE_SOCKET");
+    a.env.push(("GRUNTAS_TAILSCALE_SOCKET".into(), socket.display().to_string()));
+    a.env.push(("GRUNTAS_RELAY_TICKET_KEYS".into(), keys.display().to_string()));
 
     let (host, session) = hosted(&w, &a);
     let mut view = Running::spawn(b.command(&["sync", "attach", &session]));
@@ -920,8 +920,8 @@ fn r_sync_3_a_daemon_session_is_listed_elsewhere_with_no_sync_command() {
     let w = World::new("auto");
     let mut a = w.machine("a");
     let b = w.machine("b");
-    a.env.retain(|(k, _)| k != "KROWK_HOST_IDLE");
-    a.env.push(("KROWK_HOST_IDLE".into(), "0".into()));
+    a.env.retain(|(k, _)| k != "GRUNTAS_HOST_IDLE");
+    a.env.push(("GRUNTAS_HOST_IDLE".into(), "0".into()));
     let started = Instant::now();
     let made = a.command(&["-p", "--daemon", "hello", "--model", "claude/sonnet"]).stdin(Stdio::null()).output().unwrap();
     assert!(made.status.success(), "A runs a turn in its daemon: {}", String::from_utf8_lossy(&made.stderr));
@@ -953,9 +953,9 @@ fn r_sync_3_a_daemon_session_is_listed_elsewhere_with_no_sync_command() {
     assert_eq!((data["autoSync"]["on"].as_bool(), data["directory"]["synced"].as_bool()), (Some(true), Some(true)), "{data}");
     // Off as this shell reads it, while the daemon — started with another
     // environment — syncs: said, rather than left as a plain "off".
-    let human = a.command(&["sync", "status", "--format", "human"]).env("KROWK_SYNC_AUTO", "0").stdin(Stdio::null()).output().unwrap();
+    let human = a.command(&["sync", "status", "--format", "human"]).env("GRUNTAS_SYNC_AUTO", "0").stdin(Stdio::null()).output().unwrap();
     let human = String::from_utf8_lossy(&human.stdout);
-    assert!(human.contains("auto-sync: off (KROWK_SYNC_AUTO)") && human.contains("the running host daemon still syncs 1 session(s)"), "{human}");
+    assert!(human.contains("auto-sync: off (GRUNTAS_SYNC_AUTO)") && human.contains("the running host daemon still syncs 1 session(s)"), "{human}");
 
     let again = a.command(&["sync", "host", &session]).stdin(Stdio::null()).output().unwrap();
     let said = String::from_utf8_lossy(&again.stdout);
@@ -985,8 +985,8 @@ fn r_sync_3_sync_status_says_what_applies_here() {
         assert!(human.lines().any(|l| l == line), "{line:?} in {human}");
     }
 
-    let data = sync_status(&a, &[("KROWK_SYNC_AUTO", "0")]);
-    assert_eq!(data["autoSync"], serde_json::json!({"on": false, "why": "KROWK_SYNC_AUTO"}), "{data}");
+    let data = sync_status(&a, &[("GRUNTAS_SYNC_AUTO", "0")]);
+    assert_eq!(data["autoSync"], serde_json::json!({"on": false, "why": "GRUNTAS_SYNC_AUTO"}), "{data}");
     assert_eq!(data["directory"]["synced"], false, "{data}");
 
     let repo = a.repo.display().to_string();
@@ -1092,8 +1092,8 @@ fn r_host_3_krowk_hosts_shows_an_announced_host_online_with_no_tailscale() {
     let w = World::new("announced");
     let mut a = w.machine("a");
     let b = w.machine("b");
-    a.env.retain(|(k, _)| k != "KROWK_HOST_IDLE");
-    a.env.push(("KROWK_HOST_IDLE".into(), "0".into()));
+    a.env.retain(|(k, _)| k != "GRUNTAS_HOST_IDLE");
+    a.env.push(("GRUNTAS_HOST_IDLE".into(), "0".into()));
     std::fs::write(a.home.join(".krowk/trusted.json"), serde_json::json!({"directories": [a.repo]}).to_string()).unwrap();
     let made = a.command(&["-p", "--daemon", "hello", "--model", "claude/sonnet"]).stdin(Stdio::null()).output().unwrap();
     assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
@@ -1133,8 +1133,8 @@ fn r_host_3_krowk_hosts_shows_an_announced_host_online_with_no_tailscale() {
 fn serving(w: &World) -> (Machine, Machine, Running) {
     let mut a = w.machine("a");
     let b = w.machine("b");
-    a.env.retain(|(k, _)| k != "KROWK_HOST_IDLE");
-    a.env.push(("KROWK_HOST_IDLE".into(), "0".into()));
+    a.env.retain(|(k, _)| k != "GRUNTAS_HOST_IDLE");
+    a.env.push(("GRUNTAS_HOST_IDLE".into(), "0".into()));
     std::fs::write(a.home.join(".krowk/trusted.json"), serde_json::json!({"directories": [a.repo]}).to_string()).unwrap();
     let serve = Running::spawn(a.command(&["host", "serve"]));
     a_as_b_sees_it(&b, &a, |h| h["announced"] == true && h["online"] == true);
@@ -1396,8 +1396,8 @@ impl Moving {
             std::fs::remove_dir_all(&m.repo).unwrap();
             git(&w.root, &["clone", "-q", &origin.display().to_string(), &m.repo.display().to_string()]);
         }
-        b.env.retain(|(k, _)| k != "KROWK_HOST_IDLE");
-        b.env.push(("KROWK_HOST_IDLE".into(), "0".into()));
+        b.env.retain(|(k, _)| k != "GRUNTAS_HOST_IDLE");
+        b.env.push(("GRUNTAS_HOST_IDLE".into(), "0".into()));
         let mut env = b.env.clone();
         b_env(&mut env);
         std::fs::write(b.home.join(".krowk/trusted.json"), serde_json::json!({"directories": [b.repo]}).to_string()).unwrap();
@@ -1517,8 +1517,8 @@ fn allocating(w: &World) -> (Machine, Machine, Running) {
         git(&w.root, &["clone", "-q", "origin.git", m.repo.to_str().unwrap()]);
         git(&m.repo, &["remote", "set-url", "origin", "https://github.com/acme/app.git"]);
     }
-    a.env.retain(|(k, _)| k != "KROWK_HOST_IDLE");
-    a.env.push(("KROWK_HOST_IDLE".into(), "0".into()));
+    a.env.retain(|(k, _)| k != "GRUNTAS_HOST_IDLE");
+    a.env.push(("GRUNTAS_HOST_IDLE".into(), "0".into()));
     std::fs::write(a.home.join(".krowk/trusted.json"), serde_json::json!({"directories": [a.repo]}).to_string()).unwrap();
     std::fs::write(a.home.join(".krowk/config.json"), serde_json::json!({"permissions": {"defaultMode": "acceptEdits"}}).to_string()).unwrap();
     let serve = Running::spawn(a.command(&["host", "serve"]));

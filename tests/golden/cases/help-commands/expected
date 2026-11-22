@@ -139,7 +139,7 @@ krowk workspaces — Switch between stored keys
 The stored keys, one per workspace. A key belongs to one workspace, and the
 credentials file holds one key per workspace: logging in against a second
 workspace adds a key rather than replacing the first. Which key a command uses
-is decided in order by --workspace, KROWK_WORKSPACE, the repository's
+is decided in order by --workspace, GRUNTAS_WORKSPACE, the repository's
 .krowk/config.json, the global config, and finally whichever key logged in
 last. `krowk config set workspace <name>` pins a repository to a workspace, so
 every command run inside it — by anyone, agent or person — lands there

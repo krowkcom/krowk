@@ -59,7 +59,7 @@ class Krowk:
         # Scratch data, cache and config, and no update check: nothing a run
         # does lands in the real home.
         self.env = dict(os.environ, XDG_DATA_HOME=str(data), XDG_CACHE_HOME=str(cache),
-                        XDG_CONFIG_HOME=str(cache / "config"), KROWK_NO_UPDATE_CHECK="1")
+                        XDG_CONFIG_HOME=str(cache / "config"), GRUNTAS_NO_UPDATE_CHECK="1")
 
     def run(self, *args, check=True):
         t0 = time.perf_counter()

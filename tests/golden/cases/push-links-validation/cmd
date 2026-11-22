@@ -1,5 +1,5 @@
 @registry
-@env KROWK_TOKEN=krowk_sk_test
+@env GRUNTAS_TOKEN=krowk_sk_test
 @file a.txt hello
 krowk push a.txt --link ftp://x.example --jq .ok
 krowk push a.txt --link "https://a b.example" --jq .ok

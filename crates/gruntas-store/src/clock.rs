@@ -6,14 +6,14 @@ use std::io::Read;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-/// KROWK_TEST_NOW_MS starts the clock at a fixed moment and advances it a
+/// GRUNTAS_TEST_NOW_MS starts the clock at a fixed moment and advances it a
 /// millisecond per read — the black-box golden cases hold this build and the
 /// Go one to the same output through it. A clock that never moved would tie
 /// every row and leave a listing ordered by time in SQLite's tie order. Not a
 /// user setting.
 fn test_clock() -> Option<&'static AtomicI64> {
     static CLOCK: OnceLock<Option<AtomicI64>> = OnceLock::new();
-    CLOCK.get_or_init(|| std::env::var("KROWK_TEST_NOW_MS").ok()?.parse().ok().map(AtomicI64::new)).as_ref()
+    CLOCK.get_or_init(|| std::env::var("GRUNTAS_TEST_NOW_MS").ok()?.parse().ok().map(AtomicI64::new)).as_ref()
 }
 
 /// Milliseconds since the Unix epoch, UTC — the unit of every time column.

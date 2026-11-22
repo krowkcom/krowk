@@ -240,7 +240,7 @@ pub(crate) fn key_account(r: &Resolved) -> bool {
 fn to_harness(native: &InstanceKind, r: &Resolved, dir: String, stores: bool) -> Option<InstanceKind> {
     let var = match r.api_key_env.trim() {
         "" if r.stored == crate::keys::Stored::No && !stores => None,
-        "" => Some(format!("KROWK_{}_API_KEY", env_part(&r.name))),
+        "" => Some(format!("GRUNTAS_{}_API_KEY", env_part(&r.name))),
         v => Some(v.to_string()),
     };
     let (vendor, label, effort) = match native {

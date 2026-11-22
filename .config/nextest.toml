@@ -2,7 +2,7 @@
 # own, so a `static` lock in a test binary no longer keeps its tests one at a
 # time: the groups and overrides below do.
 
-# A scratch KROWK_HOME for every test (scripts/test_home.sh), so no test
+# A scratch GRUNTAS_HOME for every test (scripts/test_home.sh), so no test
 # makes the developer's own ~/.krowk. Setup scripts are the one way nextest
 # sets a variable for every test process; the Makefile does the doctests.
 experimental = ["setup-scripts"]

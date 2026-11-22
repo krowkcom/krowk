@@ -45,14 +45,14 @@ pub fn workspace_list(ws: &Workspaces, f: Format, quiet: bool, colour: bool) -> 
         lines.push(format!("Uploads from here land in {} {}", ws.resolved, paint(colour, DIM, &format!("({})", ws.source))));
     }
     if ws.shadowed {
-        lines.push(warning(colour, "KROWK_TOKEN is set and wins over every stored key — uploads use that key instead"));
+        lines.push(warning(colour, "GRUNTAS_TOKEN is set and wins over every stored key — uploads use that key instead"));
     }
     lines.join("\n")
 }
 
 fn summary(ws: &Workspaces) -> String {
     if ws.shadowed {
-        return "KROWK_TOKEN is set and wins over every stored key — `krowk whoami` names the workspace that key acts in".into();
+        return "GRUNTAS_TOKEN is set and wins over every stored key — `krowk whoami` names the workspace that key acts in".into();
     }
     let stored = format!("{} key(s) stored", ws.stored.len());
     if ws.resolved.is_empty() {
@@ -106,7 +106,7 @@ pub fn default_workspace(name: &str, path: &str, f: Format, quiet: bool, colour:
             vec![crumb(
                 "check what resolves here",
                 "krowk workspaces",
-                "a repo config, KROWK_WORKSPACE or --workspace still outranks the default",
+                "a repo config, GRUNTAS_WORKSPACE or --workspace still outranks the default",
             )],
         );
     }

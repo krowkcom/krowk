@@ -11,14 +11,14 @@ anybody shelling out.
     "krowk": {
       "command": "npx",
       "args": ["-y", "@krowk/mcp"],
-      "env": { "KROWK_TOKEN": "krowk_sk_..." }
+      "env": { "GRUNTAS_TOKEN": "krowk_sk_..." }
     }
   }
 }
 ```
 
 Uploads are confined to a root directory — the working directory by default,
-`--root` or `KROWK_MCP_ROOT` to say otherwise. The model picks the paths, so the
+`--root` or `GRUNTAS_MCP_ROOT` to say otherwise. The model picks the paths, so the
 boundary is what keeps an instruction hidden in a repository file from
 publishing something else entirely.
 

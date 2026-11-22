@@ -4,7 +4,7 @@
 //! same hubs, the same outboxes, the same `hello`, `execute` and `attach` —
 //! only the framing differs.
 //!
-//! Loopback only, off unless `KROWK_HOST_WS` or `host.websocket` names an
+//! Loopback only, off unless `GRUNTAS_HOST_WS` or `host.websocket` names an
 //! address: TCP cannot say whose process connected, so a client proves it
 //! is this user with the daemon's token (`host.token`, `0600` beside the
 //! socket) in its hello. That stands in until the relay and end-to-end

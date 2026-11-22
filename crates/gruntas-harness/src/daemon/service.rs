@@ -1,7 +1,7 @@
 //! `krowk machines always-on on`: the daemon as a service of the user's own — a
 //! systemd user unit on Linux, a launchd agent on macOS (R-HOST-2) — for a
 //! machine that is always on and reached from other devices. Run that way
-//! it has no idle window (`KROWK_HOST_IDLE=0`): the service manager starts
+//! it has no idle window (`GRUNTAS_HOST_IDLE=0`): the service manager starts
 //! it at login and again if it dies, and it stays.
 //!
 //! What is written is a pure function of the binary's path and the
@@ -11,7 +11,7 @@
 //!
 //! A service does not start from a shell, so it has none of the shell's
 //! variables: a provider's key the daemon is to use is one `krowk connect`
-//! stored, not one exported in a shell profile. `KROWK_HOME`, when set, is
+//! stored, not one exported in a shell profile. `GRUNTAS_HOME`, when set, is
 //! carried into the unit so the daemon keeps the same home.
 
 use std::path::{Path, PathBuf};
@@ -51,10 +51,10 @@ pub fn path(platform: Platform, env: &dyn Fn(&str) -> String) -> Result<PathBuf,
 /// The variables the service runs with: no idle exit, and krowk's home
 /// when it is not the default.
 fn environment(env: &dyn Fn(&str) -> String) -> Vec<(&'static str, String)> {
-    let mut vars = vec![("KROWK_HOST_IDLE", "0".to_string())];
-    let home = env("KROWK_HOME");
+    let mut vars = vec![("GRUNTAS_HOST_IDLE", "0".to_string())];
+    let home = env("GRUNTAS_HOME");
     if !home.is_empty() {
-        vars.push(("KROWK_HOME", home));
+        vars.push(("GRUNTAS_HOME", home));
     }
     vars
 }
@@ -165,7 +165,7 @@ mod tests {
     fn env(k: &str) -> String {
         match k {
             "HOME" => "/home/ada".into(),
-            "KROWK_HOME" => "/srv/krowk 100%".into(),
+            "GRUNTAS_HOME" => "/srv/krowk 100%".into(),
             _ => String::new(),
         }
     }
@@ -175,9 +175,9 @@ mod tests {
         assert_eq!(path(Platform::Systemd, &env).unwrap(), Path::new("/home/ada/.config/systemd/user/krowk-host.service"));
         let unit = render(Platform::Systemd, Path::new("/opt/my krowk/krowk"), Path::new("/x.log"), &env);
         assert!(unit.contains("\nExecStart=\"/opt/my krowk/krowk\" host serve\n"), "{unit}");
-        assert!(unit.contains("\nEnvironment=\"KROWK_HOST_IDLE=0\"\n"), "{unit}");
+        assert!(unit.contains("\nEnvironment=\"GRUNTAS_HOST_IDLE=0\"\n"), "{unit}");
         // A `%` is a specifier to systemd: doubled, it is a `%`.
-        assert!(unit.contains("\nEnvironment=\"KROWK_HOME=/srv/krowk 100%%\"\n"), "{unit}");
+        assert!(unit.contains("\nEnvironment=\"GRUNTAS_HOME=/srv/krowk 100%%\"\n"), "{unit}");
         assert!(unit.contains("\nWantedBy=default.target\n"), "{unit}");
         assert_eq!(commands(Platform::Systemd, true, Path::new("/f"), 501)[1], ["systemctl", "--user", "enable", "--now", "krowk-host.service"]);
         let xdg = |k: &str| if k == "XDG_CONFIG_HOME" { "/cfg".into() } else { env(k) };
@@ -191,7 +191,7 @@ mod tests {
         let plist = render(Platform::Launchd, Path::new("/opt/k&k/krowk"), Path::new("/home/ada/.krowk/host.log"), &env);
         assert!(plist.contains("<string>com.krowk.host</string>"), "{plist}");
         assert!(plist.contains("<string>/opt/k&amp;k/krowk</string>\n\t\t<string>host</string>\n\t\t<string>serve</string>"), "{plist}");
-        assert!(plist.contains("<key>KROWK_HOST_IDLE</key>\n\t\t<string>0</string>"), "{plist}");
+        assert!(plist.contains("<key>GRUNTAS_HOST_IDLE</key>\n\t\t<string>0</string>"), "{plist}");
         assert!(plist.contains("<key>StandardErrorPath</key>\n\t<string>/home/ada/.krowk/host.log</string>"), "{plist}");
         assert_eq!(commands(Platform::Launchd, true, &file, 501), [["launchctl", "bootstrap", "gui/501", file.to_str().unwrap()]]);
         assert_eq!(commands(Platform::Launchd, false, &file, 501)[0][1], "bootout");

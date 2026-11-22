@@ -83,7 +83,7 @@ const SECRET_NAMES: &[&str] = &[
     "credentials.json", ".krowk", "id_rsa", "id_ed25519", "id_ecdsa",
 ];
 
-/// krowk's home, wherever `KROWK_HOME` put it, the default `~/.krowk`, and
+/// krowk's home, wherever `GRUNTAS_HOME` put it, the default `~/.krowk`, and
 /// a move's staging directory and lock beside each: their keys, logins and
 /// sessions are never published, whatever the path is called.
 fn in_krowk_home(real: &Path) -> bool {
@@ -665,7 +665,7 @@ impl Server<'_> {
         if !self.authenticated() {
             return Ok((
                 "No API key is configured, so pushes will be anonymous: they expire within a day and come back with a claim token.\n\n\
-                 Set KROWK_TOKEN, or run `krowk login --token krowk_sk_...`."
+                 Set GRUNTAS_TOKEN, or run `krowk login --token krowk_sk_...`."
                     .into(),
                 json!({ "authenticated": false }),
             ));

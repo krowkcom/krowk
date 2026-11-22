@@ -52,8 +52,8 @@ impl Sandbox {
             // `codex`: the person's real ones are never reached.
             .env("PATH", format!("{}:/usr/bin:/bin", self.root.join("bin").display()))
             .env("HOME", self.root.join("home"))
-            .env("KROWK_NO_UPDATE_CHECK", "1")
-            .env("KROWK_API_URL", "http://127.0.0.1:9/v1")
+            .env("GRUNTAS_NO_UPDATE_CHECK", "1")
+            .env("GRUNTAS_API_URL", "http://127.0.0.1:9/v1")
             .env("FAKE_CLAUDE_LOG", self.root.join("fake.log"))
             .env("FAKE_CODEX_LOG", self.root.join("fake.log"))
             .current_dir(self.root.join("repo"))
@@ -449,9 +449,9 @@ fn a_directory_in_home_is_the_persons_own_login_even_with_claude_config_dir_set_
 fn with_no_home_to_name_it_the_built_in_claude_is_still_the_persons_own_login() {
     let b = Sandbox::new("nohome");
     let mut c = b.command(&["disconnect", "claude"], &[]);
-    // No HOME (krowk has KROWK_HOME) and no CLAUDE_CONFIG_DIR: Claude Code finds its directory
+    // No HOME (krowk has GRUNTAS_HOME) and no CLAUDE_CONFIG_DIR: Claude Code finds its directory
     // through the password database anyway, so it is still asked about.
-    c.env_remove("HOME").env("KROWK_HOME", b.root.join("home/.krowk"));
+    c.env_remove("HOME").env("GRUNTAS_HOME", b.root.join("home/.krowk"));
     let out = c.output().unwrap();
     assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(stderr(&out).contains("signs you out of Claude Code itself, in ~/.claude"), "{}", stderr(&out));

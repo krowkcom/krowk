@@ -18,8 +18,8 @@
 //!   whoever's command it is: an install runs the repository's code.
 //!   Inside a container the container holds it, as it holds the agent's
 //!   commands.
-//! - **Its environment**: `KROWK_PROJECT_ROOT` (the main checkout),
-//!   `KROWK_WORKTREE_PATH` and `KROWK_PORT_BASE`; in the sandbox, on top of
+//! - **Its environment**: `GRUNTAS_PROJECT_ROOT` (the main checkout),
+//!   `GRUNTAS_WORKTREE_PATH` and `GRUNTAS_PORT_BASE`; in the sandbox, on top of
 //!   its allowlist. The port base is the worktree's port slot's
 //!   (`port_slot`), which the agent's own commands see too, so servers
 //!   started in two worktrees at once do not fight over a port.
@@ -68,7 +68,7 @@ pub fn port_slot(runtime: PathBuf) -> Result<Option<crate::slots::Slot>, String>
     crate::slots::Pool::new(runtime, PORT_POOL, PORT_SLOTS).try_take()
 }
 
-/// `KROWK_PORT_BASE` for the port slot `slot`: `20000 + 10 n`, ten ports
+/// `GRUNTAS_PORT_BASE` for the port slot `slot`: `20000 + 10 n`, ten ports
 /// to each worktree.
 pub fn port_base(slot: &crate::slots::Slot) -> u16 {
     20000 + 10 * slot.index().min(PORT_SLOTS - 1) as u16
@@ -141,8 +141,8 @@ fn run_setup(p: &Prepare<'_>, command: &str, from: &str, timeout: Duration) -> O
         None => return gate("this machine has no sandbox to run it in, and outside one krowk runs it only for a repository the person has trusted"),
     };
     let deadline = Instant::now() + timeout;
-    let mut env: Vec<(String, String)> = vec![("KROWK_PROJECT_ROOT".into(), wt.main.display().to_string()), ("KROWK_WORKTREE_PATH".into(), wt.path.display().to_string())];
-    env.extend(p.port_base.map(|b| ("KROWK_PORT_BASE".to_string(), b.to_string())));
+    let mut env: Vec<(String, String)> = vec![("GRUNTAS_PROJECT_ROOT".into(), wt.main.display().to_string()), ("GRUNTAS_WORKTREE_PATH".into(), wt.path.display().to_string())];
+    env.extend(p.port_base.map(|b| ("GRUNTAS_PORT_BASE".to_string(), b.to_string())));
     // A heavy command waits for a build slot as the bash tool's would,
     // within its own time.
     let stopped = || p.cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed));
@@ -393,7 +393,7 @@ mod tests {
         }
         let d = scratch("trusted");
         let (_, main, root) = repo_in(&d, "trusted");
-        let project = setup_config("echo $KROWK_PORT_BASE > port && touch ready && echo set up", None);
+        let project = setup_config("echo $GRUNTAS_PORT_BASE > port && touch ready && echo set up", None);
         let user = setup_config("touch from-user", None);
         let (a, b) = (create(&main, &root, "s1").unwrap(), create(&main, &root, "s2").unwrap());
         let outside = d.join("outside.txt");
@@ -409,7 +409,7 @@ mod tests {
             assert!(!w.path.join("from-user").exists(), "the repository's command is the one that runs");
             assert_eq!(std::fs::read_to_string(w.path.join("port")).unwrap().trim(), port_base(slot).to_string());
             let log = std::fs::read_to_string(log_of(w)).unwrap();
-            assert!(log.starts_with("$ echo $KROWK_PORT_BASE") && log.contains("set up\n") && log.ends_with("(exited with code 0)\n"), "{log}");
+            assert!(log.starts_with("$ echo $GRUNTAS_PORT_BASE") && log.contains("set up\n") && log.ends_with("(exited with code 0)\n"), "{log}");
         }
         assert_eq!((port_base(&sa), port_base(&sb)), (20000, 20010));
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "untouched\n", "the log replaced the link rather than writing through it");
@@ -465,7 +465,7 @@ mod tests {
         let d = scratch("fenced");
         let (_, main, root) = repo_in(&d, "fenced");
         let w = create(&main, &root, "s1").unwrap();
-        let user = setup_config("touch here && echo changed > \"$KROWK_PROJECT_ROOT/a.txt\"", None);
+        let user = setup_config("touch here && echo changed > \"$GRUNTAS_PROJECT_ROOT/a.txt\"", None);
         let plan = sandbox(&crate::permissions::Policy::default(), &w.path);
         let notes = prepare(&Prepare { sandbox: plan.as_ref(), trusted: true, ..Prepare::new(&w, &user) });
         assert!(w.path.join("here").is_file(), "the worktree is writable");

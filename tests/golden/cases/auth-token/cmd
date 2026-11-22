@@ -5,6 +5,6 @@ krowk auth login --token krowk_sk_test
 krowk auth token
 krowk auth verify
 @ls {home}
-@env KROWK_TOKEN=krowk_sk_other
+@env GRUNTAS_TOKEN=krowk_sk_other
 krowk auth token
 krowk auth verify

@@ -160,7 +160,7 @@ pub struct TurnContext {
     /// Where the session runs: tools resolve paths against it.
     pub cwd: PathBuf,
     /// What the turn's commands get in their environment beyond krowk's
-    /// own, in the sandbox too: a krowk worktree's `KROWK_PORT_BASE`.
+    /// own, in the sandbox too: a krowk worktree's `GRUNTAS_PORT_BASE`.
     pub env: Vec<(String, String)>,
     /// The session's own directory, beside its log: where the images its
     /// prompts carry are kept (`crate::images`).

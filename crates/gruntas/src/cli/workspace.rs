@@ -21,7 +21,7 @@ pub(crate) fn resolve_workspace(ctx: &Ctx) -> Result<(String, String), Error> {
 pub(crate) fn workspaces_list(ctx: &mut Ctx) -> Result<(), Error> {
     let (ws, source) = resolve_workspace(ctx)?;
     let stored = creds::stored_workspaces();
-    let mut view = Workspaces { resolved: ws.clone(), source, shadowed: !ctx.env("KROWK_TOKEN").is_empty(), ..Workspaces::default() };
+    let mut view = Workspaces { resolved: ws.clone(), source, shadowed: !ctx.env("GRUNTAS_TOKEN").is_empty(), ..Workspaces::default() };
     if let Some(k) = stored.iter().find(|k| k.default).filter(|_| ws.is_empty()) {
         view.resolved = k.name.clone();
         view.source = "stored default".into();

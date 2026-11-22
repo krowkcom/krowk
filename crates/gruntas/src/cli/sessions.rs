@@ -133,11 +133,11 @@ pub(super) fn restore_if_archived(ctx: &mut Ctx, session_id: &str) -> Result<boo
 }
 
 /// The idle cut-off `krowk sessions archive` uses: `--older-than`, else
-/// KROWK_ARCHIVE_AFTER_DAYS, else 14 days.
+/// GRUNTAS_ARCHIVE_AFTER_DAYS, else 14 days.
 #[cfg(all(feature = "harness", unix))]
 fn idle_days(ctx: &Ctx) -> Result<u64, Error> {
     let (given, from) = match ctx.f.older_than.trim() {
-        "" => (ctx.env("KROWK_ARCHIVE_AFTER_DAYS"), "KROWK_ARCHIVE_AFTER_DAYS"),
+        "" => (ctx.env("GRUNTAS_ARCHIVE_AFTER_DAYS"), "GRUNTAS_ARCHIVE_AFTER_DAYS"),
         v => (v.to_string(), "--older-than"),
     };
     if given.trim().is_empty() {
@@ -1998,7 +1998,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("krowk-sync-lost-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let cache_home = dir.join("home").display().to_string();
-        let env = move |k: &str| if k == "KROWK_HOME" { cache_home.clone() } else { String::new() };
+        let env = move |k: &str| if k == "GRUNTAS_HOME" { cache_home.clone() } else { String::new() };
         let cache = pricing::cache_path(&env).unwrap();
         std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
         // A sidecar stamped just now, with the ETag, beside a file that holds nothing.
@@ -2020,7 +2020,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("krowk-sync-prices-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let cache_home = dir.join("home").display().to_string();
-        let env = move |k: &str| if k == "KROWK_HOME" { cache_home.clone() } else { String::new() };
+        let env = move |k: &str| if k == "GRUNTAS_HOME" { cache_home.clone() } else { String::new() };
         let cache = pricing::cache_path(&env).unwrap();
         std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
         std::fs::write(&cache, r#"{"p":{"m":{"input":9}}}"#).unwrap();

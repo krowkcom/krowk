@@ -1,5 +1,5 @@
 # Two stored keys; the default moves with `use`, and --workspace and
-# KROWK_WORKSPACE pick one per command.
+# GRUNTAS_WORKSPACE pick one per command.
 @registry
 krowk auth login --token krowk_sk_first
 @let WS1 .data.workspace
@@ -11,11 +11,11 @@ krowk workspaces
 @cat {home}/.krowk/credentials.json
 krowk auth verify
 krowk auth verify --workspace {WS2}
-@env KROWK_WORKSPACE={WS2}
+@env GRUNTAS_WORKSPACE={WS2}
 krowk auth verify
 krowk auth verify --workspace {WS1}
 krowk auth verify --workspace ws_unknown000000000000000
-@unenv KROWK_WORKSPACE
+@unenv GRUNTAS_WORKSPACE
 @sh mkdir -p .git
 krowk config set workspace {WS2}
 krowk auth verify

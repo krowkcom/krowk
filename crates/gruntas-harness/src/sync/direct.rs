@@ -33,7 +33,7 @@ pub struct Config {
     pub roster: Roster,
     /// Also require tailscaled to name the far end as this tailnet user.
     pub same_user: bool,
-    /// Offer this machine's LAN address too (`KROWK_DIRECT_LAN=1`), and
+    /// Offer this machine's LAN address too (`GRUNTAS_DIRECT_LAN=1`), and
     /// advertise it over mDNS — with Tailscale or without it; never with
     /// `same_user`.
     pub lan: bool,
@@ -111,7 +111,7 @@ pub fn running(socket: &tailscale::LocalApi) -> Result<tailscale::Status, String
 /// tagged machine and turn away the person's own. It is refused there.
 pub fn same_user(status: &tailscale::Status) -> Result<u64, String> {
     if let Some(tags) = status.me.tags.as_ref().filter(|t| !t.is_empty()) {
-        return Err(format!("Tailscale owns this machine by its tags ({}), not by a person, so the same-user check cannot hold — remove them, or leave KROWK_TAILSCALE_SAME_USER unset", tags.join(", ")));
+        return Err(format!("Tailscale owns this machine by its tags ({}), not by a person, so the same-user check cannot hold — remove them, or leave GRUNTAS_TAILSCALE_SAME_USER unset", tags.join(", ")));
     }
     if status.me.user_id == 0 {
         return Err("Tailscale names no user for this machine, so the same-user check cannot pass".into());
@@ -152,7 +152,7 @@ pub fn listen(c: &Config, session: [u8; 16], host: gruntas_client::e2e::DeviceId
         // Only a tailnet address is listened on, whatever the LocalAPI
         // says: on macOS it is a port on 127.0.0.1 that anyone may bind
         // once the app quits, and an answer of 0.0.0.0 would put plain
-        // ws:// on every network, past KROWK_DIRECT_LAN.
+        // ws:// on every network, past GRUNTAS_DIRECT_LAN.
         let ips: Vec<IpAddr> = status.me.tailscale_ips.iter().copied().filter(tailscale::is_tailnet).collect();
         let ip = ips.iter().find(|i| i.is_ipv4()).or(ips.first()).copied().ok_or("Tailscale gives this machine no tailnet address")?;
         whois = if c.same_user { Some(SameUser { socket: c.socket.clone(), user: same_user(status)? }) } else { None };
@@ -396,7 +396,7 @@ pub fn unreached_line(session: &str, device: &DeviceId, candidates: &[Candidate]
     let at = candidates.iter().map(|c| c.url.trim_start_matches("ws://")).collect::<Vec<_>>().join(", ");
     let short: String = device.to_string().chars().take(8).collect();
     let why = if candidates.iter().any(|c| !c.on_lan()) { "if it is on this tailnet, a firewall here or the tailnet's access policy may be refusing the port" } else { "a firewall here may be refusing the port" };
-    let check = if same_user { ", or the same-user check (KROWK_TAILSCALE_SAME_USER) turned it away" } else { "" };
+    let check = if same_user { ", or the same-user check (GRUNTAS_TAILSCALE_SAME_USER) turned it away" } else { "" };
     let mac = if cfg!(target_os = "macos") { " — on macOS, allow incoming connections for krowk under System Settings → Network → Firewall → Options" } else { "" };
     format!("krowk: session {session}: device {short} stays on the relay — nothing it sent reached this machine's direct addresses ({at}); {why}{check}{mac}")
 }
@@ -479,7 +479,7 @@ mod tests {
         let line = unreached_line("s1", &device(0xab), &c, false);
         assert!(line.contains("device abababab ") && line.contains("100.64.0.1:51915, a.tail1.ts.net:51915") && line.contains("tailnet's access policy"), "{line}");
         assert!(!line.contains("same-user"));
-        assert!(unreached_line("s1", &device(1), &c, true).contains("KROWK_TAILSCALE_SAME_USER"));
+        assert!(unreached_line("s1", &device(1), &c, true).contains("GRUNTAS_TAILSCALE_SAME_USER"));
         let lan = [Candidate { url: "ws://192.168.1.2:51915".into(), via: "lan".into() }];
         assert!(!unreached_line("s1", &device(1), &lan, false).contains("tailnet"));
     }
@@ -493,7 +493,7 @@ mod tests {
         assert_eq!(same_user(&status(serde_json::json!({"UserID": 7}))), Ok(7));
         assert_eq!(same_user(&status(serde_json::json!({"UserID": 7, "Tags": []}))), Ok(7));
         let tagged = same_user(&status(serde_json::json!({"UserID": 478457612062579_u64, "Tags": ["tag:ops"]}))).unwrap_err();
-        assert!(tagged.contains("tag:ops") && tagged.contains("KROWK_TAILSCALE_SAME_USER"), "{tagged}");
+        assert!(tagged.contains("tag:ops") && tagged.contains("GRUNTAS_TAILSCALE_SAME_USER"), "{tagged}");
         assert!(same_user(&status(serde_json::json!({}))).is_err());
     }
 

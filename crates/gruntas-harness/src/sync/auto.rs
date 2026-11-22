@@ -84,7 +84,7 @@ use tokio::task::{JoinError, JoinSet};
 use tokio::time::Instant;
 
 /// How long a bridge may sit idle before it is let go, when neither
-/// `KROWK_SYNC_IDLE` nor `sync.idleMinutes` says.
+/// `GRUNTAS_SYNC_IDLE` nor `sync.idleMinutes` says.
 pub const DEFAULT_IDLE: Duration = Duration::from_secs(10 * 60);
 
 /// The keys `sync` takes. Any other is refused, so a misspelt opt-out
@@ -97,14 +97,14 @@ const KEYS: [&str; 4] = ["auto", "exclude", "idleMinutes", "accept"];
 const NEVER_AFTER: u64 = 100 * 365 * 24 * 60 * 60;
 
 const AUTO_KEY: &str = "sync.auto in config.json";
-const AUTO_ENV: &str = "KROWK_SYNC_AUTO";
+const AUTO_ENV: &str = "GRUNTAS_SYNC_AUTO";
 
 /// What the device has said about automatic sync.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Policy {
     /// Sessions are synced without a command.
     pub on: bool,
-    /// What turned it off, for a person to read: `KROWK_SYNC_AUTO` or
+    /// What turned it off, for a person to read: `GRUNTAS_SYNC_AUTO` or
     /// `sync.auto in config.json`. `None` when on.
     pub off_by: Option<&'static str>,
     /// `sync.exclude`: absolute directories whose sessions are never
@@ -130,7 +130,7 @@ pub enum OptOut {
     Marker(PathBuf),
 }
 
-/// The policy from `KROWK_SYNC_AUTO` and `KROWK_SYNC_IDLE`, else the
+/// The policy from `GRUNTAS_SYNC_AUTO` and `GRUNTAS_SYNC_IDLE`, else the
 /// `sync` object of `config` — which must be the person's own
 /// `~/.krowk/config.json`, never a repository's: a repository can only
 /// turn sync off (with `.krowk/no-sync`), never on. No config reads as `{}`:
@@ -141,7 +141,7 @@ pub enum OptOut {
 /// read, so a typo never sends a session off the machine. Never read an
 /// error as "on". Every value is checked, the config's under an env
 /// variable that overrides it too, so a broken `sync.exclude` is an `Err`
-/// even with `KROWK_SYNC_AUTO=0`: still off, named by the error.
+/// even with `GRUNTAS_SYNC_AUTO=0`: still off, named by the error.
 pub fn policy(env: &dyn Fn(&str) -> String, config: Option<&Value>) -> Result<Policy, String> {
     let sync = match config {
         None => None,
@@ -192,9 +192,9 @@ pub fn policy(env: &dyn Fn(&str) -> String, config: Option<&Value>) -> Result<Po
         // `daemon::idle_window` applies to host.idleMinutes).
         Some(v) => v.as_f64().filter(|m| *m == 0.0 || *m * 60.0 >= 1.0).map(|m| (m * 60.0).round() as u64).ok_or_else(|| format!("sync.idleMinutes in config.json is {v}, not a number of minutes of at least one second (0 never lets go) — fix it, or remove it for {} minutes", DEFAULT_IDLE.as_secs() / 60))?,
     };
-    let secs = match env("KROWK_SYNC_IDLE").trim() {
+    let secs = match env("GRUNTAS_SYNC_IDLE").trim() {
         "" => configured,
-        s => s.parse::<u64>().map_err(|_| format!("KROWK_SYNC_IDLE is {s:?}, not a number of seconds — set it to one (0 never lets go), or unset it"))?,
+        s => s.parse::<u64>().map_err(|_| format!("GRUNTAS_SYNC_IDLE is {s:?}, not a number of seconds — set it to one (0 never lets go), or unset it"))?,
     };
 
     let accepting = match key("accept") {
@@ -1703,19 +1703,19 @@ mod tests {
         assert_eq!((p.on, p.off_by), (false, Some("sync.auto in config.json")));
 
         for s in ["0", "false", "off", "OFF", " False "] {
-            let e = [("KROWK_SYNC_AUTO", s.to_string())];
+            let e = [("GRUNTAS_SYNC_AUTO", s.to_string())];
             let p = policy(&env(&e), Some(&json!({"sync": {"auto": true}}))).unwrap();
-            assert_eq!((p.on, p.off_by), (false, Some("KROWK_SYNC_AUTO")), "{s:?} turns it off, over config");
+            assert_eq!((p.on, p.off_by), (false, Some("GRUNTAS_SYNC_AUTO")), "{s:?} turns it off, over config");
         }
         for s in ["1", "true", "on", "On"] {
-            let e = [("KROWK_SYNC_AUTO", s.to_string())];
+            let e = [("GRUNTAS_SYNC_AUTO", s.to_string())];
             let p = policy(&env(&e), Some(&off)).unwrap();
             assert_eq!((p.on, p.off_by), (true, None), "{s:?} turns it on, over config");
         }
 
-        let e = [("KROWK_SYNC_AUTO", "maybe".to_string())];
+        let e = [("GRUNTAS_SYNC_AUTO", "maybe".to_string())];
         let err = policy(&env(&e), None).unwrap_err();
-        assert!(err.contains("KROWK_SYNC_AUTO") && err.contains("\"maybe\"") && err.contains("off"), "{err}");
+        assert!(err.contains("GRUNTAS_SYNC_AUTO") && err.contains("\"maybe\"") && err.contains("off"), "{err}");
         for bad in [json!({"sync": {"auto": "no"}}), json!({"sync": {"auto": 0}}), json!({"sync": {"auto": null}})] {
             let err = policy(&env(&NONE), Some(&bad)).unwrap_err();
             assert!(err.contains("sync.auto in config.json"), "{err}");
@@ -1733,9 +1733,9 @@ mod tests {
             assert!(err.contains(named) && err.contains("not a setting"), "{err}");
         }
         // Every value is checked, the switch's override too: still an Err, so off.
-        let e = [("KROWK_SYNC_AUTO", "0".to_string())];
+        let e = [("GRUNTAS_SYNC_AUTO", "0".to_string())];
         assert!(policy(&env(&e), Some(&json!({"sync": {"exclude": "/w"}}))).is_err());
-        let e = [("KROWK_SYNC_AUTO", "1".to_string()), ("KROWK_SYNC_IDLE", "5".to_string())];
+        let e = [("GRUNTAS_SYNC_AUTO", "1".to_string()), ("GRUNTAS_SYNC_IDLE", "5".to_string())];
         assert!(policy(&env(&e), Some(&json!({"sync": {"auto": "no"}}))).unwrap_err().contains("sync.auto"), "a bad value under the override is still refused");
         assert!(policy(&env(&e), Some(&json!({"sync": {"idleMinutes": 0.005}}))).unwrap_err().contains("sync.idleMinutes"));
     }
@@ -1762,21 +1762,21 @@ mod tests {
         assert_eq!(DEFAULT_IDLE, Duration::from_secs(600));
         let cfg = json!({"sync": {"idleMinutes": 2}});
         assert_eq!(policy(&env(&NONE), Some(&cfg)).unwrap().idle, Some(Duration::from_secs(120)));
-        let e = [("KROWK_SYNC_IDLE", "3".to_string())];
+        let e = [("GRUNTAS_SYNC_IDLE", "3".to_string())];
         assert_eq!(policy(&env(&e), Some(&cfg)).unwrap().idle, Some(Duration::from_secs(3)), "the env wins");
-        let e = [("KROWK_SYNC_IDLE", "0".to_string())];
+        let e = [("GRUNTAS_SYNC_IDLE", "0".to_string())];
         assert_eq!(policy(&env(&e), Some(&cfg)).unwrap().idle, None, "0 never lets go");
         assert_eq!(policy(&env(&NONE), Some(&json!({"sync": {"idleMinutes": 0}}))).unwrap().idle, None);
         for tiny in [json!(0.005), json!(-1), json!("10")] {
             let err = policy(&env(&NONE), Some(&json!({"sync": {"idleMinutes": tiny}}))).unwrap_err();
             assert!(err.contains("sync.idleMinutes in config.json") && err.contains("at least one second"), "not rounded down to never: {err}");
         }
-        let e = [("KROWK_SYNC_IDLE", u64::MAX.to_string())];
+        let e = [("GRUNTAS_SYNC_IDLE", u64::MAX.to_string())];
         assert_eq!(policy(&env(&e), None).unwrap().idle, None, "past a century is never, and no Instant overflows");
         assert_eq!(policy(&env(&NONE), Some(&json!({"sync": {"idleMinutes": 1e300}}))).unwrap().idle, None);
         for bad in ["soon", "-1", "1.5"] {
-            let e = [("KROWK_SYNC_IDLE", bad.to_string())];
-            assert!(policy(&env(&e), None).unwrap_err().contains("KROWK_SYNC_IDLE"), "{bad}");
+            let e = [("GRUNTAS_SYNC_IDLE", bad.to_string())];
+            assert!(policy(&env(&e), None).unwrap_err().contains("GRUNTAS_SYNC_IDLE"), "{bad}");
         }
     }
 
@@ -1894,7 +1894,7 @@ mod tests {
         let e = crate::protocol::LogEvent { id: id.into(), parent_id: None, session_id: id.into(), time_ms: 1, body: LogBody::SessionStarted { cwd: sessions.display().to_string(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None } };
         std::fs::write(sessions.join(id).join(crate::log::EVENTS_FILE), format!("{}\n", serde_json::to_string(&e).unwrap())).unwrap();
         let on = Policy { on: true, off_by: None, exclude: Vec::new(), idle: None, accepting: true };
-        let off = Policy { on: false, off_by: Some("KROWK_SYNC_AUTO"), ..on.clone() };
+        let off = Policy { on: false, off_by: Some("GRUNTAS_SYNC_AUTO"), ..on.clone() };
         type Case = (Result<Policy, String>, Result<(), String>, usize);
         let cases: [Case; 4] = [
             (Ok(off), Ok(()), 0),

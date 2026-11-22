@@ -1,4 +1,4 @@
-//! krowk's one home: `~/.krowk`, or `$KROWK_HOME`. Every file krowk keeps —
+//! krowk's one home: `~/.krowk`, or `$GRUNTAS_HOME`. Every file krowk keeps —
 //! its config, its keys and logins, its accounts, sessions and caches — is
 //! under it, and every path to one is derived here, in the lean build and
 //! the full one alike, so the file tools' fence and the files it fences can
@@ -46,10 +46,10 @@ pub fn process_env(k: &str) -> String {
 }
 
 fn no_home() -> Error {
-    fail("no_home", "there is no home directory to keep krowk's files in — set HOME, or KROWK_HOME to an absolute path")
+    fail("no_home", "there is no home directory to keep krowk's files in — set HOME, or GRUNTAS_HOME to an absolute path")
 }
 
-/// Where the home is, by the environment alone: `$KROWK_HOME` when set,
+/// Where the home is, by the environment alone: `$GRUNTAS_HOME` when set,
 /// which must be absolute, else `.krowk` in the user's home directory
 /// (`HOME`, or `USERPROFILE` on Windows). Never a relative path — that would
 /// make a repository's own files krowk's keys and settings.
@@ -59,17 +59,17 @@ pub fn resolve(env: Env) -> Result<PathBuf, Error> {
 
 fn resolve_on(env: Env, windows: bool) -> Result<PathBuf, Error> {
     // `..` taken out first: `HOME=/x/gone/../h` would otherwise miss the
-    // old layout and make `gone/`, and `KROWK_HOME=$HOME/x/..` make the
+    // old layout and make `gone/`, and `GRUNTAS_HOME=$HOME/x/..` make the
     // person's own home krowk's, chmod 0700 and all.
     let user = user_home(env, windows);
-    let own = env("KROWK_HOME");
+    let own = env("GRUNTAS_HOME");
     if !own.is_empty() {
         let p = lexical(Path::new(&own));
         // The user's home itself is judged by where both really lead, and
         // regardless of case, as macOS and Windows open them.
         let is_user = user.as_ref().is_some_and(|u| holds(u, &p) && holds(&p, u));
         if !Path::new(&own).is_absolute() || p.parent().is_none() || is_user {
-            return Err(fail("bad_home", format!("KROWK_HOME is {own:?}, which is not an absolute path below the root and apart from your home directory — set it to one, or unset it for ~/.krowk")));
+            return Err(fail("bad_home", format!("GRUNTAS_HOME is {own:?}, which is not an absolute path below the root and apart from your home directory — set it to one, or unset it for ~/.krowk")));
         }
         return Ok(p);
     }
@@ -87,7 +87,7 @@ fn user_home(env: Env, windows: bool) -> Option<PathBuf> {
 }
 
 /// Everything the file tools and `krowk_push` keep away from: the home in
-/// use and the default one (`~/.krowk`, when `KROWK_HOME` names another),
+/// use and the default one (`~/.krowk`, when `GRUNTAS_HOME` names another),
 /// each with the staging directory and lock a move from the old layout
 /// uses beside it.
 pub fn fenced(env: Env) -> Vec<PathBuf> {
@@ -140,9 +140,9 @@ pub fn get() -> Result<PathBuf, Error> {
 }
 
 fn prepare(home: &Path, env: Env) -> Result<(), Error> {
-    // Only the default home inherits an older krowk's files: a KROWK_HOME
+    // Only the default home inherits an older krowk's files: a GRUNTAS_HOME
     // is a sandbox, and never takes the person's own.
-    let inherits = env("KROWK_HOME").is_empty();
+    let inherits = env("GRUNTAS_HOME").is_empty();
     match std::fs::symlink_metadata(home) {
         Ok(m) => {
             own(home, &m).map_err(|m| fail("bad_home", m))?;
@@ -278,9 +278,9 @@ mod tests {
     #[cfg(unix)]
     fn the_home_is_krowk_home_or_dot_krowk_and_never_relative() {
         assert_eq!(resolve(&env(&[("HOME", "/h")])).unwrap(), PathBuf::from("/h/.krowk"));
-        assert_eq!(resolve(&env(&[("HOME", "/h"), ("KROWK_HOME", "/k")])).unwrap(), PathBuf::from("/k"));
-        assert_eq!(resolve(&env(&[("HOME", "/h"), ("KROWK_HOME", "rel/k")])).unwrap_err().code(), "bad_home");
-        assert_eq!(resolve(&env(&[("KROWK_HOME", "/")])).unwrap_err().code(), "bad_home");
+        assert_eq!(resolve(&env(&[("HOME", "/h"), ("GRUNTAS_HOME", "/k")])).unwrap(), PathBuf::from("/k"));
+        assert_eq!(resolve(&env(&[("HOME", "/h"), ("GRUNTAS_HOME", "rel/k")])).unwrap_err().code(), "bad_home");
+        assert_eq!(resolve(&env(&[("GRUNTAS_HOME", "/")])).unwrap_err().code(), "bad_home");
         assert_eq!(resolve(&env(&[("HOME", "relative")])).unwrap_err().code(), "no_home");
         assert_eq!(resolve(&env(&[])).unwrap_err().code(), "no_home");
         let xdg = env(&[("HOME", "/h"), ("XDG_CONFIG_HOME", "/x"), ("XDG_DATA_HOME", "/y")]);
@@ -291,17 +291,17 @@ mod tests {
     #[cfg(unix)]
     fn dot_dot_is_taken_out_before_the_home_is_judged() {
         assert_eq!(resolve(&env(&[("HOME", "/x/gone/../h")])).unwrap(), PathBuf::from("/x/h/.krowk"));
-        assert_eq!(resolve(&env(&[("HOME", "/h"), ("KROWK_HOME", "/k/sub/..")])).unwrap(), PathBuf::from("/k"));
+        assert_eq!(resolve(&env(&[("HOME", "/h"), ("GRUNTAS_HOME", "/k/sub/..")])).unwrap(), PathBuf::from("/k"));
         // The person's own home, however spelled, and the root are refused.
         for own in ["/h/x/..", "/h", "/h/./", "/k/.."] {
             let e = move |k: &str| match k {
                 "HOME" => "/h".to_string(),
-                "KROWK_HOME" => own.to_string(),
+                "GRUNTAS_HOME" => own.to_string(),
                 _ => String::new(),
             };
             assert_eq!(resolve(&e).unwrap_err().code(), "bad_home", "{own}");
         }
-        let fenced = fenced(&env(&[("HOME", "/h"), ("KROWK_HOME", "/k")]));
+        let fenced = fenced(&env(&[("HOME", "/h"), ("GRUNTAS_HOME", "/k")]));
         for p in ["/k", "/k.migrating", "/k.migrate.lock", "/h/.krowk", "/h/.krowk.migrating", "/h/.krowk.migrate.lock"] {
             assert!(fenced.contains(&PathBuf::from(p)), "{p} in {fenced:?}");
         }
@@ -313,7 +313,7 @@ mod tests {
         assert_eq!(worktrees_root(&env(&[("HOME", "/h")])), Some(PathBuf::from("/h/.local/share/krowk/worktrees")));
         assert_eq!(worktrees_root(&env(&[("HOME", "/h"), ("XDG_DATA_HOME", "/d/x/..")])), Some(PathBuf::from("/d/krowk/worktrees")));
         assert_eq!(worktrees_root(&env(&[("HOME", "/h"), ("XDG_DATA_HOME", "rel")])), Some(PathBuf::from("/h/.local/share/krowk/worktrees")), "a relative XDG_DATA_HOME is ignored");
-        assert_eq!(worktrees_root(&env(&[("HOME", "/h"), ("KROWK_HOME", "/k")])), Some(PathBuf::from("/h/.local/share/krowk/worktrees")), "not under KROWK_HOME");
+        assert_eq!(worktrees_root(&env(&[("HOME", "/h"), ("GRUNTAS_HOME", "/k")])), Some(PathBuf::from("/h/.local/share/krowk/worktrees")), "not under GRUNTAS_HOME");
         assert_eq!(worktrees_root(&env(&[])), None);
     }
 
@@ -341,7 +341,7 @@ mod tests {
         let d = scratch("own");
         let home = d.join("h");
         let s = home.display().to_string();
-        let env = move |k: &str| if k == "KROWK_HOME" { s.clone() } else { String::new() };
+        let env = move |k: &str| if k == "GRUNTAS_HOME" { s.clone() } else { String::new() };
         assert_eq!(dir(&env).unwrap(), home);
         assert_eq!(std::fs::metadata(&home).unwrap().permissions().mode() & 0o777, 0o700);
         // Loosened by hand: closed again the next time a process looks.
@@ -352,7 +352,7 @@ mod tests {
         let link = d.join("link");
         std::os::unix::fs::symlink(&home, &link).unwrap();
         let l = link.display().to_string();
-        let e = dir(&move |k: &str| if k == "KROWK_HOME" { l.clone() } else { String::new() }).unwrap_err();
+        let e = dir(&move |k: &str| if k == "GRUNTAS_HOME" { l.clone() } else { String::new() }).unwrap_err();
         assert!(e.code() == "bad_home" && e.fix().contains("is a symlink"), "{}", e.fix());
         let _ = std::fs::remove_dir_all(&d);
     }

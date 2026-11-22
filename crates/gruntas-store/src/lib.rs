@@ -34,7 +34,7 @@ pub type Env<'a> = &'a dyn Fn(&str) -> String;
 /// CLI answers differently.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StoreError {
-    /// Nowhere for krowk.db to live: no home, or a KROWK_HOME that is not
+    /// Nowhere for krowk.db to live: no home, or a GRUNTAS_HOME that is not
     /// absolute.
     NoHome(String),
     /// The file is not the v1 schema; `krowk sessions rebuild` is the fix.

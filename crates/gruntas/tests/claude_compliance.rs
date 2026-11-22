@@ -285,7 +285,7 @@ fn r_back_2_a_whole_claude_workflow_never_opens_claudes_credentials_or_a_keychai
             .env_clear()
             .env("PATH", format!("{}:{}", root.join("bin").display(), std::env::var("PATH").unwrap_or_default()))
             .env("HOME", root.join("home"))
-            .env("KROWK_NO_UPDATE_CHECK", "1")
+            .env("GRUNTAS_NO_UPDATE_CHECK", "1")
             .current_dir(root.join("repo"))
             .stdin(Stdio::null());
         if let Some(s) = scenario {

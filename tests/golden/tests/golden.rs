@@ -1,7 +1,7 @@
 //! Black-box cases for any krowk binary: what it printed, how it exited, and
 //! what it left on disk.
 //!
-//! The binary under test is `$KROWK_BIN`, defaulting to target/release/krowk;
+//! The binary under test is `$GRUNTAS_BIN`, defaulting to target/release/krowk;
 //! `make golden` passes the one it built, on `$GOLDEN_PROFILE`.
 //! Each case's transcript is held byte for byte:
 //!
@@ -24,7 +24,7 @@
 //! command per line:
 //!
 //!     # a comment
-//!     @registry                 start the stand-in registry; KROWK_API_URL points at it
+//!     @registry                 start the stand-in registry; GRUNTAS_API_URL points at it
 //!     @fixture name             copy fixtures/name/{home,work} in as above, then run its
 //!                               setup.sh (if any) in work/ with $FIXTURE naming the directory
 //!     @env KEY=VALUE            set for every later command ({home} {work} {registry} expand)
@@ -35,7 +35,7 @@
 //!     @ls path                  print a directory tree into the transcript
 //!     @sh command               run /bin/sh -c in work/ for setup; not recorded ({case} expands too)
 //!     krowk args...             run the binary; shell-style quoting
-//!     krowk-mcp args...         run $KROWK_MCP_BIN, default target/release/krowk-mcp
+//!     krowk-mcp args...         run $GRUNTAS_MCP_BIN, default target/release/krowk-mcp
 //!     @let NAME .path[0].to     capture a value from the previous command's stdout (JSON,
 //!                               before masking); {NAME} expands in every later line
 //!     @tty krowk args...        run with stdout and stderr on one pseudo-terminal, to see
@@ -47,9 +47,9 @@
 //!                               outside this gate and checked by hand.
 //!
 //! Every command runs with an empty environment apart from PATH, HOME, TMPDIR,
-//! TZ=UTC, KROWK_NO_UPDATE_CHECK and KROWK_TEST_NOW_MS (the store's clock,
+//! TZ=UTC, GRUNTAS_NO_UPDATE_CHECK and GRUNTAS_TEST_NOW_MS (the store's clock,
 //! from 2026-01-01, a minute later for each command and a millisecond later
-//! for each read within one), with KROWK_API_URL on a port nothing listens on
+//! for each read within one), with GRUNTAS_API_URL on a port nothing listens on
 //! and every proxy variable pointing there too, so nothing on the machine — a
 //! key, a krowk.db, a harness transcript — leaks in, and no case reaches the
 //! network (models.dev, GitHub) by accident.
@@ -95,8 +95,8 @@ fn bin_from(var: &str, default: &str) -> PathBuf {
 
 #[test]
 fn golden() {
-    let krowk = bin_from("KROWK_BIN", "target/release/krowk");
-    let mcp = std::env::var_os("KROWK_MCP_BIN").map(PathBuf::from).unwrap_or_else(|| workspace_path("target/release/krowk-mcp"));
+    let krowk = bin_from("GRUNTAS_BIN", "target/release/krowk");
+    let mcp = std::env::var_os("GRUNTAS_MCP_BIN").map(PathBuf::from).unwrap_or_else(|| workspace_path("target/release/krowk-mcp"));
     let mcp = if mcp.is_relative() { workspace_path(&mcp.to_string_lossy()) } else { mcp };
     // The version is compared like any other output, so a binary stamped with
     // anything else fails most cases with diffs that never mention why.
@@ -109,7 +109,7 @@ fn golden() {
             bin.display()
         );
     }
-    let registry = bin_from("KROWK_REGISTRY_BIN", "bin/devregistry");
+    let registry = bin_from("GRUNTAS_REGISTRY_BIN", "bin/devregistry");
     let update = std::env::var_os("GOLDEN_UPDATE").is_some();
     let only = std::env::var("GOLDEN_CASE").unwrap_or_default();
 
@@ -215,13 +215,13 @@ fn run_case(case: &Path, n: usize, bins: &Bins) -> String {
         ("PATH".into(), "/usr/bin:/bin".into()),
         ("HOME".into(), home.display().to_string()),
         ("TMPDIR".into(), tmp.display().to_string()),
-        ("KROWK_NO_UPDATE_CHECK".into(), "1".into()),
-        ("KROWK_API_URL".into(), "http://127.0.0.1:9/v1".into()),
+        ("GRUNTAS_NO_UPDATE_CHECK".into(), "1".into()),
+        ("GRUNTAS_API_URL".into(), "http://127.0.0.1:9/v1".into()),
         ("HTTPS_PROXY".into(), "http://127.0.0.1:9".into()),
         ("HTTP_PROXY".into(), "http://127.0.0.1:9".into()),
         ("NO_PROXY".into(), "127.0.0.1,localhost".into()),
         // The store's clock: see `step_clock`.
-        ("KROWK_TEST_NOW_MS".into(), STORE_EPOCH_MS.to_string()),
+        ("GRUNTAS_TEST_NOW_MS".into(), STORE_EPOCH_MS.to_string()),
         // "expires tomorrow" counts midnights in the local zone.
         ("TZ".into(), "UTC".into()),
     ];
@@ -246,7 +246,7 @@ fn run_case(case: &Path, n: usize, bins: &Bins) -> String {
         match word {
             "@registry" => {
                 let started = start_registry(bins.registry);
-                set(&mut env, "KROWK_API_URL", &format!("{}/v1", started.1));
+                set(&mut env, "GRUNTAS_API_URL", &format!("{}/v1", started.1));
                 registry = Some(started);
             }
             "@env" => {
@@ -457,7 +457,7 @@ fn json_path(value: &serde_json::Value, path: &str) -> Option<String> {
 /// earlier than the import did, which is the one thing a real clock never
 /// does. A minute is more reads than any command makes.
 fn step_clock(env: &mut Vec<(String, String)>, commands: &mut i64) {
-    set(env, "KROWK_TEST_NOW_MS", &(STORE_EPOCH_MS + *commands * 60_000).to_string());
+    set(env, "GRUNTAS_TEST_NOW_MS", &(STORE_EPOCH_MS + *commands * 60_000).to_string());
     *commands += 1;
 }
 

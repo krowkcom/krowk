@@ -21,7 +21,7 @@
 //! Where it listens: `$XDG_RUNTIME_DIR/krowk/<home>/host.sock`, and where
 //! there is no runtime directory (macOS), `$TMPDIR/krowk-<uid>/<home>/…`.
 //! `<home>` is the first twelve hex digits of the SHA-256 of krowk's home
-//! (`~/.krowk`, or `KROWK_HOME`): a daemon serves one home's config, keys
+//! (`~/.krowk`, or `GRUNTAS_HOME`): a daemon serves one home's config, keys
 //! and sessions, so each home gets its own. The directories are `0700` and
 //! must be this user's own, the socket `0600`: the socket runs turns with
 //! the user's keys, so nobody else may reach it. Beside it, `host.lock` is
@@ -44,7 +44,7 @@ pub const SOCKET: &str = "host.sock";
 pub const LOCK: &str = "host.lock";
 
 /// How long the daemon stays up with no turn running and no client
-/// connected, unless `KROWK_HOST_IDLE` or config says otherwise.
+/// connected, unless `GRUNTAS_HOST_IDLE` or config says otherwise.
 pub const DEFAULT_IDLE: Duration = Duration::from_secs(10 * 60);
 
 /// How long a `krowk` that spawned the daemon waits for its socket.
@@ -83,36 +83,36 @@ pub fn socket(env: &dyn Fn(&str) -> String) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// How long the daemon waits idle before it exits, from `KROWK_HOST_IDLE`
+/// How long the daemon waits idle before it exits, from `GRUNTAS_HOST_IDLE`
 /// (seconds; `0` never exits), else `host.idleMinutes` from config.json
 /// (`config`), else ten minutes. None: it never exits by itself, as a
 /// service runs it.
 pub fn idle_window(env: &dyn Fn(&str) -> String, config: Option<&serde_json::Value>) -> Result<Option<Duration>, String> {
-    let secs = match env("KROWK_HOST_IDLE").trim() {
+    let secs = match env("GRUNTAS_HOST_IDLE").trim() {
         "" => match config.and_then(|c| c.pointer("/host/idleMinutes")) {
             None => return Ok(Some(DEFAULT_IDLE)),
             // A window under a second would read as none, which is never:
             // refused rather than turned into the opposite of what it says.
             Some(v) => v.as_f64().filter(|m| *m == 0.0 || *m * 60.0 >= 1.0).map(|m| (m * 60.0).round() as u64).ok_or_else(|| format!("host.idleMinutes in config.json is {v}, not a number of minutes of at least one second (0 never exits) — fix it, or remove it for {} minutes", DEFAULT_IDLE.as_secs() / 60))?,
         },
-        s => s.parse::<u64>().map_err(|_| format!("KROWK_HOST_IDLE is {s:?}, not a number of seconds — set it to one (0 never exits), or unset it"))?,
+        s => s.parse::<u64>().map_err(|_| format!("GRUNTAS_HOST_IDLE is {s:?}, not a number of seconds — set it to one (0 never exits), or unset it"))?,
     };
     Ok((secs > 0).then(|| Duration::from_secs(secs)))
 }
 
-/// Where the WebSocket listener binds, from `KROWK_HOST_WS`, else
+/// Where the WebSocket listener binds, from `GRUNTAS_HOST_WS`, else
 /// `host.websocket` in config.json: a loopback `address:port` (port 0
 /// picks one; `krowk host status` names it), or `off`. Off when neither
 /// says. Anything but loopback is refused: this listener proves who a
 /// client is only with the daemon's token, and reaching other devices is
 /// the relay's job.
 pub fn websocket_addr(env: &dyn Fn(&str) -> String, config: Option<&serde_json::Value>) -> Result<Option<std::net::SocketAddr>, String> {
-    let (value, from) = match env("KROWK_HOST_WS").trim() {
+    let (value, from) = match env("GRUNTAS_HOST_WS").trim() {
         "" => match config.and_then(|c| c.pointer("/host/websocket")) {
             None | Some(serde_json::Value::Null) => return Ok(None),
             Some(v) => (v.as_str().map(str::to_string).ok_or_else(|| format!("host.websocket in config.json is {v}, not an address — set it to \"127.0.0.1:<port>\" or \"off\""))?, "host.websocket in config.json"),
         },
-        s => (s.to_string(), "KROWK_HOST_WS"),
+        s => (s.to_string(), "GRUNTAS_HOST_WS"),
     };
     if value == "off" {
         return Ok(None);
@@ -454,7 +454,7 @@ mod tests {
         let uid = unsafe { libc::getuid() };
         assert_eq!(socket(&env(&e)).unwrap(), root.join(format!("krowk-{uid}")).join(&key).join("host.sock"));
         // Another home is another daemon: its config, keys and sessions.
-        let e = [("XDG_RUNTIME_DIR", root.display().to_string()), ("HOME", "/home/ada".to_string()), ("KROWK_HOME", "/work/.krowk".to_string())];
+        let e = [("XDG_RUNTIME_DIR", root.display().to_string()), ("HOME", "/home/ada".to_string()), ("GRUNTAS_HOME", "/work/.krowk".to_string())];
         assert_ne!(socket(&env(&e)).unwrap().parent().unwrap().file_name().unwrap().to_str().unwrap(), key);
         // One made loose by someone is made private again, and a symlink —
         // which could lead anywhere — is refused.
@@ -481,15 +481,15 @@ mod tests {
         assert_eq!(websocket_addr(&env(&none), None).unwrap(), None, "off by default");
         let cfg = serde_json::json!({"host": {"websocket": "127.0.0.1:7788"}});
         assert_eq!(websocket_addr(&env(&none), Some(&cfg)).unwrap(), Some("127.0.0.1:7788".parse().unwrap()));
-        let e = [("KROWK_HOST_WS", "off".to_string())];
+        let e = [("GRUNTAS_HOST_WS", "off".to_string())];
         assert_eq!(websocket_addr(&env(&e), Some(&cfg)).unwrap(), None);
-        let e = [("KROWK_HOST_WS", "[::1]:0".to_string())];
+        let e = [("GRUNTAS_HOST_WS", "[::1]:0".to_string())];
         assert!(websocket_addr(&env(&e), None).unwrap().is_some());
         for wide in ["0.0.0.0:7788", "192.168.1.2:7788"] {
-            let e = [("KROWK_HOST_WS", wide.to_string())];
+            let e = [("GRUNTAS_HOST_WS", wide.to_string())];
             assert!(websocket_addr(&env(&e), None).unwrap_err().contains("not loopback"), "{wide}");
         }
-        let e = [("KROWK_HOST_WS", "localhost".to_string())];
+        let e = [("GRUNTAS_HOST_WS", "localhost".to_string())];
         assert!(websocket_addr(&env(&e), None).unwrap_err().contains("not an address"));
     }
 
@@ -570,14 +570,14 @@ mod tests {
         assert_eq!(idle_window(&env(&none), None).unwrap(), Some(DEFAULT_IDLE));
         let cfg = serde_json::json!({"host": {"idleMinutes": 2}});
         assert_eq!(idle_window(&env(&none), Some(&cfg)).unwrap(), Some(Duration::from_secs(120)));
-        let e = [("KROWK_HOST_IDLE", "3".to_string())];
+        let e = [("GRUNTAS_HOST_IDLE", "3".to_string())];
         assert_eq!(idle_window(&env(&e), Some(&cfg)).unwrap(), Some(Duration::from_secs(3)));
-        let e = [("KROWK_HOST_IDLE", "0".to_string())];
+        let e = [("GRUNTAS_HOST_IDLE", "0".to_string())];
         assert_eq!(idle_window(&env(&e), None).unwrap(), None, "a service never exits by itself");
         let tiny = serde_json::json!({"host": {"idleMinutes": 0.005}});
         assert!(idle_window(&env(&none), Some(&tiny)).unwrap_err().contains("at least one second"), "not rounded down to never");
-        let e = [("KROWK_HOST_IDLE", "soon".to_string())];
-        assert!(idle_window(&env(&e), None).unwrap_err().contains("KROWK_HOST_IDLE"));
+        let e = [("GRUNTAS_HOST_IDLE", "soon".to_string())];
+        assert!(idle_window(&env(&e), None).unwrap_err().contains("GRUNTAS_HOST_IDLE"));
     }
 
     #[test]

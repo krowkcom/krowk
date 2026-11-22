@@ -55,10 +55,10 @@ impl Sandbox {
             .env("PATH", format!("{}:/usr/bin:/bin", self.root.join("bin").display()))
             .env("HOME", self.root.join("home"))
             .env("TERM", "xterm-256color")
-            .env("KROWK_NO_UPDATE_CHECK", "1")
-            .env("KROWK_API_URL", api)
+            .env("GRUNTAS_NO_UPDATE_CHECK", "1")
+            .env("GRUNTAS_API_URL", api)
             .env("SSH_CONNECTION", "x 1 y 2")
-            .env("KROWK_DEVICE_NAME", "first")
+            .env("GRUNTAS_DEVICE_NAME", "first")
             .env("FAKE_CLAUDE_LOG", self.root.join("fake.log"))
             // The fake's login waits for a line on the terminal, as the
             // real one waits on a person.
@@ -230,7 +230,7 @@ fn later_at_the_kit_is_not_asked_again_and_the_reminder_follows_while_there_is_o
     says(&t, REMINDER);
     ends(&mut t);
     let unit = std::fs::read_to_string(b.root.join("home/.config/systemd/user/krowk-host.service")).unwrap_or_default();
-    assert!(unit.contains("KROWK_HOST_IDLE=0"), "a yes installs the service: {unit}");
+    assert!(unit.contains("GRUNTAS_HOST_IDLE=0"), "a yes installs the service: {unit}");
     let log = std::fs::read_to_string(b.root.join("systemctl.log")).unwrap_or_default();
     assert!(log.contains("--user enable --now krowk-host.service"), "{log}");
     assert!(b.keystore().device_list().unwrap().is_some_and(|c| c.recovery().is_none()), "later: no kit");
@@ -289,11 +289,11 @@ fn first_machine(name: &str, api: &str) -> Sandbox {
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", other.root.join("home"))
-        .env("KROWK_NO_UPDATE_CHECK", "1")
-        .env("KROWK_API_URL", api)
-        .env("KROWK_TOKEN", "krowk_sk_first#laptop")
-        .env("KROWK_DEVICE_NAME", "laptop")
-        .env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL", "1")
+        .env("GRUNTAS_NO_UPDATE_CHECK", "1")
+        .env("GRUNTAS_API_URL", api)
+        .env("GRUNTAS_TOKEN", "krowk_sk_first#laptop")
+        .env("GRUNTAS_DEVICE_NAME", "laptop")
+        .env("GRUNTAS_TEST_UNATTENDED_DEVICE_APPROVAL", "1")
         .current_dir(&other.root)
         .output()
         .unwrap();
@@ -404,7 +404,7 @@ fn a_new_machine_with_no_host_online_says_so_and_keeps_the_join_owed() {
     let _other = first_machine("laptop-nohost", &api);
     let b = signed_in_owing("nohost", &api);
     let mut cmd = b.command(&api, &[]);
-    cmd.env("KROWK_TEST_NO_HOST_SECS", "2");
+    cmd.env("GRUNTAS_TEST_NO_HOST_SECS", "2");
     let mut t = wide(cmd);
     assert!(t.wait_for("None of your machines is online to show a code. Run krowk machines add on one of them.", Duration::from_secs(60)).is_some(), "{:?}", t.text());
     says(&t, "Connect which provider?");

@@ -395,7 +395,7 @@ pub(super) fn budget_flag(ctx: &Ctx) -> Result<Option<BudgetLimits>, Error> {
 
 /// R-EVID-1: what the host's `publish` runs — krowk_push, the MCP server's
 /// own code, against the registry this invocation pushes to (`--dev` is the
-/// stand-in), with the key read the way krowk-mcp reads it: KROWK_TOKEN, then
+/// stand-in), with the key read the way krowk-mcp reads it: GRUNTAS_TOKEN, then
 /// the workspace the config names. A workspace that names no stored key
 /// refuses uploads rather than landing them anonymously, as there.
 pub(super) fn publisher(ctx: &Ctx) -> Publisher {
@@ -564,10 +564,10 @@ pub(super) fn ask_trust(store: &trust::Store, root: &std::path::Path, vendor: &s
 /// as every figure `krowk sessions` shows is priced. The environment is
 /// captured now: the engine runs on its own thread.
 pub(super) fn pricer(env: &dyn Fn(&str) -> String) -> gruntas_harness::host::Pricer {
-    let (own, home) = (env("KROWK_HOME"), env("HOME"));
+    let (own, home) = (env("GRUNTAS_HOME"), env("HOME"));
     Arc::new(move |provider: &str, model: &str, u: &Usage| {
         let env = |k: &str| match k {
-            "KROWK_HOME" => own.clone(),
+            "GRUNTAS_HOME" => own.clone(),
             "HOME" => home.clone(),
             _ => String::new(),
         };
@@ -587,10 +587,10 @@ pub(super) fn pricer(env: &dyn Fn(&str) -> String) -> gruntas_harness::host::Pri
 /// snapshot is trimmed to prices, and a model it would miss is read for its
 /// family off its id instead. Captured like the pricer's environment.
 pub(super) fn catalog(env: &dyn Fn(&str) -> String) -> gruntas_harness::host::Catalog {
-    let (own, home) = (env("KROWK_HOME"), env("HOME"));
+    let (own, home) = (env("GRUNTAS_HOME"), env("HOME"));
     Arc::new(move |provider: &str, model: &str| {
         let env = |k: &str| match k {
-            "KROWK_HOME" => own.clone(),
+            "GRUNTAS_HOME" => own.clone(),
             "HOME" => home.clone(),
             _ => String::new(),
         };
@@ -604,10 +604,10 @@ pub(super) fn catalog(env: &dyn Fn(&str) -> String) -> gruntas_harness::host::Ca
 /// are made.
 pub(super) fn agents_config(env: &dyn Fn(&str) -> String) -> AgentsConfig {
     let home = env("HOME");
-    let own = env("KROWK_HOME");
+    let own = env("GRUNTAS_HOME");
     let models: Models = Arc::new(move |provider: &str| {
         let env = |k: &str| match k {
-            "KROWK_HOME" => own.clone(),
+            "GRUNTAS_HOME" => own.clone(),
             "HOME" => home.clone(),
             _ => String::new(),
         };

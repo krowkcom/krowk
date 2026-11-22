@@ -204,8 +204,8 @@ fn detect_in(env: Env, dir: Option<&Path>) -> Metadata {
         branch: branch_in(env, dir),
         dirty: dirty(dir),
         harness: detect_agent(env),
-        model: first(&[env("KROWK_MODEL"), env("ANTHROPIC_MODEL")]),
-        session: first(&[env("KROWK_SESSION"), env("CLAUDE_CODE_SESSION_ID"), env("CURSOR_TRACE_ID"), env("GITHUB_RUN_ID")]),
+        model: first(&[env("GRUNTAS_MODEL"), env("ANTHROPIC_MODEL")]),
+        session: first(&[env("GRUNTAS_SESSION"), env("CLAUDE_CODE_SESSION_ID"), env("CURSOR_TRACE_ID"), env("GITHUB_RUN_ID")]),
         change_url: ci_pull_request(env),
         remote_slug: slug(&remote),
         ..Metadata::default()
@@ -307,7 +307,7 @@ pub fn detect_system(harness: &str, model: &str) -> &'static str {
 
 /// The harness driving the upload.
 pub fn detect_agent(env: Env) -> String {
-    let agent = env("KROWK_AGENT");
+    let agent = env("GRUNTAS_AGENT");
     if !agent.is_empty() {
         agent
     } else if !env("CLAUDECODE").is_empty() || !env("CLAUDE_CODE").is_empty() {

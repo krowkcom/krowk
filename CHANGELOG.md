@@ -29,6 +29,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `--sandbox` with a profile, which only held krowk's own tools, is refused;
   and `--client-id`, which only SuperGrok took. It is announced and removed
   in the same release.
+- **Environment variables are now `GRUNTAS_*`.** Every `KROWK_*` variable
+  is renamed (`KROWK_TOKEN` is `GRUNTAS_TOKEN`, `KROWK_HOME` is
+  `GRUNTAS_HOME`, and so on, the installer's and the Action's too); the old
+  names are no longer read, so rename them in your shell profile and CI.
 
 ### Changed
 

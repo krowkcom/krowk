@@ -493,10 +493,10 @@ mod tests {
     /// krowk upgrade will"): a change in what cosign writes fails the
     /// release, not every krowk's next upgrade.
     #[test]
-    #[ignore = "needs KROWK_RELEASE_DIR and KROWK_RELEASE_VERSION, which the release workflow sets"]
+    #[ignore = "needs GRUNTAS_RELEASE_DIR and GRUNTAS_RELEASE_VERSION, which the release workflow sets"]
     fn r_oss_3_the_release_being_published_verifies_as_krowk_upgrade_will_check_it() {
-        let dir = std::path::PathBuf::from(std::env::var("KROWK_RELEASE_DIR").expect("KROWK_RELEASE_DIR"));
-        let version = std::env::var("KROWK_RELEASE_VERSION").expect("KROWK_RELEASE_VERSION");
+        let dir = std::path::PathBuf::from(std::env::var("GRUNTAS_RELEASE_DIR").expect("GRUNTAS_RELEASE_DIR"));
+        let version = std::env::var("GRUNTAS_RELEASE_VERSION").expect("GRUNTAS_RELEASE_VERSION");
         let sums = std::fs::read(dir.join("checksums.txt")).unwrap();
         let bundle = std::fs::read(dir.join("checksums.txt.sigstore.json")).unwrap();
         assert_eq!(verify(&sums, &bundle, &identity(&version)), Ok(()));

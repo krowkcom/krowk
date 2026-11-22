@@ -223,7 +223,7 @@ Two commands answer with a bare record and no envelope, whatever the flags:
 
 A key belongs to one workspace; `krowk login` stores one key per workspace, so
 logging into a second never replaces the first. Which key a command uses:
-`--workspace` → `KROWK_WORKSPACE` → `.krowk/config.json` at the git root → the
+`--workspace` → `GRUNTAS_WORKSPACE` → `.krowk/config.json` at the git root → the
 global config → whichever key logged in last. A workspace is always its
 `ws_…` slug.
 
@@ -386,7 +386,7 @@ The key itself is not yours to read. It lands in the credentials file at 0600 an
 every later command finds it there. Two things in the receipt are worth reading
 rather than repeating:
 
-- `shadowed_by_env` — `KROWK_TOKEN` is set and outranks what was just stored, so
+- `shadowed_by_env` — `GRUNTAS_TOKEN` is set and outranks what was just stored, so
   uploads use that key instead. Say so rather than reporting the workspace the
   receipt names.
 - `confirmed: false` with a `reason` — the key is stored and works, but the
@@ -421,20 +421,20 @@ repository. Then tell the person exactly what was exposed, and rotate it.
 
 | Variable | Does |
 |----------|------|
-| `KROWK_TOKEN` | API key, e.g. `krowk_sk_…`. Outranks the stored credentials file |
-| `KROWK_API_URL` | Base URL of the registry. Default `https://api.krowk.com/v1` |
-| `KROWK_WORKSPACE` | Workspace whose stored key to use, as if by `--workspace` |
-| `KROWK_AGENT` | Harness name recorded as `krowk.harness`. Detected otherwise |
-| `KROWK_SESSION` | Session ID recorded as `krowk.session`. Detected otherwise |
-| `KROWK_MODEL` | Model recorded as `gen_ai.request.model`. `ANTHROPIC_MODEL` also read |
-| `KROWK_DEV` | `1`/`true`/`yes`/`on` — same as `--dev`, a local registry |
-| `KROWK_HOME` | Where krowk keeps its files, as an absolute path. Default `~/.krowk` |
+| `GRUNTAS_TOKEN` | API key, e.g. `krowk_sk_…`. Outranks the stored credentials file |
+| `GRUNTAS_API_URL` | Base URL of the registry. Default `https://api.krowk.com/v1` |
+| `GRUNTAS_WORKSPACE` | Workspace whose stored key to use, as if by `--workspace` |
+| `GRUNTAS_AGENT` | Harness name recorded as `krowk.harness`. Detected otherwise |
+| `GRUNTAS_SESSION` | Session ID recorded as `krowk.session`. Detected otherwise |
+| `GRUNTAS_MODEL` | Model recorded as `gen_ai.request.model`. `ANTHROPIC_MODEL` also read |
+| `GRUNTAS_DEV` | `1`/`true`/`yes`/`on` — same as `--dev`, a local registry |
+| `GRUNTAS_HOME` | Where krowk keeps its files, as an absolute path. Default `~/.krowk` |
 
 A stored key lives at `~/.krowk/credentials.json`, mode 0600, written by
 `krowk login`, in the `0700` directory where krowk keeps everything else too.
 Never read it or anything else in `~/.krowk` out to show a person, never
 push it — `krowk_push` refuses — and never put a token on a command line in
-a shared shell: `KROWK_TOKEN` in the environment is better.
+a shared shell: `GRUNTAS_TOKEN` in the environment is better.
 
 ## Error Handling
 
@@ -470,12 +470,12 @@ answer.
 |------|-------|------------|
 | 0 | It worked | — |
 | 1 | The command was wrong, or krowk failed on its own — bad flag, unknown command, unreadable file. Also anything unclassified | Fix the command; `krowk help <command> --json` |
-| 2 | Not found — no such artifact or run in this workspace, or an unrecognised claim token | Check the slug and the token, or `KROWK_API_URL` |
+| 2 | Not found — no such artifact or run in this workspace, or an unrecognised claim token | Check the slug and the token, or `GRUNTAS_API_URL` |
 | 3 | Refused for want of credentials — no key where one is needed, a rejected key, a browser login somebody denied or that CI could not approve, or no claim token where that is the only authority | `krowk login --token …`, or pass the claim token |
 | 4 | Understood and refused — validation, an artifact already finalized, a run that needs a key | Change something; retrying unchanged answers the same |
 | 5 | Rate limited | Wait `error.retry_after` seconds, then retry |
 | 6 | The bytes did not move — registry or object storage unreachable | Retry; `krowk doctor --json` |
-| 7 | The registry failed on its side, answered something this client could not read, or named a login page krowk will not open | Retry, and report it if it persists; for the login page, check `KROWK_API_URL` |
+| 7 | The registry failed on its side, answered something this client could not read, or named a login page krowk will not open | Retry, and report it if it persists; for the login page, check `GRUNTAS_API_URL` |
 | 8 | Gone — an artifact expired or was taken down, or a browser login lapsed or had its key collected already | Push again, or log in again; nothing brings the old one back |
 
 1 stays the catch-all, so a check for `!= 0` keeps working and a failure that

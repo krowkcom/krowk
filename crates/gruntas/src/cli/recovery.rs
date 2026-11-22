@@ -367,7 +367,7 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
 /// whether it is on, whether this directory is synced, and how many
 /// sessions this machine's host daemon bridges now.
 struct AutoSync {
-    /// On, or why off: `KROWK_SYNC_AUTO`, `sync.auto in config.json`, or
+    /// On, or why off: `GRUNTAS_SYNC_AUTO`, `sync.auto in config.json`, or
     /// what in the policy does not read (which is off).
     on: Result<(), String>,
     /// Synced, or what opts it out (`sync.exclude (<entry>)`, a marker's

@@ -13,7 +13,7 @@
     {
       "name": "Krowk API key",
       "description": "Optional. Adds run grouping, listings and permanence.",
-      "envVar": "KROWK_API_KEY",
+      "envVar": "GRUNTAS_API_KEY",
       "sensitive": true
     }
   ]

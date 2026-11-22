@@ -169,7 +169,7 @@ pub fn browsable_url(raw: &str, api_insecure: bool) -> Result<String, Error> {
     let malformed = |what: &str| {
         fail(
             "malformed_response",
-            format!("the registry {what} — check KROWK_API_URL points at the API host, not the website"),
+            format!("the registry {what} — check GRUNTAS_API_URL points at the API host, not the website"),
         )
     };
     if raw.is_empty() {
@@ -184,7 +184,7 @@ pub fn browsable_url(raw: &str, api_insecure: bool) -> Result<String, Error> {
         "http" => {
             return Err(fail(
                 "refused_verification_url",
-                "the registry named an http page for this login while the API itself is https — krowk will not open it; check KROWK_API_URL",
+                "the registry named an http page for this login while the API itself is https — krowk will not open it; check GRUNTAS_API_URL",
             ))
         }
         "" => return Err(malformed("named a page for this login with no scheme")),

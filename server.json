@@ -16,7 +16,7 @@
       "transport": { "type": "stdio" },
       "environmentVariables": [
         {
-          "name": "KROWK_API_KEY",
+          "name": "GRUNTAS_API_KEY",
           "description": "Optional. Adds run grouping, listings and permanence past the 24-hour anonymous expiry. Pushing works without it.",
           "isRequired": false,
           "isSecret": true,

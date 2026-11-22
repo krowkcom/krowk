@@ -92,7 +92,7 @@ fn run(home: &Path, args: &[&str]) -> String {
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", home)
-        .env("KROWK_NO_UPDATE_CHECK", "1")
+        .env("GRUNTAS_NO_UPDATE_CHECK", "1")
         .current_dir(home)
         .output()
         .unwrap();

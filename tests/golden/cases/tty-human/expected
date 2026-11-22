@@ -112,7 +112,7 @@ tty:
 Version         0.0.0-golden
 Runtime         <runtime>
 API             http://<registry>/v1
-Registry        custom (KROWK_API_URL)
+Registry        custom (GRUNTAS_API_URL)
 API status      reachable (krowk-registry, v1)
 Signed in       no
 Key from        none

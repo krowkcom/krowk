@@ -64,7 +64,7 @@ pub(super) fn chose_local(ctx: &Ctx) -> bool {
 pub(super) fn bare(ctx: &mut Ctx) {
     account_step(ctx, runnable(ctx));
     // A key in the environment is the caller's, not this machine's account.
-    let past_account = load(ctx).local || (ctx.env("KROWK_TOKEN").is_empty() && agent::new_client(ctx).is_ok_and(|c| c.authenticated()));
+    let past_account = load(ctx).local || (ctx.env("GRUNTAS_TOKEN").is_empty() && agent::new_client(ctx).is_ok_and(|c| c.authenticated()));
     if !path(ctx).is_ok_and(|p| p.exists()) || !past_account || !steps_due(ctx) {
         return;
     }
@@ -117,7 +117,7 @@ fn account_step(ctx: &mut Ctx, runnable: bool) {
     let mut state = load(ctx);
     // A key in the environment is the caller's own, not this machine's
     // account: with it set, the step is not asked and nothing owed is finished.
-    if !ctx.env("KROWK_TOKEN").is_empty() {
+    if !ctx.env("GRUNTAS_TOKEN").is_empty() {
         return;
     }
     let Ok(client) = agent::new_client(ctx) else { return };

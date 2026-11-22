@@ -17,14 +17,14 @@ const CLAIM_TOKEN_PREFIX: &str = "krowk_claim_";
 /// The metadata key a caption is recorded under, on the artifact.
 const CAPTION_KEY: &str = "krowk.caption";
 
-/// The one place a client gets built: --dev, KROWK_API_URL, KROWK_DEV for
-/// where; KROWK_TOKEN, then --workspace, KROWK_WORKSPACE, the repo config,
+/// The one place a client gets built: --dev, GRUNTAS_API_URL, GRUNTAS_DEV for
+/// where; GRUNTAS_TOKEN, then --workspace, GRUNTAS_WORKSPACE, the repo config,
 /// the global config and the stored default for which key. A workspace that
 /// resolved and holds no key is a refusal, not an anonymous fallback — but
-/// KROWK_TOKEN stays the strongest word, read before any config file.
+/// GRUNTAS_TOKEN stays the strongest word, read before any config file.
 pub(crate) fn new_client(ctx: &Ctx) -> Result<Client, Error> {
     let base = gruntas_api::base_url_for(ctx.f.dev, ctx.io.env);
-    let token = ctx.env("KROWK_TOKEN");
+    let token = ctx.env("GRUNTAS_TOKEN");
     if !token.is_empty() {
         return Ok(Client::new(&base, &token));
     }

@@ -225,14 +225,14 @@ impl Gruntas {
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", &self.home)
-            .env("KROWK_API_URL", &self.api)
-            .env("KROWK_NO_UPDATE_CHECK", "1")
+            .env("GRUNTAS_API_URL", &self.api)
+            .env("GRUNTAS_NO_UPDATE_CHECK", "1")
             // The debug build's stand-in for the person saying yes at
             // `devices approve` and `sync join`.
-            .env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL", "1")
+            .env("GRUNTAS_TEST_UNATTENDED_DEVICE_APPROVAL", "1")
             .current_dir(self.home.parent().unwrap());
         if keyed {
-            cmd.env("KROWK_TOKEN", "krowk_sk_test");
+            cmd.env("GRUNTAS_TOKEN", "krowk_sk_test");
         }
         let out = cmd.output().unwrap();
         (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))

@@ -358,7 +358,7 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x verifier/krowk-unit-tests
-          KROWK_RELEASE_DIR="$PWD/dist" KROWK_RELEASE_VERSION="$VERSION" verifier/krowk-unit-tests \
+          GRUNTAS_RELEASE_DIR="$PWD/dist" GRUNTAS_RELEASE_VERSION="$VERSION" verifier/krowk-unit-tests \
             cli::upgrade::sigstore::tests::r_oss_3_the_release_being_published_verifies_as_krowk_upgrade_will_check_it \
             --ignored --exact
 

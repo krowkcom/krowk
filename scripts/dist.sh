@@ -23,7 +23,7 @@
 # it, and dist/<triple>-lean/ loose. krowk-mcp is the same lean binary in both.
 # install.sh picks between them; an upgrade stays on the build it is.
 #
-# KROWK_FAST_BUILD=1 builds without LTO and with parallel codegen: the same
+# GRUNTAS_FAST_BUILD=1 builds without LTO and with parallel codegen: the same
 # binaries in every way a packaging test can see, minutes sooner. Releases
 # never set it.
 
@@ -94,19 +94,19 @@ build() {
   local cargo_home="${CARGO_HOME:-$HOME/.cargo}"
   export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$PWD=/krowk --remap-path-prefix=$cargo_home=/cargo"
   export CFLAGS="${CFLAGS:-} -ffile-prefix-map=$PWD=/krowk -ffile-prefix-map=$cargo_home=/cargo"
-  if [[ "${KROWK_FAST_BUILD:-}" == 1 ]]; then
+  if [[ "${GRUNTAS_FAST_BUILD:-}" == 1 ]]; then
     export CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
   fi
   # The lean build first, both binaries: krowk-mcp never touches the session
   # store, so it is the lean build in both archives. Its krowk is copied out
   # before the full build overwrites target/…/krowk.
-  KROWK_VERSION="$version" cargo "$tool" --release --locked --target "$triple" -p gruntas --bin krowk --bin krowk-mcp
+  GRUNTAS_VERSION="$version" cargo "$tool" --release --locked --target "$triple" -p gruntas --bin krowk --bin krowk-mcp
   local lean="dist/$triple-lean"
   rm -rf "$lean" && mkdir -p "$lean"
   for bin in krowk krowk-mcp; do
     cp "target/$triple/release/$bin$ext" "$lean/"
   done
-  KROWK_VERSION="$version" cargo "$tool" --release --locked --target "$triple" -p gruntas --bin krowk --features harness
+  GRUNTAS_VERSION="$version" cargo "$tool" --release --locked --target "$triple" -p gruntas --bin krowk --features harness
 
   out="dist/$triple"
   rm -rf "$out" && mkdir -p "$out"

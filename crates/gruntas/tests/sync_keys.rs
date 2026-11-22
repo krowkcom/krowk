@@ -27,9 +27,9 @@ fn command(home: &Path, args: &[&str]) -> Command {
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", home)
-        .env("KROWK_NO_UPDATE_CHECK", "1")
-        .env("KROWK_API_URL", "http://127.0.0.1:9/v1")
-        .env("KROWK_TOKEN", "krowk_sk_kit")
+        .env("GRUNTAS_NO_UPDATE_CHECK", "1")
+        .env("GRUNTAS_API_URL", "http://127.0.0.1:9/v1")
+        .env("GRUNTAS_TOKEN", "krowk_sk_kit")
         .current_dir(home)
         .stdin(Stdio::null());
     c
@@ -38,7 +38,7 @@ fn command(home: &Path, args: &[&str]) -> Command {
 /// With the debug build's stand-in for the person, and `input` piped in.
 fn piped(home: &Path, args: &[&str], input: &str) -> Output {
     let mut c = command(home, args);
-    c.env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL", "1");
+    c.env("GRUNTAS_TEST_UNATTENDED_DEVICE_APPROVAL", "1");
     let mut child = c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
     child.wait_with_output().unwrap()

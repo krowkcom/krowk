@@ -204,7 +204,7 @@ fn self_upgrade(dest: &Path, version: &str) -> Result<Vec<String>, Error> {
         fail(
             "unverified_release",
             format!(
-                "checksums.txt on release v{version} is not signed by krowk's release workflow: {why} — nothing was installed. If this krowk is older than a change to Sigstore's keys, install cosign (https://docs.sigstore.dev/cosign/system_config/installation/) and reinstall with `curl -fsSL https://krowk.com/install | KROWK_REQUIRE_SIGNATURE=1 bash`, which checks the signature with it, or verify the release by hand (SECURITY.md → Verifying a release)"
+                "checksums.txt on release v{version} is not signed by krowk's release workflow: {why} — nothing was installed. If this krowk is older than a change to Sigstore's keys, install cosign (https://docs.sigstore.dev/cosign/system_config/installation/) and reinstall with `curl -fsSL https://krowk.com/install | GRUNTAS_REQUIRE_SIGNATURE=1 bash`, which checks the signature with it, or verify the release by hand (SECURITY.md → Verifying a release)"
             ),
         )
     })?;
@@ -306,9 +306,9 @@ fn since(t: Option<jiff::Timestamp>, now: jiff::Timestamp) -> Option<i64> {
     t.map(|t| now.duration_since(t).as_secs())
 }
 
-/// Never on a source build, on CI, or when KROWK_NO_UPDATE_CHECK says not to.
+/// Never on a source build, on CI, or when GRUNTAS_NO_UPDATE_CHECK says not to.
 fn enabled(ctx: &Ctx) -> bool {
-    is_release(VERSION) && !gruntas_api::truthy(&ctx.env("CI")) && ctx.env("GITHUB_ACTIONS").is_empty() && !gruntas_api::truthy(&ctx.env("KROWK_NO_UPDATE_CHECK"))
+    is_release(VERSION) && !gruntas_api::truthy(&ctx.env("CI")) && ctx.env("GITHUB_ACTIONS").is_empty() && !gruntas_api::truthy(&ctx.env("GRUNTAS_NO_UPDATE_CHECK"))
 }
 
 fn stale(state: &Value, now: jiff::Timestamp) -> bool {

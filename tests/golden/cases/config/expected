@@ -205,12 +205,12 @@ stdout:
   "data": {
     "workspace": "ws_env",
     "sources": {
-      "workspace": "KROWK_WORKSPACE"
+      "workspace": "GRUNTAS_WORKSPACE"
     },
     "global_path": "<scratch>/home/.krowk/config.json",
     "repo_path": "<scratch>/work/.krowk/config.json"
   },
-  "summary": "workspace ws_env — KROWK_WORKSPACE",
+  "summary": "workspace ws_env — GRUNTAS_WORKSPACE",
   "breadcrumbs": [
     {
       "action": "set the workspace",

@@ -230,7 +230,7 @@ const WORKSPACES_ABOUT: &str = "\
 The stored keys, one per workspace. A key belongs to one workspace, and the
 credentials file holds one key per workspace: logging in against a second
 workspace adds a key rather than replacing the first. Which key a command uses
-is decided in order by --workspace, KROWK_WORKSPACE, the repository's
+is decided in order by --workspace, GRUNTAS_WORKSPACE, the repository's
 .krowk/config.json, the global config, and finally whichever key logged in
 last. `krowk config set workspace <name>` pins a repository to a workspace, so
 every command run inside it — by anyone, agent or person — lands there
@@ -286,10 +286,10 @@ path), then the Tailscale app's LocalAPI on 127.0.0.1, whose port and token it
 finds in the app's sameuserproof file: the App Store app's group container,
 or /Library/Tailscale for the standalone app. To name one yourself:
 
-  KROWK_TAILSCALE_SOCKET=/path/to/tailscaled.sock
-  KROWK_TAILSCALE_LOCALAPI=http://127.0.0.1:<port>
-    with KROWK_TAILSCALE_LOCALAPI_TOKEN=<token>
-  KROWK_TAILSCALE_LOCALAPI=/path/to/sameuserproof-<port>-<token>
+  GRUNTAS_TAILSCALE_SOCKET=/path/to/tailscaled.sock
+  GRUNTAS_TAILSCALE_LOCALAPI=http://127.0.0.1:<port>
+    with GRUNTAS_TAILSCALE_LOCALAPI_TOKEN=<token>
+  GRUNTAS_TAILSCALE_LOCALAPI=/path/to/sameuserproof-<port>-<token>
     or /Library/Tailscale/sameuserproof-<port>, which holds the token
 
 The socket wins over the LocalAPI. krowk dials 127.0.0.1 and nowhere else
@@ -563,17 +563,17 @@ pub fn catalog(version: &str) -> Catalog {
         ],
         global_flags: global_flags(),
         environment: vec![
-            EnvVar { name: "KROWK_TOKEN", usage: "API token — wins over the credentials file", default: "" },
+            EnvVar { name: "GRUNTAS_TOKEN", usage: "API token — wins over the credentials file", default: "" },
             EnvVar {
-                name: "KROWK_WORKSPACE",
+                name: "GRUNTAS_WORKSPACE",
                 usage: "Workspace whose stored key to use, as if by --workspace — outranks the config files, loses to the flag",
                 default: "",
             },
-            EnvVar { name: "KROWK_API_URL", usage: "API base URL", default: gruntas_api::DEFAULT_BASE_URL },
-            EnvVar { name: "KROWK_DEV", usage: "1/true/yes/on — same as --dev", default: "" },
-            EnvVar { name: "KROWK_AGENT", usage: "Agent name to report", default: "" },
-            EnvVar { name: "KROWK_NO_UPDATE_CHECK", usage: "1/true/yes/on — never check for or mention new releases", default: "" },
-            EnvVar { name: "KROWK_HOME", usage: "Where krowk keeps its files, an absolute path", default: "~/.krowk" },
+            EnvVar { name: "GRUNTAS_API_URL", usage: "API base URL", default: gruntas_api::DEFAULT_BASE_URL },
+            EnvVar { name: "GRUNTAS_DEV", usage: "1/true/yes/on — same as --dev", default: "" },
+            EnvVar { name: "GRUNTAS_AGENT", usage: "Agent name to report", default: "" },
+            EnvVar { name: "GRUNTAS_NO_UPDATE_CHECK", usage: "1/true/yes/on — never check for or mention new releases", default: "" },
+            EnvVar { name: "GRUNTAS_HOME", usage: "Where krowk keeps its files, an absolute path", default: "~/.krowk" },
             EnvVar { name: "NO_COLOR", usage: "Set to anything — no colour, even on a terminal (no-color.org); TERM=dumb does the same", default: "" },
         ],
     };
@@ -640,7 +640,7 @@ fn vintage_commands() -> Vec<Command> {
     vec![
         Command {
             flags: vec![
-                flag("older-than", STRING, "Idle cut-off in days (default 14, or KROWK_ARCHIVE_AFTER_DAYS)"),
+                flag("older-than", STRING, "Idle cut-off in days (default 14, or GRUNTAS_ARCHIVE_AFTER_DAYS)"),
                 flag("weekly", BOOL, "Run only a week after the last run: the weekly job"),
             ],
             ..cmd("archive", "krowk sessions archive [--older-than DAYS] [--weekly]", "Move idle sessions into encrypted weekly vintages")
@@ -668,12 +668,12 @@ fn sync_command() -> Command {
                 flags: vec![
                     flag("save", STRING, "Write the recovery kit to this file (0600) instead of showing it"),
                     flag("start-over", BOOL, "Replace your device list; this device's sessions come along"),
-                    flag("name", STRING, "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"),
+                    flag("name", STRING, "What your device list calls this machine; its host name when absent (also GRUNTAS_DEVICE_NAME)"),
                 ],
                 ..cmd("init", "krowk sync init [--save FILE] [--start-over]", "Set up sync: this device, your user key and a recovery kit")
             },
             Command {
-                flags: vec![flag("name", STRING, "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)")],
+                flags: vec![flag("name", STRING, "What your device list calls this machine; its host name when absent (also GRUNTAS_DEVICE_NAME)")],
                 ..cmd("recover", "krowk sync recover", "Back in from the recovery kit's 12 words, on a new machine")
             },
             cmd("status", "krowk sync status", "This device's list, recovery kit and auto-sync, checked"),
@@ -686,7 +686,7 @@ fn sync_command() -> Command {
                 ..cmd("recovery", "krowk sync recovery new|check|discard-old", "Your recovery kit: make a new one, or test its words")
             },
             Command {
-                flags: vec![flag("name", STRING, "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)")],
+                flags: vec![flag("name", STRING, "What the workspace's device list calls this machine; its host name when absent (also GRUNTAS_DEVICE_NAME)")],
                 ..cmd("join", "krowk sync join", "Add this machine by the code `krowk machines add` shows")
             },
             #[cfg(unix)]
@@ -884,7 +884,7 @@ pub const CORE_FLAGS: usize = 8;
 /// The flags every command takes.
 fn core_flags() -> Vec<Flag> {
     vec![
-        flag("workspace", STRING, "Use this workspace's stored key for this one command — outranks KROWK_WORKSPACE and every config file"),
+        flag("workspace", STRING, "Use this workspace's stored key for this one command — outranks GRUNTAS_WORKSPACE and every config file"),
         flag("dev", BOOL, format!("Talk to a local registry at {}", gruntas_api::DEV_BASE_URL)),
         flag(
             "format",
@@ -1222,7 +1222,7 @@ directories, which an agent's changes leave to you, are applied.",
         #[cfg(feature = "harness")]
         "host" => "\
 The first krowk that needs it starts the daemon, and it exits after ten idle
-minutes (host.idleMinutes in config.json, or KROWK_HOST_IDLE seconds).
+minutes (host.idleMinutes in config.json, or GRUNTAS_HOST_IDLE seconds).
 `krowk machines always-on on` keeps it running instead, for an
 always-on machine.",
         _ => "",

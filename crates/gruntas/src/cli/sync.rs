@@ -37,7 +37,7 @@ pub(super) fn vintage_keys(ctx: &Ctx) -> Result<(Client, gruntas_harness::vintag
 pub(super) fn keyed_client(ctx: &Ctx, what: &str) -> Result<Client, Error> {
     let client = super::agent::new_client(ctx)?;
     if !client.authenticated() {
-        return Err(fail("not_authenticated", format!("{what} needs an API key to the workspace this machine syncs — run `krowk login`, or set KROWK_TOKEN")));
+        return Err(fail("not_authenticated", format!("{what} needs an API key to the workspace this machine syncs — run `krowk login`, or set GRUNTAS_TOKEN")));
     }
     Ok(client)
 }

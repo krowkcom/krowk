@@ -271,8 +271,8 @@ mod tests {
     /// killed. Run any other way it does nothing.
     #[test]
     fn holder() {
-        let Ok(runtime) = std::env::var("KROWK_TEST_SLOT_HOLDER") else { return };
-        let (name, size) = std::env::var("KROWK_TEST_SLOT_POOL").ok().and_then(|p| Some((p.split_once(':')?.0.to_string(), p.split_once(':')?.1.parse().ok()?))).unwrap_or(("build-slots".into(), 1));
+        let Ok(runtime) = std::env::var("GRUNTAS_TEST_SLOT_HOLDER") else { return };
+        let (name, size) = std::env::var("GRUNTAS_TEST_SLOT_POOL").ok().and_then(|p| Some((p.split_once(':')?.0.to_string(), p.split_once(':')?.1.parse().ok()?))).unwrap_or(("build-slots".into(), 1));
         let _slot = Pool::new(PathBuf::from(runtime), &name, size).try_take().unwrap().expect("the slot is free");
         println!("\nslot-held");
         std::thread::sleep(Duration::from_secs(60));
@@ -284,8 +284,8 @@ mod tests {
         use std::io::BufRead;
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "slots::tests::holder", "--nocapture", "--test-threads=1"])
-            .env("KROWK_TEST_SLOT_HOLDER", runtime)
-            .env("KROWK_TEST_SLOT_POOL", format!("{name}:{size}"))
+            .env("GRUNTAS_TEST_SLOT_HOLDER", runtime)
+            .env("GRUNTAS_TEST_SLOT_POOL", format!("{name}:{size}"))
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()

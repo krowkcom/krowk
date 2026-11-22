@@ -250,7 +250,7 @@ fn r_perm_3_a_sandboxed_command_gets_only_the_allowlisted_environment() {
     if !enforced("r_perm_3_a_sandboxed_command_gets_only_the_allowlisted_environment") {
         return;
     }
-    let planted = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY", "GITHUB_TOKEN", "KROWK_SYNC_TOKEN", "AWS_SECRET_ACCESS_KEY", "SSH_AUTH_SOCK", "GPG_AGENT_INFO"];
+    let planted = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY", "GITHUB_TOKEN", "GRUNTAS_SYNC_TOKEN", "AWS_SECRET_ACCESS_KEY", "SSH_AUTH_SOCK", "GPG_AGENT_INFO"];
     let (base, ws, scope) = setup("sbx-env", Profile::Workspace);
     let dump = "env; tr '\\0' '\\n' < /proc/1/environ";
     // bubblewrap started with a parent's keys in its environment, as
@@ -646,17 +646,17 @@ fn wt4_a_linked_worktree_outside_krowks_root_keeps_todays_fences() {
     let _ = std::fs::remove_dir_all(&r.base);
 }
 
-/// Worktrees WT8: a worktree's `KROWK_PORT_BASE` reaches the agent's
+/// Worktrees WT8: a worktree's `GRUNTAS_PORT_BASE` reaches the agent's
 /// commands, in the sandbox, whose environment is otherwise an allowlist
-/// that keeps every other `KROWK_*` out.
+/// that keeps every other `GRUNTAS_*` out.
 #[test]
 fn wt8_the_port_base_reaches_a_sandboxed_command() {
     if !enforced("wt8_the_port_base_reaches_a_sandboxed_command") {
         return;
     }
     let (base, ws, scope) = setup("wt8-port", Profile::Workspace);
-    let extra = [("KROWK_PORT_BASE".to_string(), "20030".to_string())];
-    let (out, err) = bash_with(&ws, &scope, "echo \"base=$KROWK_PORT_BASE\"; env | grep -c '^KROWK_'", &extra);
+    let extra = [("GRUNTAS_PORT_BASE".to_string(), "20030".to_string())];
+    let (out, err) = bash_with(&ws, &scope, "echo \"base=$GRUNTAS_PORT_BASE\"; env | grep -c '^GRUNTAS_'", &extra);
     assert_eq!((out.as_str(), err), ("base=20030\n1\n", false));
     let _ = std::fs::remove_dir_all(&base);
 }

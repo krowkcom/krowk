@@ -69,10 +69,10 @@ pub struct Config {
     /// The registry's `signed_requests.v1_until`, an ISO date: after it, in
     /// UTC, a request signed with v1's lines is refused as
     /// `signature_version_retired`. Empty, v1 is accepted. `devregistry`
-    /// reads it from KROWK_DEVREGISTRY_V1_UNTIL.
+    /// reads it from GRUNTAS_DEVREGISTRY_V1_UNTIL.
     pub v1_until: String,
     /// The registry's `signed_requests.v2_release`, the krowk release that
-    /// refusal names; KROWK_DEVREGISTRY_V2_RELEASE for `devregistry`.
+    /// refusal names; GRUNTAS_DEVREGISTRY_V2_RELEASE for `devregistry`.
     pub v2_release: String,
 }
 

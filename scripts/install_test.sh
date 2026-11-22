@@ -4,7 +4,7 @@
 # No krowk release has been published yet, so the installer cannot be tried the
 # way a user will try it. What it *can* be tried against is a release that
 # exists on this machine: a local HTTP server stands in for GitHub and
-# KROWK_INSTALL_BASE_URL points the installer at it. That exercises the archive
+# GRUNTAS_INSTALL_BASE_URL points the installer at it. That exercises the archive
 # naming, the checksum verification, the extraction of both binaries, the bin
 # directory, the version check and the skill copy — everything except resolving
 # the latest tag, which needs a tag to resolve.
@@ -267,8 +267,8 @@ mkdir -p "$SHARED"
 # HOME is redirected so a failing test cannot write to the real one, and SHELL is
 # named so the PATH branch picks a file inside the redirected HOME.
 env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
-  CLAUDE_CONFIG_DIR="$CLAUDE" KROWK_INSTALL_TTY=/dev/null \
-  KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BIN" \
+  CLAUDE_CONFIG_DIR="$CLAUDE" GRUNTAS_INSTALL_TTY=/dev/null \
+  GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
   bash "$REPO_ROOT/scripts/install.sh" >"$WORK/install.log" 2>&1 \
   || { cat "$WORK/install.log"; fail "the installer exited non-zero"; }
 
@@ -334,7 +334,7 @@ printf '# my own skill\n' >"$MINE/skills/krowk/SKILL.md"
 printf 'mine\n' >"$MINE/skills/krowk/notes.md"
 env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
   CLAUDE_CONFIG_DIR="$MINE" \
-  KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BIN" \
+  GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
   bash "$REPO_ROOT/scripts/install.sh" >"$WORK/unowned.log" 2>&1 \
   || { cat "$WORK/unowned.log"; fail "the installer exited non-zero over a skill directory it does not own"; }
 
@@ -350,7 +350,7 @@ pass "a populated skill directory krowk did not write is left untouched, and sai
 printf '# stale\n' >"$CLAUDE/skills/krowk/SKILL.md"
 env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
   CLAUDE_CONFIG_DIR="$CLAUDE" \
-  KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BIN" \
+  GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
   bash "$REPO_ROOT/scripts/install.sh" >"$WORK/refresh.log" 2>&1 \
   || { cat "$WORK/refresh.log"; fail "the installer exited non-zero refreshing its own skill directory"; }
 
@@ -367,7 +367,7 @@ mkdir -p "$LINKED/skills" "$WORK/link-target"
 ln -s "$WORK/link-target" "$LINKED/skills/krowk"
 env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
   CLAUDE_CONFIG_DIR="$LINKED" \
-  KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BIN" \
+  GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
   bash "$REPO_ROOT/scripts/install.sh" >"$WORK/linked.log" 2>&1 \
   || { cat "$WORK/linked.log"; fail "the installer exited non-zero over a symlinked skill directory"; }
 [[ -z "$(ls -A "$WORK/link-target")" ]] \
@@ -385,7 +385,7 @@ rm -f "$CLAUDE/skills/krowk/.installed-version"
 ln -s "$WORK/victim" "$CLAUDE/skills/krowk/.installed-version"
 env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
   CLAUDE_CONFIG_DIR="$CLAUDE" \
-  KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BIN" \
+  GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
   bash "$REPO_ROOT/scripts/install.sh" >"$WORK/victim.log" 2>&1 \
   || { cat "$WORK/victim.log"; fail "the installer exited non-zero over a symlinked version stamp"; }
 [[ "$(cat "$WORK/victim")" == "do not touch" ]] \
@@ -407,7 +407,7 @@ else
   chmod 300 "$BLIND/skills/krowk"
   env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
     CLAUDE_CONFIG_DIR="$BLIND" \
-    KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BIN" \
+    GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
     bash "$REPO_ROOT/scripts/install.sh" >"$WORK/blind.log" 2>&1 \
     || { cat "$WORK/blind.log"; fail "the installer exited non-zero over an unreadable skill directory"; }
   grep -q "cannot be read" "$WORK/blind.log" \
@@ -426,7 +426,7 @@ mkdir -p "$OLD/skills/krowk"
 printf '# an older krowk wrote this\n' >"$OLD/skills/krowk/SKILL.md"
 env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
   CLAUDE_CONFIG_DIR="$OLD" \
-  KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BIN" \
+  GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
   bash "$REPO_ROOT/scripts/install.sh" >"$WORK/old.log" 2>&1 \
   || { cat "$WORK/old.log"; fail "the installer exited non-zero upgrading a pre-marker skill"; }
 [[ -f "$OLD/skills/krowk/.managed-by-krowk-cli" ]] \
@@ -442,7 +442,7 @@ mkdir -p "$LOOSE/skills"
 ( umask 000
   env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
     CLAUDE_CONFIG_DIR="$LOOSE" \
-    KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BIN" \
+    GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
     bash "$REPO_ROOT/scripts/install.sh" >"$WORK/umask.log" 2>&1 ) \
   || { cat "$WORK/umask.log"; fail "the installer exited non-zero under umask 000"; }
 [[ -z "$(find "$LOOSE/skills/krowk" -maxdepth 0 -perm /022)" ]] \
@@ -459,7 +459,7 @@ mkdir -p "$BIG/skills/krowk"
 printf '# mine\n' >"$BIG/skills/krowk/SKILL.md"
 env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
   CLAUDE_CONFIG_DIR="$BIG" \
-  KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BIN" \
+  GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
   bash "$REPO_ROOT/scripts/install.sh" >"$WORK/big.log" 2>&1 \
   || { cat "$WORK/big.log"; fail "the installer exited non-zero over an oversized marker"; }
 grep -q "carries a marker krowk did not write" "$WORK/big.log" \
@@ -479,7 +479,7 @@ else
   mkfifo "$FIFO/skills/krowk/SKILL.md"
   env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
     CLAUDE_CONFIG_DIR="$FIFO" \
-    KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BIN" \
+    GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
     bash "$REPO_ROOT/scripts/install.sh" >"$WORK/fifo.log" 2>&1 \
     || { cat "$WORK/fifo.log"; fail "the installer exited non-zero over a FIFO in the skill's name"; }
   grep -q "not a regular file krowk wrote" "$WORK/fifo.log" \
@@ -496,7 +496,7 @@ mkdir -p "$DIRNAME/skills/krowk/SKILL.md"
 printf '%s\n' "$MANAGED_MARKER_CONTENT" >"$DIRNAME/skills/krowk/.managed-by-krowk-cli"
 env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
   CLAUDE_CONFIG_DIR="$DIRNAME" \
-  KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BIN" \
+  GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
   bash "$REPO_ROOT/scripts/install.sh" >"$WORK/dirname.log" 2>&1 \
   || { cat "$WORK/dirname.log"; fail "the installer exited non-zero over a directory in SKILL.md's name"; }
 [[ -z "$(ls -A "$DIRNAME/skills/krowk/SKILL.md")" ]] \
@@ -522,7 +522,7 @@ else
   chown 65534:65534 "$OTHER/skills/krowk"
   env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
     CLAUDE_CONFIG_DIR="$OTHER" \
-    KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BIN" \
+    GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
     bash "$REPO_ROOT/scripts/install.sh" >"$WORK/other.log" 2>&1 \
     || { cat "$WORK/other.log"; fail "the installer exited non-zero over a directory owned by another user"; }
   grep -q "belongs to another user" "$WORK/other.log" \
@@ -553,8 +553,8 @@ while IFS='|' read -r envs args want; do
   # shellcheck disable=SC2086  # envs and args are word lists on purpose.
   # A terminal stands in (/dev/null opens where /dev/tty would), so each
   # case is decided by what it sets, not by how this test was started.
-  env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 KROWK_SKIP_SKILL=1 KROWK_INSTALL_TTY=/dev/null \
-    KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BUILD_BIN" $envs \
+  env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 GRUNTAS_SKIP_SKILL=1 GRUNTAS_INSTALL_TTY=/dev/null \
+    GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BUILD_BIN" $envs \
     bash "$REPO_ROOT/scripts/install.sh" $args >"$WORK/build.log" 2>&1 \
     || { cat "$WORK/build.log"; fail "the installer exited non-zero with [$envs] [$args]"; }
   cmp -s "$BUILD_BIN/krowk" "$WORK/$want/krowk" \
@@ -566,18 +566,18 @@ CI=1||lean
 CI=false||full
 GITHUB_ACTIONS=true||lean
 GITLAB_CI=true||lean
-KROWK_INSTALL_FS_ROOT=$WORK/docker-root||lean
-KROWK_INSTALL_FS_ROOT=$WORK/podman-root||lean
+GRUNTAS_INSTALL_FS_ROOT=$WORK/docker-root||lean
+GRUNTAS_INSTALL_FS_ROOT=$WORK/podman-root||lean
 container=podman||lean
 KUBERNETES_SERVICE_HOST=10.0.0.1||lean
 |--lean|lean
 CI=true|--full|full
-CI=true KROWK_LEAN=0||full
-KROWK_LEAN=1||lean
-KROWK_INSTALL_TTY=$WORK/no-such-tty|--full|full
-KROWK_INSTALL_TTY=$WORK/no-such-tty||lean
+CI=true GRUNTAS_LEAN=0||full
+GRUNTAS_LEAN=1||lean
+GRUNTAS_INSTALL_TTY=$WORK/no-such-tty|--full|full
+GRUNTAS_INSTALL_TTY=$WORK/no-such-tty||lean
 CASES
-grep -q "Pass --full, or set KROWK_LEAN=0" "$WORK/build.log" \
+grep -q "Pass --full, or set GRUNTAS_LEAN=0" "$WORK/build.log" \
   || { cat "$WORK/build.log"; fail "a lean install did not say how to get the full build"; }
 pass "a lean install says why, and how to get the full build instead"
 
@@ -587,8 +587,8 @@ pass "the lean build is the agent build: no session store"
 
 # A Dockerfile RUN under BuildKit: no /.dockerenv, no CI, and no terminal.
 rm -rf "$BUILD_BIN"
-env -i PATH="$PATH" HOME="$WORK/home" NO_COLOR=1 KROWK_SKIP_SKILL=1 KROWK_INSTALL_TTY="$WORK/no-such-tty" \
-  KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BUILD_BIN" \
+env -i PATH="$PATH" HOME="$WORK/home" NO_COLOR=1 GRUNTAS_SKIP_SKILL=1 GRUNTAS_INSTALL_TTY="$WORK/no-such-tty" \
+  GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BUILD_BIN" \
   bash "$REPO_ROOT/scripts/install.sh" >"$WORK/notty.log" 2>&1 || { cat "$WORK/notty.log"; fail "the installer failed with no terminal"; }
 grep -q "no terminal, so no person" "$WORK/notty.log" || { cat "$WORK/notty.log"; fail "a terminal-less install did not say why it is lean"; }
 pass "no controlling terminal (a Dockerfile RUN under BuildKit): the lean build, and why"
@@ -603,8 +603,8 @@ tar -czf "$OLD_REL/$ARCHIVE" -C "$WORK/lean" krowk krowk-mcp
 cp "$RELEASE/SKILL.md" "$OLD_REL/"
 (cd "$OLD_REL" && "${SHA256_CMD[@]}" "$ARCHIVE" >checksums.txt)
 rm -rf "$BUILD_BIN"
-env -i PATH="$PATH" HOME="$WORK/home" NO_COLOR=1 KROWK_SKIP_SKILL=1 CI=true \
-  KROWK_INSTALL_BASE_URL="$BASE/old" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BUILD_BIN" \
+env -i PATH="$PATH" HOME="$WORK/home" NO_COLOR=1 GRUNTAS_SKIP_SKILL=1 CI=true \
+  GRUNTAS_INSTALL_BASE_URL="$BASE/old" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BUILD_BIN" \
   bash "$REPO_ROOT/scripts/install.sh" --lean >"$WORK/old-release.log" 2>&1 \
   || { cat "$WORK/old-release.log"; fail "a lean install of a release that predates the lean build failed"; }
 cmp -s "$BUILD_BIN/krowk" "$WORK/lean/krowk" || fail "a release without a lean build installed something other than its one build"
@@ -612,17 +612,17 @@ grep -q "predates the lean build" "$WORK/old-release.log" || { cat "$WORK/old-re
 if grep -q "Open krowk's agent" "$WORK/old-release.log"; then cat "$WORK/old-release.log"; fail "the next steps advertised an agent the installed krowk does not have"; fi
 pass "a release that predates the lean build installs its one build, and says so"
 
-if env -i PATH="$PATH" HOME="$WORK/home" NO_COLOR=1 KROWK_LEAN=maybe \
-  KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BUILD_BIN" \
+if env -i PATH="$PATH" HOME="$WORK/home" NO_COLOR=1 GRUNTAS_LEAN=maybe \
+  GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BUILD_BIN" \
   bash "$REPO_ROOT/scripts/install.sh" >"$WORK/lean-bad.log" 2>&1; then
-  fail "the installer accepted KROWK_LEAN=maybe"
+  fail "the installer accepted GRUNTAS_LEAN=maybe"
 fi
 if env -i PATH="$PATH" HOME="$WORK/home" NO_COLOR=1 \
-  KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BUILD_BIN" \
+  GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BUILD_BIN" \
   bash "$REPO_ROOT/scripts/install.sh" --tiny >"$WORK/arg-bad.log" 2>&1; then
   fail "the installer accepted --tiny"
 fi
-pass "a KROWK_LEAN or an argument that means neither build is refused"
+pass "a GRUNTAS_LEAN or an argument that means neither build is refused"
 
 echo
 echo "The release's signature, with cosign (R-OSS-3)"
@@ -645,8 +645,8 @@ for says in ok refused; do
   rm -rf "${BIN:?}"/*
   if env -i PATH="$STUB:$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
     COSIGN_SAYS="$says" COSIGN_ARGS="$WORK/cosign-$says.args" \
-    KROWK_SKIP_SKILL=1 KROWK_INSTALL_TTY=/dev/null \
-    KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BIN" \
+    GRUNTAS_SKIP_SKILL=1 GRUNTAS_INSTALL_TTY=/dev/null \
+    GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
     bash "$REPO_ROOT/scripts/install.sh" >"$WORK/cosign-$says.log" 2>&1; then
     [[ "$says" == ok ]] || { cat "$WORK/cosign-$says.log"; fail "R-OSS-3: the installer installed a release whose signature cosign refused"; }
   else
@@ -667,33 +667,33 @@ for says in ok refused; do
   fi
 done
 # The old release laid out above has no bundle; at this version it should.
-if env -i PATH="$STUB:$PATH" HOME="$WORK/home" NO_COLOR=1 KROWK_SKIP_SKILL=1 CI=true \
+if env -i PATH="$STUB:$PATH" HOME="$WORK/home" NO_COLOR=1 GRUNTAS_SKIP_SKILL=1 CI=true \
   COSIGN_SAYS=ok COSIGN_ARGS="$WORK/cosign-missing.args" \
-  KROWK_INSTALL_BASE_URL="$BASE/old" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BIN" \
+  GRUNTAS_INSTALL_BASE_URL="$BASE/old" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
   bash "$REPO_ROOT/scripts/install.sh" --lean >"$WORK/cosign-missing.log" 2>&1; then
   fail "R-OSS-3: with cosign, a signed release's missing bundle was installed past"
 fi
 grep -q "would not download" "$WORK/cosign-missing.log" || { cat "$WORK/cosign-missing.log"; fail "R-OSS-3: a missing bundle failed for another reason"; }
 pass "R-OSS-3: with cosign, a signed release without its bundle is refused"
-# KROWK_REQUIRE_SIGNATURE=1: no cosign, or a release from before signing, is
+# GRUNTAS_REQUIRE_SIGNATURE=1: no cosign, or a release from before signing, is
 # refused rather than installed on its checksum.
 rm -rf "${BIN:?}"/*
-if env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 KROWK_REQUIRE_SIGNATURE=1 \
-  KROWK_SKIP_SKILL=1 KROWK_INSTALL_TTY=/dev/null \
-  KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BIN" \
+if env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 GRUNTAS_REQUIRE_SIGNATURE=1 \
+  GRUNTAS_SKIP_SKILL=1 GRUNTAS_INSTALL_TTY=/dev/null \
+  GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
   bash "$REPO_ROOT/scripts/install.sh" >"$WORK/strict-nocosign.log" 2>&1; then
-  fail "R-OSS-3: KROWK_REQUIRE_SIGNATURE=1 installed without cosign"
+  fail "R-OSS-3: GRUNTAS_REQUIRE_SIGNATURE=1 installed without cosign"
 fi
-{ [[ ! -e "$BIN/krowk" ]] && grep -q "install cosign" "$WORK/strict-nocosign.log"; } || { cat "$WORK/strict-nocosign.log"; fail "R-OSS-3: KROWK_REQUIRE_SIGNATURE=1 without cosign did not say to install it"; }
-pass "R-OSS-3: KROWK_REQUIRE_SIGNATURE=1 refuses without cosign"
+{ [[ ! -e "$BIN/krowk" ]] && grep -q "install cosign" "$WORK/strict-nocosign.log"; } || { cat "$WORK/strict-nocosign.log"; fail "R-OSS-3: GRUNTAS_REQUIRE_SIGNATURE=1 without cosign did not say to install it"; }
+pass "R-OSS-3: GRUNTAS_REQUIRE_SIGNATURE=1 refuses without cosign"
 else
   echo "  - R-OSS-3: the cosign checks need a signed release; $VERSION predates signing (a local run checks them on its own)"
 fi
 { signed_since 0.12.0-rc2 && signed_since 1.0.0 && ! signed_since 0.11.2; } || fail "the first signed release is not 0.12.0"
 pass "R-OSS-3: releases before 0.12.0 have no bundle"
-verify_signature_log=$( (REQUIRE_SIGNATURE=1 verify_signature "$BASE" "$WORK" 0.11.2) 2>&1 ) && fail "R-OSS-3: KROWK_REQUIRE_SIGNATURE=1 accepted a release from before signing"
-[[ "$verify_signature_log" == *"predates signed releases"*"install 0.12.0 or later"* ]] || fail "R-OSS-3: an unsigned old release under KROWK_REQUIRE_SIGNATURE=1 was refused for another reason: $verify_signature_log"
-pass "R-OSS-3: KROWK_REQUIRE_SIGNATURE=1 refuses a release from before signing"
+verify_signature_log=$( (REQUIRE_SIGNATURE=1 verify_signature "$BASE" "$WORK" 0.11.2) 2>&1 ) && fail "R-OSS-3: GRUNTAS_REQUIRE_SIGNATURE=1 accepted a release from before signing"
+[[ "$verify_signature_log" == *"predates signed releases"*"install 0.12.0 or later"* ]] || fail "R-OSS-3: an unsigned old release under GRUNTAS_REQUIRE_SIGNATURE=1 was refused for another reason: $verify_signature_log"
+pass "R-OSS-3: GRUNTAS_REQUIRE_SIGNATURE=1 refuses a release from before signing"
 
 echo
 echo "Refusing a bad download"
@@ -702,8 +702,8 @@ rm -rf "${BIN:?}"/*
 # a tampered or truncated download.
 printf 'x' >>"$RELEASE/$ARCHIVE"
 if env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
-  KROWK_SKIP_SKILL=1 KROWK_INSTALL_TTY=/dev/null \
-  KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BIN" \
+  GRUNTAS_SKIP_SKILL=1 GRUNTAS_INSTALL_TTY=/dev/null \
+  GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="$VERSION" GRUNTAS_BIN_DIR="$BIN" \
   bash "$REPO_ROOT/scripts/install.sh" >"$WORK/bad.log" 2>&1; then
   fail "the installer accepted an archive whose checksum does not match"
 fi
@@ -715,9 +715,9 @@ pass "a mismatched checksum stops the install, and installs nothing"
 echo
 echo "Refusing a missing version"
 if env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
-  KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="not-a-version" KROWK_BIN_DIR="$BIN" \
+  GRUNTAS_INSTALL_BASE_URL="$BASE" GRUNTAS_VERSION="not-a-version" GRUNTAS_BIN_DIR="$BIN" \
   bash "$REPO_ROOT/scripts/install.sh" >"$WORK/version.log" 2>&1; then
-  fail "the installer accepted KROWK_VERSION=not-a-version"
+  fail "the installer accepted GRUNTAS_VERSION=not-a-version"
 fi
 pass "a version that is not one is refused"
 

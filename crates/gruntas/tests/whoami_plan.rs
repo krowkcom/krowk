@@ -19,9 +19,9 @@ impl Gruntas {
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", &self.home)
-            .env("KROWK_API_URL", &self.api)
-            .env("KROWK_NO_UPDATE_CHECK", "1")
-            .env("KROWK_TOKEN", token)
+            .env("GRUNTAS_API_URL", &self.api)
+            .env("GRUNTAS_NO_UPDATE_CHECK", "1")
+            .env("GRUNTAS_TOKEN", token)
             .current_dir(&self.home);
         // Piped, krowk answers in JSON unless asked for the human form.
         cmd.args(["--format", if json { "json" } else { "human" }]);

@@ -40,7 +40,7 @@ impl Sandbox {
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.root.join("home"))
             .env("XDG_DATA_HOME", self.root.join("data"))
-            .env("KROWK_NO_UPDATE_CHECK", "1")
+            .env("GRUNTAS_NO_UPDATE_CHECK", "1")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .current_dir(dir)

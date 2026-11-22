@@ -62,8 +62,8 @@ impl Sandbox {
             .env_clear()
             .env("PATH", format!("{}:/usr/bin:/bin", self.root.join("bin").display()))
             .env("HOME", self.home())
-            .env("KROWK_NO_UPDATE_CHECK", "1")
-            .env("KROWK_API_URL", "http://127.0.0.1:9/v1")
+            .env("GRUNTAS_NO_UPDATE_CHECK", "1")
+            .env("GRUNTAS_API_URL", "http://127.0.0.1:9/v1")
             .env("FAKE_CLAUDE_LOG", self.root.join("fake.log"))
             .env("FAKE_CODEX_LOG", self.root.join("fake.log"))
             .current_dir(self.root.join("repo"))
@@ -231,9 +231,9 @@ fn doctor_checks_everything_names_the_fix_and_exits_non_zero_exactly_when_a_chec
     assert_eq!(check(&d, "account")["status"], "skip", "{d}");
     assert!(out.status.success(), "no failed check, exit 0: {d}");
 
-    // A key in KROWK_TOKEN (CI, an agent): signed in, and no machine of the
+    // A key in GRUNTAS_TOKEN (CI, an agent): signed in, and no machine of the
     // person's, so nothing about registration or the service is asked.
-    let out = b.krowk(&["doctor", "--json"], &[("KROWK_TOKEN", "krowk_sk_ci#a")]);
+    let out = b.krowk(&["doctor", "--json"], &[("GRUNTAS_TOKEN", "krowk_sk_ci#a")]);
     let d = stdout_json(&out);
     assert_eq!((check(&d, "account")["status"].as_str(), check(&d, "machine")["status"].as_str(), check(&d, "always_on")["status"].as_str()), (Some("pass"), Some("skip"), Some("skip")), "{d}");
     assert!(out.status.success(), "{d}");
@@ -241,7 +241,7 @@ fn doctor_checks_everything_names_the_fix_and_exits_non_zero_exactly_when_a_chec
     // Signed in with a key, on a machine never registered: that fails with
     // its fix, and the service has no machine to keep on.
     std::fs::write(b.home().join(".krowk/credentials.json"), json!({"version": 1, "default": "ws_t", "workspaces": {"ws_t": {"token": "krowk_sk_doctor#a", "key_id": "key_t", "workspace": "ws_t"}}}).to_string()).unwrap();
-    let out = b.krowk(&["doctor", "--json"], &[("KROWK_API_URL", "http://127.0.0.1:9")]);
+    let out = b.krowk(&["doctor", "--json"], &[("GRUNTAS_API_URL", "http://127.0.0.1:9")]);
     let d = stdout_json(&out);
     assert_eq!(check(&d, "account")["status"], "pass", "{d}");
     assert_eq!((check(&d, "machine")["status"].as_str(), check(&d, "machine")["fix"].as_str()), (Some("fail"), Some("krowk login")), "{d}");

@@ -16,7 +16,7 @@
 # /run/.containerenv, $container, a Kubernetes service host), or from there
 # being no controlling terminal at all — a Dockerfile RUN, a provisioning
 # script. `--lean` or
-# KROWK_LEAN=1 asks for the lean build anywhere; `--full` or KROWK_LEAN=0 for
+# GRUNTAS_LEAN=1 asks for the lean build anywhere; `--full` or GRUNTAS_LEAN=0 for
 # the full one:
 #
 #   curl -fsSL https://krowk.com/install | bash -s -- --lean
@@ -27,44 +27,44 @@
 # bash` inside a container build, where stdin is not a terminal.
 #
 # Options, all through the environment because a piped script has no argv:
-#   KROWK_BIN_DIR     Where the binaries go (default: ~/bin if it is on PATH,
+#   GRUNTAS_BIN_DIR     Where the binaries go (default: ~/bin if it is on PATH,
 #                     else ~/.local/bin if it is; otherwise ~/bin on Windows and
 #                     ~/.local/bin everywhere else)
-#   KROWK_VERSION     A version to install, e.g. 0.1.0 (default: the latest release)
-#   KROWK_SKIP_SKILL  1 to leave the agent skill alone
-#   KROWK_LEAN        1 for the lean build, 0 for the full one (default: lean in
+#   GRUNTAS_VERSION     A version to install, e.g. 0.1.0 (default: the latest release)
+#   GRUNTAS_SKIP_SKILL  1 to leave the agent skill alone
+#   GRUNTAS_LEAN        1 for the lean build, 0 for the full one (default: lean in
 #                     CI and containers, full everywhere else)
-#   KROWK_REQUIRE_SIGNATURE
+#   GRUNTAS_REQUIRE_SIGNATURE
 #                     1 to refuse an install whose signature cannot be checked:
 #                     no cosign here, or a release from before 0.12.0 (default:
 #                     the signature when cosign is installed, the checksum always)
 #
-#   KROWK_INSTALL_BASE_URL
+#   GRUNTAS_INSTALL_BASE_URL
 #                     Test-only. A directory holding the archives, checksums.txt
 #                     and SKILL.md, instead of the GitHub release. It exists so
 #                     scripts/install_test.sh can run this file end to end
 #                     against a local server; it is not a supported knob, and it
-#                     requires KROWK_VERSION since there is no release to ask.
-#   KROWK_INSTALL_FS_ROOT
+#                     requires GRUNTAS_VERSION since there is no release to ask.
+#   GRUNTAS_INSTALL_FS_ROOT
 #                     Test-only. Where the container markers are looked for,
 #                     instead of /, so the detection can be tested on a machine
 #                     that is, or is not, a container.
-#   KROWK_INSTALL_TTY Test-only. The terminal device opened to tell whether a
+#   GRUNTAS_INSTALL_TTY Test-only. The terminal device opened to tell whether a
 #                     person is there (default /dev/tty), so a test run with no
 #                     terminal can stand in for one that has one.
 
 set -euo pipefail
 
-# KROWK_REPO is how the GitHub Action names the repository it was taken from;
+# GRUNTAS_REPO is how the GitHub Action names the repository it was taken from;
 # anyone else gets the canonical one.
-REPO="${KROWK_REPO:-krowkcom/krowk}"
-BIN_DIR="${KROWK_BIN_DIR:-}"
-VERSION="${KROWK_VERSION:-}"
-REQUIRE_SIGNATURE="${KROWK_REQUIRE_SIGNATURE:-}"
-BASE_URL_OVERRIDE="${KROWK_INSTALL_BASE_URL:-}"
-FS_ROOT="${KROWK_INSTALL_FS_ROOT:-}"
-TTY_DEVICE="${KROWK_INSTALL_TTY:-/dev/tty}"
-# full or lean, and why; main settles both from the arguments, KROWK_LEAN and
+REPO="${GRUNTAS_REPO:-krowkcom/krowk}"
+BIN_DIR="${GRUNTAS_BIN_DIR:-}"
+VERSION="${GRUNTAS_VERSION:-}"
+REQUIRE_SIGNATURE="${GRUNTAS_REQUIRE_SIGNATURE:-}"
+BASE_URL_OVERRIDE="${GRUNTAS_INSTALL_BASE_URL:-}"
+FS_ROOT="${GRUNTAS_INSTALL_FS_ROOT:-}"
+TTY_DEVICE="${GRUNTAS_INSTALL_TTY:-/dev/tty}"
+# full or lean, and why; main settles both from the arguments, GRUNTAS_LEAN and
 # what this machine is, before anything is downloaded.
 BUILD=""
 BUILD_REASON=""
@@ -271,7 +271,7 @@ latest_version() {
 
   local why
   why=$(curl_reason)
-  error "Could not find the latest release of ${REPO}. ${why:+curl said: ${why}. }Name one with KROWK_VERSION, or install from source: cargo install --locked --git https://github.com/${REPO} --features harness krowk"
+  error "Could not find the latest release of ${REPO}. ${why:+curl said: ${why}. }Name one with GRUNTAS_VERSION, or install from source: cargo install --locked --git https://github.com/${REPO} --features harness krowk"
 }
 
 release_base_url() {
@@ -339,7 +339,7 @@ signed_since() {
 # none — so without it the checksum alone is checked, over HTTPS, and the
 # command that would check the rest is printed. With it, a signature that does
 # not verify, or a signed release's bundle that will not download, ends the
-# install like a checksum mismatch. KROWK_REQUIRE_SIGNATURE=1 makes the
+# install like a checksum mismatch. GRUNTAS_REQUIRE_SIGNATURE=1 makes the
 # signature required: no cosign, or a release from before signing, is refused
 # rather than installed on its checksum.
 verify_signature() {
@@ -347,14 +347,14 @@ verify_signature() {
   identity="https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/v${version}"
   if ! signed_since "$version"; then
     if truthy "$REQUIRE_SIGNATURE"; then
-      error "krowk ${version} predates signed releases, and KROWK_REQUIRE_SIGNATURE=${REQUIRE_SIGNATURE} asks for a signature. Nothing is installed: install 0.12.0 or later."
+      error "krowk ${version} predates signed releases, and GRUNTAS_REQUIRE_SIGNATURE=${REQUIRE_SIGNATURE} asks for a signature. Nothing is installed: install 0.12.0 or later."
     fi
     note "krowk ${version} predates signed releases, so only its checksum is checked."
     return
   fi
   if ! command -v cosign >/dev/null 2>&1; then
     if truthy "$REQUIRE_SIGNATURE"; then
-      error "cosign is not installed, and KROWK_REQUIRE_SIGNATURE=${REQUIRE_SIGNATURE} asks for the release's signature to be checked. Nothing is installed: install cosign (https://docs.sigstore.dev/cosign/system_config/installation/), then run this again."
+      error "cosign is not installed, and GRUNTAS_REQUIRE_SIGNATURE=${REQUIRE_SIGNATURE} asks for the release's signature to be checked. Nothing is installed: install cosign (https://docs.sigstore.dev/cosign/system_config/installation/), then run this again."
     fi
     note "cosign is not installed, so the release's signature on checksums.txt is not checked; the checksum is. To check it too:"
     note "  cosign verify-blob checksums.txt --bundle checksums.txt.sigstore.json \\"
@@ -425,7 +425,7 @@ container_name() {
 }
 
 # choose_build settles BUILD and BUILD_REASON: an explicit ask first (the
-# argument, then KROWK_LEAN), then what this machine is.
+# argument, then GRUNTAS_LEAN), then what this machine is.
 choose_build() {
   local asked="$1" found
   if [[ -n "$asked" ]]; then
@@ -433,19 +433,19 @@ choose_build() {
     BUILD_REASON="--${asked} was passed"
     return
   fi
-  case "${KROWK_LEAN:-}" in
+  case "${GRUNTAS_LEAN:-}" in
     "") ;;
     1 | true | yes)
       BUILD=lean
-      BUILD_REASON="KROWK_LEAN=${KROWK_LEAN}"
+      BUILD_REASON="GRUNTAS_LEAN=${GRUNTAS_LEAN}"
       return
       ;;
     0 | false | no)
       BUILD=full
-      BUILD_REASON="KROWK_LEAN=${KROWK_LEAN}"
+      BUILD_REASON="GRUNTAS_LEAN=${GRUNTAS_LEAN}"
       return
       ;;
-    *) error "KROWK_LEAN=${KROWK_LEAN} is neither 1 (the lean build) nor 0 (the full build)" ;;
+    *) error "GRUNTAS_LEAN=${GRUNTAS_LEAN} is neither 1 (the lean build) nor 0 (the full build)" ;;
   esac
   found=$(ci_name)
   if [[ -n "$found" ]]; then
@@ -504,7 +504,7 @@ download_binaries() {
 
   step "Downloading krowk ${version} (${BUILD} build) for ${platform//_/ }, from ${REPO}"
   if [[ "$BUILD" == lean ]]; then
-    note "The lean build: ${BUILD_REASON}. Pass --full, or set KROWK_LEAN=0, for krowk's own agent."
+    note "The lean build: ${BUILD_REASON}. Pass --full, or set GRUNTAS_LEAN=0, for krowk's own agent."
   elif [[ -n "$BUILD_REASON" ]]; then
     note "The full build: ${BUILD_REASON}."
   fi
@@ -872,8 +872,8 @@ claim_skill_dir() {
 install_skill() {
   local version="$1" dirs dir url tmp written=""
 
-  if [[ "${KROWK_SKIP_SKILL:-}" == "1" ]]; then
-    step "Skipping the agent skill (KROWK_SKIP_SKILL=1)"
+  if [[ "${GRUNTAS_SKIP_SKILL:-}" == "1" ]]; then
+    step "Skipping the agent skill (GRUNTAS_SKIP_SKILL=1)"
     return 0
   fi
 
@@ -1017,9 +1017,9 @@ main() {
 
   if [[ -n "$VERSION" ]]; then
     version="${VERSION#v}"
-    is_semver "$version" || error "KROWK_VERSION=${VERSION} is not a version. It looks like 0.1.0, or 0.1.0-rc.1."
+    is_semver "$version" || error "GRUNTAS_VERSION=${VERSION} is not a version. It looks like 0.1.0, or 0.1.0-rc.1."
   elif [[ -n "$BASE_URL_OVERRIDE" ]]; then
-    error "KROWK_INSTALL_BASE_URL has no release to ask for the latest version. Set KROWK_VERSION too."
+    error "GRUNTAS_INSTALL_BASE_URL has no release to ask for the latest version. Set GRUNTAS_VERSION too."
   else
     version=$(latest_version)
   fi

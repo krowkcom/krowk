@@ -49,12 +49,12 @@ fn krowk_with(home: &Path, api: &str, token: &str, args: &[&str], answers: &str,
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", home)
-        .env("KROWK_NO_UPDATE_CHECK", "1")
-        .env("KROWK_API_URL", api)
-        .env("KROWK_TOKEN", token)
-        .env("KROWK_DEVICE_NAME", home.file_name().unwrap())
-        .env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL", "1")
-        .env("KROWK_TEST_ANSWERS", answers)
+        .env("GRUNTAS_NO_UPDATE_CHECK", "1")
+        .env("GRUNTAS_API_URL", api)
+        .env("GRUNTAS_TOKEN", token)
+        .env("GRUNTAS_DEVICE_NAME", home.file_name().unwrap())
+        .env("GRUNTAS_TEST_UNATTENDED_DEVICE_APPROVAL", "1")
+        .env("GRUNTAS_TEST_ANSWERS", answers)
         .current_dir(home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -266,7 +266,7 @@ fn a_krowk_signing_retired_v1_lines_is_told_to_upgrade() {
     let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
     let kit = r.join("kit.txt");
     let init = ["sync", "init", "--save", kit.to_str().unwrap()];
-    let v1 = [("KROWK_TEST_SIGN_V1", "1")];
+    let v1 = [("GRUNTAS_TEST_SIGN_V1", "1")];
 
     let out = krowk_with(&laptop, &api, LAPTOP, &[&init[..], &["--json"]].concat(), "", "", &v1);
     // The envelope follows what init said of the kit before it was refused.

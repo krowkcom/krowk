@@ -188,7 +188,7 @@ fn r_tool_3_a_relative_command_never_runs_the_repositorys_file_and_keys_are_not_
     // SAFETY: this binary's one test that touches the environment.
     unsafe {
         std::env::set_var("ANTHROPIC_API_KEY", "sk-secret");
-        std::env::set_var("KROWK_TOKEN", "kr-secret");
+        std::env::set_var("GRUNTAS_TOKEN", "kr-secret");
         std::env::set_var("OPENAI_API_KEY", "sk-openai");
     }
     let dump = b.join("env.txt");

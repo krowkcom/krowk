@@ -7,7 +7,7 @@
 //! - **Made before the session**, whose id is chosen first: the worktree is
 //!   locked in that session's name, and the host gives the id to its first
 //!   new session (`HostConfig::session`), with the prepare steps' notes at
-//!   the top of its first prompt and `KROWK_PORT_BASE` in its commands'
+//!   the top of its first prompt and `GRUNTAS_PORT_BASE` in its commands'
 //!   environment.
 //! - **Held by this process** for the session's life (`InUse`), so the
 //!   session runs in this process, never in the host daemon, which would

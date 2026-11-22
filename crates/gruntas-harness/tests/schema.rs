@@ -1,6 +1,6 @@
 //! R-PROTO-2: the protocol's JSON Schema is generated from the Rust types,
 //! and the copy checked in beside the crate is never stale. A type change
-//! fails this until `make schema` (KROWK_SCHEMA_UPDATE=1) rewrites the files.
+//! fails this until `make schema` (GRUNTAS_SCHEMA_UPDATE=1) rewrites the files.
 
 use std::path::PathBuf;
 
@@ -10,7 +10,7 @@ fn dir() -> PathBuf {
 
 #[test]
 fn r_proto_2_the_checked_in_schema_is_generated_from_the_types_and_current() {
-    let update = std::env::var("KROWK_SCHEMA_UPDATE").is_ok_and(|v| !v.is_empty());
+    let update = std::env::var("GRUNTAS_SCHEMA_UPDATE").is_ok_and(|v| !v.is_empty());
     let mut stale = Vec::new();
     for (name, want) in gruntas_harness::schema::files() {
         let path = dir().join(name);
