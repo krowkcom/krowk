@@ -152,6 +152,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   provenance either way, and a release with neither now fails instead of
   skipping npm.
 
+- **The MCP registry entry follows every release.** Each stable release now
+  publishes `io.github.gruntas/gruntas` to the MCP registry once npm carries
+  `@gruntas/mcp`, signing in as the release workflow (no stored token), so
+  MCP clients that install from the registry get the new version without a
+  manual step. A prerelease leaves the entry where it was.
+
 ## [0.18.0] - 2026-11-20
 
 ### Added
