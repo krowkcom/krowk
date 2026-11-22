@@ -208,10 +208,16 @@ pub fn copy_krowk(home: &Path) -> Result<bool, String> {
                 std::fs::rename(&db, &to).map_err(|e| io(&to, e))?;
             }
         }
-        let (old, new) = (from.display().to_string(), home.display().to_string());
+        // As JSON writes them: quoted, and Windows's `\` separators doubled.
+        let json = |p: &Path| serde_json::to_string(&p.display().to_string()).unwrap_or_default();
+        let (old, new) = (json(&from), json(home));
+        let (old_open, new_open) = (old.trim_end_matches('"'), new.trim_end_matches('"'));
         for f in naming_home(&staging) {
             let Ok(text) = std::fs::read_to_string(&f) else { continue };
-            let moved = text.replace(&format!("\"{old}/"), &format!("\"{new}/")).replace(&format!("\"{old}\""), &format!("\"{new}\""));
+            let mut moved = text.replace(&old, &new);
+            for sep in ["/", "\\\\"] {
+                moved = moved.replace(&format!("{old_open}{sep}"), &format!("{new_open}{sep}"));
+            }
             if moved != text {
                 std::fs::write(&f, moved).map_err(|e| io(&f, e))?;
             }
@@ -653,7 +659,7 @@ mod tests {
         std::fs::create_dir_all(old.join("accounts/claude-work/plugins")).unwrap();
         std::fs::create_dir_all(old.join("sessions")).unwrap();
         let account = old.join("accounts/claude-work").display().to_string();
-        let config = json!({"instances": {"claude:work": {"kind": "claude-code", "configDir": account}}, "note": format!("{}x", old.display())}).to_string();
+        let config = json!({"instances": {"claude:work": {"kind": "claude-code", "configDir": account}}, "note": format!("{}x", old.display()), "win": format!("{}\\accounts", old.display())}).to_string();
         for (f, body) in [("config.json", config.as_str()), ("credentials.json", "{}"), ("sessions/krowk.db", "db"), ("sessions/krowk.db-wal", "wal"), ("accounts/claude-work/plugins/known_marketplaces.json", &format!("{{\"m\": {{\"installLocation\": \"{account}/plugins/m\"}}}}"))] {
             std::fs::write(old.join(f), body).unwrap();
         }
@@ -670,6 +676,7 @@ mod tests {
         let c: Value = serde_json::from_str(&std::fs::read_to_string(home.join("config.json")).unwrap()).unwrap();
         assert_eq!(c["instances"]["claude:work"]["configDir"].as_str(), Some(home.join("accounts/claude-work").to_str().unwrap()));
         assert_eq!(c["note"].as_str(), Some(format!("{}x", old.display()).as_str()), "only a path into the home moves");
+        assert_eq!(c["win"].as_str(), Some(format!("{}\\accounts", home.display()).as_str()), "a Windows separator too");
         let m = std::fs::read_to_string(home.join("accounts/claude-work/plugins/known_marketplaces.json")).unwrap();
         assert!(m.contains(&home.join("accounts/claude-work/plugins/m").display().to_string()), "{m}");
         assert_eq!(std::fs::read_to_string(old.join("config.json")).unwrap(), before, "~/.krowk untouched");
