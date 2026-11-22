@@ -67,6 +67,13 @@ impl Sandbox {
         c
     }
 
+    /// The fake `claude` signed in, as Claude Code is once a person has
+    /// logged in: a model ready here.
+    fn claude_signed_in(&self) {
+        std::fs::create_dir_all(self.root.join("home/.claude")).unwrap();
+        std::fs::write(self.root.join("home/.claude/fake-login"), "").unwrap();
+    }
+
     fn state(&self) -> serde_json::Value {
         serde_json::from_str(&std::fs::read_to_string(self.root.join("home/.krowk/first-run.json")).unwrap_or_else(|_| "{}".into())).unwrap()
     }
@@ -427,9 +434,8 @@ fn a_registration_left_owed_is_finished_by_the_next_krowk_and_any_other_answer_i
     assert!(login.status.success(), "{}", String::from_utf8_lossy(&login.stderr));
     std::fs::write(b.root.join("home/.krowk/first-run.json"), "{\"pending\": true, \"always_on_asked\": true, \"kit_offered\": true}\n").unwrap();
     assert!(b.keystore().device_list().unwrap().is_none());
-    let mut cmd = b.command(&api, &[]);
-    cmd.env("ANTHROPIC_API_KEY", "sk-test");
-    let mut t = wide(cmd);
+    b.claude_signed_in();
+    let mut t = wide(b.command(&api, &[]));
     says(&t, "is set up to sync");
     says(&t, "krowk help agents");
     ends(&mut t);
@@ -479,7 +485,8 @@ fn the_overview_shows_the_top_problem_and_nothing_when_nothing_is_wrong() {
     let b = Sandbox::new("no-problem");
     std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
     std::fs::write(b.root.join("home/.krowk/first-run.json"), "{\"local\": true, \"always_on_asked\": true}\n").unwrap();
-    let out = b.command(&api, &[]).env("ANTHROPIC_API_KEY", "sk-test").output().unwrap();
+    b.claude_signed_in();
+    let out = b.command(&api, &[]).output().unwrap();
     let said = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success() && said.contains("krowk help agents"), "{said}");
     assert!(!said.contains("not registered"), "{said}");

@@ -2,8 +2,8 @@
 //!
 //! With `--include-partial-messages`, `claude -p` forwards the Messages API
 //! stream it reads as `stream_event` lines — `message_start`, the content
-//! blocks, `message_stop` — so the same decoder the native Anthropic client
-//! uses turns them into items: one content block is one item, streamed under
+//! blocks, `message_stop` — so the Messages decoder (`super::messages`)
+//! turns them into items: one content block is one item, streamed under
 //! one id, its thinking signature collected whole. Claude Code also sends
 //! each finished block as an `assistant` message; those are skipped for a
 //! message whose stream was seen, and are the items themselves for one that
@@ -13,7 +13,7 @@
 //! What Claude Code runs is reported as `user` messages holding
 //! `tool_result` blocks. They arrive before the stream of the message that
 //! called the tool has stopped, so they are held until that response is
-//! logged: the log reads call, response, result, as a native turn does.
+//! logged: the log reads call, response, result.
 //!
 //! Lines of a subagent (`parent_tool_use_id` set) belong to the subagent's
 //! own conversation, not the turn's (`super::children` makes them the
@@ -24,7 +24,7 @@
 //! keeps, since a background agent's calls go on between turns. `result`
 //! ends the turn, with Claude Code's own `total_cost_usd` for it.
 
-use crate::anthropic::stream::Decoder;
+use super::messages::Decoder;
 use crate::engine::{EngineError, EngineEvent};
 use crate::protocol::{Item, ItemKind, LimitState, LimitStatus, ProviderBlob, Usage, WireApi};
 use crate::sse::SseEvent;
@@ -343,7 +343,7 @@ impl Translator {
 
     /// Steering Claude Code replayed: logged after the tool results it
     /// arrived with, which wait for the response that called them, so the
-    /// log reads call, response, results, steer, as a native turn's does.
+    /// log reads call, response, results, steer.
     pub fn steered(&mut self, item: Item) -> Vec<EngineEvent> {
         let item_id = krowk_store::new_id();
         let evs = vec![EngineEvent::ItemStarted { item_id: item_id.clone(), kind: item.kind() }, EngineEvent::ItemCompleted { item_id, item }];
@@ -460,7 +460,7 @@ fn usage(u: &Value) -> Usage {
 
 /// One content block of a whole `assistant` message as an item.
 fn block(b: &Value) -> Option<Item> {
-    let blob = |data: Value| Some(ProviderBlob { provider: crate::anthropic::stream::PROVIDER.into(), wire_api: WireApi::ClaudeCode, data });
+    let blob = |data: Value| Some(ProviderBlob { provider: super::messages::PROVIDER.into(), wire_api: WireApi::ClaudeCode, data });
     Some(match str_of(b, "type") {
         "text" => Item::AssistantText { text: str_of(b, "text").into() },
         "thinking" => Item::Reasoning { text: str_of(b, "thinking").into(), blob: blob(json!({"type": "thinking", "signature": str_of(b, "signature")})) },

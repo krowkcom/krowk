@@ -14,7 +14,7 @@ Examples
   krowk sessions --json      Every agent session on this machine, as data
 
 Accounts
-  connect       Connect a model: Claude, ChatGPT, SuperGrok or an API key
+  connect       Connect a Claude Code or Codex account, by login or API key
   disconnect    Sign a connected model out
   login         Sign in to your krowk account
   whoami        Show the key and its workspace
@@ -1063,7 +1063,7 @@ stdout:
     {
       "name": "connect",
       "usage": "krowk connect [vendor] [--method subscription|api-key|device] [--name N]",
-      "summary": "Connect a model: Claude, ChatGPT, SuperGrok or an API key",
+      "summary": "Connect a Claude Code or Codex account, by login or API key",
       "args": [
         {
           "name": "vendor",
@@ -1076,7 +1076,7 @@ stdout:
           "name": "method",
           "type": "string",
           "default": "",
-          "usage": "subscription (Claude, ChatGPT or SuperGrok, signed in by the vendor's own login), device (the same with a code typed into any browser: ChatGPT, SuperGrok) or api-key. Required without a terminal when the vendor has more than one"
+          "usage": "subscription (Claude or ChatGPT, signed in by Claude Code's or Codex's own login), device (the same with a code typed into any browser: ChatGPT) or api-key (a Claude Code or Codex account on the key). Required without a terminal when the vendor has more than one"
         },
         {
           "name": "name",
@@ -1113,18 +1113,6 @@ stdout:
           "type": "string",
           "default": "",
           "usage": "Where the API is, for a gateway, a router or a local server — asked for openai-compatible"
-        },
-        {
-          "name": "client-id",
-          "type": "string",
-          "default": "",
-          "usage": "SuperGrok: the OAuth client id to sign in as, when xAI's server offers no registration"
-        },
-        {
-          "name": "no-browser",
-          "type": "bool",
-          "default": "false",
-          "usage": "SuperGrok: print the sign-in link instead of opening a browser"
         },
         {
           "name": "binary",
@@ -1179,7 +1167,7 @@ stdout:
           "args": [
             {
               "name": "provider",
-              "summary": "anthropic, openai, xai, openrouter, openai-compatible, supergrok (xAI with a SuperGrok or X Premium subscription), claude (runs Claude Code, signed in with its own login), or codex (runs Codex, signed in with its own login)",
+              "summary": "anthropic, openai, xai, openrouter, openai-compatible (an API key or a gateway, run in Claude Code or Codex), claude (runs Claude Code, signed in with its own login), or codex (runs Codex, signed in with its own login)",
               "required": true
             }
           ],
@@ -1203,22 +1191,10 @@ stdout:
               "usage": "Where the API is, for a gateway, a router or a local server — required for openai-compatible"
             },
             {
-              "name": "client-id",
-              "type": "string",
-              "default": "",
-              "usage": "supergrok: the OAuth client id to sign in as, when xAI's server offers no registration"
-            },
-            {
               "name": "device",
               "type": "bool",
               "default": "false",
-              "usage": "supergrok, codex: sign in with a code typed into any browser, instead of one opened here"
-            },
-            {
-              "name": "no-browser",
-              "type": "bool",
-              "default": "false",
-              "usage": "supergrok: print the sign-in link instead of opening a browser"
+              "usage": "codex: sign in with a code typed into any browser, instead of one opened here"
             },
             {
               "name": "binary",
@@ -1918,7 +1894,7 @@ stdout:
       ],
       "type": "bool",
       "default": "false",
-      "usage": "Run the prompt given as the arguments (or on stdin) headless: krowk's own agent answers it, then exits"
+      "usage": "Run the prompt given as the arguments (or on stdin) headless: Claude Code or Codex answers it, on the default account or the one --model names, then exits"
     },
     {
       "name": "output-format",
@@ -1954,13 +1930,13 @@ stdout:
       "name": "sandbox",
       "type": "string",
       "default": "",
-      "usage": "With -p: run the tools in an OS sandbox — workspace (the working directory writable, credentials hidden), read-only, or strict (no network, the home hidden) — or off. .git, .claude and krowk's settings stay read-only inside it, and a sandbox this machine cannot enforce refuses the run. Without it, a run with no mode set takes the workspace sandbox and acceptEdits where bubblewrap works"
+      "usage": "With -p: off. Claude Code and Codex run their own tools outside krowk's OS sandbox, so a profile (workspace, read-only, strict) is refused"
     },
     {
       "name": "toolset",
       "type": "string",
       "default": "",
-      "usage": "With -p: the tools' preset — claude (str_replace), gpt (apply_patch) or grok (search_replace). The model's family picks one when absent"
+      "usage": "With -p: the preset the session's context record names — claude, gpt or grok. The model's family picks one when absent"
     },
     {
       "name": "effort",
@@ -1985,13 +1961,13 @@ stdout:
       "name": "max-usd",
       "type": "string",
       "default": "",
-      "usage": "With -p: stop the session before the model call that would take it, with its subagents, past this many dollars — metered, priced from models.dev. Exits 4, like `krowk sessions budget`"
+      "usage": "With -p: stop the session once it, with its agents, is past this many dollars — metered, priced from models.dev: a turn at the limit is refused, and one a call takes past it is interrupted. Exits 4, like `krowk sessions budget`"
     },
     {
       "name": "max-tokens",
       "type": "string",
       "default": "",
-      "usage": "With -p: stop the session before the model call that would take its generated tokens (output and reasoning, subagents included) past this many. Exits 4"
+      "usage": "With -p: stop the session once its generated tokens (output and reasoning, its agents included) are past this many: a turn at the limit is refused, and one a call takes past it is interrupted. Exits 4"
     },
     {
       "name": "trust",
@@ -2075,7 +2051,7 @@ Examples
   krowk sessions --json      Every agent session on this machine, as data
 
 Accounts
-  connect       Connect a model: Claude, ChatGPT, SuperGrok or an API key
+  connect       Connect a Claude Code or Codex account, by login or API key
   disconnect    Sign a connected model out
   login         Sign in to your krowk account
   whoami        Show the key and its workspace
@@ -2125,7 +2101,7 @@ tty:
   krowk sessions --json      Every agent session on this machine, as data
 
 \e[1mAccounts\e[0m
-  connect       Connect a model: Claude, ChatGPT, SuperGrok or an API key
+  connect       Connect a Claude Code or Codex account, by login or API key
   disconnect    Sign a connected model out
   login         Sign in to your krowk account
   whoami        Show the key and its workspace
@@ -3174,7 +3150,7 @@ tty:
     {
       "name": "connect",
       "usage": "krowk connect [vendor] [--method subscription|api-key|device] [--name N]",
-      "summary": "Connect a model: Claude, ChatGPT, SuperGrok or an API key",
+      "summary": "Connect a Claude Code or Codex account, by login or API key",
       "args": [
         {
           "name": "vendor",
@@ -3187,7 +3163,7 @@ tty:
           "name": "method",
           "type": "string",
           "default": "",
-          "usage": "subscription (Claude, ChatGPT or SuperGrok, signed in by the vendor's own login), device (the same with a code typed into any browser: ChatGPT, SuperGrok) or api-key. Required without a terminal when the vendor has more than one"
+          "usage": "subscription (Claude or ChatGPT, signed in by Claude Code's or Codex's own login), device (the same with a code typed into any browser: ChatGPT) or api-key (a Claude Code or Codex account on the key). Required without a terminal when the vendor has more than one"
         },
         {
           "name": "name",
@@ -3224,18 +3200,6 @@ tty:
           "type": "string",
           "default": "",
           "usage": "Where the API is, for a gateway, a router or a local server — asked for openai-compatible"
-        },
-        {
-          "name": "client-id",
-          "type": "string",
-          "default": "",
-          "usage": "SuperGrok: the OAuth client id to sign in as, when xAI's server offers no registration"
-        },
-        {
-          "name": "no-browser",
-          "type": "bool",
-          "default": "false",
-          "usage": "SuperGrok: print the sign-in link instead of opening a browser"
         },
         {
           "name": "binary",
@@ -3290,7 +3254,7 @@ tty:
           "args": [
             {
               "name": "provider",
-              "summary": "anthropic, openai, xai, openrouter, openai-compatible, supergrok (xAI with a SuperGrok or X Premium subscription), claude (runs Claude Code, signed in with its own login), or codex (runs Codex, signed in with its own login)",
+              "summary": "anthropic, openai, xai, openrouter, openai-compatible (an API key or a gateway, run in Claude Code or Codex), claude (runs Claude Code, signed in with its own login), or codex (runs Codex, signed in with its own login)",
               "required": true
             }
           ],
@@ -3314,22 +3278,10 @@ tty:
               "usage": "Where the API is, for a gateway, a router or a local server — required for openai-compatible"
             },
             {
-              "name": "client-id",
-              "type": "string",
-              "default": "",
-              "usage": "supergrok: the OAuth client id to sign in as, when xAI's server offers no registration"
-            },
-            {
               "name": "device",
               "type": "bool",
               "default": "false",
-              "usage": "supergrok, codex: sign in with a code typed into any browser, instead of one opened here"
-            },
-            {
-              "name": "no-browser",
-              "type": "bool",
-              "default": "false",
-              "usage": "supergrok: print the sign-in link instead of opening a browser"
+              "usage": "codex: sign in with a code typed into any browser, instead of one opened here"
             },
             {
               "name": "binary",
@@ -4029,7 +3981,7 @@ tty:
       ],
       "type": "bool",
       "default": "false",
-      "usage": "Run the prompt given as the arguments (or on stdin) headless: krowk's own agent answers it, then exits"
+      "usage": "Run the prompt given as the arguments (or on stdin) headless: Claude Code or Codex answers it, on the default account or the one --model names, then exits"
     },
     {
       "name": "output-format",
@@ -4065,13 +4017,13 @@ tty:
       "name": "sandbox",
       "type": "string",
       "default": "",
-      "usage": "With -p: run the tools in an OS sandbox — workspace (the working directory writable, credentials hidden), read-only, or strict (no network, the home hidden) — or off. .git, .claude and krowk's settings stay read-only inside it, and a sandbox this machine cannot enforce refuses the run. Without it, a run with no mode set takes the workspace sandbox and acceptEdits where bubblewrap works"
+      "usage": "With -p: off. Claude Code and Codex run their own tools outside krowk's OS sandbox, so a profile (workspace, read-only, strict) is refused"
     },
     {
       "name": "toolset",
       "type": "string",
       "default": "",
-      "usage": "With -p: the tools' preset — claude (str_replace), gpt (apply_patch) or grok (search_replace). The model's family picks one when absent"
+      "usage": "With -p: the preset the session's context record names — claude, gpt or grok. The model's family picks one when absent"
     },
     {
       "name": "effort",
@@ -4096,13 +4048,13 @@ tty:
       "name": "max-usd",
       "type": "string",
       "default": "",
-      "usage": "With -p: stop the session before the model call that would take it, with its subagents, past this many dollars — metered, priced from models.dev. Exits 4, like `krowk sessions budget`"
+      "usage": "With -p: stop the session once it, with its agents, is past this many dollars — metered, priced from models.dev: a turn at the limit is refused, and one a call takes past it is interrupted. Exits 4, like `krowk sessions budget`"
     },
     {
       "name": "max-tokens",
       "type": "string",
       "default": "",
-      "usage": "With -p: stop the session before the model call that would take its generated tokens (output and reasoning, subagents included) past this many. Exits 4"
+      "usage": "With -p: stop the session once its generated tokens (output and reasoning, its agents included) are past this many: a turn at the limit is refused, and one a call takes past it is interrupted. Exits 4"
     },
     {
       "name": "trust",

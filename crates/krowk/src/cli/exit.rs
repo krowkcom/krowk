@@ -37,6 +37,10 @@ fn client(code: &str) -> Option<i32> {
         // keyed, the same class as a missing login.
         #[cfg(feature = "harness")]
         "none_ready" => AUTH,
+        // A provider krowk no longer runs (D4): connecting a Claude Code or
+        // Codex account is the fix, as for a missing one.
+        #[cfg(feature = "harness")]
+        "removed_provider" => AUTH,
         // A pairing that failed is over, and its code with it; a mistyped
         // code started nothing (devices.md → Adding a device).
         #[cfg(feature = "harness")]

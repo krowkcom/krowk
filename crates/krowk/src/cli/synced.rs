@@ -553,19 +553,13 @@ pub(super) fn announcer(ctx: &mut Ctx, fresh: bool) -> Result<krowk_harness::syn
     Ok(krowk_harness::sync::announce::Announcer { api, keys: k.user, chain: k.chain, device: k.device })
 }
 
-/// The supervisor's `Placer` a subagent is placed by (R-ALLOC-10), made on
+/// The `Placer` krowk-mcp's delegation places by (R-ALLOC-11), made on
 /// the first call that asks and then kept, so its placements of the last 30
-/// seconds count: none when sync is not set up here, which never reaches the
-/// registry, so every subagent runs here as it always did. This machine's
-/// slot pools are the config's.
-pub(super) fn placer_source(f: &super::flags::Flags) -> krowk_harness::subagent::PlacerSource {
-    source(f, false)
-}
-
-/// `placer_source`, for krowk-mcp when `local`: its `Placer` also runs a
+/// seconds count: none when sync is not set up here. When `local`, its
+/// `Placer` also runs a
 /// task that stays on this machine, as a child in a worktree
 /// (`delegate::run_local`), since it has no agent of its own to run it.
-pub(super) fn source(f: &super::flags::Flags, local: bool) -> krowk_harness::subagent::PlacerSource {
+pub(super) fn source(f: &super::flags::Flags, local: bool) -> krowk_harness::sync::placement::PlacerSource {
     use krowk_harness::sync::placement::Placer;
     // Built at most once, off the lock; a machine with no sync set up is
     // remembered too, so its calls read nothing again.
@@ -730,7 +724,7 @@ pub(super) fn take(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let events = read_log(&api).map_err(undo)?;
     // The images its turns name, before the log is written back: a session
     // is never left here to start a turn without them.
-    let s = api.show_sync_session(&session).map_err(&undo)?;
+    let s = api.show_sync_session(&session).map_err(undo)?;
     let skeys = store::open_session_key(&s, &session, &k.user, &k.chain, krowk_client::session_record::Signer::EverHeld).map_err(|e| undo(fail("sync_failed", e)))?;
     handoff::fetch_images(&api, &skeys, &session, &sessions.join(&session), &events).map_err(|e| undo(fail("handoff_failed", e)))?;
     handoff::restore_log(&sessions, &session, &events, &applied.cwd, &me, &handed.from_device).map_err(|e| undo(fail("handoff_failed", e)))?;
@@ -744,7 +738,8 @@ pub(super) fn take(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
 /// Whether the session can run here (R-INST-5, R-CRED-1): the instance its
 /// next turn runs on, by name, ready — signed in, its key set, its vendor's
 /// login good — and for a backend this repository trusted. The backend's
-/// config directory, where its transcript goes; None for a native session.
+/// config directory, where its transcript goes; None for a session that
+/// has run no turn yet. A native instance is refused (D4).
 fn ready_here(ctx: &Ctx, session: &str, events: &[serde_json::Value], cwd: &std::path::Path) -> Result<Option<std::path::PathBuf>, Error> {
     use krowk_harness::{readiness, trust};
     let Some(name) = krowk_harness::sync::handoff::last_instance(events) else { return Ok(None) };
@@ -752,6 +747,10 @@ fn ready_here(ctx: &Ctx, session: &str, events: &[serde_json::Value], cwd: &std:
     let config = super::prompt::config_json()?;
     let registry = krowk_harness::instances::Registry::resolve(&super::prompt::instances_from(&config)?, &krowk_api::home::process_env);
     let inst = registry.get(&name).map_err(|_| fail("instance_missing", format!("session {session} runs on the {name} instance, which this machine does not have — {stays}; connect it here under the same name with `krowk connect`, then take it again")))?;
+    // D4: a session on an instance krowk would run itself goes nowhere.
+    if inst.backend.is_none() {
+        return Err(fail("removed_provider", krowk_harness::connect::NO_DIRECT_MODELS));
+    }
     let creds = super::providers::credentials_path()?;
     let probe = readiness::Probe { dir: cwd.to_path_buf(), within: std::time::Duration::from_secs(20) };
     if let Some(e) = readiness::check(inst, &creds, &probe).refusal(inst) {

@@ -6,18 +6,11 @@
 //! log, forwards live frames and adds up the cost, so every engine's turns
 //! land in the same log in the same shape (R-BACK-5).
 //!
-//! Two families implement it:
-//!
-//! - The native loop (`native::NativeEngine`), where krowk owns the prompt,
-//!   the tools and the loop, and a `ModelClient` speaks one provider's wire
-//!   API. The Anthropic Messages client is the first; OpenAI Responses and
-//!   Chat Completions are more `ModelClient`s under the same loop.
-//! - Backends (a vendor harness such as `claude -p` or `codex app-server`
-//!   driving its own loop), which implement `Engine` directly and translate
-//!   the vendor's stream into these events. `claude::ClaudeEngine` is the
-//!   first: one long-lived `claude` process per session, kept by the host
-//!   between turns; `codex::CodexEngine` drives `codex app-server` the same
-//!   way.
+//! Backends implement it: a vendor harness (`claude -p` or `codex
+//! app-server`) driving its own loop, its stream translated into these
+//! events. `claude::ClaudeEngine` keeps one long-lived `claude` process per
+//! session, kept by the host between turns; `codex::CodexEngine` drives
+//! `codex app-server` the same way.
 //!
 //! The rules every engine keeps:
 //!
@@ -41,15 +34,13 @@
 
 use crate::budget::Budget;
 use crate::evidence::Evidence;
-use crate::toolset::Preset;
 use crate::catalog::ModelInfo;
-use crate::protocol::{ApprovalDecision, ApprovalRequest, BackendAgent, Billing, Delta, Effort, ErrorInfo, HandoffKind, ImageRef, Item, ItemKind, LimitStatus, ModelRef, PermissionMode, Todo, ToolDefinition, Usage, WireApi};
-use crate::subagent::{AgentRun, Subagents};
+use crate::protocol::{ApprovalDecision, ApprovalRequest, BackendAgent, Billing, Delta, Effort, ErrorInfo, HandoffKind, ImageRef, Item, ItemKind, LimitStatus, ModelRef, PermissionMode, ToolDefinition, Usage, WireApi};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Notify};
 
 /// A boxed future that can move between threads: what a dyn-compatible
 /// async trait method returns.
@@ -85,8 +76,6 @@ pub enum EngineEvent {
     Approval(ApprovalRequest),
     /// It was answered.
     ApprovalResolved { request_id: String, decision: ApprovalDecision },
-    /// `todo_write` replaced the session's todo list: the host logs it.
-    Todos { todos: Vec<Todo> },
     /// A subagent started, as the child session `session_id`, answering
     /// the tool call `call_id`: the host logs the link, with who runs it
     /// and the backend's own id for it (R-SUB-7).
@@ -177,8 +166,6 @@ pub struct TurnContext {
     /// prompts carry are kept (`crate::images`).
     pub session_dir: PathBuf,
     pub permission_mode: PermissionMode,
-    /// The toolset preset the host chose for this turn's model.
-    pub preset: &'static Preset,
     /// The effort asked for, on krowk's ladder; the engine maps it onto the
     /// rungs the model takes.
     pub effort: Option<Effort>,
@@ -190,33 +177,22 @@ pub struct TurnContext {
     pub steers: Steers,
     /// The backend session the branch last ran in, from its
     /// `backend.session` event: what a backend resumes. None for a new
-    /// session, and for one that has only run natively.
+    /// session.
     pub backend_session: Option<String>,
-    /// What the session has spent and may spend: the engine asks it before
-    /// every model call it makes (R-BUDGET-1).
+    /// What the session has spent and may spend (R-BUDGET-1): the host
+    /// checks it before the turn and as each call is metered.
     pub budget: Budget,
     /// Where `publish` sends files; none when this host publishes nothing.
     pub evidence: Option<Evidence>,
-    /// The build slots bash's heavy commands wait for (`crate::builds`).
-    pub builds: crate::builds::Builds,
-    /// The session's background jobs (R-STEER-2), the host's: none where
-    /// nothing keeps them.
-    pub jobs: Option<Arc<crate::jobs::Jobs>>,
     /// The turn's permissions: every call the engine runs or is asked about
     /// is judged here, and asked about through it.
     pub gate: crate::permissions::Gate,
-    /// What the repository and the person's settings bring to a native
-    /// turn: instructions, skills, hooks.
+    /// What the repository and the person's settings bring to the turn:
+    /// its MCP servers, skills and hooks.
     pub compat: std::sync::Arc<crate::compat::Compat>,
-    /// What this turn may start subagents with; none in a subagent, which
-    /// starts none of its own, and for an engine that does not offer them.
-    pub subagents: Option<Subagents>,
-    /// For a subagent: the definition it runs — its instructions and its
-    /// tool allowlist.
-    pub agent: Option<AgentRun>,
     /// For a backend: how to bring its vendor session up to date with
     /// turns it did not run (`crate::handoff`). None when there is nothing
-    /// it has not seen; the native loop reads the whole branch instead.
+    /// it has not seen.
     pub handoff: Option<crate::handoff::Handoff>,
     /// The turn a backend began by itself (`Command::Continue`): nothing is
     /// sent, and the engine reads the turn already under way. Its prompt
@@ -233,50 +209,32 @@ pub struct TurnContext {
 /// engine closes the queue in the same locked step as its last check that
 /// it is empty, and the host closes it when the turn is over, so a push that
 /// comes after either is told so instead of being queued for nobody.
+///
+/// A running turn waits for steering on `arrived` rather than a timer, so a
+/// backend that has gone quiet leaves krowk asleep (R-PERF-2).
 #[derive(Debug, Clone, Default)]
-pub struct Steers(Arc<Queue>);
-
-#[derive(Debug, Default)]
-struct Queue {
-    q: Mutex<SteerQueue>,
-    /// Woken by each push: a turn held open for its background children
-    /// waits on it for their notes, or the person's steering.
-    arrived: tokio::sync::Notify,
-}
+pub struct Steers(Arc<Mutex<SteerQueue>>, Arc<Notify>);
 
 #[derive(Debug, Default)]
 struct SteerQueue {
     waiting: Vec<Steer>,
     closed: bool,
-    /// A call was moved to the background for the steering waiting
-    /// (R-STEER-4): the step's later calls are moved sooner. Cleared when
-    /// that steering is taken.
-    moved: bool,
 }
 
-/// One steer: its text, and the images it carries, already kept. Or a
-/// note of krowk's riding the same queue (`from_krowk`): a background job
-/// or child that ended, which the model reads as it reads steering but
-/// which is never handed back as the person's words.
+/// One steer: its text, and the images it carries, already kept.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Steer {
     pub text: String,
     pub images: Vec<ImageRef>,
-    pub from_krowk: bool,
 }
 
 impl From<&str> for Steer {
     fn from(text: &str) -> Steer {
-        Steer { text: text.to_string(), images: Vec::new(), from_krowk: false }
+        Steer { text: text.to_string(), images: Vec::new() }
     }
 }
 
 impl Steer {
-    /// A note of krowk's.
-    pub fn note(text: String) -> Steer {
-        Steer { text, images: Vec::new(), from_krowk: true }
-    }
-
     pub fn item(self) -> Item {
         Item::UserText { text: self.text, images: self.images }
     }
@@ -284,7 +242,7 @@ impl Steer {
 
 impl Steers {
     fn lock(&self) -> std::sync::MutexGuard<'_, SteerQueue> {
-        self.0.q.lock().unwrap_or_else(|e| e.into_inner())
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Queues `steer`, or hands it back when the turn takes no more.
@@ -295,8 +253,16 @@ impl Steers {
         }
         q.waiting.push(steer);
         drop(q);
-        self.0.arrived.notify_waiters();
+        self.1.notify_one();
         Ok(())
+    }
+
+    /// Resolves once a steer has been pushed since the last time this
+    /// resolved — at once if one was pushed while nobody waited, so a push
+    /// between the engine's `take` and its next wait is never missed. It may
+    /// resolve with the queue already drained: `take` then finds nothing.
+    pub async fn arrived(&self) {
+        self.1.notified().await
     }
 
     /// Whether nothing waits.
@@ -304,47 +270,9 @@ impl Steers {
         self.lock().waiting.is_empty()
     }
 
-    /// Returns once the person's steering waits: krowk's notes do not
-    /// count.
-    pub async fn steered(&self) {
-        loop {
-            let arrived = self.0.arrived.notified();
-            tokio::pin!(arrived);
-            arrived.as_mut().enable();
-            if self.lock().waiting.iter().any(|s| !s.from_krowk) {
-                return;
-            }
-            arrived.await;
-        }
-    }
-
-    /// Returns once something waits in the queue.
-    pub async fn arrival(&self) {
-        let arrived = self.0.arrived.notified();
-        tokio::pin!(arrived);
-        arrived.as_mut().enable();
-        if !self.is_empty() {
-            return;
-        }
-        arrived.await;
-    }
-
     /// Everything waiting, oldest first, leaving the queue empty.
     pub fn take(&self) -> Vec<Steer> {
-        let mut q = self.lock();
-        q.moved = false;
-        std::mem::take(&mut q.waiting)
-    }
-
-    /// Says a call was moved to the background for the steering waiting.
-    pub fn moved_one(&self) {
-        self.lock().moved = true;
-    }
-
-    /// Whether a call was moved for the steering waiting: one after it in
-    /// the same step is moved after a moment, not its two seconds.
-    pub fn has_moved(&self) -> bool {
-        self.lock().moved
+        std::mem::take(&mut self.lock().waiting)
     }
 
     /// Closes the queue if nothing is waiting, and says whether it did: the
@@ -359,9 +287,7 @@ impl Steers {
 
     /// Returns steering to the front of the queue, oldest first, whether or
     /// not it is closed: steering a backend took but the model never read
-    /// (cancelled on an interrupt), and the host's notes of krowk's, taken
-    /// out with the person's steering when the turn ended and kept for the
-    /// next.
+    /// (cancelled on an interrupt).
     pub fn put_back(&self, steers: Vec<Steer>) {
         self.lock().waiting.splice(0..0, steers);
     }
@@ -445,13 +371,6 @@ pub trait Engine: Send + Sync {
     /// Runs one turn to its end. Items produced before a failure were
     /// already sent and stay in the log.
     fn run_turn<'a>(&'a self, ctx: TurnContext, events: Events) -> BoxFuture<'a, Result<TurnEnd, EngineError>>;
-    /// Whether the engine asks `TurnContext::budget` before each model call
-    /// itself. The native loop does; a backend's calls are the vendor's to
-    /// make, so the host checks before its turn and interrupts it when a
-    /// metered call has gone over.
-    fn checks_budget(&self) -> bool {
-        false
-    }
     /// Lets go of whatever outlives a turn — a backend's process — cleanly,
     /// before the host goes away. Nothing, for an engine that keeps nothing.
     fn shutdown(&self) -> BoxFuture<'_, ()> {
@@ -493,6 +412,40 @@ pub async fn sleep_until(deadline: Option<tokio::time::Instant>) {
     }
 }
 
+/// Tokens in a text, estimated at four bytes a token — the ratio providers
+/// quote for English and code. No tokenizer ships with krowk; what the
+/// estimate is for is noticing growth, which it does whatever the true
+/// ratio is.
+pub fn estimate_tokens(text: &str) -> u64 {
+    (text.len() as u64).div_ceil(4)
+}
+
+/// The tool definitions' estimated tokens, over the JSON a provider is sent
+/// for them.
+pub fn tools_tokens(tools: &[ToolDefinition]) -> u64 {
+    tools.iter().map(|t| estimate_tokens(&serde_json::to_string(t).expect("a definition serializes"))).sum()
+}
+
+/// Runs every future to its end at once, and answers in their order: a
+/// fan-out of subagents, which borrow the turn and so cannot be spawned.
+pub(crate) async fn join_all<T>(mut futs: Vec<BoxFuture<'_, T>>) -> Vec<T> {
+    let mut done: Vec<Option<T>> = futs.iter().map(|_| None).collect();
+    std::future::poll_fn(|cx| {
+        let mut pending = false;
+        for (f, slot) in futs.iter_mut().zip(done.iter_mut()) {
+            if slot.is_none() {
+                match f.as_mut().poll(cx) {
+                    std::task::Poll::Ready(v) => *slot = Some(v),
+                    std::task::Poll::Pending => pending = true,
+                }
+            }
+        }
+        if pending { std::task::Poll::Pending } else { std::task::Poll::Ready(()) }
+    })
+    .await;
+    done.into_iter().map(|v| v.expect("every future finished")).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,5 +467,26 @@ mod tests {
         t.push("never read".into()).unwrap();
         assert_eq!(texts(t.close()), ["never read"], "a turn that stops early returns what it never took");
         assert!(t.push("x".into()).is_err());
+    }
+
+    /// The wake a waiting turn gets: a steer pushed between the engine's
+    /// `take` and its next wait still wakes it, and a turn with nothing
+    /// pushed stays asleep (R-PERF-2).
+    #[tokio::test]
+    async fn r_steer_1_a_steer_pushed_before_the_wait_still_wakes_it() {
+        let soon = std::time::Duration::from_millis(50);
+        let s = Steers::default();
+        assert!(tokio::time::timeout(soon, s.arrived()).await.is_err(), "nothing pushed: no wake");
+        s.push("between".into()).unwrap();
+        tokio::time::timeout(soon, s.arrived()).await.expect("pushed before the wait: woken at once");
+        assert!(tokio::time::timeout(soon, s.arrived()).await.is_err(), "one push, one wake");
+        let waiter = tokio::spawn({
+            let s = s.clone();
+            async move { s.arrived().await }
+        });
+        tokio::task::yield_now().await;
+        s.push("during".into()).unwrap();
+        tokio::time::timeout(soon * 20, waiter).await.expect("pushed during the wait: woken").unwrap();
+        assert_eq!(s.take().len(), 2);
     }
 }

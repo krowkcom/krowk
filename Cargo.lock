@@ -1453,7 +1453,6 @@ dependencies = [
  "krowk-store",
  "libc",
  "mdns-sd",
- "regex-lite",
  "reqwest",
  "ring",
  "rustls",

@@ -187,7 +187,7 @@ fn limits(ctx: &Ctx) -> Result<Limits, Error> {
 
 /// `--max-usd` and `--max-tokens` as given, either or both absent: what
 /// `krowk sessions budget` checks a session against, and what `krowk -p`
-/// holds one to before every model call.
+/// holds one to before each turn and as each call is metered.
 pub(super) fn given_limits(ctx: &Ctx) -> Result<Limits, Error> {
     // A limit given blank — `--max-usd "$UNSET"` — is a mistake to name, not
     // a check to switch off.

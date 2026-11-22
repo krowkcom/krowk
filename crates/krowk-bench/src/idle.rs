@@ -4,44 +4,31 @@
 //! and the pinned runner, which is Linux, holds them.
 
 use crate::measure::{Idle, sandboxed};
-use std::io::Read;
-use std::net::TcpListener;
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// `krowk -p` with a turn in flight against a provider that takes the
-/// request and never answers: the engine waiting on the network, the most
-/// idle a turn gets. Sampled from /proc once the request has arrived, then
-/// again after `window`; anything the process did in between is polling.
+/// `krowk -p` with a turn in flight on a Claude Code account whose
+/// `claude` — the fake the harness's tests use — has taken the prompt and
+/// never answers: krowk waiting on its backend, the most idle a turn gets.
+/// Sampled from /proc once the prompt has reached the fake, then again
+/// after `window`; anything krowk did in between is polling. krowk's own
+/// process is measured, not the fake's.
 pub fn engine_idle(bin: &Path, home: &Path, window: Duration) -> Result<Idle, String> {
-    std::fs::create_dir_all(home).map_err(|e| format!("{}: {e}", home.display()))?;
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| format!("bind the silent provider: {e}"))?;
-    let url = format!("http://{}", listener.local_addr().map_err(|e| e.to_string())?);
-    let (arrived, request) = mpsc::channel();
-    // The connection is held open, unanswered, for as long as the thread
-    // lives; it ends with the bench.
-    std::thread::spawn(move || {
-        if let Ok((mut conn, _)) = listener.accept() {
-            let mut got = Vec::new();
-            let mut buf = [0u8; 16 * 1024];
-            while !request_complete(&got) {
-                match conn.read(&mut buf) {
-                    Ok(0) | Err(_) => return,
-                    Ok(n) => got.extend_from_slice(&buf[..n]),
-                }
-            }
-            let _ = arrived.send(());
-            std::thread::park();
-            drop(conn);
-        }
+    std::fs::create_dir_all(home.join(".krowk")).map_err(|e| format!("{}: {e}", home.display()))?;
+    let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures/claude/fake-claude");
+    let (account, scenario, log) = (home.join("claude"), home.join("silent.jsonl"), home.join("fake.log"));
+    std::fs::create_dir_all(&account).map_err(|e| e.to_string())?;
+    std::fs::write(account.join("fake-login"), "").map_err(|e| e.to_string())?;
+    std::fs::write(&scenario, "@await-interrupt\n").map_err(|e| e.to_string())?;
+    let config = serde_json::json!({
+        "defaultModel": "claude/sonnet",
+        "instances": {"claude": {"kind": "claude-code", "binary": fake, "configDir": account, "env": {"FAKE_CLAUDE_SCENARIO": scenario, "FAKE_CLAUDE_LOG": log}}},
     });
+    std::fs::write(home.join(".krowk/config.json"), config.to_string()).map_err(|e| e.to_string())?;
     let stderr = home.join("stderr");
     let mut child = sandboxed(bin, home)
-        .args(["-p", "say hello"])
-        .env("ANTHROPIC_API_KEY", "sk-bench")
-        .env("ANTHROPIC_BASE_URL", &url)
+        .args(["-p", "say hello", "--trust"])
         .stdout(Stdio::null())
         .stderr(std::fs::File::create(&stderr).map_err(|e| e.to_string())?)
         .spawn()
@@ -50,19 +37,34 @@ pub fn engine_idle(bin: &Path, home: &Path, window: Duration) -> Result<Idle, St
     let result = (|| {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            if request.recv_timeout(Duration::from_millis(50)).is_ok() {
+            if std::fs::read_to_string(&log).is_ok_and(|l| l.lines().any(|l| l.starts_with(r#"in {"type":"user""#))) {
                 break;
             }
+            std::thread::sleep(Duration::from_millis(50));
             if let Ok(Some(st)) = child.try_wait() {
-                return Err(format!("`krowk -p` exited {st} before its request arrived: {}", std::fs::read_to_string(&stderr).unwrap_or_default().trim()));
+                return Err(format!("`krowk -p` exited {st} before its prompt reached claude: {}", std::fs::read_to_string(&stderr).unwrap_or_default().trim()));
             }
             if Instant::now() > deadline {
-                return Err("`krowk -p` sent no request within 30 s".into());
+                return Err("`krowk -p` sent claude no prompt within 30 s".into());
             }
         }
-        // The request is out; what is left of startup (the write returning,
-        // the await parking) settles well inside this.
-        std::thread::sleep(Duration::from_millis(500));
+        // The prompt is out. What is left of startup settles: the write
+        // returning, the await parking, and the blocking threads startup
+        // used (the account's readiness check) leaving the runtime's pool
+        // once they have been idle its ten seconds — held to the same set
+        // of threads for longer than that, then measured.
+        let settle = Instant::now() + Duration::from_secs(40);
+        let (mut threads, mut since) = (proc_switches(pid)?.into_keys().collect::<Vec<_>>(), Instant::now());
+        while since.elapsed() < Duration::from_secs(11) {
+            if Instant::now() > settle {
+                return Err(format!("`krowk -p`'s threads never settled: {threads:?}"));
+            }
+            std::thread::sleep(Duration::from_millis(250));
+            let now: Vec<u32> = proc_switches(pid)?.into_keys().collect();
+            if now != threads {
+                (threads, since) = (now, Instant::now());
+            }
+        }
         let (t0, w0) = (proc_ticks(pid)?, proc_switches(pid)?);
         std::thread::sleep(window);
         let (t1, w1) = (proc_ticks(pid)?, proc_switches(pid)?);
@@ -76,14 +78,6 @@ pub fn engine_idle(bin: &Path, home: &Path, window: Duration) -> Result<Idle, St
     let _ = child.kill();
     let _ = child.wait();
     result
-}
-
-/// Headers in, and as much body as Content-Length says.
-fn request_complete(got: &[u8]) -> bool {
-    let Some(end) = got.windows(4).position(|w| w == b"\r\n\r\n") else { return false };
-    let head = String::from_utf8_lossy(&got[..end]).to_ascii_lowercase();
-    let len = head.lines().find_map(|l| l.strip_prefix("content-length:")).and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(0);
-    got.len() >= end + 4 + len
 }
 
 /// utime + stime from /proc/<pid>/stat: every thread, since the process's
@@ -177,12 +171,5 @@ mod tests {
         assert!(started.contains("threads changed"), "{started}");
         let back = wakeups_between(&s(&[(1, 5)]), &s(&[(1, 4)])).unwrap_err();
         assert!(back.contains("went backwards"), "{back}");
-    }
-
-    #[test]
-    fn a_request_is_complete_with_its_whole_body() {
-        assert!(!request_complete(b"POST / HTTP/1.1\r\ncontent-length: 4\r\n\r\nab"));
-        assert!(request_complete(b"POST / HTTP/1.1\r\nContent-Length: 4\r\n\r\nabcd"));
-        assert!(!request_complete(b"POST / HTTP/1.1\r\n"));
     }
 }

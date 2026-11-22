@@ -72,7 +72,7 @@ impl Registry {
         let env = |k: &str| std::env::var(k).unwrap_or_default();
         let registry = crate::instances::Registry::resolve(&crate::instances::InstancesConfig::default(), &env);
         let builds = registry.builds.pool.clone().unwrap_or_else(|| crate::slots::Pool::new(crate::slots::runtime_dir(&env), crate::builds::POOL, 1));
-        let agents = registry.agents.clone().unwrap_or_else(|| crate::slots::Pool::new(crate::slots::runtime_dir(&env), crate::subagent::AGENT_SLOTS, 1));
+        let agents = registry.agents.clone().unwrap_or_else(|| crate::slots::Pool::new(crate::slots::runtime_dir(&env), crate::children::AGENT_SLOTS, 1));
         let resolve: Resolver = Box::new(move |c| match (&c.instance, &c.model) {
             (Some(i), Some(m)) => Ok(ModelRef { instance: i.clone(), model: m.clone() }),
             (None, Some(m)) => registry.parse_model(m),

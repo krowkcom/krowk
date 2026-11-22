@@ -20,9 +20,9 @@
 //! repository that can run code (`FINGERPRINTED`): one added or changed
 //! since — a `git pull` — puts the repository back to untrusted, and the
 //! question names the file. Local-only files (`.claude/settings.local.json`,
-//! which is not in git) are not fingerprinted. The native engine consults it for what a repository would
-//! widen (`crate::permissions::settings`) and the MCP servers its
-//! `.mcp.json` would start (`crate::mcp`).
+//! which is not in git) are not fingerprinted. The host consults it for
+//! what a repository would widen (`crate::permissions::settings`) and the
+//! MCP servers its `.mcp.json` would start (`crate::mcp`).
 
 use crate::engine::EngineError;
 use serde::{Deserialize, Serialize};

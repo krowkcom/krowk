@@ -29,16 +29,16 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # raw_value: the catalog reads one model out of the megabytes of the
 # models.dev cache without building the rest (the CLI already enables it).
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
-# The protocol's JSON Schema, and the tools' input schemas, derived from the
-# Rust types rather than written beside them (R-PROTO-2).
+# The protocol's JSON Schema, and the bridged tools' input schemas, derived
+# from the Rust types rather than written beside them (R-PROTO-2).
 schemars = { version = "1", default-features = false, features = ["derive", "std", "preserve_order"] }
-# The async runtime lives here and nowhere else: a model stream, a tool
+# The async runtime lives here and nowhere else: a backend's stream, its
 # process and an interrupt are three things one turn waits on at once. `net`
-# is the SuperGrok login's one-shot loopback listener.
+# is an OAuth sign-in's one-shot loopback listener.
 tokio = { version = "1", default-features = false, features = ["rt", "time", "process", "io-util", "sync", "signal", "macros", "net"] }
-# Streaming HTTP for the provider APIs. rustls on ring and the platform
-# verifier: the TLS stack the lean build's ureq already carries, so the
-# certificates krowk trusts are the same on both paths.
+# HTTP for MCP servers, OAuth sign-ins and the registry. rustls on ring and
+# the platform verifier: the TLS stack the lean build's ureq already
+# carries, so the certificates krowk trusts are the same on both paths.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-manual-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-platform-verifier = "0.7"
@@ -48,20 +48,17 @@ rustls-platform-verifier = "0.7"
 tower-layer = "0.3"
 tower-service = "0.3"
 sha2 = "0.11"
-# The SuperGrok OAuth login: the PKCE verifier and state come from ring's
-# system RNG, are base64url-encoded, and the sign-in URL and the loopback
-# answer are built and read with url. All three are already linked here
-# through rustls and reqwest, so they cost no new crate.
+# OAuth sign-ins (an MCP server's): the PKCE verifier and state come from
+# ring's system RNG, are base64url-encoded, and the sign-in URL and the
+# loopback answer are built and read with url. All three are already linked
+# here through rustls and reqwest, so they cost no new crate.
 ring = "0.17"
 base64 = "0.22"
 url = "2"
-# grep's patterns. The lite engine the lean build already links for its own
-# filters: no Unicode classes and slower on huge trees, which a capped
-# search of a work tree does not feel, against no new crate at all.
-regex-lite = "0.1"
 
 [target.'cfg(unix)'.dependencies]
-# Killing a timed-out bash call's whole process group.
+# Killing a timed-out setup command's whole process group, and the local
+# clock a limit's reset is shown in.
 libc = "0.2"
 # The host daemon's WebSocket transport (R-PROTO-1), unix-only with the
 # daemon. The server handshake and nothing else: no TLS (loopback now, the

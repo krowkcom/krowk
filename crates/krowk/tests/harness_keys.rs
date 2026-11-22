@@ -1,8 +1,8 @@
 //! Stored API keys (R-CRED-1, R-INST-5 as amended): `krowk connect <vendor>
 //! --method api-key` storing a pasted key, a `$VAR` or a `!command` in
-//! krowk's provider credentials file, the built binary against the
-//! stand-in Anthropic API, fake vendor binaries and a fake password
-//! manager. A sentinel key is followed through every path — connect, status,
+//! krowk's provider credentials file, the built binary against fake
+//! vendor binaries, a stand-in gateway and a fake password manager. A
+//! sentinel key is followed through every path — connect, status,
 //! providers list, doctor, a turn's stream-json and log, a failing request,
 //! disconnect — and found only in the credentials file.
 
@@ -98,6 +98,25 @@ impl Sandbox {
         std::fs::read_to_string(self.root.join("home/.krowk/config.json")).map(|s| serde_json::from_str(&s).unwrap()).unwrap_or(json!({}))
     }
 
+    /// Keyed Claude Code and Codex accounts, as `krowk connect` makes them
+    /// for an Anthropic, OpenAI, xAI and OpenRouter key: the instances a
+    /// stored key belongs to now (D3), krowk running no model itself (D4).
+    fn keyed_accounts(&self) {
+        let dir = |n: &str| {
+            let d = self.root.join("home/.krowk/accounts").join(n);
+            std::fs::create_dir_all(&d).unwrap();
+            d.display().to_string()
+        };
+        let codex = |n: &str, var: &str| json!({"kind": "codex-app-server", "codexHome": dir(n), "apiKeyEnv": var});
+        let cfg = json!({"instances": {
+            "anthropic": {"kind": "claude-code", "configDir": dir("anthropic"), "apiKeyEnv": "ANTHROPIC_API_KEY"},
+            "openai": codex("openai", "OPENAI_API_KEY"),
+            "xai": codex("xai", "XAI_API_KEY"),
+            "openrouter": codex("openrouter", "OPENROUTER_API_KEY"),
+        }});
+        std::fs::write(self.root.join("home/.krowk/config.json"), cfg.to_string()).unwrap();
+    }
+
     fn row(&self, instance: &str, env: &[(&str, &str)]) -> Value {
         let out = self.krowk(&["status", "--json"], env);
         let v: Value = serde_json::from_slice(&out.stdout).or_else(|_| serde_json::from_slice(&out.stderr)).unwrap();
@@ -107,6 +126,11 @@ impl Sandbox {
 
     fn pass_runs(&self) -> usize {
         std::fs::read_to_string(self.root.join("pass.log")).unwrap_or_default().lines().count()
+    }
+
+    /// How many lines the fake harnesses logged that start with `start`.
+    fn logged(&self, start: &str) -> usize {
+        std::fs::read_to_string(self.root.join("fake.log")).unwrap_or_default().lines().filter(|l| l.starts_with(start)).count()
     }
 
     /// Every file under the sandbox holding `needle`, but the credentials
@@ -125,7 +149,8 @@ impl Sandbox {
         let mut files = Vec::new();
         walk(&self.root, &mut files);
         let bin = self.root.join("bin");
-        files.into_iter().filter(|p| *p != self.credentials() && !p.starts_with(&bin)).filter(|p| std::fs::read(p).is_ok_and(|b| b.windows(needle.len()).any(|w| w == needle.as_bytes()))).collect()
+        let fake_log = self.root.join("fake.log");
+        files.into_iter().filter(|p| *p != self.credentials() && *p != fake_log && !p.starts_with(&bin)).filter(|p| std::fs::read(p).is_ok_and(|b| b.windows(needle.len()).any(|w| w == needle.as_bytes()))).collect()
     }
 }
 
@@ -139,8 +164,10 @@ fn printed(out: &Output) -> String {
     format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
 }
 
+/// A gateway's address for the sandbox's `ANTHROPIC_BASE_URL`: the fake
+/// `claude` runs the turns, so nothing it answers is a model's.
 fn answer() -> mock::Mock {
-    mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("stored keys work")))
+    mock::serve(|_, _| mock::Reply::json(200, &json!({})))
 }
 
 #[test]
@@ -157,21 +184,18 @@ fn r_cred_1_a_pasted_key_is_stored_0600_used_first_and_never_shown_anywhere() {
     assert_eq!(b.stored()["keys"]["anthropic"], json!({"literal": SENTINEL}));
     assert!(!b.config().to_string().contains(SENTINEL));
 
-    // Used before the environment's key, which is set too.
+    // Used before the environment's key, which is set too, and handed to
+    // the Claude Code account the key now is (R-NAT-2).
     let env = [("ANTHROPIC_API_KEY", DECOY)];
     let row = b.row("anthropic", &env);
-    assert_eq!((row["state"].as_str(), row["source"].as_str()), (Some("ready"), Some("stored")), "{row}");
-    let turn = b.krowk(&["-p", "hello", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "stream-json"], &env);
+    assert_eq!((row["state"].as_str(), row["source"].as_str()), (Some("ready"), Some("stored, handed to Claude Code")), "{row}");
+    let turn = b.krowk(&["-p", "hello", "--trust", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "stream-json"], &env);
     assert!(turn.status.success(), "{}", printed(&turn));
-    assert_eq!(m.seen.lock().unwrap()[0].header("x-api-key"), Some(SENTINEL), "the stored key, not the environment's");
+    // The sandbox's ANTHROPIC_BASE_URL made it a gateway's account: the key
+    // goes on as the gateway's token.
+    assert_eq!(b.logged(&format!("env ANTHROPIC_AUTH_TOKEN={SENTINEL}")), 1, "the stored key, not the environment's, handed to Claude Code");
 
-    // A failing request: refused by the API, and the key is not in the error.
-    let refused = mock::serve(|_, _| mock::Reply::json(401, &json!({"type": "error", "error": {"type": "authentication_error", "message": "invalid x-api-key"}})));
-    let failed = b.krowk(&["-p", "hello", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "stream-json"], &[("ANTHROPIC_BASE_URL", &refused.url)]);
-    assert!(!failed.status.success());
-    assert_eq!(refused.seen.lock().unwrap()[0].header("x-api-key"), Some(SENTINEL));
-
-    let mut outs = vec![out, turn, failed];
+    let mut outs = vec![out, turn];
     for args in [&["status", "--json"][..], &["status"], &["providers", "list", "--json"], &["providers", "list"], &["doctor", "--json"], &["doctor"]] {
         outs.push(b.krowk(args, &env));
     }
@@ -186,7 +210,7 @@ fn r_cred_1_a_pasted_key_is_stored_0600_used_first_and_never_shown_anywhere() {
     assert!(gone.status.success(), "{}", printed(&gone));
     assert!(printed(&gone).contains("its stored key is deleted") && printed(&gone).contains("$ANTHROPIC_API_KEY is set too"), "{}", printed(&gone));
     assert!(!std::fs::read_to_string(b.credentials()).unwrap().contains(SENTINEL));
-    assert_eq!(b.row("anthropic", &env)["source"], "env ANTHROPIC_API_KEY");
+    assert_eq!(b.row("anthropic", &env)["source"], "env ANTHROPIC_API_KEY, handed to Claude Code");
 }
 
 #[test]
@@ -195,20 +219,20 @@ fn r_cred_1_a_var_and_a_command_reference_resolve_and_one_that_fails_has_no_fall
     let b = Sandbox::new("refs", &m.url);
     let env = [("ANTHROPIC_API_KEY", DECOY)];
 
-    assert_a_var_reference(&b, &m);
-    assert_a_command_reference(&b, &m, &env);
+    assert_a_var_reference(&b);
+    assert_a_command_reference(&b, &env);
 
     // Failing: `unknown` with why, the turn refused, nothing of its output
     // shown, and the environment's key never sent in its place.
     std::fs::write(b.root.join("pass.fail"), "").unwrap();
-    let asked = m.seen.lock().unwrap().len();
+    let asked = b.logged("env ANTHROPIC_AUTH_TOKEN=");
     let row = b.row("anthropic", &env);
     assert_eq!(row["state"], "unknown", "{row}");
     assert!(row["reason"].as_str().unwrap().contains("`fake-pass …`, which stopped"), "{row}");
-    let failed = b.krowk(&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6"], &env);
+    let failed = b.krowk(&["-p", "hi", "--trust", "--model", "anthropic/claude-sonnet-4-6"], &env);
     assert_eq!(failed.status.code(), Some(3), "{}", printed(&failed));
     assert!(printed(&failed).contains("does not fall back to $ANTHROPIC_API_KEY"), "{}", printed(&failed));
-    assert_eq!(m.seen.lock().unwrap().len(), asked, "nothing was sent");
+    assert_eq!(b.logged("env ANTHROPIC_AUTH_TOKEN="), asked, "nothing was started");
     for o in [&row.to_string(), &printed(&failed)] {
         assert!(!o.contains(SENTINEL) && !o.contains("gpg:"), "{o}");
     }
@@ -228,25 +252,25 @@ fn r_cred_1_a_var_and_a_command_reference_resolve_and_one_that_fails_has_no_fall
 }
 
 /// `$VAR`: read from that variable, and with it unset nothing is sent.
-fn assert_a_var_reference(b: &Sandbox, m: &mock::Mock) {
-    let out = b.krowk(&["connect", "anthropic", "--method", "api-key", "--name", "work", "--key-ref", "$WORK_SECRET", "--base-url", &m.url], &[]);
+fn assert_a_var_reference(b: &Sandbox) {
+    let out = b.krowk(&["connect", "anthropic", "--method", "api-key", "--name", "work", "--key-ref", "$WORK_SECRET", "--base-url", &b.url], &[]);
     assert!(out.status.success(), "{}", printed(&out));
     assert_eq!(b.stored()["keys"]["anthropic:work"], json!({"env": "WORK_SECRET"}));
     let row = b.row("anthropic:work", &[("WORK_SECRET", SENTINEL)]);
-    assert_eq!((row["state"].as_str(), row["source"].as_str()), (Some("ready"), Some("stored ($WORK_SECRET)")), "{row}");
+    assert_eq!((row["state"].as_str(), row["source"].as_str()), (Some("ready"), Some("stored ($WORK_SECRET), handed to Claude Code")), "{row}");
     let unset = b.row("anthropic:work", &[("ANTHROPIC_WORK_API_KEY", DECOY)]);
     assert_eq!((unset["state"].as_str(), unset["var"].as_str()), (Some("key_not_set"), Some("WORK_SECRET")), "{unset}");
-    let refused = b.krowk(&["-p", "hi", "--model", "anthropic:work/claude-sonnet-4-6"], &[("ANTHROPIC_WORK_API_KEY", DECOY)]);
+    let refused = b.krowk(&["-p", "hi", "--trust", "--model", "anthropic:work/claude-sonnet-4-6"], &[("ANTHROPIC_WORK_API_KEY", DECOY)]);
     assert_eq!(refused.status.code(), Some(3), "{}", printed(&refused));
     assert!(printed(&refused).contains("$WORK_SECRET, which is not set") && printed(&refused).contains("does not fall back"), "{}", printed(&refused));
-    let sent = b.krowk(&["-p", "hi", "--model", "anthropic:work/claude-sonnet-4-6"], &[("WORK_SECRET", SENTINEL)]);
+    let sent = b.krowk(&["-p", "hi", "--trust", "--model", "anthropic:work/claude-sonnet-4-6"], &[("WORK_SECRET", SENTINEL)]);
     assert!(sent.status.success(), "{}", printed(&sent));
-    assert_eq!(m.seen.lock().unwrap().last().unwrap().header("x-api-key"), Some(SENTINEL));
+    assert_eq!(b.logged(&format!("env ANTHROPIC_AUTH_TOKEN={SENTINEL}")), 1, "the gateway's token, handed to Claude Code");
 }
 
 /// `!command`: run once to connect, then once per krowk process — status
 /// runs it, and a turn in another process runs it again.
-fn assert_a_command_reference(b: &Sandbox, m: &mock::Mock, env: &[(&str, &str)]) {
+fn assert_a_command_reference(b: &Sandbox, env: &[(&str, &str)]) {
     let out = b.krowk(&["connect", "anthropic", "--method", "api-key", "--key-ref", "!fake-pass show anthropic", "--format", "human"], &[]);
     assert!(out.status.success(), "{}", printed(&out));
     assert_eq!(b.pass_runs(), 1, "connecting checks the command");
@@ -260,11 +284,11 @@ fn assert_a_command_reference(b: &Sandbox, m: &mock::Mock, env: &[(&str, &str)])
     let unset = b.krowk(&["connect", "openai", "--method", "api-key", "--key-ref", "$NOT_SET_HERE", "--format", "human"], &[]);
     assert!(printed(&unset).contains("$NOT_SET_HERE is not set here") && !printed(&unset).contains("try it"), "{}", printed(&unset));
     let row = b.row("anthropic", env);
-    assert_eq!((row["state"].as_str(), row["source"].as_str()), (Some("ready"), Some("stored (!fake-pass …)")), "{row}");
+    assert_eq!((row["state"].as_str(), row["source"].as_str()), (Some("ready"), Some("stored (!fake-pass …), handed to Claude Code")), "{row}");
     assert_eq!(b.pass_runs(), 2);
-    let turn = b.krowk(&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "stream-json"], env);
+    let turn = b.krowk(&["-p", "hi", "--trust", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "stream-json"], env);
     assert!(turn.status.success(), "{}", printed(&turn));
-    assert_eq!(m.seen.lock().unwrap().last().unwrap().header("x-api-key"), Some(SENTINEL));
+    assert_eq!(b.logged(&format!("env ANTHROPIC_AUTH_TOKEN={SENTINEL}")), 2, "the command's key, handed to Claude Code");
     assert_eq!(b.pass_runs(), 3, "once for the turn's process");
 }
 
@@ -285,15 +309,19 @@ fn r_cred_1_no_config_but_the_persons_own_credentials_file_can_make_krowk_run_a_
     std::fs::write(b.root.join("repo/.krowk/config.json"), planted.to_string()).unwrap();
     std::fs::write(b.root.join("planted.json"), json!({"version": 1, "keys": {"anthropic": {"command": cmd}}}).to_string()).unwrap();
     std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
-    let own = json!({"instances": {"openai:x": {"kind": "openai-api", "apiKeyEnv": format!("!{cmd}")}, "xai:y": {"kind": "xai-api", "apiKeyEnv": "$(touch pwned)"}}, "keysFrom": b.root.join("planted.json")});
+    b.keyed_accounts();
+    let mut own: Value = serde_json::from_str(&std::fs::read_to_string(b.root.join("home/.krowk/config.json")).unwrap()).unwrap();
+    own["instances"]["openai:x"] = json!({"kind": "openai-api", "apiKeyEnv": format!("!{cmd}")});
+    own["instances"]["xai:y"] = json!({"kind": "xai-api", "apiKeyEnv": "$(touch pwned)"});
+    own["keysFrom"] = json!(b.root.join("planted.json"));
     std::fs::write(b.root.join("home/.krowk/config.json"), own.to_string()).unwrap();
 
     let env = [("ANTHROPIC_API_KEY", DECOY)];
     let row = b.row("anthropic", &env);
-    assert_eq!(row["source"], "env ANTHROPIC_API_KEY", "{row}");
+    assert_eq!(row["source"], "env ANTHROPIC_API_KEY, handed to Claude Code", "{row}");
     let turn = b.krowk(&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--trust"], &env);
     assert!(turn.status.success(), "{}", printed(&turn));
-    assert_eq!(m.seen.lock().unwrap()[0].header("x-api-key"), Some(DECOY));
+    assert!(b.logged("env ANTHROPIC_API_KEY=set") >= 1, "the environment's key, handed to Claude Code");
     assert_eq!(b.row("openai:x", &[])["state"], "key_not_set", "a variable's name is only ever a name");
     assert!(!pwned.exists() && !b.root.join("repo/pwned").exists(), "nothing ran");
 }
@@ -322,69 +350,11 @@ fn r_cred_1_at_a_terminal_a_key_is_pasted_without_echo_and_without_one_the_flags
 }
 
 #[test]
-fn r_cred_1_the_file_tools_neither_read_search_nor_write_krowks_home_unasked() {
-    // The model goes for krowk's home by every spelling that leads there —
-    // by name, through `..`, in another case, through a symlinked alias —
-    // with allow rules for everything, from a session whose working
-    // directory holds the home: every read, search and write rooted in it
-    // is refused, a search of the directory around it skips it, and what
-    // the model is sent back never holds the key.
-    let target = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-    let path = target.clone();
-    let calls = [
-        ("read", json!({"path": ".krowk/config.json"})),
-        ("read", json!({"path": ".krowk/../.krowk/credentials.json"})),
-        ("read", json!({"path": ".KROWK/credentials.json"})),
-        ("read", json!({"path": "alias/credentials.json"})),
-        ("grep", json!({"pattern": "STORED-SENTINEL", "path": ".krowk"})),
-        ("grep", json!({"pattern": "STORED-SENTINEL", "path": "alias"})),
-        ("glob", json!({"pattern": "**/*.json", "path": ".krowk/../.krowk"})),
-        ("write", json!({"path": ".krowk/config.json", "content": "{}"})),
-        ("write", json!({"path": "alias/sessions/planted.json", "content": "{}"})),
-        ("grep", json!({"pattern": "STORED-SENTINEL", "path": "."})),
-        ("glob", json!({"pattern": "**/*.json", "path": "."})),
-    ];
-    let m = mock::serve(move |_, n| match n {
-        0 => mock::Reply::sse(&mock::tool_use("toolu_00Read", "read", &json!({"path": *path.lock().unwrap()}))),
-        n if n <= calls.len() => {
-            let (tool, input) = &calls[n - 1];
-            mock::Reply::sse(&mock::tool_use(&format!("toolu_{n:02}Call"), tool, input))
-        }
-        _ => mock::Reply::sse(&mock::text_stream("done")),
-    });
-    let b = Sandbox::new("fence", &m.url);
-    *target.lock().unwrap() = b.credentials().display().to_string();
-    assert!(b.piped(&["connect", "anthropic", "--method", "api-key", "--key-stdin"], SENTINEL).status.success());
-    let mut config = b.config();
-    config["permissions"] = json!({"allow": ["Read", "Edit", "Write", "Grep", "Glob"]});
-    std::fs::write(b.root.join("home/.krowk/config.json"), config.to_string()).unwrap();
-    std::fs::write(b.root.join("home/notes.txt"), "STORED-SENTINEL-control\n").unwrap();
-    std::fs::write(b.root.join("home/other.json"), "{}\n").unwrap();
-    std::fs::write(b.root.join("home/.krowk/notes.txt"), "STORED-SENTINEL-inside\n").unwrap();
-    std::os::unix::fs::symlink(b.root.join("home/.krowk"), b.root.join("home/alias")).unwrap();
-    let before = std::fs::read(b.root.join("home/.krowk/config.json")).unwrap();
-    let mut cmd = b.command(&["-p", "look", "--model", "anthropic/claude-sonnet-4-6", "--permission-mode", "acceptEdits"], &[]);
-    let out = cmd.current_dir(b.root.join("home")).output().unwrap();
-    assert!(out.status.success(), "{}", printed(&out));
-    let seen = m.seen.lock().unwrap();
-    let result = |i: usize| seen[i].body["messages"].as_array().unwrap().last().unwrap().to_string();
-    for i in 1..=10 {
-        assert!(result(i).contains("inside krowk's home"), "call {i} is refused: {}", result(i));
-    }
-    assert!(result(11).contains("notes.txt") && !result(11).contains("inside") && !result(11).contains(".krowk"), "a search around the home skips it: {}", result(11));
-    assert!(result(12).contains("other.json") && !result(12).contains("credentials.json") && !result(12).contains("config.json"), "so does a glob: {}", result(12));
-    assert_eq!(std::fs::read(b.root.join("home/.krowk/config.json")).unwrap(), before, "nothing was written");
-    assert!(!b.root.join("home/.krowk/sessions/planted.json").exists());
-    for s in seen.iter().skip(1) {
-        assert!(!s.body.to_string().contains(SENTINEL), "the key reached the model: {}", s.body);
-    }
-}
-
-#[test]
 fn r_cred_1_a_credentials_file_krowk_cannot_read_is_named_without_quoting_it() {
     let m = answer();
     let b = Sandbox::new("unreadable", &m.url);
     std::fs::create_dir_all(b.credentials().parent().unwrap()).unwrap();
+    b.keyed_accounts();
     // A key and a token written by hand as bare strings: serde's own words
     // would quote them back.
     for file in [json!({"version": 1, "keys": {"anthropic": SENTINEL}}), json!({"version": 1, "instances": {"supergrok": SENTINEL}})] {
@@ -431,6 +401,8 @@ fn r_cred_1_with_no_home_krowk_reads_no_repositorys_dot_krowk_as_its_own() {
 #[test]
 fn r_cred_1_a_command_runs_once_per_process_with_no_terminal_and_bounded_output() {
     let b = Sandbox::new("once", "http://127.0.0.1:9");
+    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
+    b.keyed_accounts();
     // One that asks on the terminal; one that never stops printing.
     b.install("tty-pass", &format!("#!/bin/sh\nread x </dev/tty || exit 1\necho \"{SENTINEL}\"\n"));
     b.install("chatty", "#!/bin/sh\nhead -c 1000000 /dev/zero | tr '\\0' a\n");
@@ -467,7 +439,8 @@ fn r_cred_1_a_command_runs_once_per_process_with_no_terminal_and_bounded_output(
     assert!(t.text().contains("with no terminal"), "{}", t.text());
 
     // At a terminal, `krowk connect` runs it there, so its passphrase can be typed.
-    let mut c = b.command(&["connect", "xai", "--method", "api-key"], &[]);
+    // A new account: `xai` is the hand-written one above.
+    let mut c = b.command(&["connect", "xai", "--method", "api-key", "--name", "t"], &[]);
     c.env("TERM", "xterm-256color");
     let mut t = pty::Pty::spawn(c, 120, 30);
     let wait = Duration::from_secs(20);

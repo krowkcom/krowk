@@ -337,11 +337,6 @@ pub fn heavy(command: &str) -> bool {
     false
 }
 
-/// What the result says about the wait, when it was long enough to notice.
-pub fn waited_note(waited: std::time::Duration) -> Option<String> {
-    (waited > std::time::Duration::from_secs(1)).then(|| format!("(waited {:.1} s for a build slot)", waited.as_secs_f64()))
-}
-
 /// What the live output shows while a heavy command waits.
 pub fn waiting_line(in_use: usize) -> String {
     format!("waiting for a build slot ({in_use} in use)\n")
@@ -437,9 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn a_long_wait_is_noted_and_a_short_one_is_not() {
-        assert_eq!(waited_note(std::time::Duration::from_millis(900)), None);
-        assert_eq!(waited_note(std::time::Duration::from_millis(3300)).as_deref(), Some("(waited 3.3 s for a build slot)"));
+    fn the_waiting_line_says_how_many_slots_are_in_use() {
         assert_eq!(waiting_line(2), "waiting for a build slot (2 in use)\n");
     }
 }

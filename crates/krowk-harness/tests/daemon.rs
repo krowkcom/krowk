@@ -1,5 +1,5 @@
-//! The host daemon over its unix socket, against a stand-in Anthropic API
-//! that types slowly: a turn outlives the client that asked for it, a
+//! The host daemon over its unix socket, against the fake `claude` typing
+//! slowly (`common/fake.rs`): a turn outlives the client that asked for it, a
 //! client that attaches late sees the turn so far and then the rest, two
 //! clients on one session see the same frames, and the daemon goes away
 //! once it has nothing to do (R-HOST-1, R-PROTO-1). Each test runs its own
@@ -7,8 +7,8 @@
 
 #![cfg(unix)]
 
-#[path = "common/mock.rs"]
-mod mock;
+#[path = "common/fake.rs"]
+mod fake;
 #[path = "common/scratch.rs"]
 mod scratch;
 
@@ -16,7 +16,7 @@ use krowk_harness::daemon::{self, client::Client, server};
 use krowk_harness::host::HostConfig;
 use krowk_harness::instances::{InstancesConfig, Registry};
 use krowk_harness::log;
-use krowk_harness::protocol::{Command, Delta, Item, LiveEvent, LogBody, LogEvent, PermissionMode, StreamLine, TurnStatus};
+use krowk_harness::protocol::{Command, Delta, Item, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, StreamLine, TurnStatus};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,29 +24,35 @@ use tokio::sync::mpsc;
 
 struct Home {
     root: PathBuf,
-    url: String,
+    instances: InstancesConfig,
     /// How many hosts' configurations the daemon has asked for.
     made: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Home {
-    fn new(name: &str, url: &str) -> Home {
+    /// A home whose one instance, `claude`, is the fake playing `scenario`.
+    fn new(name: &str, scenario: Option<&str>) -> Home {
         let root = scratch::root(&format!("daemon-{name}"));
         for d in ["home", "run", "repo/.git"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
-        Home { root, url: url.into(), made: Arc::default() }
+        let instances = InstancesConfig { instances: [("claude".to_string(), fake::claude(&root, "claude", scenario))].into_iter().collect(), ..Default::default() };
+        Home { root, instances, made: Arc::default() }
     }
 
     fn env(&self) -> impl Fn(&str) -> String + Clone + Send + 'static {
-        let (root, url) = (self.root.clone(), self.url.clone());
+        let root = self.root.clone();
         move |k| match k {
             "HOME" => root.join("home").display().to_string(),
             "XDG_RUNTIME_DIR" => root.join("run").display().to_string(),
-            "ANTHROPIC_API_KEY" => "sk-test".into(),
-            "ANTHROPIC_BASE_URL" => url.clone(),
+            "PATH" => std::env::var("PATH").unwrap_or_default(),
             _ => String::new(),
         }
+    }
+
+    /// The prompts the fake was sent.
+    fn prompts(&self) -> usize {
+        fake::prompts(&self.root, "claude").len()
     }
 
     fn socket(&self) -> PathBuf {
@@ -77,14 +83,14 @@ impl Home {
     fn serve_hooked(&self, version: &str, idle: Option<Duration>, kick: Option<Arc<tokio::sync::Notify>>, hooks: Hooks) -> std::thread::JoinHandle<Result<(), String>> {
         let (env, socket, version) = (self.env(), self.socket(), version.to_string());
         let credentials = self.root.join("home/.krowk/credentials.json");
-        let made = self.made.clone();
+        let (made, instances) = (self.made.clone(), self.instances.clone());
         let t = std::thread::spawn(move || {
             let factory: server::Factory = Box::new(move |cwd: &Path, answers: bool| {
                 made.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 Ok(HostConfig {
                     sessions_dir: log::sessions_dir(&env).unwrap(),
                     cwd: cwd.to_path_buf(),
-                    registry: Registry::resolve(&InstancesConfig::default(), &env),
+                    registry: Registry::resolve(&instances, &env),
                     krowk_version: "test".into(),
                     pricer: Arc::new(|_, _, _| None),
                     catalog: Arc::new(|_, _| None),
@@ -92,7 +98,7 @@ impl Home {
                     trust: krowk_harness::trust::allow_all(),
                     publisher: None,
                     permissions: krowk_harness::permissions::Config { approvals: answers, ..Default::default() },
-                    agents: krowk_harness::subagent::AgentsConfig::none(),
+                    agents: krowk_harness::agents::AgentsConfig::none(),
                     session: Default::default(),
                 })
             });
@@ -126,7 +132,7 @@ impl Home {
     }
 
     fn prompt(&self, text: &str) -> Command {
-        let model = Registry::resolve(&InstancesConfig::default(), &self.env()).parse_model("claude-sonnet-4-6").unwrap();
+        let model = ModelRef { instance: "claude".into(), model: "sonnet".into() };
         Command::Prompt { session_id: None, text: text.into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None }
     }
 }
@@ -145,11 +151,11 @@ impl Drop for Home {
     }
 }
 
-const ANSWER: &str = "one two three four five six seven eight nine ten eleven twelve";
+const ANSWER: &str = "w0 w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 ";
 
-/// A provider that types `ANSWER` a word every 40 ms.
-fn slow() -> mock::Mock {
-    mock::serve(|_, _| mock::Reply::paced(mock::text_stream(ANSWER), Duration::from_millis(40)))
+/// A model that types `ANSWER`, a word every 40 ms, every turn.
+fn slow() -> String {
+    format!("@when \"user\"\n{}", fake::typed(12, 0.04, "w", 1))
 }
 
 fn rt() -> tokio::runtime::Runtime {
@@ -187,8 +193,7 @@ fn answered(lines: &[StreamLine]) -> Option<String> {
 
 #[test]
 fn r_host_1_a_turn_outlives_its_client_and_a_new_one_reattaches_mid_stream() {
-    let m = slow();
-    let home = Home::new("reattach", &m.url);
+    let home = Home::new("reattach", Some(&slow()));
     let daemon = home.serve(Some(Duration::from_millis(300)));
     let rt = rt();
     let (session, first, later) = rt.block_on(async {
@@ -244,8 +249,7 @@ fn r_host_1_a_turn_outlives_its_client_and_a_new_one_reattaches_mid_stream() {
 
 #[test]
 fn r_proto_1_two_clients_on_one_session_see_identical_frames() {
-    let m = slow();
-    let home = Home::new("two", &m.url);
+    let home = Home::new("two", Some(&slow()));
     let daemon = home.serve(Some(Duration::from_millis(300)));
     let rt = rt();
     let (a_lines, b_lines) = rt.block_on(async {
@@ -287,8 +291,7 @@ fn r_proto_1_two_clients_on_one_session_see_identical_frames() {
 
 #[test]
 fn r_host_1_the_daemon_exits_after_its_idle_window_and_not_while_a_client_is_on() {
-    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("hi")));
-    let home = Home::new("idle", &m.url);
+    let home = Home::new("idle", None);
     let daemon = home.serve(Some(Duration::from_millis(400)));
     let rt = rt();
     rt.block_on(async {
@@ -312,7 +315,7 @@ fn r_host_1_the_daemon_exits_after_its_idle_window_and_not_while_a_client_is_on(
 #[test]
 fn r_proto_1_a_client_of_another_protocol_version_is_refused_with_a_fix() {
     use std::io::{BufRead, Write};
-    let home = Home::new("version", "http://127.0.0.1:9");
+    let home = Home::new("version", None);
     let daemon = home.serve(Some(Duration::from_millis(200)));
     let mut s = std::os::unix::net::UnixStream::connect(home.socket()).unwrap();
     writeln!(s, r#"{{"type":"hello","protocolVersion":999,"cwd":"/"}}"#).unwrap();
@@ -328,7 +331,7 @@ fn r_proto_1_a_client_of_another_protocol_version_is_refused_with_a_fix() {
 
 #[test]
 fn r_host_1_two_krowks_starting_at_once_spawn_one_daemon_over_a_stale_socket() {
-    let home = Home::new("race", "http://127.0.0.1:9");
+    let home = Home::new("race", None);
     // A socket a daemon that died left behind: nothing answers on it.
     drop(std::os::unix::net::UnixListener::bind(home.socket()).unwrap());
     assert!(home.socket().exists());
@@ -358,16 +361,10 @@ fn r_host_1_two_krowks_starting_at_once_spawn_one_daemon_over_a_stale_socket() {
     }
 }
 
-/// A model that runs one bash command, then answers once it has the result.
-fn runs_bash() -> mock::Mock {
-    mock::serve(|body, _| {
-        let last = body["messages"].as_array().and_then(|m| m.last().cloned()).unwrap_or_default();
-        if last["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result")) {
-            mock::Reply::sse(&mock::text_stream("Done."))
-        } else {
-            mock::Reply::sse(&mock::tool_use("toolu_01Call", "bash", &serde_json::json!({"command": "touch made-by-the-model"})))
-        }
-    })
+/// A model that asks to run one bash command, then answers once it has the
+/// result. It runs nothing: were it allowed, the file would be the test's.
+fn runs_bash() -> String {
+    format!("{}\n@touch made-by-the-model\n{}", fake::asks_bash("toolu_01Call", "touch made-by-the-model"), fake::answer("Done."))
 }
 
 fn tool_result(lines: &[StreamLine]) -> Option<(String, bool)> {
@@ -382,8 +379,7 @@ fn tool_result(lines: &[StreamLine]) -> Option<(String, bool)> {
 /// does — never waiting on a person nobody will be.
 #[test]
 fn r_host_1_a_p_clients_turn_refuses_what_would_be_asked_as_in_process() {
-    let m = runs_bash();
-    let home = Home::new("refuse", &m.url);
+    let home = Home::new("refuse", Some(&runs_bash()));
     let daemon = home.serve(Some(Duration::from_millis(300)));
     let rt = rt();
     let lines = rt.block_on(async {
@@ -409,8 +405,7 @@ fn r_host_1_a_p_clients_turn_refuses_what_would_be_asked_as_in_process() {
 /// answered `deny`, so it ends, and the daemon can go.
 #[test]
 fn r_host_1_a_request_left_with_no_client_to_answer_it_is_denied() {
-    let m = runs_bash();
-    let home = Home::new("leave", &m.url);
+    let home = Home::new("leave", Some(&runs_bash()));
     let daemon = home.serve(Some(Duration::from_millis(300)));
     let rt = rt();
     let session = rt.block_on(async {
@@ -444,8 +439,7 @@ fn r_host_1_a_request_left_with_no_client_to_answer_it_is_denied() {
 /// asking the daemon krowk started to stop — refused while a turn runs.
 #[test]
 fn r_host_2_a_daemon_stops_when_asked_unless_a_turn_runs() {
-    let m = slow();
-    let home = Home::new("stop", &m.url);
+    let home = Home::new("stop", Some(&slow()));
     let daemon = home.serve(None);
     let rt = rt();
     rt.block_on(async {
@@ -476,8 +470,7 @@ fn r_host_2_a_daemon_stops_when_asked_unless_a_turn_runs() {
 /// one following a session with nothing running is told so at once.
 #[test]
 fn r_host_1_a_follower_gets_the_running_turns_frames_and_its_result() {
-    let m = slow();
-    let home = Home::new("follow", &m.url);
+    let home = Home::new("follow", Some(&slow()));
     let daemon = home.serve(Some(Duration::from_millis(300)));
     let rt = rt();
     rt.block_on(async {
@@ -515,89 +508,11 @@ fn r_host_1_a_follower_gets_the_running_turns_frames_and_its_result() {
     daemon.join().unwrap().unwrap();
 }
 
-/// R-STEER-2: a job outlives the client whose turn started it, the idle
-/// window included; a client that follows the session after it left is
-/// told the count once caught up, before anything changes it; a turn of
-/// the session on another host (an interactive client's, which answers approvals) leaves
-/// the job running on the first; and once it ends the daemon lets the
-/// session go and exits after its window.
-#[test]
-fn r_steer_2_a_job_outlives_its_client_and_a_later_follower_is_told_the_count_at_once() {
-    let m = mock::serve(|_, n| {
-        mock::Reply::sse(&match n {
-            0 => mock::tool_use("t1", "bash", &serde_json::json!({"command": "sleep 10", "run_in_background": true})),
-            3 => mock::tool_use("t2", "kill_bash", &serde_json::json!({"id": "b1"})),
-            _ => mock::text_stream("Started."),
-        })
-    });
-    let home = Home::new("bg-count", &m.url);
-    let daemon = home.serve(Some(Duration::from_millis(300)));
-    let rt = rt();
-    rt.block_on(async {
-        // `krowk -p --daemon`: the turn starts the job, and the client goes.
-        let a = home.client().await;
-        let (tx, _rx) = mpsc::channel(1024);
-        let mut cmd = home.prompt("start a job");
-        if let Command::Prompt { permission_mode, .. } = &mut cmd {
-            *permission_mode = PermissionMode::BypassPermissions;
-        }
-        let r = a.execute(cmd, tx).await.unwrap().unwrap();
-        assert_eq!(r.status, TurnStatus::Completed);
-        drop(a);
-        // Past the idle window: the job still runs, and the daemon with it.
-        tokio::time::sleep(Duration::from_millis(600)).await;
-        let b = home.client_answering(true).await;
-        let (btx, mut brx) = mpsc::channel(1024);
-        assert!(!b.attach(&r.session_id, None, btx).await.unwrap(), "no turn runs");
-        let mut seen = Vec::new();
-        let count = loop {
-            let line = tokio::time::timeout(Duration::from_secs(2), brx.recv()).await.expect("the count, at once").expect("the stream stays open");
-            if let StreamLine::Live(LiveEvent::Background { session_id, running }) = &line {
-                break (session_id.clone(), *running);
-            }
-            seen.push(line);
-        };
-        assert_eq!(count, (r.session_id.clone(), 1), "after {} lines caught up", seen.len());
-        // The follower's turn runs on its own host: the job's is kept.
-        let mut cmd = home.prompt("and now?");
-        if let Command::Prompt { session_id, .. } = &mut cmd {
-            *session_id = Some(r.session_id.clone());
-        }
-        let (ttx, _trx) = mpsc::channel(1024);
-        assert_eq!(b.execute(cmd, ttx).await.unwrap().unwrap().status, TurnStatus::Completed);
-        drop(b);
-        // Another `-p` client, on the job's host, finds it running and stops it.
-        let c = home.client().await;
-        let mut cmd = home.prompt("stop it");
-        if let Command::Prompt { session_id, permission_mode, .. } = &mut cmd {
-            *session_id = Some(r.session_id.clone());
-            *permission_mode = PermissionMode::BypassPermissions;
-        }
-        let (ctx, mut crx) = mpsc::channel(1024);
-        c.execute(cmd, ctx).await.unwrap().unwrap();
-        let mut lines = Vec::new();
-        while let Ok(l) = crx.try_recv() {
-            lines.push(l);
-        }
-        let (output, _) = tool_result(&lines).expect("kill_bash ran");
-        assert!(output.contains("stopped background job b1"), "{output}");
-    });
-    // With no client left, the job's end lets the daemon go after its window.
-    drop(rt);
-    let deadline = std::time::Instant::now() + Duration::from_secs(8);
-    while !daemon.is_finished() {
-        assert!(std::time::Instant::now() < deadline, "the daemon stayed once the job ended");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    daemon.join().unwrap().unwrap();
-}
-
 /// R-PROTO-1: a client running a turn in one session while following
 /// another keeps their streams apart — each line goes to its session's.
 #[test]
 fn r_proto_1_a_client_in_two_sessions_keeps_their_streams_apart() {
-    let m = slow();
-    let home = Home::new("apart", &m.url);
+    let home = Home::new("apart", Some(&slow()));
     let daemon = home.serve(Some(Duration::from_millis(300)));
     let rt = rt();
     rt.block_on(async {
@@ -634,8 +549,7 @@ fn r_proto_1_a_client_in_two_sessions_keeps_their_streams_apart() {
 /// `krowk connect` from another process: the daemon reads every host's instances again.
 #[test]
 fn r_proto_1_reload_reads_every_hosts_instances_again() {
-    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("hi")));
-    let home = Home::new("reload", &m.url);
+    let home = Home::new("reload", None);
     let daemon = home.serve(Some(Duration::from_millis(300)));
     let rt = rt();
     rt.block_on(async {
@@ -643,7 +557,7 @@ fn r_proto_1_reload_reads_every_hosts_instances_again() {
         let (tx, _rx) = mpsc::channel(1024);
         c.execute(home.prompt("hi"), tx).await.unwrap().unwrap();
         let before = home.made.load(std::sync::atomic::Ordering::SeqCst);
-        c.reload(Some("anthropic"), None).await.unwrap();
+        c.reload(Some("claude"), None).await.unwrap();
         assert!(home.made.load(std::sync::atomic::Ordering::SeqCst) > before, "each host's configuration made again");
     });
     drop(rt);
@@ -655,8 +569,9 @@ fn r_proto_1_reload_reads_every_hosts_instances_again() {
 /// and stops the turn.
 #[test]
 fn r_proto_1_an_interrupt_is_answered_while_the_turns_stream_is_full() {
-    let m = mock::serve(|_, _| mock::Reply::paced(mock::text_stream(&"word ".repeat(2000)), Duration::from_millis(3)));
-    let home = Home::new("full", &m.url);
+    // Two thousand words, then held until interrupted, as Claude Code is.
+    let interrupted = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming","errors":[],"session_id":"{{SESSION}}"}"#;
+    let home = Home::new("full", Some(&format!("@type 2000 0 word\n@await-interrupt\n{interrupted}")));
     let daemon = home.serve(Some(Duration::from_millis(300)));
     let rt = rt();
     rt.block_on(async {
@@ -689,8 +604,7 @@ fn r_proto_1_an_interrupt_is_answered_while_the_turns_stream_is_full() {
 /// is restarted.
 #[test]
 fn r_host_1_a_remote_client_reconnects_when_its_daemon_goes() {
-    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("hi")));
-    let home = Arc::new(Home::new("reconnect", &m.url));
+    let home = Arc::new(Home::new("reconnect", None));
     let first = home.serve(Some(Duration::from_millis(300)));
     let started = Arc::new(std::sync::Mutex::new(Vec::new()));
     let rt = rt();
@@ -727,8 +641,7 @@ fn r_host_1_a_remote_client_reconnects_when_its_daemon_goes() {
 /// run, so an older krowk still open never replaces it in turn.
 #[test]
 fn r_host_1_an_older_daemon_is_replaced_and_a_newer_one_left() {
-    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("hi")));
-    let home = Arc::new(Home::new("renew", &m.url));
+    let home = Arc::new(Home::new("renew", None));
     let old = home.serve_as("0.12.1", Some(Duration::from_millis(300)), None);
     let started = Arc::new(std::sync::Mutex::new(Vec::new()));
     let rt = rt();
@@ -763,8 +676,7 @@ fn r_host_1_an_older_daemon_is_replaced_and_a_newer_one_left() {
 /// An older daemon running a turn is left to finish it.
 #[test]
 fn r_host_1_an_older_daemon_is_not_replaced_while_a_turn_runs() {
-    let m = slow();
-    let home = Home::new("renew-busy", &m.url);
+    let home = Home::new("renew-busy", Some(&slow()));
     let old = home.serve_as("0.12.1", Some(Duration::from_millis(300)), None);
     let rt = rt();
     rt.block_on(async {
@@ -794,8 +706,7 @@ fn r_host_1_an_older_daemon_is_not_replaced_while_a_turn_runs() {
 /// happen to arrive first — and a session left sends nothing more.
 #[test]
 fn r_proto_1_a_new_sessions_stream_is_bound_by_its_command_and_leave_stops_the_rest() {
-    let m = slow();
-    let home = Home::new("bind", &m.url);
+    let home = Home::new("bind", Some(&slow()));
     let daemon = home.serve(Some(Duration::from_millis(300)));
     let rt = rt();
     rt.block_on(async {
@@ -850,8 +761,7 @@ fn r_proto_1_a_new_sessions_stream_is_bound_by_its_command_and_leave_stops_the_r
 /// is lost, and nothing drawn comes again.
 #[test]
 fn r_host_1_following_after_the_replays_last_event_misses_and_repeats_nothing() {
-    let m = slow();
-    let home = Home::new("after", &m.url);
+    let home = Home::new("after", Some(&slow()));
     let daemon = home.serve(Some(Duration::from_millis(300)));
     let rt = rt();
     rt.block_on(async {
@@ -897,9 +807,8 @@ fn r_host_1_following_after_the_replays_last_event_misses_and_repeats_nothing() 
 /// turn answers its result as though nothing had happened.
 #[test]
 fn r_lag_4_a_remote_let_go_mid_turn_resumes_from_its_cursor_with_no_gap_or_duplicate() {
-    let answer: String = (1..=300).map(|i| format!("w{i} ")).collect();
-    let m = { let a = answer.clone(); mock::serve(move |_, _| mock::Reply::paced(mock::text_stream(&a), Duration::from_millis(4))) };
-    let home = Home::new("resume", &m.url);
+    let answer: String = (0..300).map(|i| format!("w{i} ")).collect();
+    let home = Home::new("resume", Some(&fake::typed(300, 0.004, "w", 1)));
     let kick = Arc::new(tokio::sync::Notify::new());
     let daemon = home.serve_with(Some(Duration::from_millis(300)), Some(kick.clone()));
     let rt = rt();
@@ -934,8 +843,8 @@ fn r_lag_4_a_remote_let_go_mid_turn_resumes_from_its_cursor_with_no_gap_or_dupli
         assert_eq!(ids.len(), logged.len(), "no logged event twice");
         let finished = logged.iter().filter(|e| matches!(&e.body, LogBody::ItemCompleted { item: Item::AssistantText { .. }, .. })).count();
         assert_eq!(finished, 1, "the finished item once");
-        // Resumed, not run again: the prompt went to the provider once.
-        assert_eq!(m.seen.lock().unwrap().len(), 1, "the prompt was sent once");
+        // Resumed, not run again: the prompt went to the model once.
+        assert_eq!(home.prompts(), 1, "the prompt was sent once");
     });
     drop(rt);
     daemon.join().unwrap().unwrap();
@@ -949,9 +858,8 @@ fn r_lag_4_a_remote_let_go_mid_turn_resumes_from_its_cursor_with_no_gap_or_dupli
 #[test]
 fn r_lag_4_a_new_session_prompt_cut_before_its_first_line_is_found_again_by_its_client_ref() {
     use krowk_harness::host::{HoldAt, hold_turns};
-    let gate = mock::Gate::default();
-    let m = { let g = gate.clone(); mock::serve(move |_, _| mock::Reply { hold: Some(("message_stop", g.clone())), ..mock::Reply::paced(mock::text_stream("found again"), Duration::from_millis(1)) }) };
-    let home = Home::new("refind", &m.url);
+    // Its answer comes a second after it is asked: after the test has seen it asked.
+    let home = Home::new("refind", Some(&format!("@sleep 1\n{}", fake::answer("found again"))));
     let kick = Arc::new(tokio::sync::Notify::new());
     let daemon = home.serve_with(Some(Duration::from_millis(300)), Some(kick.clone()));
     let rt = rt();
@@ -981,11 +889,10 @@ fn r_lag_4_a_new_session_prompt_cut_before_its_first_line_is_found_again_by_its_
         drive!(Duration::from_millis(300));
         assert!(rx.try_recv().is_err(), "no line came before the cut");
         drop(held);
-        while m.seen.lock().unwrap().is_empty() {
-            assert!(std::time::Instant::now() < deadline, "the provider was never asked");
+        while home.prompts() == 0 {
+            assert!(std::time::Instant::now() < deadline, "the model was never asked");
             drive!(Duration::from_millis(5));
         }
-        gate.open();
         let result = exec.await.expect("found again, not host_gone").expect("and answered");
         assert_eq!(result.status, TurnStatus::Completed);
         assert!(r.take_note().is_some_and(|n| n.contains("reconnected")), "on a connection of its own");
@@ -997,7 +904,7 @@ fn r_lag_4_a_new_session_prompt_cut_before_its_first_line_is_found_again_by_its_
             }
         }
         assert_eq!(started, 1, "its session followed from the start, once");
-        assert_eq!(m.seen.lock().unwrap().len(), 1, "the prompt was sent once");
+        assert_eq!(home.prompts(), 1, "the prompt was sent once");
     });
     drop(rt);
     daemon.join().unwrap().unwrap();
@@ -1009,7 +916,7 @@ fn r_lag_4_a_new_session_prompt_cut_before_its_first_line_is_found_again_by_its_
 /// client connected as long holds it up: the idle test above.)
 #[test]
 fn r_host_1_a_background_client_does_not_hold_the_daemon_up() {
-    let home = Home::new("bg-idle", "http://127.0.0.1:9");
+    let home = Home::new("bg-idle", None);
     let daemon = home.serve(Some(Duration::from_millis(400)));
     let started = std::time::Instant::now();
     let rt = rt();
@@ -1034,7 +941,7 @@ fn r_host_1_a_background_client_does_not_hold_the_daemon_up() {
 /// `status` counts only the ordinary ones.
 #[test]
 fn r_host_1_stop_and_status_do_not_count_a_background_client() {
-    let home = Home::new("bg-stop", "http://127.0.0.1:9");
+    let home = Home::new("bg-stop", None);
     let daemon = home.serve(None);
     let rt = rt();
     rt.block_on(async {
@@ -1052,8 +959,7 @@ fn r_host_1_stop_and_status_do_not_count_a_background_client() {
 /// approvals — a background one that answers counts like any other.
 #[test]
 fn r_host_1_status_counts_a_sessions_answering_followers() {
-    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("hi")));
-    let home = Home::new("answering", &m.url);
+    let home = Home::new("answering", None);
     let daemon = home.serve(Some(Duration::from_millis(300)));
     let rt = rt();
     rt.block_on(async {
@@ -1082,8 +988,7 @@ fn r_host_1_status_counts_a_sessions_answering_followers() {
 #[test]
 fn r_host_1_status_running_agrees_with_a_prompt_refused_as_busy() {
     use krowk_harness::host::{HoldAt, hold_turns};
-    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("hi")));
-    let home = Home::new("busy", &m.url);
+    let home = Home::new("busy", None);
     let daemon = home.serve(Some(Duration::from_millis(300)));
     let rt = rt();
     rt.block_on(async {
@@ -1158,20 +1063,16 @@ async fn turn_events(rx: &mut tokio::sync::mpsc::UnboundedReceiver<server::TurnE
 /// subagent's turn is not told.
 #[test]
 fn r_lag_9_the_turn_hook_is_told_each_sessions_own_turns_and_never_a_subagents() {
-    let parent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let p = parent.clone();
-    let m = mock::serve(move |body, _| {
-        if body["system"].to_string().contains("You are a subagent") {
-            return mock::Reply::sse(&mock::text_stream("The repo has one README."));
-        }
-        let last = body["messages"].as_array().and_then(|m| m.last().cloned()).unwrap_or_default();
-        let text = last["content"].to_string();
-        if text.contains("survey") && p.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
-            return mock::Reply::sse(&mock::tool_use("t1", "subagent", &serde_json::json!({"description": "survey", "prompt": "survey the repo"})));
-        }
-        mock::Reply::sse(&mock::text_stream("hi"))
-    });
-    let home = Home::new("turns", &m.url);
+    // A survey is the recorded turn of Claude Code running two agents, its
+    // control lines and replayed prompt left out; anything else, a plain answer.
+    let raw = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/recorded/agents_parallel.txt")).unwrap();
+    let printed: Vec<serde_json::Value> = raw.lines().filter_map(|l| l.strip_prefix("<< ")).map(|j| serde_json::from_str(j).unwrap()).collect();
+    let init = printed.iter().position(|m| m["subtype"] == "init").unwrap();
+    let mut scenario = String::from("@when survey\n");
+    for m in printed[init + 1..].iter().filter(|m| !matches!(m["type"].as_str(), Some("control_request" | "control_response")) && m["isReplay"] != true) {
+        scenario.push_str(&format!("{m}\n"));
+    }
+    let home = Home::new("turns", Some(&scenario));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let daemon = home.serve_hooked("test", Some(Duration::from_millis(300)), None, Hooks { turns: Some(tx), bridged: None, introductions: None });
     let rt = rt();
@@ -1205,7 +1106,7 @@ fn r_lag_9_the_turn_hook_is_told_each_sessions_own_turns_and_never_a_subagents()
 /// the set its owner keeps — and nothing from a daemon without one.
 #[test]
 fn r_host_1_status_reports_the_bridged_sessions_only_with_a_supervisor() {
-    let home = Home::new("bridged", "http://127.0.0.1:9");
+    let home = Home::new("bridged", None);
     let daemon = home.serve(Some(Duration::from_millis(200)));
     rt().block_on(async { assert_eq!(home.client().await.status().await.unwrap().bridged, None) });
     daemon.join().unwrap().unwrap();
@@ -1229,7 +1130,7 @@ fn r_host_1_status_reports_the_bridged_sessions_only_with_a_supervisor() {
 fn r_ease_5_a_client_reads_the_pairing_offer_and_an_answer_with_none_waiting_is_refused() {
     use krowk_api::sync::DeliveredPairingRequest;
     use krowk_harness::sync::introduce::Introductions;
-    let home = Home::new("offer", "http://127.0.0.1:9");
+    let home = Home::new("offer", None);
     let daemon = home.serve(Some(Duration::from_millis(200)));
     rt().block_on(async { assert_eq!(home.client().await.pairing_offer().await.unwrap(), None) });
     daemon.join().unwrap().unwrap();

@@ -1,6 +1,6 @@
-//! The budget (R-BUDGET-1): what a session may spend, checked by the engine
-//! before every model call it makes, so a runaway stops before the call
-//! that would cross the limit rather than after it.
+//! The budget (R-BUDGET-1): what a session may spend. A backend's calls are
+//! the vendor's to make, so the host checks before a turn and interrupts
+//! the turn as soon as a metered call takes it past a limit.
 //!
 //! What counts is what the provider metered — the `usage` of every
 //! `response.completed` — never what a request asked for: a request's
@@ -14,21 +14,20 @@
 //! way every krowk figure is. Both are the limits `krowk sessions budget`
 //! takes, with its meaning: at the limit is inside it.
 //!
-//! The next call's cost is not known before it is made, so the check asks
-//! what it costs at least. It resends at least the whole prompt of the call
-//! before it on the same model — the log is append-only, so the
-//! conversation only grows — and generates at least one token; priced as if
-//! that prompt were all read from cache, the cheapest a provider charges
-//! for input, that is a floor no real call comes in under. A call is
-//! refused when what has been spent plus that floor would go past the
-//! limit. A model with no price trips `--max-usd` outright: an unknown
-//! spend is not a spend inside the limit.
-//!
-//! A backend makes its own model calls, so for one the host checks before
-//! the turn starts and interrupts the turn as soon as a metered call has
+//! A call's cost is not known before it is made, so once a call on
+//! the turn's model has been metered the check before a turn asks what the
+//! next costs at least: it resends at least the whole prompt of the call
+//! before it — the log is append-only, so the conversation only grows — and
+//! generates at least one token; priced as if that prompt were all read
+//! from cache, the cheapest a provider charges for input, that is a floor
+//! no real call comes in under. A turn is refused when what has been spent
+//! plus that floor would go past the limit; with no call on the turn's model
+//! metered yet, only when the spend is already past it. A model with no price trips
+//! `--max-usd` outright: an unknown spend is not a spend inside the limit.
+//! During the turn the host interrupts it as soon as a metered call has
 //! gone over (`Budget::over`).
 
-use crate::engine::{BoxFuture, EngineError};
+use crate::engine::EngineError;
 use crate::host::Pricer;
 use crate::log;
 use crate::protocol::{BudgetLimits, LogBody, LogEvent, Usage};
@@ -36,7 +35,6 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use tokio::sync::watch;
 
 /// The code a refused call ends its turn with: `krowk sessions budget`'s,
 /// so a script branches on one code and one exit status (4) for both.
@@ -366,10 +364,6 @@ struct State {
     turn: Spend,
     /// Its subagents', as last counted from their logs.
     subagents: Spend,
-    /// Its subagents' calls since, as they reported them: without a limit
-    /// the logs are not read again during the turn, and this is what the
-    /// status bar adds.
-    live: Spend,
     last: Option<LastCall>,
 }
 
@@ -381,21 +375,13 @@ struct Inner {
     provider: String,
     model: String,
     state: Mutex<State>,
-    /// How many of this turn's calls the host has recorded. The native loop
-    /// waits for its own before it asks for the next: the host records a
-    /// call when it handles the event, which can trail the loop.
-    recorded: watch::Sender<u64>,
-    /// The turn of the session that started this one, for a subagent: its
-    /// limits are the parent's, counted over the parent's whole tree, so a
-    /// subagent's call is judged where the parent's would be (R-SUB-4).
-    parent: Option<Budget>,
     /// The session's tree, counted incrementally, for a budget with a limit.
     meter: Arc<Mutex<TreeMeter>>,
 }
 
 /// One turn's view of the session's spend, shared by the host, which
-/// records every metered call, and the engine, which asks before each call
-/// it makes. It prices whether or not a limit is set: the status bar's cost
+/// records every metered call and checks it before each turn
+/// (`admit_turn`). It prices whether or not a limit is set: the status bar's cost
 /// is the same figure.
 #[derive(Clone)]
 pub struct Budget(Arc<Inner>);
@@ -429,31 +415,8 @@ impl Budget {
             pricer,
             provider: provider.into(),
             model: model.into(),
-            state: Mutex::new(State { earlier, turn: Spend::default(), subagents, live: Spend::default(), last }),
-            recorded: watch::Sender::new(0),
-            parent: None,
+            state: Mutex::new(State { earlier, turn: Spend::default(), subagents, last }),
             meter: Arc::new(Mutex::new(meter)),
-        }))
-    }
-
-    /// The budget of a subagent's turn: `parent`'s limits, held over the
-    /// parent's tree — the parent's own spend, every subagent's, this one's
-    /// included — rather than over this session alone. `events` is the
-    /// subagent's log so far.
-    pub fn for_subagent(parent: &Budget, session_id: &str, provider: &str, model: &str, events: &[LogEvent]) -> Budget {
-        let p = &parent.0;
-        let (earlier, last) = metered(events, &p.pricer);
-        Budget(Arc::new(Inner {
-            limits: p.limits,
-            session_id: session_id.into(),
-            sessions: p.sessions.clone(),
-            pricer: p.pricer.clone(),
-            provider: provider.into(),
-            model: model.into(),
-            state: Mutex::new(State { earlier, turn: Spend::default(), subagents: Spend::default(), live: Spend::default(), last }),
-            recorded: watch::Sender::new(0),
-            parent: Some(parent.clone()),
-            meter: Arc::default(),
         }))
     }
 
@@ -479,18 +442,6 @@ impl Budget {
         s.subagents = subagents;
     }
 
-    /// A subagent's call, as it reports it: added to what its parents show
-    /// while no limit has them read the logs again.
-    fn record_descendant(&self, call: &Spend) {
-        if !self.0.limits.is_empty() {
-            return;
-        }
-        self.state().live.merge(call);
-        if let Some(p) = &self.0.parent {
-            p.record_descendant(call);
-        }
-    }
-
     pub fn limits(&self) -> BudgetLimits {
         self.0.limits
     }
@@ -502,7 +453,6 @@ impl Budget {
     fn total(s: &State) -> Spend {
         let mut t = s.earlier.clone();
         t.merge(&s.subagents);
-        t.merge(&s.live);
         t.merge(&s.turn);
         t
     }
@@ -513,9 +463,6 @@ impl Budget {
     pub fn record_subagent(&self, answered: &str, usage: &Usage) -> Snapshot {
         let mut call = Spend::default();
         call.add(&self.0.pricer, &self.0.provider, answered, &self.0.model, usage);
-        if let Some(p) = &self.0.parent {
-            p.record_descendant(&call);
-        }
         let mut s = self.state();
         s.turn.merge(&call);
         Snapshot { total: Budget::total(&s), turn: s.turn.clone() }
@@ -533,25 +480,10 @@ impl Budget {
     pub fn record(&self, answered: &str, usage: &Usage) -> Snapshot {
         let mut call = Spend::default();
         call.add(&self.0.pricer, &self.0.provider, &self.0.model, answered, usage);
-        if let Some(p) = &self.0.parent {
-            p.record_descendant(&call);
-        }
-        let snap = {
-            let mut s = self.state();
-            s.turn.merge(&call);
-            s.last = Some(LastCall { provider: self.0.provider.clone(), model: self.0.model.clone(), answered: answered.into(), usage: *usage });
-            Snapshot { total: Budget::total(&s), turn: s.turn.clone() }
-        };
-        self.0.recorded.send_modify(|n| *n += 1);
-        snap
-    }
-
-    /// Before a model call: refused when what the session and its
-    /// subagents have spent, plus the least the call costs, would go past a
-    /// limit. `made` is how many calls this turn has made so far; their
-    /// usage is waited for first, so none is missed.
-    pub async fn admit(&self, made: u64) -> Result<(), EngineError> {
-        self.check_before(made, false).await
+        let mut s = self.state();
+        s.turn.merge(&call);
+        s.last = Some(LastCall { provider: self.0.provider.clone(), model: self.0.model.clone(), answered: answered.into(), usage: *usage });
+        Snapshot { total: Budget::total(&s), turn: s.turn.clone() }
     }
 
     /// Before a backend's turn. Its model is often an alias the price list
@@ -560,21 +492,15 @@ impl Budget {
     /// first priced call goes past — and after one, the floor is priced by
     /// the id that answered.
     pub async fn admit_turn(&self) -> Result<(), EngineError> {
-        self.check_before(0, true).await
-    }
-
-    async fn check_before(&self, made: u64, backend: bool) -> Result<(), EngineError> {
         if self.0.limits.is_empty() {
             return Ok(());
         }
-        let mut rx = self.0.recorded.subscribe();
-        let _ = rx.wait_for(|n| *n >= made).await;
         let (next, answered) = {
             let s = self.state();
             let answered = s.last.as_ref().filter(|l| l.provider == self.0.provider && l.model == self.0.model).map(|l| l.answered.clone());
             (floor(s.last.as_ref(), &self.0.provider, &self.0.model), answered)
         };
-        if backend && answered.is_none() {
+        if answered.is_none() {
             return self.judge_tree(None).await;
         }
         let price = (self.0.pricer)(&self.0.provider, &self.0.model, &next).or_else(|| answered.and_then(|a| (self.0.pricer)(&self.0.provider, &a, &next)));
@@ -582,24 +508,16 @@ impl Budget {
         self.judge_tree(Some((next, price, model))).await
     }
 
-    /// Judges the call about to be made against the limits, over the tree
-    /// the limits hold: a subagent asks its parent, which asks its own, up
-    /// to the session the limits were set on. There the subagents are
-    /// counted again — one spends during its parent's turn — off the
-    /// runtime, like any file work; a subagent's own calls are in its log
-    /// before they are recorded, so the count has them.
-    fn judge_tree(&self, next: Option<(Usage, Option<f64>, String)>) -> BoxFuture<'_, Result<(), EngineError>> {
-        Box::pin(async move {
-            if let Some(parent) = &self.0.parent {
-                return parent.judge_tree(next).await;
-            }
-            self.recount().await;
-            let spent = Budget::total(&self.state());
-            match judge(&self.0.limits, &spent, next.as_ref().map(|(u, p, m)| (u, *p, m.as_str()))) {
-                None => Ok(()),
-                Some(trip) => Err(self.refusal(&trip, true)),
-            }
-        })
+    /// Judges the turn about to start against the limits, over the
+    /// session's tree: its agents are counted again — one spends during its
+    /// parent's turn — off the runtime, like any file work.
+    async fn judge_tree(&self, next: Option<(Usage, Option<f64>, String)>) -> Result<(), EngineError> {
+        self.recount().await;
+        let spent = Budget::total(&self.state());
+        match judge(&self.0.limits, &spent, next.as_ref().map(|(u, p, m)| (u, *p, m.as_str()))) {
+            None => Ok(()),
+            Some(trip) => Err(self.refusal(&trip, true)),
+        }
     }
 
     /// After a metered call: whether the session is already past a limit —
@@ -614,7 +532,7 @@ impl Budget {
     /// of `krowk sessions budget`, its sentence, and the next action.
     fn refusal(&self, trip: &Trip, before_call: bool) -> EngineError {
         let id = &self.0.session_id;
-        let stopped = if before_call { "krowk stopped it before that call; what it produced is kept" } else { "krowk interrupted the turn; what it produced is kept" };
+        let stopped = if before_call { "krowk refused the turn before it started" } else { "krowk interrupted the turn; what it produced is kept" };
         let fix = match trip {
             Trip::Unknown { .. } => format!(
                 "refresh the prices with `krowk pricing refresh`, or hold it to --max-tokens instead: `krowk -p --resume {id} --max-tokens <count> \"…\"`"
@@ -690,7 +608,6 @@ mod tests {
         let b = Budget::new(limits, &root.session_id, &dir, pricer.clone(), "anthropic", "sonnet", std::slice::from_ref(&root));
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
         assert!(rt.block_on(b.admit_turn()).is_ok(), "no call yet: the floor is zero, not an unknown price");
-        assert!(matches!(rt.block_on(b.admit(0)), Err(e) if e.message.contains("no price for anthropic/sonnet")), "a native call on an unpriced id still trips");
         let snap = b.record("claude-sonnet-4-6", &Usage { output_tokens: 50, cache_read_tokens: 1000, ..Usage::default() });
         assert!((snap.turn.cost().unwrap() - 0.051).abs() < 1e-9, "priced by the answering id: {:?}", snap.turn);
         assert!(rt.block_on(b.admit_turn()).is_ok(), "the next floor is priced by the answering id too");
@@ -771,16 +688,6 @@ mod tests {
         f.write_all(&line.as_bytes()[20..]).unwrap();
         f.write_all(b"\n").unwrap();
         assert_eq!(meter.spent(&dir, &parent, &pricer()).generated(), 250);
-        // Without a limit a subagent's calls reach its parent as reported,
-        // and the logs are not read again.
-        let (_, events) = log::SessionLog::open(&dir, &parent).unwrap();
-        let root = Budget::new(BudgetLimits::default(), &parent, &dir, pricer(), "anthropic", "m", &events);
-        let kid = Budget::for_subagent(&root, &child, "anthropic", "m", &[]);
-        kid.record("m", &Usage { output_tokens: 7, ..Usage::default() });
-        std::fs::remove_dir_all(dir.join(&child)).unwrap();
-        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        let snap = rt.block_on(root.refreshed());
-        assert_eq!(snap.total.generated(), 100 + 250 + 7, "the count at the turn's start, and the call as reported");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -798,18 +705,18 @@ mod tests {
         let limits = BudgetLimits { max_tokens: Some(650), max_usd: None };
         let b = Budget::new(limits, &parent, &dir, pricer(), "anthropic", "m", &events);
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
-        // 100 + 200 + 300 = 600 generated: a call fits.
-        assert!(rt.block_on(b.admit(0)).is_ok());
-        // The child spends 50 more while the parent's turn runs: 650, and the
-        // next call would cross.
+        // 100 + 200 + 300 = 600 generated: a turn starts.
+        assert!(rt.block_on(b.admit_turn()).is_ok());
+        // The child spends 60 more while the parent's turn runs: 660, past
+        // the limit, so the next turn is refused.
         let (mut clog, _) = log::SessionLog::open(&dir, &child).unwrap();
-        clog.append(LogBody::ResponseCompleted { turn_id: "t1".into(), response_id: None, model: "m".into(), usage: Usage { output_tokens: 50, ..Usage::default() }, stop_reason: None, item_ids: vec![] }).unwrap();
-        let e = rt.block_on(b.admit(0)).unwrap_err();
+        clog.append(LogBody::ResponseCompleted { turn_id: "t1".into(), response_id: None, model: "m".into(), usage: Usage { output_tokens: 60, ..Usage::default() }, stop_reason: None, item_ids: vec![] }).unwrap();
+        let e = rt.block_on(b.admit_turn()).unwrap_err();
         assert_eq!(e.code, EXCEEDED);
-        assert!(e.message.contains("650 tokens generated of --max-tokens 650") && e.message.contains(&format!("krowk -p --resume {parent} --max-tokens")), "{}", e.message);
-        // Priced the same way: $0.65 across the tree.
+        assert!(e.message.contains("660 tokens generated of --max-tokens 650") && e.message.contains(&format!("krowk -p --resume {parent} --max-tokens")), "{}", e.message);
+        // Priced the same way: $0.66 across the tree.
         let snap = b.record("m", &Usage::default());
-        assert!((snap.total.cost().unwrap() - 0.65).abs() < 1e-9, "{:?}", snap.total);
+        assert!((snap.total.cost().unwrap() - 0.66).abs() < 1e-9, "{:?}", snap.total);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

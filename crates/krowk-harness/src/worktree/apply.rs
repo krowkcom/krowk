@@ -25,7 +25,7 @@
 //!   is from.
 //! - **Fenced files left to a person**: a change inside a `.git`,
 //!   `.claude`, `.codex` or `.krowk` directory
-//!   (`crate::tools::fenced_dir`, the predicate the file tools are fenced
+//!   (`crate::permissions::scope::fenced_dir`, the predicate the file tools are fenced
 //!   by) names what runs, or what is allowed, in the target. The file tools
 //!   change those only with a person's say, so applying a subagent's back
 //!   (`Approval::Agent`) applies nothing of a worktree with any, keeps it,
@@ -135,7 +135,7 @@ pub(super) fn apply(wt: &Worktree, to: &Path, by: Approval) -> Result<Applied, E
     if !links.is_empty() {
         return Ok(Applied::Submodules(links));
     }
-    let fenced: Vec<String> = files.iter().filter(|f| crate::tools::fenced_dir(Path::new(f.as_str())).is_some()).cloned().collect();
+    let fenced: Vec<String> = files.iter().filter(|f| crate::permissions::scope::fenced_dir(Path::new(f.as_str())).is_some()).cloned().collect();
     if by == Approval::Agent && !fenced.is_empty() {
         return Ok(Applied::Protected(fenced));
     }

@@ -521,7 +521,7 @@ fn pools_of(registry: &Registry) -> (crate::slots::Pool, crate::slots::Pool) {
     let env = krowk_api::home::process_env;
     let runtime = crate::slots::runtime_dir(&env);
     let builds = registry.builds.pool.clone().unwrap_or_else(|| crate::slots::Pool::new(runtime.clone(), crate::builds::POOL, (crate::builds::cores() / 4).max(1)));
-    let agents = registry.agents.clone().unwrap_or_else(|| crate::slots::Pool::new(runtime, crate::subagent::AGENT_SLOTS, crate::subagent::max_host()));
+    let agents = registry.agents.clone().unwrap_or_else(|| crate::slots::Pool::new(runtime, crate::children::AGENT_SLOTS, crate::children::max_host()));
     (builds, agents)
 }
 
@@ -705,7 +705,7 @@ mod tests {
     fn alloc_02_this_machine_reads_its_capacity() {
         let runtime = std::env::temp_dir().join(format!("krowk-capacity-{}", std::process::id()));
         let builds = crate::slots::Pool::new(runtime.clone(), "build-slots", 3);
-        let agents = crate::slots::Pool::new(runtime.clone(), crate::subagent::AGENT_SLOTS, 5);
+        let agents = crate::slots::Pool::new(runtime.clone(), crate::children::AGENT_SLOTS, 5);
         let held = agents.try_take().unwrap().expect("a slot");
         let c = capacity(&builds, &agents);
         assert!(c.cores >= 1 && c.load_1m >= 0.0 && c.free_memory > 0, "{c:?}");

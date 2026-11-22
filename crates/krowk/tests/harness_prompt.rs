@@ -1,12 +1,13 @@
-//! `krowk -p`, the built binary, against the stand-in Anthropic API: the
-//! three output formats, a resumed session reading the cache, the session
-//! listed beside an imported Claude one, and a rebuild that re-derives it
-//! from the log alone.
+//! `krowk -p`, the built binary, against the fake `claude` (Claude Code) on
+//! PATH: its flags, the record it leaves on a terminal (R-PRES-6), images
+//! sent with the prompt, rollover across two accounts, and bare `krowk` on
+//! a terminal.
 
 #![cfg(feature = "harness")]
 
-#[path = "../../krowk-harness/tests/common/mock.rs"]
-mod mock;
+#[cfg(unix)]
+#[path = "../../krowk-harness/tests/common/fake.rs"]
+mod fake;
 #[cfg(unix)]
 #[path = "common/pty.rs"]
 mod pty;
@@ -17,31 +18,44 @@ use std::process::{Command, Output, Stdio};
 
 struct Sandbox {
     root: PathBuf,
-    url: String,
 }
 
 impl Sandbox {
-    fn new(name: &str, url: &str) -> Sandbox {
+    /// A home, a repository, and the fake `claude` and `codex` first on
+    /// PATH, signed in to nothing: a bare model is routed, which asks every
+    /// vendor there is, and never the real ones the machine may have.
+    fn new(name: &str) -> Sandbox {
         let root = std::env::temp_dir().join(format!("krowk-harness-cli-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("repo/.git")).unwrap();
         std::fs::write(root.join("repo/README.md"), "# krowk\n\nPermalinks for agent output.\n").unwrap();
-        // The fake `claude` and `codex`, signed in to nothing, first on
-        // PATH: a bare model is routed, which asks every vendor there is,
-        // and never the real ones the machine may have.
         std::fs::create_dir_all(root.join("bin")).unwrap();
         for (dir, bin) in [("claude", "fake-claude"), ("codex", "fake-codex")] {
-            let at = root.join("bin").join(dir);
-            std::fs::copy(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures").join(dir).join(bin), &at).unwrap();
+            let from = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures").join(dir).join(bin);
+            // Linked, not copied: a copy is a file open for writing that a
+            // test forking beside it can inherit ("Text file busy").
             #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o755)).unwrap();
-            }
+            std::os::unix::fs::symlink(from, root.join("bin").join(dir)).unwrap();
+            #[cfg(not(unix))]
+            std::fs::copy(from, root.join("bin").join(dir)).unwrap();
         }
         let root = root.canonicalize().unwrap();
-        Sandbox { root, url: url.into() }
+        Sandbox { root }
+    }
+
+    /// Signs the default Claude Code account (`~/.claude`) in, so `-p` runs
+    /// on it, playing `scenario` (a plain `ok` a turn without one), in the
+    /// repository trusted for good.
+    #[cfg(unix)]
+    fn claude(&self, scenario: Option<&str>) {
+        std::fs::create_dir_all(self.root.join("home/.claude")).unwrap();
+        std::fs::write(self.root.join("home/.claude/fake-login"), "").unwrap();
+        std::fs::create_dir_all(self.root.join("home/.krowk")).unwrap();
+        std::fs::write(self.root.join("home/.krowk/trusted.json"), serde_json::json!({"directories": [self.root.join("repo")]}).to_string()).unwrap();
+        if let Some(s) = scenario {
+            std::fs::write(self.root.join("scenario.jsonl"), s).unwrap();
+        }
     }
 
     /// PATH with the fakes first.
@@ -50,27 +64,27 @@ impl Sandbox {
     }
 
     fn krowk(&self, args: &[&str]) -> Output {
-        self.krowk_with(args, "sk-test")
+        self.command(args).output().unwrap()
     }
 
-    fn krowk_with(&self, args: &[&str], key: &str) -> Output {
-        self.command(args, key).output().unwrap()
-    }
-
-    fn command(&self, args: &[&str], key: &str) -> Command {
+    fn command(&self, args: &[&str]) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
         c.args(args)
             .env_clear()
             .env("PATH", self.path())
             .env("HOME", self.root.join("home"))
             .env("KROWK_NO_UPDATE_CHECK", "1")
-            .env("ANTHROPIC_API_KEY", key)
-            .env("ANTHROPIC_BASE_URL", &self.url)
+            .env("FAKE_CLAUDE_LOG", self.root.join("fake.log"))
             .current_dir(self.root.join("repo"))
             .stdin(Stdio::null());
+        let scenario = self.root.join("scenario.jsonl");
+        if scenario.exists() {
+            c.env("FAKE_CLAUDE_SCENARIO", scenario);
+        }
         c
     }
 
+    #[cfg(unix)]
     fn ok(&self, args: &[&str]) -> String {
         let out = self.krowk(args);
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -78,9 +92,16 @@ impl Sandbox {
         stdout
     }
 
-    fn json(&self, args: &[&str]) -> Value {
-        let s = self.ok(args);
-        serde_json::from_str(&s).unwrap_or_else(|e| panic!("krowk {args:?}: {e}: {s}"))
+    /// What the fake logged: every argv, and each line in and out.
+    #[cfg(unix)]
+    fn fake_log(&self) -> String {
+        std::fs::read_to_string(self.root.join("fake.log")).unwrap_or_default()
+    }
+
+    /// The prompts Claude Code was sent: each `user` line krowk wrote it.
+    #[cfg(unix)]
+    fn prompts(&self) -> Vec<Value> {
+        self.fake_log().lines().filter_map(|l| l.strip_prefix("in ")).filter(|l| l.starts_with(r#"{"type":"user""#)).map(|l| serde_json::from_str(l).unwrap()).collect()
     }
 }
 
@@ -90,108 +111,9 @@ impl Drop for Sandbox {
     }
 }
 
-fn krowk_sessions(b: &Sandbox) -> Vec<Value> {
-    b.json(&["sessions", "--json"])["data"]["sessions"].as_array().unwrap().clone()
-}
-
-#[test]
-fn r_log_5_krowk_p_answers_streams_resumes_and_lists_beside_imported_sessions() {
-    let m = mock::serve(mock::readme_script);
-    let b = Sandbox::new("session", &m.url);
-
-    // text: the answer, after a read of the README in the working directory.
-    let text = b.ok(&["-p", "read README.md and summarise it in one line", "--model", "claude-sonnet-4-6"]);
-    assert_eq!(text, "krowk turns agent output — screenshots, logs, diffs — into permalinks you can paste anywhere.\n");
-    {
-        let seen = m.seen.lock().unwrap();
-        let result = &seen[1].body["messages"][2]["content"][0];
-        assert_eq!(result["type"], "tool_result");
-        assert!(result["content"].as_str().unwrap().contains("Permalinks for agent output."), "{result}");
-    }
-
-    // The session is in krowk.db straight away, harness krowk.
-    let listed = krowk_sessions(&b);
-    let ours = listed.iter().find(|s| s["harness"] == "krowk").expect("the -p session is listed");
-    let session_id = ours["foreign_session_id"].as_str().unwrap().to_string();
-    assert_eq!(ours["title"], "read README.md and summarise it in one line");
-
-    // stream-json on a resume, by the krowk.db id: start/delta/end, then the result.
-    let stream = b.ok(&["-p", "what language is it written in?", "--resume", ours["id"].as_str().unwrap(), "--output-format", "stream-json"]);
-    let lines: Vec<Value> = stream.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-    let types: Vec<&str> = lines.iter().map(|l| l["type"].as_str().unwrap()).collect();
-    for want in ["turn.started", "item.started", "item.delta", "item.completed", "response.completed", "turn.completed"] {
-        assert!(types.contains(&want), "{want} missing from {types:?}");
-    }
-    let result = lines.last().unwrap();
-    assert_eq!(result["type"], "result");
-    assert_eq!(result["sessionId"], session_id.as_str(), "the same session continued");
-    assert!(result["usage"]["cacheReadTokens"].as_i64().unwrap() > 0, "{result}");
-    for k in ["inputTokens", "outputTokens", "cacheWriteTokens", "reasoningTokens"] {
-        assert!(result["usage"][k].is_i64(), "{k} in {result}");
-    }
-    assert!(result["costUsd"].as_f64().unwrap() > 0.0 && result["durationMs"].is_u64());
-
-    // json: the result event alone.
-    let one = b.json(&["-p", "hello", "--output-format", "json", "--model", "anthropic/claude-sonnet-4-6"]);
-    assert_eq!((one["type"].as_str(), one["status"].as_str()), (Some("result"), Some("completed")));
-
-    // An imported Claude session lists beside the native ones.
-    let project = b.root.join("home/.claude/projects/-repo");
-    std::fs::create_dir_all(&project).unwrap();
-    let line = serde_json::json!({"type": "user", "sessionId": "c1a0de00-0000-4000-8000-000000000001", "uuid": "u1", "cwd": b.root.join("repo"), "message": {"role": "user", "content": "hello from claude"}});
-    std::fs::write(project.join("c1a0de00-0000-4000-8000-000000000001.jsonl"), format!("{line}\n")).unwrap();
-    b.ok(&["sessions", "import", "--from", "all", "--json"]);
-    let listed = krowk_sessions(&b);
-    let harnesses: Vec<&str> = listed.iter().map(|s| s["harness"].as_str().unwrap()).collect();
-    assert_eq!(harnesses.iter().filter(|h| **h == "krowk").count(), 2, "{harnesses:?}");
-    assert!(harnesses.contains(&"claude"), "{harnesses:?}");
-
-    // R-LOG-2: a rebuild deletes krowk.db and re-derives the native
-    // sessions from their JSONL alone.
-    let before = b.json(&["sessions", "show", &session_id, "--json"])["data"].clone();
-    b.ok(&["sessions", "rebuild", "--yes", "--json"]);
-    let after = b.json(&["sessions", "show", &session_id, "--json"])["data"].clone();
-    let strip = |v: &Value| {
-        let mut v = v.clone();
-        v.as_object_mut().unwrap().remove("id");
-        v
-    };
-    assert_eq!(strip(&after), strip(&before));
-    assert_eq!(after["turns"].as_array().unwrap().len(), 2);
-    assert_eq!(after["harness"], "krowk");
-}
-
-/// R-STEER-2: `krowk -p` stops the jobs still running when its one prompt
-/// is answered, and stderr names them; a job that ended in the turn left
-/// its note, which krowk.db keeps as krowk's, never the person's.
-#[test]
-fn r_steer_2_krowk_p_names_a_job_it_stops_at_exit_and_krowk_db_keeps_a_note_as_krowks() {
-    let m = mock::serve(|_, n| {
-        mock::Reply::sse(&match n {
-            0 => mock::tool_use("t1", "bash", &serde_json::json!({"command": "echo hi", "run_in_background": true})),
-            1 => mock::tool_use("t2", "bash", &serde_json::json!({"command": "sleep 30", "run_in_background": true})),
-            2 => mock::tool_use("t3", "bash", &serde_json::json!({"command": "sleep 1"})),
-            _ => mock::text_stream("done"),
-        })
-    });
-    let b = Sandbox::new("job-exit", &m.url);
-    let started = std::time::Instant::now();
-    let out = b.krowk(&["-p", "start two jobs", "--model", "claude-sonnet-4-6", "--permission-mode", "bypassPermissions"]);
-    let err = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert!(out.status.success(), "{err}");
-    assert!(err.contains("! background job b2 is still running, and stops with this run: krowk -p does not wait for background jobs"), "{err}");
-    assert!(!err.contains("b1"), "the job that ended is not named: {err}");
-    assert!(started.elapsed() < std::time::Duration::from_secs(20), "not the 30 s the job would have run");
-    let id = krowk_sessions(&b)[0]["foreign_session_id"].as_str().unwrap().to_string();
-    let shown = b.json(&["sessions", "show", &id, "--json"])["data"].clone();
-    let said = |role: &str| shown["messages"].as_array().unwrap().iter().filter(|m| m["role"] == role).map(|m| m.to_string()).collect::<Vec<_>>();
-    assert!(said("system").iter().any(|m| m.contains("background-done id=")), "the note is krowk's: {shown}");
-    assert_eq!(said("user").len(), 1, "the prompt alone is the person's: {:?}", said("user"));
-}
-
 #[test]
 fn p_flags_are_refused_elsewhere_and_bad_values_are_named() {
-    let b = Sandbox::new("flags", "http://127.0.0.1:9");
+    let b = Sandbox::new("flags");
     let out = b.krowk(&["sessions", "--model", "x"]);
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("only a flag of `krowk -p`"));
@@ -201,167 +123,18 @@ fn p_flags_are_refused_elsewhere_and_bad_values_are_named() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("stream-json"));
     let out = b.krowk(&["-p"]);
     assert!(String::from_utf8_lossy(&out.stderr).contains("needs a prompt"));
-    // No key: refused before a session exists, exit 3, the variable named.
-    let out = b.krowk_with(&["-p", "hi"], "");
-    assert_eq!(out.status.code(), Some(3));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("ANTHROPIC_API_KEY"));
-    assert!(!b.root.join("home/.krowk/sessions").exists(), "a refused prompt leaves no session behind");
-    // Nothing listening: named as unreachable, exit 6, and R-OFF-1's words
-    // lead the fix line.
-    let out = b.krowk(&["-p", "hi", "--model", "claude-sonnet-4-6"]);
-    assert_eq!(out.status.code(), Some(6), "{}", String::from_utf8_lossy(&out.stderr));
-    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
-    assert!(err.contains("network_unreachable") && err.contains("no network connectivity"), "r_off_1: {err}");
-}
-
-/// R-TOOL-2 through the built binary: the recorded tool definitions carry
-/// the edit tool of the model's family — from the models.dev cache when it
-/// knows the model, from the id otherwise — and config's `toolset` and
-/// `--toolset` override it, in that order.
-#[test]
-fn r_tool_2_krowk_p_records_each_familys_edit_tool_and_toolset_overrides_it() {
-    let m = mock::serve(|_, _| mock::Reply::sse(&mock::fixture("turn2_answer.sse")));
-    let b = Sandbox::new("toolset", &m.url);
-    let cache = b.root.join("home/.krowk/cache");
-    std::fs::create_dir_all(&cache).unwrap();
-    std::fs::write(cache.join("models.json"), r#"{"anthropic": {"models": {"house-coder": {"family": "grok-build"}}}}"#).unwrap();
-    let tools = |args: &[&str]| -> (String, Vec<String>) {
-        let r = b.json(&[&["-p", "hello", "--output-format", "json"], args].concat());
-        let id = r["sessionId"].as_str().unwrap().to_string();
-        let raw = std::fs::read_to_string(b.root.join("home/.krowk/sessions").join(id).join("context.jsonl")).unwrap();
-        let rec: Value = serde_json::from_str(raw.lines().next().unwrap()).unwrap();
-        let names = rec["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect();
-        (rec["toolset"].as_str().unwrap().to_string(), names)
-    };
-    let edit = |args: &[&str]| {
-        let (preset, names) = tools(args);
-        assert_eq!([&names[..2], &names[3..]].concat(), ["read", "write", "bash", "bash_output", "kill_bash", "grep", "glob", "todo_write", "publish", "subagent"], "{args:?}");
-        (preset, names[2].clone())
-    };
-    let pair = |p: &str, e: &str| (p.to_string(), e.to_string());
-    assert_eq!(edit(&["--model", "claude-sonnet-4-6"]), pair("claude", "str_replace"));
-    assert_eq!(edit(&["--model", "anthropic/gpt-5.1-codex"]), pair("gpt", "apply_patch"));
-    assert_eq!(edit(&["--model", "anthropic/grok-code-fast-1"]), pair("grok", "search_replace"));
-    assert_eq!(edit(&["--model", "house-coder"]), pair("grok", "search_replace"), "the catalog's family");
-    assert_eq!(edit(&["--model", "anthropic/gpt-5.1-codex", "--toolset", "claude"]), pair("claude", "str_replace"));
-    // Config pins one for every model; --toolset still wins.
-    let config = b.root.join("home/.krowk");
-    std::fs::create_dir_all(&config).unwrap();
-    std::fs::write(config.join("config.json"), r#"{"toolset": "gpt"}"#).unwrap();
-    assert_eq!(edit(&["--model", "claude-sonnet-4-6"]), pair("gpt", "apply_patch"));
-    assert_eq!(edit(&["--model", "claude-sonnet-4-6", "--toolset", "grok"]), pair("grok", "search_replace"));
-
-    let out = b.krowk(&["-p", "hi", "--toolset", "vim"]);
-    assert_eq!(out.status.code(), Some(1), "a usage error");
-    assert!(String::from_utf8_lossy(&out.stderr).contains("claude, gpt, grok"));
-    let out = b.krowk(&["sessions", "--toolset", "gpt"]);
-    assert!(String::from_utf8_lossy(&out.stderr).contains("only a flag of `krowk -p`"));
-    std::fs::write(config.join("config.json"), r#"{"toolset": "vim"}"#).unwrap();
+    // No account: refused before a session exists, exit 3, with D4's line.
     let out = b.krowk(&["-p", "hi"]);
-    assert!(!out.status.success() && String::from_utf8_lossy(&out.stderr).contains("is not a toolset"), "{}", String::from_utf8_lossy(&out.stderr));
-}
-
-#[cfg(unix)]
-#[test]
-fn ctrl_c_interrupts_a_turn_waiting_on_the_model_and_keeps_the_session() {
-    // A model that takes its time: the interrupt has to reach a turn that is
-    // waiting on the network, not one between events.
-    let m = mock::serve(|b, n| {
-        std::thread::sleep(std::time::Duration::from_secs(5));
-        mock::readme_script(b, n)
-    });
-    let b = Sandbox::new("interrupt", &m.url);
-    let child = Command::new(env!("CARGO_BIN_EXE_krowk"))
-        .args(["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "json"])
-        .env_clear()
-        .env("PATH", b.path())
-        .env("HOME", b.root.join("home"))
-        .env("KROWK_NO_UPDATE_CHECK", "1")
-        .env("ANTHROPIC_API_KEY", "sk-test")
-        .env("ANTHROPIC_BASE_URL", &b.url)
-        .current_dir(b.root.join("repo"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(400));
-    let started = std::time::Instant::now();
-    // SAFETY: SIGINT to the child this test spawned.
-    unsafe {
-        libc::kill(child.id() as i32, libc::SIGINT);
-    }
-    let out = child.wait_with_output().unwrap();
-    assert!(started.elapsed() < std::time::Duration::from_secs(3), "the interrupt did not wait for the model");
-    let result: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
-    assert_eq!(result["status"], "interrupted");
-    assert!(String::from_utf8_lossy(&out.stderr).contains("--resume"));
-    let listed = krowk_sessions(&b);
-    assert_eq!(listed[0]["harness"], "krowk", "the interrupted session is kept and listed");
-}
-
-/// Claude Code's `permissions.defaultMode: "auto"` in `~/.claude/settings.json`
-/// is a mode krowk does not run: the prompt still runs, in default, with a
-/// notice naming the file — and `--permission-mode` wins without one. A
-/// deny rule that does not parse still refuses the prompt.
-#[test]
-fn r_perm_1_krowk_p_runs_beside_a_claude_default_mode_it_does_not_run() {
-    let m = mock::serve(mock::readme_script);
-    let b = Sandbox::new("auto-mode", &m.url);
-    let settings = b.root.join("home/.claude/settings.json");
-    let write = |deny: &str| {
-        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
-        let v = serde_json::json!({"model": "opus", "permissions": {"allow": ["Bash(npm test)"], "deny": [deny], "defaultMode": "auto"}, "alwaysThinkingEnabled": true});
-        std::fs::write(&settings, serde_json::to_string_pretty(&v).unwrap()).unwrap();
-    };
-    let mode_of = |out: &Output| -> String {
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let started = stdout.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).find(|l| l["type"] == "turn.started").unwrap_or_else(|| panic!("no turn.started in {stdout}"));
-        started["permissionMode"].as_str().unwrap().to_string()
-    };
-    write("Read(.env)");
-
-    let out = b.krowk(&["-p", "read README.md and summarise it in one line", "--model", "claude-sonnet-4-6", "--output-format", "stream-json"]);
-    let err = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert!(out.status.success(), "{err}");
-    assert_eq!(mode_of(&out), "default");
-    assert!(err.contains("~/.claude/settings.json sets defaultMode \"auto\"") && err.contains("asks before edits and commands"), "the notice names the file and the value: {err}");
-
-    let out = b.krowk(&["-p", "read README.md and summarise it in one line", "--model", "claude-sonnet-4-6", "--output-format", "stream-json", "--permission-mode", "acceptEdits"]);
-    let err = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert!(out.status.success(), "{err}");
-    assert_eq!(mode_of(&out), "acceptEdits");
-    assert!(!err.contains("\"auto\""), "with the flag given the file's mode is not mentioned: {err}");
-
-    write("Read(.env");
-    let out = b.krowk(&["-p", "hi", "--model", "claude-sonnet-4-6", "--permission-mode", "acceptEdits"]);
-    let err = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert!(!out.status.success() && err.contains("bad_settings") && err.contains("permissions.deny"), "{err}");
-}
-
-/// R-TOOL-3: a native `krowk -p` asks nobody about trust, so a repository's
-/// `.mcp.json` it will not start is named on stderr; trusted, a server it
-/// leaves out for its name or its config is named with why.
-#[test]
-fn r_tool_3_krowk_p_names_an_untrusted_mcp_json_and_a_server_it_skips() {
-    let m = mock::serve(mock::readme_script);
-    let b = Sandbox::new("mcp-notice", &m.url);
-    let servers = serde_json::json!({"mcpServers": {"ok": {"command": "true"}, "a__b": {"command": "true"}}});
-    std::fs::write(b.root.join("repo/.mcp.json"), servers.to_string()).unwrap();
-    let args = ["-p", "read README.md and summarise it in one line", "--model", "claude-sonnet-4-6"];
-    let out = b.krowk(&args);
-    let err = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert!(out.status.success(), "{err}");
-    assert!(err.contains("repo/.mcp.json names MCP servers, which krowk starts only in a trusted repository"), "{err}");
-    assert!(!err.contains("a__b"), "nothing of an untrusted .mcp.json is read: {err}");
-    let out = b.krowk(&[&args[..], &["--trust"]].concat());
-    let err = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert!(out.status.success(), "{err}");
-    assert!(!err.contains("starts only in a trusted repository"), "{err}");
-    assert!(err.contains("the MCP server \"a__b\" in .mcp.json was skipped"), "{err}");
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("connect a Claude Code or Codex account"));
+    assert!(!b.root.join("home/.krowk/sessions").exists(), "a refused prompt leaves no session behind");
 }
 
 // ---- R-PRES-6: the record `krowk -p` leaves on the terminal --------------
+
+/// What the fake model answers a summary with.
+#[cfg(unix)]
+const SUMMARY: &str = "krowk turns agent output — screenshots, logs, diffs — into permalinks you can paste anywhere.";
 
 /// The OSC 7501 reports in `out`, whole, in the order written.
 #[cfg(unix)]
@@ -378,7 +151,7 @@ fn root(state: krowk::osc7501::State, msg: &str) -> String {
 /// reports the terminal got, stdout, and the exit.
 #[cfg(unix)]
 fn on_a_terminal(b: &Sandbox, args: &[&str]) -> (String, Vec<u8>, std::process::ExitStatus) {
-    let mut c = b.command(args, "sk-test");
+    let mut c = b.command(args);
     c.stdout(Stdio::piped());
     let mut t = pty::Pty::spawn_stderr(c, 80, 24);
     // Read on a thread of its own, so a krowk that never exits fails the
@@ -402,21 +175,22 @@ fn on_a_terminal(b: &Sandbox, args: &[&str]) -> (String, Vec<u8>, std::process::
 fn r_pres_6_krowk_p_on_a_terminal_reports_working_then_done_or_error() {
     use krowk::osc7501::State;
     let prompt = "\nread README.md and summarise it in one line\nand nothing else";
-    let m = mock::serve(mock::readme_script);
-    let b = Sandbox::new("pres6", &m.url);
-    let (err, stdout, st) = on_a_terminal(&b, &["-p", prompt, "--model", "claude-sonnet-4-6"]);
+    let b = Sandbox::new("pres6");
+    b.claude(Some(&fake::answer(SUMMARY)));
+    let (err, stdout, st) = on_a_terminal(&b, &["-p", prompt, "--model", "claude/sonnet"]);
     assert!(st.success(), "{err}");
     let topic = "read README.md and summarise it in one line";
     assert_eq!(reports(&err), [root(State::Working, topic), root(State::Done, topic)], "{err:?}");
-    assert_eq!(String::from_utf8_lossy(&stdout), "krowk turns agent output — screenshots, logs, diffs — into permalinks you can paste anywhere.\n");
+    assert_eq!(String::from_utf8_lossy(&stdout), format!("{SUMMARY}\n"));
 
-    let m = mock::serve(|_, _| mock::Reply::json(400, &serde_json::json!({"type": "error", "error": {"type": "invalid_request_error", "message": "prompt is too long\nby a mile"}})));
-    let b = Sandbox::new("pres6err", &m.url);
-    let (err, stdout, st) = on_a_terminal(&b, &["-p", "hi", "--model", "claude-sonnet-4-6"]);
+    // Claude Code ends the turn in an error whose message breaks a line.
+    let b = Sandbox::new("pres6err");
+    b.claude(Some(r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"prompt is too long\nby a mile","session_id":"{{SESSION}}"}"#));
+    let (err, stdout, st) = on_a_terminal(&b, &["-p", "hi", "--model", "claude/sonnet"]);
     assert!(!st.success(), "{err}");
     // The failure's first line: its headline, what krowk prints first for
-    // it on a terminal, cut where the provider's message broke the line.
-    let failed = "Anthropic refused the request (invalid_request_error: prompt is too long";
+    // it on a terminal, cut where Claude Code's message broke the line.
+    let failed = "Claude Code could not finish the turn: prompt is too long";
     assert_eq!(reports(&err), [root(State::Working, "hi"), root(State::Error, failed)], "{err:?}");
     assert!(stdout.is_empty(), "{stdout:?}");
 }
@@ -427,12 +201,12 @@ fn r_pres_6_krowk_p_on_a_terminal_reports_working_then_done_or_error() {
 #[cfg(unix)]
 #[test]
 fn r_pres_6_stderr_in_a_file_gets_no_report_and_stdout_is_the_same_either_way() {
-    let m = mock::serve(mock::readme_script);
-    let b = Sandbox::new("pres6file", &m.url);
+    let b = Sandbox::new("pres6file");
+    b.claude(Some(&fake::answer(SUMMARY)));
     for format in ["text", "json", "stream-json"] {
-        let args = ["-p", "read README.md and summarise it in one line", "--model", "claude-sonnet-4-6", "--output-format", format];
+        let args = ["-p", "read README.md and summarise it in one line", "--model", "claude/sonnet", "--output-format", format];
         let file = b.root.join(format!("stderr-{format}"));
-        let out = b.command(&args, "sk-test").stderr(std::fs::File::create(&file).unwrap()).output().unwrap();
+        let out = b.command(&args).stderr(std::fs::File::create(&file).unwrap()).output().unwrap();
         assert!(out.status.success(), "{format}");
         let err = std::fs::read(&file).unwrap();
         assert!(!err.windows(6).any(|w| w == b"\x1b]7501"), "{format}: {}", String::from_utf8_lossy(&err));
@@ -480,43 +254,41 @@ fn steady(out: &str) -> String {
 }
 
 /// R-PRES-6: Ctrl-C on the terminal during the turn leaves idle, not
-/// error: the person stopped it.
+/// error: the person stopped it. The interrupt reaches a turn waiting on
+/// the model, with nothing arriving (Claude Code takes it over its control
+/// protocol), and the way back in is named.
 #[cfg(unix)]
 #[test]
 fn r_pres_6_ctrl_c_during_the_turn_reports_idle_before_exit() {
     use krowk::osc7501::State;
-    // A model that takes the request and holds its answer: the turn is
-    // running once the request is seen.
-    let gate = mock::Gate::default();
-    let m = mock::serve(move |_, _| mock::Reply { hold: Some(("message_start", gate.clone())), ..mock::Reply::paced(mock::text_stream("never"), std::time::Duration::ZERO) });
-    let b = Sandbox::new("pres6int", &m.url);
-    let mut c = b.command(&["-p", "wait forever", "--model", "claude-sonnet-4-6"], "sk-test");
+    // A model that has begun its answer and holds the rest: the turn is
+    // running once the prompt is seen.
+    let b = Sandbox::new("pres6int");
+    b.claude(Some(&std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures/claude/interrupt.jsonl")).unwrap()));
+    let mut c = b.command(&["-p", "wait forever", "--model", "claude/sonnet"]);
     c.stdout(Stdio::piped());
     let mut t = pty::Pty::spawn_stderr(c, 80, 24);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while m.seen.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+    while !b.fake_log().contains("1\\n2\\n3\\n") && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert!(!m.seen.lock().unwrap().is_empty(), "the prompt never reached the model: {:?}", t.text());
+    assert!(b.fake_log().contains("1\\n2\\n3\\n"), "the turn never began: {:?}", t.text());
     t.write(b"\x03");
     let st = t.wait(std::time::Duration::from_secs(10)).expect("krowk -p exits on Ctrl-C");
     let err = t.text();
-    assert!(!st.success() && err.contains("interrupted"), "{st}: {err:?}");
+    assert!(!st.success() && err.contains("interrupted") && err.contains("--resume"), "{st}: {err:?}");
+    assert!(b.fake_log().contains("\ninterrupt\n"), "the interrupt went to Claude Code");
     assert_eq!(reports(&err), [root(State::Working, "wait forever"), root(State::Idle, "wait forever")], "{err:?}");
 }
 
-/// `krowk -p --image a --image b "…"` gives the model both images, named
+/// `krowk -p --image a --image b "…"` gives Claude Code both images, named
 /// `[Image #1]` and `[Image #2]` in the prompt; a big one is shrunk to fit;
 /// a missing or non-image file is refused naming it, before any turn.
+#[cfg(unix)]
 #[test]
 fn krowk_p_image_sends_each_file_with_the_prompt_and_refuses_a_bad_one_first() {
-    let bodies = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
-    let seen = bodies.clone();
-    let m = mock::serve(move |body, _| {
-        seen.lock().unwrap().push(body.clone());
-        mock::Reply::sse(&mock::fixture("turn2_answer.sse"))
-    });
-    let b = Sandbox::new("images", &m.url);
+    let b = Sandbox::new("images");
+    b.claude(None);
     let png = |w: u32, h: u32, path: &std::path::Path| {
         // A PNG written without the image crate: 8-bit grey, stored deflate blocks.
         let mut raw = Vec::new();
@@ -567,15 +339,16 @@ fn krowk_p_image_sends_each_file_with_the_prompt_and_refuses_a_bad_one_first() {
     let (a, big, notes) = (a.to_str().unwrap(), big.to_str().unwrap(), notes.to_str().unwrap());
 
     for bad in [notes, "/nonexistent/x.png"] {
-        let out = b.krowk(&["-p", "look", "--image", a, "--image", bad]);
+        let out = b.krowk(&["-p", "look", "--image", a, "--image", bad, "--model", "claude/sonnet"]);
         assert_eq!(out.status.code(), Some(1), "{bad}");
         assert!(String::from_utf8_lossy(&out.stderr).contains(bad), "names the file: {}", String::from_utf8_lossy(&out.stderr));
     }
-    assert!(bodies.lock().unwrap().is_empty(), "no turn started");
+    assert!(!b.fake_log().contains("argv -p"), "no turn started");
 
-    b.ok(&["-p", "compare these", "--image", a, "--image", big, "--model", "claude-sonnet-4-6"]);
-    let sent = bodies.lock().unwrap();
-    let content = sent[0]["messages"][0]["content"].as_array().unwrap().clone();
+    b.ok(&["-p", "compare these", "--image", a, "--image", big, "--model", "claude/sonnet"]);
+    let sent = b.prompts();
+    assert_eq!(sent.len(), 1);
+    let content = sent[0]["message"]["content"].as_array().unwrap().clone();
     let images: Vec<&Value> = content.iter().filter(|c| c["type"] == "image").collect();
     assert_eq!(images.len(), 2, "{content:?}");
     let text: String = content.iter().filter_map(|c| c["text"].as_str()).collect();
@@ -584,40 +357,55 @@ fn krowk_p_image_sends_each_file_with_the_prompt_and_refuses_a_bad_one_first() {
     assert!(images[1]["source"]["data"].as_str().unwrap().len() < std::fs::metadata(big).unwrap().len() as usize * 4 / 3);
 }
 
-/// Saves `login`'s `requests` window with `used` percent used, as seen now.
-fn seed_usage(home: &std::path::Path, login: &str, used: f64) {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
-    let usage = krowk_harness::usage::Usage::in_home(&home.join(".krowk"));
-    let limit = krowk_harness::protocol::LimitStatus { status: krowk_harness::protocol::LimitState::Allowed, window: Some("requests".into()), used_percent: Some(used), resets_at_ms: None };
-    usage.record_limit(login, &limit, now).unwrap();
+/// Two Claude Code accounts, each signed in in a directory of its own:
+/// `claude:a` replaying `scenario`, `claude:b` answering, and `rollover`
+/// when given — what a limit on `claude:a` may move on to.
+fn two_claude_accounts(b: &Sandbox, scenario: &str, rollover: Option<&str>) {
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures/claude");
+    let account = |name: &str, scenario: &str| {
+        let dir = b.root.join("home/.krowk/accounts").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("fake-login"), "").unwrap();
+        serde_json::json!({"kind": "claude-code", "binary": b.root.join("bin/claude"), "configDir": dir, "env": {"FAKE_CLAUDE_SCENARIO": fixtures.join(scenario)}})
+    };
+    let mut cfg = serde_json::json!({"instances": {"claude:a": account("claude-a", scenario), "claude:b": account("claude-b", "switch.jsonl")}});
+    if let Some(r) = rollover {
+        cfg["rollover"] = r.into();
+    }
+    std::fs::write(b.root.join("home/.krowk/config.json"), cfg.to_string()).unwrap();
 }
 
-/// A successful answer that leaves one request in a hundred: the early switch's trigger.
-fn nearly_out(text: &str) -> mock::Reply {
-    mock::Reply { headers: vec![("anthropic-ratelimit-requests-limit".into(), "100".into()), ("anthropic-ratelimit-requests-remaining".into(), "1".into())], ..mock::Reply::sse(&mock::text_stream(text)) }
+/// Saves `instance`'s five-hour window with `used` percent used, as seen
+/// now, under a login of its own name, listing `haiku`.
+fn seed_usage(home: &std::path::Path, instance: &str, used: f64) {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let usage = krowk_harness::usage::Usage::in_home(&home.join(".krowk"));
+    usage.record_instance(instance, instance, &["haiku".to_string()], now).unwrap();
+    let limit = krowk_harness::protocol::LimitStatus { status: krowk_harness::protocol::LimitState::Allowed, window: Some("five_hour".into()), used_percent: Some(used), resets_at_ms: Some(now + 3_600_000) };
+    usage.record_limit(instance, &limit, now).unwrap();
 }
 
 /// R-ROLL-11, D16: `krowk -p` with `offer` ends a turn that left too little
-/// by offering the next instance in its JSON result, marked early, and
+/// by offering the next account in its JSON result, marked early, and
 /// says how to continue there on stderr; the turn itself succeeded.
+#[cfg(unix)]
 #[test]
 fn r_roll_11_krowk_p_shows_an_early_offer_in_json_and_hints_on_stderr() {
-    let low = mock::serve(|_, _| nearly_out("low-answer-marker"));
-    let ok = mock::serve(mock::readme_script);
-    let b = Sandbox::new("early", &low.url);
+    let b = Sandbox::new("early");
     std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
-    std::fs::write(b.root.join("home/.krowk/config.json"), serde_json::json!({"instances": {"anthropic:b": {"kind": "anthropic-api", "baseUrl": ok.url}}}).to_string()).unwrap();
-    seed_usage(&b.root.join("home"), "anthropic:b", 20.0);
-    let out = b.krowk(&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "json"]);
+    two_claude_accounts(&b, "low.jsonl", None);
+    seed_usage(&b.root.join("home"), "claude:a", 90.0);
+    seed_usage(&b.root.join("home"), "claude:b", 20.0);
+    let out = b.krowk(&["-p", "hi", "--model", "claude:a/haiku", "--trust", "--output-format", "json"]);
     let (stdout, err) = (String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned());
     assert!(out.status.success(), "{stdout}{err}");
     let v: Value = serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout}{err}"));
-    assert_eq!((v["switchOffer"]["early"].as_bool(), v["switchOffer"]["to"]["instance"].as_str()), (Some(true), Some("anthropic:b")), "{stdout}");
+    assert_eq!((v["switchOffer"]["early"].as_bool(), v["switchOffer"]["to"]["instance"].as_str()), (Some(true), Some("claude:b")), "{stdout}");
     let id = v["sessionId"].as_str().unwrap();
-    assert!(err.contains("continue on anthropic:b/claude-sonnet-4-6 (80% left as of ") && err.contains(&format!("with `krowk -p --resume {id} --model anthropic:b/claude-sonnet-4-6`")), "{err}");
+    assert!(err.contains("continue on claude:b/haiku (80% left as of ") && err.contains(&format!("with `krowk -p --resume {id} --model claude:b/haiku`")), "{err}");
     // Off: no offer, no hint.
-    let out = b.krowk(&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "json", "--rollover", "off"]);
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let out = b.krowk(&["-p", "hi", "--model", "claude:a/haiku", "--trust", "--output-format", "json", "--rollover", "off"]);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stderr)));
     assert!(v["switchOffer"].is_null() && !String::from_utf8_lossy(&out.stderr).contains("continue on"), "{v}");
 }
 
@@ -625,42 +413,37 @@ fn r_roll_11_krowk_p_shows_an_early_offer_in_json_and_hints_on_stderr() {
 /// repository's `.krowk/config.json` and `--rollover`, most specific first;
 /// `off` fails a limit with no offer; a resumed session keeps its value; any
 /// other value is refused naming the three.
+#[cfg(unix)]
 #[test]
 fn r_roll_5_krowk_p_resolves_rollover_per_session_repo_and_global() {
-    let limited = mock::serve(|_, _| mock::Reply { headers: vec![("retry-after".into(), "0".into())], ..mock::Reply::json(429, &serde_json::json!({"type": "error", "error": {"type": "rate_limit_error", "message": "slow down"}})) });
-    let ok = mock::serve(mock::readme_script);
-    let b = Sandbox::new("rollover", &limited.url);
-    let global = |rollover: Option<&str>| {
-        let mut cfg = serde_json::json!({"instances": {"anthropic:b": {"kind": "anthropic-api", "baseUrl": ok.url}}});
-        if let Some(r) = rollover {
-            cfg["rollover"] = r.into();
-        }
-        std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
-        std::fs::write(b.root.join("home/.krowk/config.json"), cfg.to_string()).unwrap();
-    };
+    let b = Sandbox::new("rollover");
+    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
+    let global = |rollover: Option<&str>| two_claude_accounts(&b, "limited.jsonl", rollover);
     let repo = |rollover: &str| {
         std::fs::create_dir_all(b.root.join("repo/.krowk")).unwrap();
         std::fs::write(b.root.join("repo/.krowk/config.json"), serde_json::json!({"rollover": rollover}).to_string()).unwrap();
     };
-    // Whether the limited turn was offered a way on, and its session.
+    // Whether the limited turn was offered a way on, and its session. The
+    // repository is trusted only when `--trust` is given.
     let offered = |extra: &[&str]| -> (bool, String) {
-        let out = b.krowk(&[&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "json"], extra].concat());
+        let out = b.krowk(&[&["-p", "hi", "--model", "claude:a/haiku", "--output-format", "json"], extra].concat());
         let (stdout, err) = (String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned());
         let v: Value = serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout}{err}"));
-        let hinted = v["error"]["message"].as_str().unwrap_or_default().contains("continue on");
-        assert_eq!(hinted, !v["switchOffer"].is_null(), "the hint and the offer go together: {stdout}");
-        (hinted, v["sessionId"].as_str().unwrap_or_default().to_string())
+        assert_eq!(v["error"]["code"].as_str(), Some("rate_limited"), "{stdout}");
+        let offer = !v["switchOffer"].is_null();
+        assert_eq!(offer, v["error"]["message"].as_str().unwrap_or_default().contains("continue on"), "the hint and the offer go together: {stdout}");
+        (offer, v["sessionId"].as_str().unwrap_or_default().to_string())
     };
 
     global(None);
-    assert!(offered(&[]).0, "offer is the default");
+    assert!(offered(&["--trust"]).0, "offer is the default");
     global(Some("off"));
-    assert!(!offered(&[]).0, "the global value");
+    assert!(!offered(&["--trust"]).0, "the global value");
     repo("offer");
-    assert!(!offered(&[]).0, "an untrusted repository's value is ignored");
     assert!(offered(&["--trust"]).0, "a trusted repository overrides the global value");
     assert!(!offered(&["--trust", "--rollover", "off"]).0, "--rollover overrides both");
-    assert!(offered(&["--rollover", "offer"]).0, "--rollover overrides the global value");
+    std::fs::remove_dir_all(b.root.join("repo/.krowk")).unwrap();
+    assert!(offered(&["--trust", "--rollover", "offer"]).0, "--rollover overrides the global value");
 
     // Resumed: the recorded value stands until a new one replaces it.
     let (_, id) = offered(&["--rollover", "off", "--trust"]);
@@ -686,17 +469,20 @@ fn r_roll_5_krowk_p_resolves_rollover_per_session_repo_and_global() {
 #[cfg(unix)]
 #[test]
 fn r_cut_8_bare_krowk_on_a_terminal_prints_the_overview_and_the_old_tui_flags_point_to_p() {
-    let m = mock::serve(|_, _| mock::Reply::sse(&mock::fixture("turn2_answer.sse")));
-    let b = Sandbox::new("bare-tty", &m.url);
+    let b = Sandbox::new("bare-tty");
+    // A Claude Code account on an API key, ready here without a login, so
+    // bare `krowk` has no first-machine setup to ask.
+    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
+    std::fs::write(b.root.join("home/.krowk/config.json"), serde_json::json!({"instances": {"claude:console": {"kind": "claude-code", "apiKeyEnv": "ANTHROPIC_API_KEY"}}}).to_string()).unwrap();
     let on_a_tty = |args: &[&str]| {
-        let mut c = b.command(args, "sk-test");
-        c.env("NO_COLOR", "1").env("TERM", "xterm-256color");
+        let mut c = b.command(args);
+        c.env("NO_COLOR", "1").env("TERM", "xterm-256color").env("ANTHROPIC_API_KEY", "sk-test");
         let mut t = pty::Pty::spawn(c, 120, 40);
         let st = t.wait(std::time::Duration::from_secs(20)).expect("krowk exits at once");
         (t.text().replace("\r\n", "\n"), st)
     };
-    let mut piped = b.command(&[], "sk-test");
-    piped.env("NO_COLOR", "1").env("TERM", "xterm-256color");
+    let mut piped = b.command(&[]);
+    piped.env("NO_COLOR", "1").env("TERM", "xterm-256color").env("ANTHROPIC_API_KEY", "sk-test");
     let piped = piped.output().unwrap();
     assert!(piped.status.success());
     let (greeting, st) = on_a_tty(&[]);

@@ -1,5 +1,5 @@
 //! `krowk -p --worktree` (worktrees WT6), the built binary against the
-//! stand-in Anthropic API, in a real repository with a stand-in home and
+//! fake `claude` (Claude Code) on PATH, in a real repository with a stand-in home and
 //! data directory: a session that makes a file makes it in a new worktree,
 //! not the checkout, and the worktree is kept and named, in the result and
 //! on stderr; a session that changes nothing leaves no worktree or branch;
@@ -8,26 +8,32 @@
 
 #![cfg(all(feature = "harness", unix))]
 
-#[path = "../../krowk-harness/tests/common/mock.rs"]
-mod mock;
-
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 struct Sandbox {
     root: PathBuf,
-    url: String,
 }
 
 impl Sandbox {
-    fn new(name: &str, url: &str) -> Sandbox {
+    /// A real repository, and the fake `claude` first on PATH, signed in to
+    /// the default account (`~/.claude`): a prompt that asks for a file
+    /// makes NEW.md where Claude Code runs, as its Write would, and any
+    /// other is only answered. The repository and the directory outside it
+    /// are trusted for good, as Claude Code runs in no other.
+    fn new(name: &str) -> Sandbox {
         let root = std::env::temp_dir().join(format!("krowk-worktree-session-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        for d in ["home", "data", "run", "repo", "elsewhere"] {
+        for d in ["home/.claude", "data", "run", "repo", "elsewhere", "bin"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
-        let b = Sandbox { root: root.canonicalize().unwrap(), url: url.into() };
+        std::fs::write(root.join("home/.claude/fake-login"), "").unwrap();
+        std::os::unix::fs::symlink(Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures/claude/fake-claude"), root.join("bin/claude")).unwrap();
+        std::fs::write(root.join("scenario.jsonl"), SCENARIO).unwrap();
+        let b = Sandbox { root: root.canonicalize().unwrap() };
+        std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
+        std::fs::write(b.root.join("home/.krowk/trusted.json"), json!({"directories": [b.repo(), b.root.join("elsewhere")]}).to_string()).unwrap();
         git(&b.repo(), &["init", "-q", "-b", "main"]);
         std::fs::write(b.repo().join("README.md"), "# krowk\n").unwrap();
         git(&b.repo(), &["add", "README.md"]);
@@ -48,13 +54,13 @@ impl Sandbox {
         Command::new(env!("CARGO_BIN_EXE_krowk"))
             .args(args)
             .env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("PATH", format!("{}:{}", self.root.join("bin").display(), std::env::var("PATH").unwrap_or_default()))
             .env("HOME", self.root.join("home"))
             .env("XDG_DATA_HOME", self.root.join("data"))
             .env("XDG_RUNTIME_DIR", self.root.join("run"))
             .env("KROWK_NO_UPDATE_CHECK", "1")
-            .env("ANTHROPIC_API_KEY", "sk-test")
-            .env("ANTHROPIC_BASE_URL", &self.url)
+            .env("FAKE_CLAUDE_LOG", self.root.join("fake.log"))
+            .env("FAKE_CLAUDE_SCENARIO", self.root.join("scenario.jsonl"))
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             // Nothing above the sandbox is a repository krowk could find.
@@ -68,7 +74,7 @@ impl Sandbox {
     /// `krowk -p` in the repository, the mode chosen so no sandbox is
     /// needed: what it printed, stdout and stderr, having succeeded.
     fn prompt(&self, args: &[&str]) -> (String, String) {
-        let args: Vec<&str> = ["-p", "--model", "anthropic/claude-sonnet-4-6", "--permission-mode", "acceptEdits"].into_iter().chain(args.iter().copied()).collect();
+        let args: Vec<&str> = ["-p", "--model", "claude/sonnet", "--permission-mode", "acceptEdits"].into_iter().chain(args.iter().copied()).collect();
         let o = self.krowk_in(&self.repo(), &args);
         let (out, err) = (String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned());
         assert!(o.status.success(), "krowk {args:?}: {out}{err}");
@@ -113,18 +119,20 @@ fn has_git() -> bool {
     Command::new("/usr/bin/env").args(["git", "--version"]).output().is_ok_and(|o| o.status.success())
 }
 
-/// A model that writes NEW.md when the prompt asks for a file, and only
-/// answers otherwise.
-fn script(body: &Value, _: usize) -> mock::Reply {
-    let messages = body["messages"].as_array().cloned().unwrap_or_default();
-    let answered = messages.last().and_then(|m| m["content"].as_array().cloned()).is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
-    if answered {
-        return mock::Reply::sse(&mock::text_stream("made it."));
-    }
-    if messages.last().is_some_and(|m| m.to_string().contains("make a file")) {
-        return mock::Reply::sse(&mock::tool_use("toolu_w", "write", &json!({"path": "NEW.md", "content": "from the session\n"})));
-    }
-    mock::Reply::sse(&mock::text_stream("nothing to do."))
+/// The fake's scenario: asked for a file, its Write makes NEW.md in the
+/// directory Claude Code runs in (`@touch`); asked anything else, a plain
+/// answer.
+const SCENARIO: &str = r#"@when make a file
+{"type":"assistant","message":{"id":"msg_w","model":"{{MODEL}}","role":"assistant","content":[{"type":"tool_use","id":"toolu_w","name":"Write","input":{"file_path":"NEW.md","content":"from the session\n"}}],"usage":{"input_tokens":3,"output_tokens":1}},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}
+@touch NEW.md
+{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_w","type":"tool_result","content":"File created successfully at: NEW.md"}]},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}
+{"type":"assistant","message":{"id":"msg_done","model":"{{MODEL}}","role":"assistant","content":[{"type":"text","text":"made it."}],"usage":{"input_tokens":3,"output_tokens":1}},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}
+{"type":"result","subtype":"success","is_error":false,"result":"made it.","session_id":"{{SESSION}}"}
+"#;
+
+/// What the fake logged: every argv, and each line in and out.
+fn fake_log(b: &Sandbox) -> String {
+    std::fs::read_to_string(b.root.join("fake.log")).unwrap_or_default()
 }
 
 #[test]
@@ -132,8 +140,7 @@ fn wt6_a_worktree_session_makes_its_file_in_the_worktree_which_is_kept_and_named
     if !has_git() {
         return;
     }
-    let m = mock::serve(script);
-    let b = Sandbox::new("kept", &m.url);
+    let b = Sandbox::new("kept");
     let (out, err) = b.prompt(&["--worktree", "--output-format", "json", "make a file"]);
     let result: Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}"));
     assert_eq!(result["status"], "completed", "{result}");
@@ -142,7 +149,7 @@ fn wt6_a_worktree_session_makes_its_file_in_the_worktree_which_is_kept_and_named
     let hex = path.file_name().unwrap().to_string_lossy().into_owned();
     assert_eq!((wt["branch"].as_str(), &wt["commits"], &wt["uncommittedChanges"]), (Some(format!("krowk/{hex}").as_str()), &json!(0), &json!(true)));
     assert!(path.starts_with(b.worktrees()), "under krowk's worktrees: {}", path.display());
-    assert_eq!(std::fs::read_to_string(path.join("NEW.md")).unwrap(), "from the session\n");
+    assert!(path.join("NEW.md").is_file(), "made in the worktree");
     assert!(!b.repo().join("NEW.md").exists(), "not in the checkout");
     assert!(!err.contains("Worktree kept"), "JSON names it in the result alone: {err}");
     // The session ran there, by the id the worktree was made for.
@@ -167,7 +174,7 @@ fn wt6_a_worktree_session_makes_its_file_in_the_worktree_which_is_kept_and_named
 
     // Gone, it is refused, naming what lists the ones that remain.
     std::fs::remove_dir_all(&path).unwrap();
-    let o = b.krowk_in(&b.repo(), &["-p", "--model", "anthropic/claude-sonnet-4-6", "--resume", session, "hi"]);
+    let o = b.krowk_in(&b.repo(), &["-p", "--model", "claude/sonnet", "--resume", session, "hi"]);
     let said = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(2), "{said}");
     assert!(said.contains("worktree_missing") && said.contains("krowk worktrees"), "{said}");
@@ -178,8 +185,7 @@ fn wt6_a_worktree_session_that_changes_nothing_leaves_nothing() {
     if !has_git() {
         return;
     }
-    let m = mock::serve(script);
-    let b = Sandbox::new("unchanged", &m.url);
+    let b = Sandbox::new("unchanged");
     for format in ["text", "stream-json"] {
         let (out, err) = b.prompt(&["--worktree", "--output-format", format, "say hello"]);
         assert!(!err.contains("Worktree kept"), "{err}");
@@ -204,13 +210,12 @@ fn wt6_worktree_outside_a_repository_is_refused() {
     if !has_git() {
         return;
     }
-    let m = mock::serve(script);
-    let b = Sandbox::new("no-repo", &m.url);
-    let o = b.krowk_in(&b.root.join("elsewhere"), &["-p", "--model", "anthropic/claude-sonnet-4-6", "--worktree", "make a file"]);
+    let b = Sandbox::new("no-repo");
+    let o = b.krowk_in(&b.root.join("elsewhere"), &["-p", "--model", "claude/sonnet", "--worktree", "make a file"]);
     let said = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{said}");
     assert!(said.contains("not_a_repository") && said.contains("this directory is in none"), "{said}");
-    assert!(m.seen.lock().unwrap().is_empty(), "no model was called");
+    assert!(!fake_log(&b).contains("argv -p"), "Claude Code was never started");
     assert!(!b.root.join("elsewhere/NEW.md").exists());
 }
 
@@ -219,8 +224,7 @@ fn worktrees_default_starts_a_new_session_in_its_own_worktree_without_the_flag()
     if !has_git() {
         return;
     }
-    let m = mock::serve(script);
-    let b = Sandbox::new("default", &m.url);
+    let b = Sandbox::new("default");
     std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
     std::fs::write(b.root.join("home/.krowk/config.json"), r#"{"worktrees": {"default": true}}"#).unwrap();
     let (out, _) = b.prompt(&["--output-format", "json", "make a file"]);
@@ -234,27 +238,29 @@ fn worktrees_default_starts_a_new_session_in_its_own_worktree_without_the_flag()
     assert!(b.repo().join("NEW.md").is_file());
     std::fs::remove_file(b.repo().join("NEW.md")).unwrap();
 
-    // A repository's own says no before the person's yes, once it is
-    // trusted: until then, the person's holds.
+    // A repository's own says no before the person's yes. (It is read only
+    // once the repository is trusted; Claude Code runs in no other, so an
+    // untrusted one's is never reached by a session.)
     std::fs::create_dir_all(b.repo().join(".krowk")).unwrap();
     std::fs::write(b.repo().join(".krowk/config.json"), r#"{"worktrees": {"default": false}}"#).unwrap();
+    // A file that can run code changed since the repository was trusted, so
+    // it is trusted again, as a person who looked at the change would.
+    let o = b.krowk_in(&b.repo(), &["trust"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let (out, _) = b.prompt(&["--output-format", "json", "make a file"]);
-    assert!(out.contains("\"worktree\""), "untrusted, the repository's no is not read: {out}");
-    assert!(!b.repo().join("NEW.md").exists());
-    b.prompt(&["--trust", "make a file"]);
+    assert!(!out.contains("\"worktree\""), "the trusted repository's no is read: {out}");
     assert!(b.repo().join("NEW.md").is_file());
 
     // Outside a repository there is nothing to make one of: the session
     // runs where it is, where `--worktree` would be refused.
-    let o = b.krowk_in(&b.root.join("elsewhere"), &["-p", "--model", "anthropic/claude-sonnet-4-6", "--permission-mode", "acceptEdits", "make a file"]);
+    let o = b.krowk_in(&b.root.join("elsewhere"), &["-p", "--model", "claude/sonnet", "--permission-mode", "acceptEdits", "make a file"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(b.root.join("elsewhere/NEW.md").is_file());
 }
 
 #[test]
 fn wt6_help_lists_the_flag_and_sessions_keeps_its_own() {
-    let m = mock::serve(script);
-    let b = Sandbox::new("help", &m.url);
+    let b = Sandbox::new("help");
     let o = b.krowk_in(&b.repo(), &["--help"]);
     let help = String::from_utf8_lossy(&o.stdout);
     let lines: Vec<&str> = help.lines().filter(|l| l.contains("--worktree")).collect();

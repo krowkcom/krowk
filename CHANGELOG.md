@@ -9,6 +9,70 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Breaking change
+
+- **krowk no longer runs models itself, and the SuperGrok sign-in is gone.**
+  Every session now runs inside Claude Code or Codex, so `krowk -p`, the host
+  and delegation need a connected Claude Code or Codex account. API keys and
+  gateways keep working: `krowk connect` turns them into Claude Code or Codex
+  accounts, and the key stays in krowk's credentials. Signing in with
+  SuperGrok is not carried over; connect a Claude Code or Codex account
+  instead. A key that is only in your environment (`ANTHROPIC_API_KEY`,
+  `OPENAI_API_KEY`) is no longer an account by itself: connect it once with
+  `krowk connect anthropic --method api-key` (or `openai`). Gone with
+  krowk's own agent: its tools and `subagent` tool, agent definitions read
+  from `.krowk/agents`, its reading of `AGENTS.md`, `CLAUDE.md` and
+  `.cursor/rules`, and its running of hooks (Claude Code and Codex read and
+  run their own); placing that `subagent` tool's subagents on another of
+  your machines, new in 0.18.0 (Claude Code and Codex hand a task to the
+  machine with room through krowk-mcp's `krowk_delegate`, as before);
+  `--sandbox` with a profile, which only held krowk's own tools, is refused;
+  and `--client-id`, which only SuperGrok took. It is announced and removed
+  in the same release.
+
+### Changed
+
+- **API keys and gateways now run in Claude Code or Codex.** `krowk connect`
+  turns an Anthropic API key into a Claude Code account, and an
+  Anthropic-compatible gateway (`--base-url`) into one that sends to it; an
+  OpenAI, xAI, OpenRouter or OpenAI-compatible key becomes a Codex account
+  on a model provider of its own, with that provider's default model, on the
+  Responses API (Codex no longer accepts the chat wire API, so an
+  OpenAI-compatible server must offer `/responses`, as recent Ollama and
+  vLLM do; one such account already written on the chat wire API is moved
+  to the Responses API the first time krowk uses it, with one line). Each
+  keeps the name it had (`anthropic`, `openai:work`), gets a directory of its
+  own under `~/.krowk/accounts`, and its key stays where it was: in krowk's
+  credentials file (pasted, `$VAR` or `!command`) or the variable it names,
+  handed to Claude Code or Codex when it starts, never written into that
+  directory. A key or gateway your `config.json` already defines is turned
+  into one the first time krowk uses it, with one line saying so; a default
+  model naming it still works. SuperGrok can no longer be
+  connected: `krowk connect` says "krowk no longer runs models directly;
+  connect a Claude Code or Codex account."
+
+- **Every session runs on a Claude Code or Codex account.** `krowk -p`,
+  sessions the host starts (`krowk sync new --host`) and a model switch go
+  only to a Claude Code or Codex account: the one named, else the default,
+  else the one that is ready. With none connected, or when `--model`,
+  `defaultModel` or a resumed session names a provider krowk no longer runs
+  (an API key krowk ran itself, SuperGrok), they stop with one line: "krowk
+  no longer runs models directly; connect a Claude Code or Codex account."
+  (exit 3, `none_ready` or `removed_provider`). `krowk status`, `providers
+  list` and `doctor` list only those accounts, and `krowk connect`, `login`,
+  the first run's "Connect a model" step and the help no longer offer
+  SuperGrok.
+
+- **`krowk connect` names a Codex account on an API key as one.** When it
+  refused a name already taken, or listed accounts to pick from, a Codex
+  account you wrote by hand on a key read "ChatGPT subscription"; it now
+  reads "Codex, API key", as `krowk status` already says.
+
+- **A turn waiting on Claude Code or Codex no longer wakes krowk up.** krowk
+  checked for steering ten times a second while a turn ran; it now waits for
+  the steering itself, so a long silent turn costs no CPU, and steering is
+  passed on the moment you send it rather than within a tenth of a second.
+
 ## [0.18.0] - 2026-11-20
 
 ### Added
