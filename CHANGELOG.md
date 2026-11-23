@@ -21,6 +21,18 @@ breaking changes may affect it without notice.
 
 ### Added
 
+- **The status layer's contract: every agent session's status as an A2A
+  v1.0 Task.** A session's state, one-line summary and when it was set are
+  A2A's `TaskState` and `TaskStatus`; what gruntas knows about it (project,
+  machine, harness, account, parent session, branch, HEAD, worktree, dirty
+  flag, phase, plan, PR, checks, cost, last activity and health) rides in the
+  Task's metadata under `https://gruntas.com/a2a/status/v1`, each field
+  marked as reported by the agent or observed by the harness. Its JSON
+  Schema is published beside the protocol's (`status-task`, `status-board`
+  and `status-counts` in `crates/gruntas-harness/schema/`). Nothing shows it
+  yet: `gruntas status` and `gruntas ping` arrive with the rest of the
+  status layer.
+
 - **`gruntas hook <harness> <event>`, the entry point for the Claude
   Code and Codex plugin's hooks.** It reads the harness's hook payload on
   stdin and tells the host daemon about the session over its socket, in a
