@@ -23,6 +23,8 @@ cargo install --locked --git https://github.com/gruntas/gruntas --features harne
 
 Builds are published for Linux and macOS (amd64/arm64) and Windows (amd64). On a workstation the installer gives you the full build, with the agent. In CI and containers it gives you the lean build, which only publishes. `--full` and `--lean` choose; see [the install docs](https://gruntas.com/docs#install).
 
+**In Claude Code and Codex.** The gruntas plugin registers every session you start with gruntas, so your machines count it, and adds the gruntas MCP server and skill. It needs the full build of `gruntas` on your PATH. Without it the hooks do nothing, but Claude Code can't make worktrees while the plugin is on, because the plugin hands them to gruntas. In Claude Code run `/plugin marketplace add gruntas/gruntas` and `/plugin install gruntas@gruntas`. In Codex run `codex plugin marketplace add gruntas/gruntas` and `codex plugin add gruntas@gruntas`, then approve its hooks once in `/hooks`. `gruntas doctor` checks that your Claude settings keep agents out of `~/.gruntas`, and prints the settings to add if they don't.
+
 **Coming from krowk?** Install gruntas fresh (a krowk binary can't upgrade itself into it). The first `gruntas` run copies `~/.krowk` into `~/.gruntas` once, so you stay signed in with your sessions and accounts. Old `krowk@krowk` plugin installs reinstall as `gruntas@gruntas`. [CHANGELOG.md](CHANGELOG.md) has the full list.
 
 ## Three moments
@@ -51,7 +53,7 @@ gruntas -p --resume <id> "go on" # continue an earlier session
 - **Accounts.** gruntas no longer runs models itself, and the SuperGrok sign-in is gone: every session runs in Claude Code or Codex. API keys and gateways keep working as Claude Code or Codex accounts, which `gruntas connect` makes of them, and `gruntas providers` lists and renames them.
 - **Configuration.** Everything lives in `~/.gruntas/`, and a repository can commit `.gruntas/config.json`. `gruntas config` reads and sets it, environment variables are `GRUNTAS_*`, `gruntas status` and `gruntas doctor` check health and `gruntas upgrade` updates. [Configuration](https://gruntas.com/docs#configuration)
 
-`gruntas help` lists the commands, `gruntas help --all` every one, and `--json` gives them as data. [`skills/gruntas/SKILL.md`](skills/gruntas/SKILL.md) teaches another agent to use gruntas, and in Claude Code `/plugin marketplace add gruntas/gruntas` and `/plugin install gruntas@gruntas` add the skill and the MCP server.
+`gruntas help` lists the commands, `gruntas help --all` every one, and `--json` gives them as data. [`skills/gruntas/SKILL.md`](skills/gruntas/SKILL.md) teaches another agent to use gruntas; the plugin above installs it.
 
 ## Versions
 

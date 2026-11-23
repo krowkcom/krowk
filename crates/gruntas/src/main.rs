@@ -17,8 +17,15 @@ fn main() {
     if args.first().map(String::as_str) == Some("hook") {
         #[cfg(all(feature = "harness", unix))]
         std::process::exit(gruntas_harness::hook::main(&args[1..], gruntas::cli::VERSION));
+        // Except a worktree Claude Code waits on: none is made, and it says why.
         #[cfg(not(all(feature = "harness", unix)))]
-        std::process::exit(0);
+        {
+            if args.get(2).map(String::as_str) == Some("WorktreeCreate") {
+                eprintln!("WorktreeCreate: this gruntas build makes no worktrees — install the full build on Linux or macOS: curl -fsSL https://gruntas.com/install | bash -s -- --full");
+                std::process::exit(1);
+            }
+            std::process::exit(0);
+        }
     }
     let env = |k: &str| std::env::var(k).unwrap_or_default();
     // stderr is not held locked: the spinner draws on it from its own thread,
