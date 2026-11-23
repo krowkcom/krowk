@@ -1151,10 +1151,6 @@ mod tests {
         assert_eq!(lines[1]["result"], json!({}), "a last line without its newline is still answered");
     }
 
-    /// Slice 08 (R-ALLOC-11, D18): gruntas_delegate, gruntas_collect and
-    /// gruntas_machines are offered, delegate saying when to use it rather
-    /// than the harness's own subagent tool, and a task id nobody started
-    /// is a tool error, not a protocol one.
     /// KT04 (R-KIT-2, D2): the lean toolkit, exactly; no mcp_search or
     /// mcp_call, since a foreign harness connects to MCP servers itself.
     #[test]
@@ -1169,6 +1165,10 @@ mod tests {
         assert_eq!(names, want);
     }
 
+    /// Slice 08 (R-ALLOC-11, D18): gruntas_delegate, gruntas_collect and
+    /// gruntas_machines are offered, delegate saying when to use it rather
+    /// than the harness's own subagent tool, and a task id nobody started
+    /// is a tool error, not a protocol one.
     #[test]
     #[cfg(all(feature = "harness", unix))]
     fn alloc_08_the_delegation_tools_are_offered_and_say_when_to_delegate() {
