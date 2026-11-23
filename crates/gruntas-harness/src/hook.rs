@@ -156,10 +156,15 @@ pub fn config_home(harness: PluginHarness, env: &dyn Fn(&str) -> String) -> Opti
         PluginHarness::Claude => ("CLAUDE_CONFIG_DIR", ".claude"),
         PluginHarness::Codex => ("CODEX_HOME", ".codex"),
     };
-    match env(var) {
-        v if !v.is_empty() => Some(v),
-        _ => Some(env("HOME")).filter(|h| !h.is_empty()).map(|h| Path::new(&h).join(default).display().to_string()),
-    }
+    // One account, one key: `/h/.claude/` and `/h/.claude` are the same.
+    let home = match env(var) {
+        v if !v.is_empty() => v,
+        _ => Some(env("HOME")).filter(|h| !h.is_empty()).map(|h| Path::new(&h).join(default).display().to_string())?,
+    };
+    Some(match home.trim_end_matches('/') {
+        "" => "/".to_string(),
+        h => h.to_string(),
+    })
 }
 
 /// Sends `activity` to the daemon on `socket` and waits for its answer:
@@ -240,8 +245,10 @@ pub fn main(args: &[String], version: &str) -> i32 {
         Ok(r) => r,
         Err(_) => (None, Some(format!("{}: gave up after {} ms", args.join(" "), GIVE_UP.as_millis()))),
     };
+    // Never `println!`: a closed stdout would panic, and the release build
+    // aborts on a panic, which the harness would see as a failed hook.
     if let Some(out) = stdout {
-        println!("{out}");
+        let _ = writeln!(std::io::stdout(), "{out}");
     }
     if let Some(why) = why {
         note(&env, &why);
@@ -288,7 +295,7 @@ mod tests {
     fn kt01_the_config_home_is_the_harness_variable_else_its_default() {
         let env = |k: &str| match k {
             "HOME" => "/h".to_string(),
-            "CODEX_HOME" => "/x/codex".to_string(),
+            "CODEX_HOME" => "/x/codex/".to_string(),
             _ => String::new(),
         };
         assert_eq!(config_home(PluginHarness::Claude, &env).as_deref(), Some("/h/.claude"));

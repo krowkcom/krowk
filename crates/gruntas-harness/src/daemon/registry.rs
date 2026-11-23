@@ -88,12 +88,15 @@ impl Registry {
         self.sessions.len() != before
     }
 
+    /// A session, unless its harness process is gone: what is read is
+    /// never staler than the read, however long since the last prune.
     pub fn get(&self, session_id: &str) -> Option<&Registration> {
-        self.sessions.get(session_id)
+        self.sessions.get(session_id).filter(|r| r.harness_pid.is_none_or(alive))
     }
 
+    /// Every session whose harness process is still there.
     pub fn sessions(&self) -> impl Iterator<Item = &Registration> {
-        self.sessions.values()
+        self.sessions.values().filter(|r| r.harness_pid.is_none_or(alive))
     }
 }
 

@@ -420,6 +420,19 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
     // Every way out takes no new turn from here, an idle exit's included:
     // a prompt that arrives while the engines are let go is refused.
     state.borrow_mut().stopping = true;
+    // The registry as it stands, when a write of it may still be queued:
+    // the runtime is dropped without waiting for one, and a deregistration
+    // lost here would come back with the next daemon.
+    // blocking: on the way out, with nobody left to serve.
+    {
+        let s = state.borrow();
+        let written = *s.registry_written.lock().unwrap_or_else(|e| e.into_inner());
+        if s.registry_seq > written
+            && let Err(e) = s.registry.save(socket.parent().unwrap_or(Path::new("/")))
+        {
+            eprintln!("the registrations cannot be written: {e}");
+        }
+    }
     // Only the socket this daemon bound: one a newer daemon put in its
     // place is that one's.
     // blocking: on the way out, with nobody left to serve.
