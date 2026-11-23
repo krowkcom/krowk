@@ -43,7 +43,7 @@ fn kt01_claude_codes_payloads_normalise_to_one_event_each() {
     assert_eq!(normalised(c, "SessionEnd"), HookEvent::SessionEnd { session: claude_session() });
     assert_eq!(normalised(c, "PreToolUse"), HookEvent::ToolStart { session: claude_session(), tool_call_id: "toolu_01HTh5vFPUMgCcLz8rj6s46g".into(), tool_name: "Bash".into(), input: serde_json::json!({"command": "echo hi", "description": "Print hi via echo"}) });
     assert_eq!(normalised(c, "PostToolUse"), HookEvent::ToolEnd { session: claude_session(), tool_call_id: "toolu_01HTh5vFPUMgCcLz8rj6s46g".into(), tool_name: "Bash".into(), input: serde_json::json!({"command": "echo hi", "description": "Print hi via echo"}) });
-    assert_eq!(normalised(c, "Stop"), HookEvent::Stop { session: claude_session() });
+    assert_eq!(normalised(c, "Stop"), HookEvent::Stop { session: claude_session(), active: false });
     assert_eq!(
         normalised(c, "usage"),
         HookEvent::Usage { config_home: "/home/user/.claude".into(), windows: vec![UsageWindow { kind: "fiveHour".into(), used_percent: 37.5, resets_at_ms: Some(1_795_430_000_000) }, UsageWindow { kind: "sevenDay".into(), used_percent: 12.0, resets_at_ms: Some(1_795_900_000_000) }] }
@@ -58,7 +58,7 @@ fn kt01_codexs_payloads_normalise_to_the_same_events() {
     assert_eq!(normalised(x, "SessionEnd"), HookEvent::SessionEnd { session: codex_session(false) });
     assert_eq!(normalised(x, "PreToolUse"), HookEvent::ToolStart { session: codex_session(true), tool_call_id: "call_Xq3mB7rT2kLp9vNw".into(), tool_name: "Bash".into(), input: serde_json::json!({"command": "cargo test"}) });
     assert_eq!(normalised(x, "PostToolUse"), HookEvent::ToolEnd { session: codex_session(true), tool_call_id: "call_Xq3mB7rT2kLp9vNw".into(), tool_name: "Bash".into(), input: serde_json::json!({"command": "cargo test"}) });
-    assert_eq!(normalised(x, "Stop"), HookEvent::Stop { session: codex_session(true) });
+    assert_eq!(normalised(x, "Stop"), HookEvent::Stop { session: codex_session(true), active: false });
 }
 
 #[test]
@@ -76,10 +76,27 @@ fn kt01_session_start_registers_and_session_end_deregisters() {
         Some(Activity::Register(Registration { session_id: CLAUDE.into(), harness: c, harness_pid: Some(7), config_home: Some("/home/user/.claude".into()), cwd: Some("/home/user/repo".into()), repository: Some("git@github.com:o/r.git".into()), transcript_path: claude_session().transcript_path, attendance: Some(Attendance::Attended) }))
     );
     assert_eq!(hook::to_activity(PluginHarness::Codex, &normalised(PluginHarness::Codex, "SessionEnd"), &ctx), Some(Activity::Deregister { session_id: CODEX.into() }));
-    // A tool call off the heavy list (`echo hi`) tells the daemon nothing.
-    for e in ["PreToolUse", "PostToolUse"] {
-        assert_eq!(hook::to_activity(c, &normalised(c, e), &ctx), None, "{e}");
+    // A tool call off the heavy list (`echo hi`) tells the daemon nothing
+    // as it starts; its end is work the agent has not reported (SL03).
+    assert_eq!(hook::to_activity(c, &normalised(c, "PreToolUse"), &ctx), None);
+    assert_eq!(hook::to_activity(c, &normalised(c, "PostToolUse"), &ctx), Some(Activity::ToolEnd { session_id: CLAUDE.into() }));
+}
+
+/// SL03: the report tool's own call is the report, not work to report.
+#[test]
+fn sl03_the_report_tools_own_call_is_not_unreported_work() {
+    let c = PluginHarness::Claude;
+    for name in ["mcp__plugin_gruntas_gruntas__gruntas_report", "gruntas_report", "gruntas.gruntas_report", "gruntas/gruntas_report"] {
+        let ev = HookEvent::ToolEnd { session: claude_session(), tool_call_id: "t".into(), tool_name: name.into(), input: serde_json::json!({ "summary": "s" }) };
+        assert_eq!(hook::to_activity(c, &ev, &Context::default()), None, "{name}");
     }
+    for name in ["mcp__other__not_gruntas_report_x", "mcp__other__my_gruntas_report"] {
+        let ev = HookEvent::ToolEnd { session: claude_session(), tool_call_id: "t".into(), tool_name: name.into(), input: serde_json::json!({}) };
+        assert_eq!(hook::to_activity(c, &ev, &Context::default()), Some(Activity::ToolEnd { session_id: CLAUDE.into() }), "{name}");
+    }
+    let mut active: serde_json::Value = serde_json::from_slice(&std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hooks/claude/Stop.json")).unwrap()).unwrap();
+    active["stop_hook_active"] = true.into();
+    assert_eq!(hook::normalise(c, "Stop", &active).unwrap(), Some(HookEvent::Stop { session: claude_session(), active: true }));
 }
 
 /// KT03: a heavy command's start and end, and the turn's end, as the

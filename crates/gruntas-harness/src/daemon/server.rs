@@ -788,17 +788,30 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
         }
         ClientFrame::Activity { id: cmd_id, activity } => {
             let mut s = state.borrow_mut();
+            let (mut task, mut report_due) = (None, false);
             let error = match s.clients.get(&id).is_some_and(|c| c.local) {
                 // Its write would be dropped with the runtime: refused, and
                 // the hook notes it.
                 true if s.stopping => Some(error_info(&stopping_error())),
+                // A report is the session's own: one that is not registered
+                // (or whose harness is gone) has no status to keep.
+                true if matches!(&activity, Activity::Report { session_id, .. } if s.registry.get(session_id).is_none()) => {
+                    Some(error_info(&EngineError::new("not_registered", "this session is not registered with the gruntas daemon, so it has no status to report to: its SessionStart hook registers it")))
+                }
                 true => {
+                    // Read before it is taken: the turn's end consumes it.
+                    if let Activity::TurnEnd { session_id } = &activity {
+                        report_due = s.registry.report_due(session_id);
+                    }
                     s.activity(&activity);
+                    if let Activity::Report { session_id, .. } = &activity {
+                        task = s.registry.task(session_id).cloned().map(Box::new);
+                    }
                     None
                 }
                 false => Some(error_info(&EngineError::new("local_only", "a session's activity is taken on the daemon's unix socket only"))),
             };
-            s.send(id, "", control(&ServerFrame::Activity { id: cmd_id, error }));
+            s.send(id, "", control(&ServerFrame::Activity { id: cmd_id, error, task, report_due }));
         }
         ClientFrame::Leave { session_id } => {
             let mut s = state.borrow_mut();
@@ -1152,7 +1165,7 @@ impl State {
                 Activity::HeavyStart { session_id, tool_call_id } => running.start(session_id, tool_call_id, std::time::Instant::now()),
                 Activity::HeavyEnd { session_id, tool_call_id } => running.end(session_id, tool_call_id),
                 Activity::TurnEnd { session_id } | Activity::Deregister { session_id } => running.end_session(session_id),
-                Activity::Register(_) | Activity::Usage { .. } => {}
+                Activity::Register(_) | Activity::Usage { .. } | Activity::ToolEnd { .. } | Activity::Report { .. } => {}
             }
         }
         if let (Activity::Usage { config_home, windows }, Some(usage)) = (a, &self.opts.usage) {

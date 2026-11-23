@@ -276,6 +276,8 @@ impl Server<'_> {
             "gruntas_machines" => machines(),
             #[cfg(all(feature = "harness", unix))]
             "gruntas_session_info" => session_info(self.env),
+            #[cfg(all(feature = "harness", unix))]
+            "gruntas_report" => report(self.env, &self.version, &args),
             other => return Err(rpc_error(-32602, &format!("unknown tool {other}"))),
         };
         Ok(match outcome {
@@ -853,6 +855,7 @@ use delegation::{collect, delegate, machines};
 #[cfg(all(feature = "harness", unix))]
 mod session {
     use super::*;
+    use gruntas_client::status::TaskState;
     use gruntas_harness::daemon::registry::Registry;
 
     /// Further up than any launcher chain goes: a loop in a racing process
@@ -862,11 +865,20 @@ mod session {
     /// What may sit between a harness and the server it starts.
     const LAUNCHERS: [&str; 8] = ["node", "npx", "npm", "sh", "bash", "dash", "zsh", "env"];
 
+    /// The registrations naming the harness process that started this
+    /// server (more than one for a Codex app-server running several
+    /// threads, or a file an older daemon wrote), and the processes looked
+    /// at.
+    fn mine(registry: &Registry) -> (Vec<&gruntas_harness::protocol::Registration>, Vec<u32>) {
+        let line = starters(std::process::id(), parent, |pid| name(pid).is_some_and(|n| LAUNCHERS.contains(&n.as_str()) || n.starts_with("npm ")));
+        let found = line.iter().map(|pid| registry.sessions().filter(|r| r.harness_pid == Some(*pid)).collect::<Vec<_>>()).find(|m| !m.is_empty()).unwrap_or_default();
+        (found, line)
+    }
+
     pub fn session_info(env: &dyn Fn(&str) -> String) -> Outcome {
         let dir = gruntas_harness::daemon::dir(env).map_err(|why| fail("no_daemon_dir", why))?;
         let registry = Registry::load(&dir);
-        let line = starters(std::process::id(), parent, |pid| name(pid).is_some_and(|n| LAUNCHERS.contains(&n.as_str()) || n.starts_with("npm ")));
-        let found = line.iter().map(|pid| registry.sessions().filter(|r| r.harness_pid == Some(*pid)).collect::<Vec<_>>()).find(|m| !m.is_empty()).unwrap_or_default();
+        let (found, line) = mine(&registry);
         let Some((r, others)) = found.split_first() else {
             let pids = line.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
             return Ok((
@@ -893,6 +905,78 @@ mod session {
             structured["alsoRegistered"] = json!(ids);
         }
         Ok((lines.join("\n"), structured))
+    }
+
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct ReportArgs {
+        state: Option<String>,
+        summary: String,
+        phase: Option<String>,
+        blocked_on: Option<String>,
+        pr: Option<String>,
+        next: Option<String>,
+    }
+
+    /// An A2A TaskState as a model writes it: `working`, `input-required`,
+    /// or ProtoJSON's `TASK_STATE_INPUT_REQUIRED`.
+    pub(super) fn task_state(word: &str) -> Option<TaskState> {
+        let w = word.trim().to_ascii_uppercase().replace(['-', ' '], "_");
+        let w = w.strip_prefix("TASK_STATE_").unwrap_or(&w);
+        serde_json::from_value(json!(format!("TASK_STATE_{w}"))).ok().filter(|s| *s != TaskState::Unspecified)
+    }
+
+    /// `TASK_STATE_INPUT_REQUIRED` as `input-required`.
+    pub(super) fn state_word(s: TaskState) -> String {
+        let v = json!(s);
+        v.as_str().unwrap_or_default().trim_start_matches("TASK_STATE_").to_ascii_lowercase().replace('_', "-")
+    }
+
+    /// gruntas_report (SL03, D2): the calling session's agent reports its
+    /// status to its machine's daemon, which keeps it as the session's A2A
+    /// Task (agent provenance, the last `status::MAX_HISTORY` reports) and
+    /// answers it as it now stands.
+    pub fn report(env: &dyn Fn(&str) -> String, version: &str, args: &Value) -> Outcome {
+        let a: ReportArgs = arguments(args, "gruntas_report takes a summary, and optionally state, phase, blocked_on, pr and next, all strings")?;
+        let summary = a.summary.trim();
+        if summary.is_empty() {
+            return Err(fail("bad_arguments", "gruntas_report needs a summary: one line on where the work stands"));
+        }
+        let state = match a.state.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            None => None,
+            Some(w) => Some(task_state(w).ok_or_else(|| fail("bad_arguments", format!("`{}` is not an A2A task state: say working, input-required, auth-required, completed, failed, canceled, rejected or submitted", w.escape_debug())))?),
+        };
+        if let Some(pr) = a.pr.as_deref().map(str::trim).filter(|p| !p.is_empty())
+            && (!gruntas_harness::daemon::registry::is_web_link(pr) || pr.chars().count() > gruntas_harness::daemon::registry::PR_MOST)
+        {
+            return Err(fail("bad_arguments", format!("pr is the pull request's URL: an http or https link of at most {} characters", gruntas_harness::daemon::registry::PR_MOST)));
+        }
+        let dir = gruntas_harness::daemon::dir(env).map_err(|why| fail("no_daemon_dir", why))?;
+        let registry = Registry::load(&dir);
+        let (found, _) = mine(&registry);
+        let r = match found.as_slice() {
+            [] => return Err(fail("not_registered", "this session is not registered with gruntas, so it has no status to report to: the gruntas plugin's SessionStart hook registers a Claude Code or Codex session as it starts")),
+            [r] => *r,
+            // Never a guess: a report on another session's Task misleads
+            // whoever reads it.
+            many => return Err(fail("ambiguous_session", format!("{} sessions are registered for the process that started this MCP server (a Codex app-server running several threads), so gruntas cannot tell which one is reporting", many.len()))),
+        };
+        let socket = gruntas_harness::daemon::socket(env).map_err(|why| fail("no_daemon_dir", why))?;
+        let report = gruntas_client::status::Report { state, phase: a.phase, blocked_on: a.blocked_on, pr: a.pr, next: a.next, timestamp: String::new() };
+        let activity = gruntas_harness::protocol::Activity::Report { session_id: r.session_id.clone(), summary: summary.to_string(), report };
+        let cwd = r.cwd.clone().unwrap_or_else(|| "/".into());
+        let answer = gruntas_harness::hook::send(&socket, &cwd, version, activity).map_err(|why| fail("report_not_taken", format!("the gruntas daemon did not take the report: {why}")))?;
+        let task = answer.task.ok_or_else(|| fail("report_not_taken", "the gruntas daemon took the report but answered no status (a gruntas too old to keep one)"))?;
+        let clean = |s: &str| if s.chars().any(char::is_control) { format!("{s:?}") } else { s.to_string() };
+        let g = &task.metadata.gruntas;
+        let mut lines = vec![format!("Reported. Session {}: {} — {}", clean(&task.id), state_word(task.status.state), clean(&task.status.message.as_ref().map(|m| m.summary()).unwrap_or_default()))];
+        for (k, v) in [("phase", g.phase.as_ref()), ("pull request", g.pr.as_ref())] {
+            if let Some(v) = v {
+                lines.push(format!("{k}: {}", clean(&v.value)));
+            }
+        }
+        lines.push(format!("{} report(s) kept, the last {} at most.", task.history.len(), gruntas_client::status::MAX_HISTORY));
+        Ok((lines.join("\n"), json!({ "task": task })))
     }
 
     /// The processes that could have started `pid`, nearest first: its
@@ -960,6 +1044,20 @@ mod session {
         }
 
         #[test]
+        fn sl03_a_state_reads_as_a_model_writes_it() {
+            use super::{state_word, task_state, TaskState};
+            for w in ["working", "WORKING", "TASK_STATE_WORKING", " Working "] {
+                assert_eq!(task_state(w), Some(TaskState::Working), "{w}");
+            }
+            assert_eq!(task_state("input-required"), Some(TaskState::InputRequired));
+            assert_eq!(task_state("input required"), Some(TaskState::InputRequired));
+            for w in ["unspecified", "TASK_STATE_UNSPECIFIED", "stalled", ""] {
+                assert_eq!(task_state(w), None, "{w}");
+            }
+            assert_eq!(state_word(TaskState::AuthRequired), "auth-required");
+        }
+
+        #[test]
         fn kt04_the_starters_run_through_launchers_to_the_harness_and_stop_there() {
             let launcher = |p: u32| [20, 30, 50].contains(&p);
             assert_eq!(starters(10, table, launcher), [20, 30, 40], "past npx and sh to the harness, never into the session around it");
@@ -972,7 +1070,7 @@ mod session {
 }
 
 #[cfg(all(feature = "harness", unix))]
-use session::session_info;
+use session::{report, session_info};
 
 fn tool_schemas() -> Value {
     let slug = "Artifact slug, e.g. art_9f3c2e1a7b04d6c8e5f1a2b3 — or any link carrying it, like https://gruntas.com/a/art_9f3c2e1a7b04d6c8e5f1a2b3.";
@@ -1054,6 +1152,18 @@ fn tool_schemas() -> Value {
             "name": "gruntas_session_info",
             "description": "What gruntas knows about this Claude Code or Codex session, as the gruntas plugin registered it when the session started: its session id, harness, harness process, account (config home), working directory, repository, transcript path and whether a person is attending it. Says so when the session is not registered.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }));
+        list.push(json!({
+            "name": "gruntas_report",
+            "description": "Report where this session's work stands, at milestones: when you start on a task, finish it, get blocked, need the person, or open a pull request. The person and their other agents read it from any of their machines with `gruntas status`. Returns the session's status as it now stands. Keep the summary to one line; the last 10 reports are kept.",
+            "inputSchema": { "type": "object", "required": ["summary"], "properties": {
+                "summary": { "type": "string", "maxLength": gruntas_harness::daemon::registry::SUMMARY_MOST, "description": "One line on where the work stands, e.g. `tests green, opening the PR`." },
+                "state": { "type": "string", "enum": ["working", "input-required", "auth-required", "completed", "failed", "canceled", "rejected", "submitted"], "description": "The task's state, an A2A TaskState: working while you work, input-required when you wait on the person, completed or failed when the task is over. Without it the last state stays (working for a first report)." },
+                "phase": { "type": "string", "maxLength": gruntas_harness::daemon::registry::WORD_MOST, "description": "The stage the work is in, e.g. `build`, `review`, `CI`." },
+                "blocked_on": { "type": "string", "maxLength": gruntas_harness::daemon::registry::WORD_MOST, "description": "What you are waiting on, when you are." },
+                "pr": { "type": "string", "maxLength": gruntas_harness::daemon::registry::PR_MOST, "description": "The pull request's URL, once there is one." },
+                "next": { "type": "string", "maxLength": gruntas_harness::daemon::registry::WORD_MOST, "description": "What you will do next." }
+            }, "additionalProperties": false }
         }));
         list.extend(delegation_schemas());
     }
@@ -1160,7 +1270,7 @@ mod tests {
         let listed: Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
         let mut names: Vec<&str> = listed["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
         names.sort_unstable();
-        let mut want = ["gruntas_push", "gruntas_list_artifacts", "gruntas_get_artifact", "gruntas_claim_artifact", "gruntas_get_run", "gruntas_verify_key", "gruntas_session_info", "gruntas_delegate", "gruntas_collect", "gruntas_machines"];
+        let mut want = ["gruntas_push", "gruntas_list_artifacts", "gruntas_get_artifact", "gruntas_claim_artifact", "gruntas_get_run", "gruntas_verify_key", "gruntas_session_info", "gruntas_report", "gruntas_delegate", "gruntas_collect", "gruntas_machines"];
         want.sort_unstable();
         assert_eq!(names, want);
     }

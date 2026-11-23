@@ -31,6 +31,8 @@ fn kt01_every_activity_round_trips_inside_its_frame() {
         Activity::Deregister { session_id: "s1".into() },
         Activity::HeavyStart { session_id: "s1".into(), tool_call_id: "t1".into() },
         Activity::HeavyEnd { session_id: "s1".into(), tool_call_id: "t1".into() },
+        Activity::ToolEnd { session_id: "s1".into() },
+        Activity::Report { session_id: "s1".into(), summary: "split the train".into(), report: gruntas_client::status::Report { state: Some(gruntas_client::status::TaskState::Working), phase: Some("build".into()), timestamp: "2026-11-23T12:00:00Z".into(), ..Default::default() } },
         Activity::Usage { config_home: "/h/.claude".into(), windows: vec![UsageWindow { kind: "fiveHour".into(), used_percent: 37.5, resets_at_ms: Some(1_800_000_000_000) }, UsageWindow { kind: "sevenDay".into(), used_percent: 2.0, resets_at_ms: None }] },
     ] {
         round_trip_client(ClientFrame::Activity { id: 2, activity });
@@ -50,10 +52,10 @@ fn kt01_optional_registration_fields_may_be_left_out() {
 
 #[test]
 fn kt01_the_answer_round_trips_with_and_without_an_error() {
-    for f in [ServerFrame::Activity { id: 1, error: None }, ServerFrame::Activity { id: 2, error: Some(ErrorInfo { code: "local_only".into(), message: "m".into(), http_status: None, resets_at_ms: None }) }] {
+    for f in [ServerFrame::Activity { id: 1, error: None, task: None, report_due: false }, ServerFrame::Activity { id: 2, error: Some(ErrorInfo { code: "local_only".into(), message: "m".into(), http_status: None, resets_at_ms: None }), task: None, report_due: true }] {
         let v = serde_json::to_value(&f).unwrap();
         assert_eq!(v["type"], "activity");
         assert_eq!(serde_json::from_value::<ServerFrame>(v).unwrap(), f);
     }
-    assert_eq!(serde_json::to_value(ServerFrame::Activity { id: 1, error: None }).unwrap(), json!({"type": "activity", "id": 1}));
+    assert_eq!(serde_json::to_value(ServerFrame::Activity { id: 1, error: None, task: None, report_due: false }).unwrap(), json!({"type": "activity", "id": 1}));
 }
