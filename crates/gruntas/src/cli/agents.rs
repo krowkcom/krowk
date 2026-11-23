@@ -241,7 +241,19 @@ pub(super) fn ping(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         Ok(Some(d)) => (signed(ctx, &k, "gruntas ping")?, d.id(), None),
         Ok(None) => {
             let (api, machines, _) = read(ctx, &k, "gruntas ping")?;
-            let found: Vec<(&Machine, &String)> = machines.iter().flat_map(|m| m.board.sessions.iter().filter(|s| *s == target || (target.len() >= 8 && s.starts_with(target.as_str()))).map(move |s| (m, s))).collect();
+            // The id in full, else 8 or more characters it starts with.
+            let on = |exact: bool| -> Vec<(&Machine, &String)> { machines.iter().flat_map(|m| m.board.sessions.iter().filter(move |s| if exact { *s == target } else { target.len() >= 8 && s.starts_with(target.as_str()) }).map(move |s| (m, s))).collect() };
+            let mut found = on(true);
+            if found.is_empty() {
+                found = on(false);
+            }
+            // One session on two boards (moved, its old machine's board not
+            // yet replaced): the machine that is up, then the newest board.
+            let first = found.first().map(|(_, s)| s.as_str());
+            if found.iter().all(|(_, s)| Some(s.as_str()) == first) {
+                found.sort_by_key(|(m, _)| (m.health == Health::Serving, m.board.published_at.parse::<jiff::Timestamp>().ok()));
+                found.drain(..found.len().saturating_sub(1));
+            }
             let (m, s) = match found[..] {
                 [one] => one,
                 [] => return Err(fail("no_agent", format!("no machine or session '{}' — gruntas machines and gruntas agents list them", printable(target)))),
@@ -275,7 +287,7 @@ pub(super) fn ping(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let started = std::time::Instant::now();
     api.send_host_command(&device.to_string(), &id, &sealed)?;
     if ctx.format == Format::Human {
-        let _ = writeln!(ctx.io.stderr, "gruntas: pinged {name} — waiting for its answer (up to 10 s)…");
+        let _ = writeln!(ctx.io.stderr, "gruntas: pinged {name} — it answers at its next presence refresh, within 10 s…");
     }
     let deadline = started + ANSWER_WAIT;
     let answer = loop {
@@ -296,7 +308,8 @@ pub(super) fn ping(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let took = started.elapsed().as_secs_f64();
     let pong = match answer {
         HostAnswer::Pong { session: s } => s,
-        HostAnswer::Refused { code, message } => return Err(fail(if code == "unknown_command" { "unknown_command" } else { "host_refused" }, printable(&message))),
+        // An older gruntas there knows no ping.
+        HostAnswer::Refused { code, message } => return Err(fail(if code == "unknown_command" { "host_outdated" } else { "host_refused" }, printable(&message))),
         _ => return Err(fail("bad_answer", format!("{name} answered the ping as something else"))),
     };
     let quiet = pong.as_ref().and_then(SessionPing::quiet_for);

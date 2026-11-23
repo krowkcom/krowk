@@ -375,7 +375,7 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         #[cfg(feature = "harness")]
         ["providers", "add", ..] => providers::add(ctx, rest(2)),
         #[cfg(feature = "harness")]
-        ["providers", "list", ..] if ctx.f.check => status::status(ctx),
+        ["providers"] | ["providers", "list", ..] if ctx.f.check => status::status(ctx),
         #[cfg(feature = "harness")]
         ["providers"] | ["providers", "list", ..] => providers::list(ctx),
         #[cfg(feature = "harness")]
@@ -789,7 +789,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `gruntas trust`")));
             }
         }
-        let owners = [("device", "`gruntas providers add` (`gruntas connect` takes --method device)", add), ("method", "`gruntas connect`", connect), ("default", "`gruntas connect`", connect), ("key-stdin", "`gruntas connect`", connect), ("key-ref", "`gruntas connect`", connect), ("remove", "`gruntas disconnect`", words.first() == Some(&"disconnect")), ("sign-out-vendor", "`gruntas disconnect`", words.first() == Some(&"disconnect"))];
+        let owners = [("device", "`gruntas providers add` (`gruntas connect` takes --method device)", add), ("method", "`gruntas connect`", connect), ("default", "`gruntas connect`", connect), ("key-stdin", "`gruntas connect`", connect), ("key-ref", "`gruntas connect`", connect), ("remove", "`gruntas disconnect`", words.first() == Some(&"disconnect")), ("sign-out-vendor", "`gruntas disconnect`", words.first() == Some(&"disconnect")), ("check", "`gruntas providers list`", matches!(words.as_slice(), ["providers"] | ["providers", "list", ..]))];
         for (name, owner, allowed) in owners {
             if f.given.contains(name) && !allowed {
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of {owner}")));

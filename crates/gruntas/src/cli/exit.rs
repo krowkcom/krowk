@@ -67,6 +67,8 @@ fn client(code: &str) -> Option<i32> {
         "machine_unknown" => UNREACHABLE,
         #[cfg(feature = "harness")]
         "no_agent" => NOT_FOUND,
+        #[cfg(feature = "harness")]
+        "host_outdated" => REFUSED,
         "authorization_expired" => GONE,
         _ => return None,
     })

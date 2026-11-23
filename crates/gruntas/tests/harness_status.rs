@@ -191,6 +191,9 @@ fn providers_list_check_is_todays_status_and_status_says_it_is_moving() {
     let human = b.gruntas(&["status", "--format", "human"], &[]);
     assert!(String::from_utf8_lossy(&human.stderr).contains(notice));
     assert_eq!(human.stdout, b.gruntas(&["providers", "list", "--check", "--format", "human"], &[]).stdout);
+    assert_eq!(stdout_json(&b.gruntas(&["providers", "--check", "--json"], &[])), stdout_json(&check), "bare providers lists as providers list");
+    let elsewhere = b.gruntas(&["mcp", "list", "--check", "--json"], &[]);
+    assert!(elsewhere.status.code() != Some(0) && String::from_utf8_lossy(&elsewhere.stderr).contains("only a flag of `gruntas providers list`"), "{}", String::from_utf8_lossy(&elsewhere.stderr));
 
     std::fs::remove_file(b.home().join(".claude/fake-login")).unwrap();
     std::fs::remove_file(b.root.join("bin/codex")).unwrap();

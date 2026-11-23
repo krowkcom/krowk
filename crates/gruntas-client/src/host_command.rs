@@ -1,10 +1,11 @@
 //! A command one of the person's devices sends a host, and the host's
 //! answer (R-HOST-4): `start`, a session in a directory the host announced,
-//! on a model it has ready; and `take`, a session another host holds moved
-//! to this one, into a clone of its repository in a directory it announced
-//! (R-HAND-1), so a device that never hosts can move one; `run`, a task
-//! a supervisor hands this machine to run in a fresh worktree of its clone
-//! of a repository (R-ALLOC-3); and `ping`, answered at once (R-STA-7). The registry carries them as bytes
+//! on a model it has ready; `take`, a session another host holds moved to
+//! this one, into a clone of its repository in a directory it announced
+//! (R-HAND-1), so a device that never hosts can move one; `run`, a task a
+//! supervisor hands this machine to run in a fresh worktree of its clone of
+//! a repository (R-ALLOC-3); and `ping`, answered at once (R-STA-7). The
+//! registry carries them as bytes
 //! (`gruntas_api` `send_host_command`, `answer_host_command`), so each is
 //! sealed to the person's devices (`e2e::seal_to_person`) and bound to the
 //! command's id and the two devices: one moved to another id, or to another
