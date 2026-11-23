@@ -821,6 +821,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "hpke",
+ "jiff",
  "schemars",
  "serde",
  "serde_json",

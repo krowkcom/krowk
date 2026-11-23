@@ -21,6 +21,12 @@ pub fn files() -> Vec<(&'static str, String)> {
         // The host daemon's socket: what wraps a command and a stream line.
         ("client-frame.schema.json", render(schemars::schema_for!(ClientFrame))),
         ("server-frame.schema.json", render(schemars::schema_for!(ServerFrame))),
+        // The status layer (R-STA-1): a session's A2A Task with the gruntas
+        // extension, a machine's board of them, and the counts the
+        // registry sees.
+        ("status-task.schema.json", render(schemars::schema_for!(gruntas_client::status::Task))),
+        ("status-board.schema.json", render(schemars::schema_for!(gruntas_client::status::Board))),
+        ("status-counts.schema.json", render(schemars::schema_for!(gruntas_client::status::Counts))),
     ]
 }
 
