@@ -32,6 +32,15 @@ breaking changes may affect it without notice.
   in `hook.log` beside the socket. Nothing calls it yet: the plugin that
   does is still to come.
 
+- **`gruntas_session_info` in `gruntas-mcp`.** A Claude Code or Codex
+  session that runs `gruntas-mcp` can ask what gruntas knows about it: the
+  registration its plugin's `SessionStart` hook made (session id, harness,
+  account, working directory, repository, transcript, attendance), found by
+  the harness process that started the server. A session nobody registered
+  is told so. With it, the full build's `gruntas-mcp` offers the publishing
+  tools, `gruntas_session_info`, `gruntas_delegate`, `gruntas_collect` and
+  `gruntas_machines`, and nothing else.
+
 - **Sessions record whether anyone is at them, and steering commands say
   where they came from.** A new session's start record notes whether a
   person is attending it: `gruntas -p` without a terminal on its input, a
