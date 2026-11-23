@@ -1,5 +1,5 @@
 //! Whether an instance can run a turn here, asked one way everywhere:
-//! `gruntas providers list --check`, `gruntas doctor`, `gruntas providers list`, and the host
+//! `gruntas providers list` (and its `--check`), `gruntas doctor`, and the host
 //! before it moves a session or starts a turn (`check_model`, `settle`,
 //! rollover candidates). Before this, `providers list` spawned each vendor
 //! CLI in turn, the host checked only keys and binaries, and a SuperGrok

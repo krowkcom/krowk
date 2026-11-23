@@ -233,7 +233,7 @@ fn print_session(out: &mut dyn std::io::Write, s: &Value, depth: usize) {
 /// `gruntas ping <machine|session>`.
 pub(super) fn ping(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let [target] = args else {
-        return Err(fail("bad_args", "`gruntas ping` takes one machine or session, e.g. gruntas ping laptop — gruntas machines and gruntas agents list them"));
+        return Err(fail("bad_args", "`gruntas ping` takes one machine or session, e.g. gruntas ping laptop — gruntas machines and gruntas status list them"));
     };
     let k = keys(ctx)?;
     // A machine by its name or id, else a session on the boards.
@@ -256,7 +256,7 @@ pub(super) fn ping(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
             }
             let (m, s) = match found[..] {
                 [one] => one,
-                [] => return Err(fail("no_agent", format!("no machine or session '{}' — gruntas machines and gruntas agents list them", printable(target)))),
+                [] => return Err(fail("no_agent", format!("no machine or session '{}' — gruntas machines and gruntas status list them", printable(target)))),
                 _ => return Err(fail("ambiguous_session", format!("'{}' names more than one session — give more of its id", printable(target)))),
             };
             let Some(d) = gruntas_client::e2e::DeviceId::parse(&m.device) else { return Err(fail("bad_board", "a board names no device id")) };

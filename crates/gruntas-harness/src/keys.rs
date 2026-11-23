@@ -65,7 +65,7 @@
 //! It runs in parallel with the vendor checks, and a turn in the same
 //! process reuses the key. A command that fails is `unknown`, with why.
 //!
-//! No key reaches a log, an error, `{:?}` or `gruntas providers list --check`: status shows
+//! No key reaches a log, an error, `{:?}` or `gruntas providers list --check`: the check shows
 //! where it comes from — `stored`, `stored ($VAR)`, `stored (!pass …)`, the
 //! command cut to its program — and never the value.
 

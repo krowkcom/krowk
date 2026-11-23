@@ -183,9 +183,12 @@ fn providers_list_check_is_the_readiness_check_and_status_is_not() {
     let check = b.gruntas(&["providers", "list", "--check", "--json"], &[]);
     assert_eq!(check.status.code(), Some(0), "{}", String::from_utf8_lossy(&check.stderr));
     assert_eq!(stdout_json(&check)["data"]["ready"], 1, "{}", String::from_utf8_lossy(&check.stdout));
+    // The agent tree, which reads sync's boards: on a machine with no sync
+    // keys it says so, where the readiness check would have answered.
     let status = b.gruntas(&["status", "--json"], &[]);
-    let said = format!("{}{}", String::from_utf8_lossy(&status.stdout), String::from_utf8_lossy(&status.stderr));
-    assert!(!said.contains("\"instances\"") && !said.contains("In the next release"), "status is the agent tree now: {said}");
+    let err: Value = serde_json::from_str(String::from_utf8_lossy(&status.stderr).trim()).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&status.stderr)));
+    assert_eq!((status.status.code(), err["error"]["error"].as_str()), (Some(1), Some("not_set_up")), "status is the agent tree now: {err}");
+    assert!(status.stdout.is_empty() && !String::from_utf8_lossy(&status.stderr).contains("In the next release"));
     assert_eq!(stdout_json(&b.gruntas(&["providers", "--check", "--json"], &[])), stdout_json(&check), "bare providers lists as providers list");
     let elsewhere = b.gruntas(&["mcp", "list", "--check", "--json"], &[]);
     assert!(elsewhere.status.code() != Some(0) && String::from_utf8_lossy(&elsewhere.stderr).contains("only a flag of `gruntas providers list`"), "{}", String::from_utf8_lossy(&elsewhere.stderr));
