@@ -213,16 +213,21 @@ const CONFIG_ABOUT: &str = concat!(
     "`config get <key>` prints one key's effective value and its source. `config set\n",
     "defaultMode default|unhinged` and `config set rollover auto|offer|off` set the\n",
     "permission mode new sessions start in and what happens at a usage limit, always\n",
-    "in the global config."
+    "in the global config. `config set steer children|attended|any` sets how far an\n",
+    "agent may steer other sessions (a prompt to one, a steer, an interrupt, an\n",
+    "approval, a model switch, a take): `children` only sessions it started,\n",
+    "`attended` (the default) any session if it is attended, else only those it\n",
+    "started, `any` every session. A person's own commands always pass. It asks for\n",
+    "a yes on a terminal, and refuses without one."
 );
 #[cfg(not(feature = "harness"))]
 const CONFIG_ABOUT: &str = "Pins a repository, or the machine, to a workspace: `gruntas help workspaces`.\n`config get <key>` prints one key's effective value and its source.";
 #[cfg(feature = "harness")]
-const CONFIG_GET_KEYS: &str = "workspace, defaultMode or rollover";
+const CONFIG_GET_KEYS: &str = "workspace, defaultMode, rollover or steer";
 #[cfg(not(feature = "harness"))]
 const CONFIG_GET_KEYS: &str = "workspace";
 #[cfg(feature = "harness")]
-const CONFIG_SET_KEYS: &str = "A configuration key: `workspace`, or `defaultMode` and `rollover`, which always write the global config";
+const CONFIG_SET_KEYS: &str = "A configuration key: `workspace`, or `defaultMode`, `rollover` and `steer`, which always write the global config";
 #[cfg(not(feature = "harness"))]
 const CONFIG_SET_KEYS: &str = "A configuration key, e.g. `workspace`";
 

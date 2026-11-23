@@ -61,6 +61,25 @@
             "null"
           ]
         },
+        "attendance": {
+          "description": "Whether a person is at the session, set by the path that started\nit. Absent in an older session's record: attended.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Attendance"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "startedBySessionId": {
+          "description": "The session that started this one — a host command's sending\nsession, an agent's prompt — which is its steering parent (D4):\nthe `steer` setting lets it steer this session. Not a subagent\nrelation: a session that has only this is synced, switchable and\nbudgeted on its own.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
         "type": {
           "type": "string",
           "const": "session.started"
@@ -607,6 +626,14 @@
     }
   ],
   "$defs": {
+    "Attendance": {
+      "description": "Whether a person is at a session: the start path that makes the session\nrecords it, never inferred from other flags (such as whether the client\nanswers approvals). Unattended is a session gruntas started headless on\nsomeone's behalf — a launcher worker, a session a host command starts\n(`sync new --host`, delegation), `-p` without a terminal; every other\nsession is attended. A session whose record says nothing (an older\ngruntas started it) counts as attended.",
+      "type": "string",
+      "enum": [
+        "attended",
+        "unattended"
+      ]
+    },
     "ModelRef": {
       "description": "A model, named as the instance that serves it and the provider's own id\nfor it: `{\"instance\": \"anthropic\", \"model\": \"claude-opus-5-5\"}`.",
       "type": "object",
@@ -715,6 +742,17 @@
               "items": {
                 "$ref": "#/$defs/ImageRef"
               }
+            },
+            "origin": {
+              "description": "Where a steer came from, beside its raw text; absent for what\nthe person typed and for a steer that carried no origin.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Origin"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "kind": {
               "type": "string",
@@ -854,6 +892,51 @@
         "number",
         "mediaType",
         "file"
+      ]
+    },
+    "Origin": {
+      "description": "Where a steering command came from (D7): the channel it arrived through,\nthe only signal used. Every command that acts on a session other than\nthe caller's own — a prompt to an existing session, `steer`, `interrupt`,\n`approve`, `switchModel`, and `take` — carries one when its sender knows\nit; a command without one (an older client's) has an unknown origin.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/OriginKind"
+        },
+        "sessionId": {
+          "description": "The session the command came from, when `kind` is `agent`. On a\nprompt that starts a new session, the new session's parent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "device": {
+          "description": "The name of the machine the command was sent from. Absent only\nwhere the sender's name is not at hand: a host command carries just\nthe sending session.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "attendance": {
+          "description": "Whether the steering session is attended, when `kind` is `agent` and\nthe sender knows it (its own session's start record says): the host\nholds a steering session it has no log of to this word, since the\nsession may run on another machine. Absent: attended.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Attendance"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "OriginKind": {
+      "description": "Who a steering command came from.",
+      "type": "string",
+      "enum": [
+        "person",
+        "agent"
       ]
     },
     "ProviderBlob": {

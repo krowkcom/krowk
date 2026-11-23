@@ -185,6 +185,10 @@ impl World {
         let repo = home.join("repo");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
         std::fs::create_dir_all(home.join(".gruntas")).unwrap();
+        // Scripts pipe commands into `sync attach` in most of these tests: an
+        // agent with no session to the host, which only `any` lets steer
+        // (D6). The tests of the setting itself set their own.
+        std::fs::write(home.join(".gruntas/config.json"), serde_json::json!({"steer": "any"}).to_string()).unwrap();
         let run = PathBuf::from(format!("/tmp/gruntas-sc-{}-{name}-{}", self.name, std::process::id()));
         let _ = std::fs::remove_dir_all(&run);
         std::fs::create_dir_all(&run).unwrap();
@@ -556,7 +560,7 @@ fn personal(w: &World, a: &Machine) -> PathBuf {
     std::fs::write(&scenario, format!("@when \"type\":\"user\"\n{}\n", fake::answer(&format!("{ANSWER} on the other")))).unwrap();
     let log = a.home.join("claude-personal.log");
     let env = serde_json::json!({"FAKE_CLAUDE_SCENARIO": scenario, "FAKE_CLAUDE_LOG": log});
-    let config = serde_json::json!({"instances": {"claude:personal": {"kind": "claude-code", "configDir": dir, "env": env}}});
+    let config = serde_json::json!({"steer": "any", "instances": {"claude:personal": {"kind": "claude-code", "configDir": dir, "env": env}}});
     std::fs::write(a.home.join(".gruntas/config.json"), config.to_string()).unwrap();
     log
 }
@@ -1419,12 +1423,17 @@ impl Moving {
     /// C's take `n` of the session into B's `cwd`, sent through gruntas-api
     /// as a viewer sends it, and B's answer, opened.
     fn ask(&self, w: &World, n: u32, cwd: &std::path::Path) -> gruntas_client::host_command::HostAnswer {
+        self.ask_as(w, n, cwd, None)
+    }
+
+    /// `ask`, the take carrying `origin`.
+    fn ask_as(&self, w: &World, n: u32, cwd: &std::path::Path, origin: Option<gruntas_client::protocol::Origin>) -> gruntas_client::host_command::HostAnswer {
         use gruntas_client::host_command::{self, HostCommand};
         let [_, b, c] = &self.ids;
         let keys = Keystore::new(&self.c.home.join(".gruntas")).user_keys().unwrap().unwrap();
         let chain = w.people.lock().unwrap().chain().clone();
         let id = format!("0190f3c1-8a2b-4c4d-9e5f-{n:012x}");
-        let take = HostCommand::Take { session_id: self.session.clone(), cwd: cwd.display().to_string() };
+        let take = HostCommand::Take { session_id: self.session.clone(), cwd: cwd.display().to_string(), origin };
         let sealed = host_command::seal_command(&take, &id, c, b, &keys, chain.generation()).unwrap();
         self.c.api.send_host_command(&b.to_string(), &id, &sealed).unwrap();
         // B sees it at its next refresh, within 10 s, and the take waits on
@@ -1496,6 +1505,64 @@ fn r_cred_1_a_take_b_cannot_run_is_refused_with_its_fix_and_the_session_stays() 
     assert_eq!(code, "take_refused", "{message}");
     assert!(message.contains("stays where it is") && !message.contains('{'), "the take's own fix: {message}");
     assert_eq!(m.holder(), Some(m.ids[0].to_string()), "the session stays on A");
+}
+
+/// R-SEC-4, D4: a take, as a host command, is held to B's `steer` setting
+/// before B moves anything: an agent that is unattended, or that names no
+/// session, is refused under `attended` — naming the setting and how a
+/// person changes it — and the session stays on A; once a person sets `any`
+/// the same take moves it.
+#[test]
+fn r_sec_4_a_take_is_held_to_the_steer_setting_of_the_host_that_takes() {
+    use gruntas_client::host_command::HostAnswer;
+    use gruntas_client::protocol::{Attendance, Origin, OriginKind};
+    let w = World::new("takesteer");
+    let m = Moving::new(&w, |_| {});
+    let agent = |session: Option<&str>, attendance| Some(Origin { kind: OriginKind::Agent, session_id: session.map(String::from), device: None, attendance });
+    let other = "01a0ec7b-0000-7000-8000-0000000000b2";
+    std::fs::write(m.b.home.join(".gruntas/config.json"), serde_json::json!({"steer": "attended"}).to_string()).unwrap();
+    for (n, who, origin) in [(1, "an agent with no session", agent(None, None)), (2, "an unattended agent", agent(Some(other), Some(Attendance::Unattended)))] {
+        let refused = m.ask_as(&w, n, &m.b.repo, origin);
+        let HostAnswer::Refused { code, message } = &refused else { panic!("{who}: not refused: {refused:?}") };
+        assert_eq!(code, "steer_refused", "{who}: {message}");
+        assert!(message.contains("steer setting is attended") && message.contains("gruntas config set steer") && message.contains("terminal"), "{who}: {message}");
+        assert_eq!(m.holder(), Some(m.ids[0].to_string()), "{who}: the session stays on A");
+    }
+    std::fs::write(m.b.home.join(".gruntas/config.json"), serde_json::json!({"steer": "any"}).to_string()).unwrap();
+    let taken = m.ask_as(&w, 3, &m.b.repo, agent(None, None));
+    assert_eq!(taken, HostAnswer::Taken { session_id: m.session.clone() }, "B's take.log: {}", std::fs::read_to_string(m.b.home.join(format!(".gruntas/takes/{}.log", m.session))).unwrap_or_default());
+    assert_eq!(m.holder(), Some(m.ids[1].to_string()), "under `any` the take moved it");
+}
+
+/// R-SEC-5, D6: `sync attach` marks what it sends as a person's only when its
+/// input is a terminal. Piped, it is an agent with no session, which A's
+/// default `attended` refuses; on a terminal the same line passes the setting
+/// (and A answers that no turn is running).
+#[test]
+fn r_sec_5_sync_attach_is_a_person_only_on_a_terminal() {
+    let w = World::new("attachorigin");
+    let a = w.machine("a");
+    let b = w.machine("b");
+    let (host, session) = hosted(&w, &a);
+    std::fs::remove_file(a.home.join(".gruntas/config.json")).unwrap();
+
+    let mut piped = Running::spawn(b.command(&["sync", "attach", &session]));
+    piped.until("the host", |v| v["type"] == "sync.host" && v["present"] == true);
+    piped.type_line("/interrupt");
+    let acked = piped.heard("its refusal", false, |v| v["type"] == "sync.acked" && !v["error"].is_null());
+    let error = acked["error"].as_str().unwrap();
+    assert!(error.contains("steer setting is attended") && error.contains("gruntas config set steer") && error.contains("terminal"), "{error}");
+    drop(piped.child.stdin.take());
+
+    let mut c = b.command(&["sync", "attach", &session]);
+    c.env("TERM", "xterm-256color");
+    let mut t = pty::Pty::spawn(c, 120, 40);
+    assert!(t.wait_for("\"sync.host\"", Duration::from_secs(20)).is_some(), "{:?}\nA: {:?}", t.text(), host.stderr());
+    t.write(b"/interrupt\r");
+    assert!(t.wait_for("no turn running", Duration::from_secs(20)).is_some(), "a person's passes the setting: {:?}", t.text());
+    assert!(!t.text().contains("steer setting"), "{:?}", t.text());
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(20)).is_some(), "{:?}", t.text());
 }
 
 /// A and B with one repository, real clones of one origin announced as

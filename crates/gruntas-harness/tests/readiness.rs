@@ -108,7 +108,7 @@ fn switch(host: &Host, model: &str) -> Result<(), gruntas_harness::engine::Engin
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let (tx, _rx) = mpsc::channel(16);
     let (i, m) = model.split_once('/').unwrap();
-    rt.block_on(host.execute(Command::SwitchModel { session_id: None, model: ModelRef { instance: i.into(), model: m.into() } }, tx)).map(drop)
+    rt.block_on(host.execute(Command::SwitchModel { session_id: None, model: ModelRef { instance: i.into(), model: m.into() }, origin: None }, tx)).map(drop)
 }
 
 #[test]

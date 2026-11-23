@@ -474,7 +474,7 @@ async fn wind_down(state: &Shared) {
                 interrupted.insert(session_id.clone());
                 tokio::task::spawn_local(async move {
                     let (tx, _rx) = mpsc::channel::<StreamLine>(16);
-                    let _ = host.execute(Command::Interrupt { session_id }, tx).await;
+                    let _ = host.execute(Command::Interrupt { session_id, origin: None }, tx).await;
                 });
             }
             tokio::select! {
@@ -998,7 +998,7 @@ async fn reloaded(state: &Shared, after: u64) {
 fn named(cmd: &Command) -> Option<&str> {
     match cmd {
         Command::Prompt { session_id, .. } | Command::SwitchModel { session_id, .. } | Command::PutImage { session_id, .. } => session_id.as_deref(),
-        Command::Interrupt { session_id } | Command::Steer { session_id, .. } | Command::Approve { session_id, .. } | Command::Fork { session_id, .. } | Command::Continue { session_id, .. } => Some(session_id),
+        Command::Interrupt { session_id, .. } | Command::Steer { session_id, .. } | Command::Approve { session_id, .. } | Command::Fork { session_id, .. } | Command::Continue { session_id, .. } => Some(session_id),
     }
 }
 

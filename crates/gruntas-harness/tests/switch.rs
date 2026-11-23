@@ -218,7 +218,7 @@ fn rt() -> tokio::runtime::Runtime {
 }
 
 fn prompt(session: Option<&str>, text: &str, model: Option<ModelRef>) -> Command {
-    Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model, permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None }
+    Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model, permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None }
 }
 
 async fn run(host: &Host, cmd: Command) -> (RunResult, Vec<StreamLine>) {
@@ -382,7 +382,7 @@ fn r_switch_4_a_switch_to_a_model_without_credentials_is_refused_and_the_session
     let nokey = ModelRef { instance: "claude:nokey".into(), model: "haiku".into() };
     // Asked for as a switch: refused before anything is logged.
     let (tx, _rx) = mpsc::channel(16);
-    let e = rt.block_on(host.execute(Command::SwitchModel { session_id: Some(id.clone()), model: nokey.clone() }, tx)).unwrap_err();
+    let e = rt.block_on(host.execute(Command::SwitchModel { session_id: Some(id.clone()), model: nokey.clone(), origin: None }, tx)).unwrap_err();
     assert_eq!(e.code, "not_authenticated");
     assert!(e.message.contains("set UNSET_KEY") && e.message.ends_with("the session stays on claude:work/haiku"), "{}", e.message);
     // Named on a prompt: the same.
@@ -394,7 +394,7 @@ fn r_switch_4_a_switch_to_a_model_without_credentials_is_refused_and_the_session
     // process is started for a turn, with the fix and the session kept.
     let nologin = ModelRef { instance: "claude:nologin".into(), model: "haiku".into() };
     let (tx, _rx) = mpsc::channel(16);
-    let e = rt.block_on(host.execute(Command::SwitchModel { session_id: Some(id.clone()), model: nologin.clone() }, tx)).unwrap_err();
+    let e = rt.block_on(host.execute(Command::SwitchModel { session_id: Some(id.clone()), model: nologin.clone(), origin: None }, tx)).unwrap_err();
     assert_eq!(e.code, "not_authenticated");
     assert!(e.message.contains("sign in with `gruntas connect anthropic --method subscription --name nologin`, which runs Claude's own login") && e.message.ends_with("the session stays on claude:work/haiku"), "{}", e.message);
     let (tx, _rx) = mpsc::channel(16);
@@ -423,12 +423,12 @@ fn r_switch_4_a_switch_to_a_model_without_credentials_is_refused_and_the_session
     assert_eq!((r3.status, r3.model), (TurnStatus::Completed, Eng::Claude.model()));
     // A good switch is logged, and the next prompt runs there.
     let (tx, _rx) = mpsc::channel(16);
-    rt.block_on(host.execute(Command::SwitchModel { session_id: Some(id.clone()), model: Eng::Codex.model() }, tx)).unwrap();
+    rt.block_on(host.execute(Command::SwitchModel { session_id: Some(id.clone()), model: Eng::Codex.model(), origin: None }, tx)).unwrap();
     let (r4, _) = rt.block_on(run(&host, prompt(Some(&id), "fifth", None)));
     assert_eq!((r4.status, r4.model), (TurnStatus::Completed, Eng::Codex.model()));
     // Without a session it is only a check.
     let (tx, _rx) = mpsc::channel(16);
-    assert!(rt.block_on(host.execute(Command::SwitchModel { session_id: None, model: Eng::Codex.model() }, tx)).is_ok());
+    assert!(rt.block_on(host.execute(Command::SwitchModel { session_id: None, model: Eng::Codex.model(), origin: None }, tx)).is_ok());
 }
 
 #[test]
@@ -475,7 +475,7 @@ fn r_inst_7_a_limited_instance_offers_the_next_one_and_a_yes_continues_there() {
     assert!(w.events(&r1.session_id).iter().all(|e| !matches!(e.body, LogBody::ModelSwitched { .. })), "offered, never taken by itself");
     // The yes: switch, and the prompt again.
     let (tx, _rx) = mpsc::channel(16);
-    rt.block_on(host.execute(Command::SwitchModel { session_id: Some(r1.session_id.clone()), model: offer.to.clone() }, tx)).unwrap();
+    rt.block_on(host.execute(Command::SwitchModel { session_id: Some(r1.session_id.clone()), model: offer.to.clone(), origin: None }, tx)).unwrap();
     let (r2, _) = rt.block_on(run(&host, prompt(Some(&r1.session_id), "do the thing", None)));
     assert_eq!((r2.status, r2.model.instance.as_str()), (TurnStatus::Completed, "claude:personal"), "{:?}", r2.error);
 }
@@ -673,7 +673,7 @@ fn r_switch_4_a_switch_the_picker_made_goes_back_when_its_first_turn_cannot_run(
     let nologin = ModelRef { instance: "claude:nologin".into(), model: "haiku".into() };
     // The picker, an offer's yes: switchModel, then a prompt naming no model.
     let (tx, _rx) = mpsc::channel(16);
-    rt.block_on(host.execute(Command::SwitchModel { session_id: Some(id.clone()), model: nologin.clone() }, tx)).unwrap();
+    rt.block_on(host.execute(Command::SwitchModel { session_id: Some(id.clone()), model: nologin.clone(), origin: None }, tx)).unwrap();
     let (r2, _) = rt.block_on(run(&host, prompt(Some(&id), "second", None)));
     assert_eq!((r2.status, r2.model.clone()), (TurnStatus::Failed, nologin.clone()));
     assert!(r2.error.unwrap().message.ends_with("the session continues on claude:work/haiku"));
@@ -939,7 +939,7 @@ fn r_switch_4_a_switch_during_a_turn_is_kept_for_after_it() {
         let switch = async {
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             let (tx, _rx) = mpsc::channel(16);
-            host.execute(Command::SwitchModel { session_id: Some(id.clone()), model: personal.clone() }, tx).await
+            host.execute(Command::SwitchModel { session_id: Some(id.clone()), model: personal.clone(), origin: None }, tx).await
         };
         tokio::join!(turn, switch)
     });
@@ -947,7 +947,7 @@ fn r_switch_4_a_switch_during_a_turn_is_kept_for_after_it() {
     assert_eq!(r2.0.status, TurnStatus::Completed);
     // Right after the turn, from the same host: no lock in the way.
     let (tx, _rx) = mpsc::channel(16);
-    rt.block_on(host.execute(Command::SwitchModel { session_id: Some(id.clone()), model: Eng::Codex.model() }, tx)).unwrap();
+    rt.block_on(host.execute(Command::SwitchModel { session_id: Some(id.clone()), model: Eng::Codex.model(), origin: None }, tx)).unwrap();
     let to: Vec<ModelRef> = w.events(&id).into_iter().filter_map(|e| match e.body {
         LogBody::ModelSwitched { to, .. } => Some(to),
         _ => None,
@@ -969,7 +969,7 @@ fn readiness_a_vendors_signed_in_is_believed_for_a_minute_and_a_signed_out_asked
     let asked = |dir: &str| w.fake_log(dir).lines().filter(|l| *l == "argv auth status --json").count();
     let switch_to = |model: ModelRef| {
         let (tx, _rx) = mpsc::channel(16);
-        rt.block_on(host.execute(Command::SwitchModel { session_id: Some(id.clone()), model }, tx))
+        rt.block_on(host.execute(Command::SwitchModel { session_id: Some(id.clone()), model, origin: None }, tx))
     };
     let switch = |instance: &str| switch_to(ModelRef { instance: instance.into(), model: "haiku".into() });
     // Signed in: asked once, then believed — a long-lived host (an interactive client)

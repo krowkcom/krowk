@@ -1,6 +1,6 @@
 # Threat model
 
-> Published from Canon, krowk's private design specs (`canon/engineering/threat-model.md` in `gruntas/cloud` at 5de0b00). `crypto.md` is in this directory. The other design files it cites, such as `relay.md`, `harness.md` and `devices.md`, are not published.
+> Published from Canon, krowk's private design specs (`canon/engineering/threat-model.md` in `gruntas/cloud` at 8022857). `crypto.md` is in this directory. The other design files it cites, such as `relay.md`, `harness.md` and `devices.md`, are not published.
 
 What krowk protects, from whom, where each protection lives, and what it does not protect against. This is the public threat model spec R-OSS-1 asks for before sync ships; `crypto.md` is the crypto design it rests on, and `relay.md` the relay's contract. It states each defence once and links the file that holds it, so that the two cannot drift.
 
@@ -62,6 +62,38 @@ A binary that is not the one this source builds, or a dependency that turned hos
 
 A process running as the person. **Out of scope**: it can read `device.json`, `credentials.json` and the terminal, and anything the client can. Every defence above assumes the device itself is the person's. Platform key stores narrow this; they do not close it. On the iPhone they are built (`crypto.md` → R-IOS-8): every key slot and the krowk API key are Keychain items readable only while the phone is unlocked, never synced to iCloud, restorable from a backup only to the same phone, and sealed under a Secure Enclave key that cannot leave it; no key is a file in the app. A backup, a copied container or a forensic image of a locked phone holds no key that opens anywhere but in that phone's enclave; code running inside the unlocked app — an exploited app, a debugger, a jailbreak's injection — can still have the enclave open every slot, as the app does. The simulator's software wrapping key is for tests only. The macOS keychain and Android's keystore come with those clients.
 
+## Agents in other harnesses
+
+Gruntas also sits under other harnesses, such as Claude Code and Codex. An agent there runs its shell as the person, so it is the "local malware" case above, and it will be given gruntas tools to read and steer sessions across the person's machines. Without limits, a prompt injection read by one session could steer every session on every machine. This section sets the stance and what gruntas does about it. The tools themselves, the launcher's session settings and the plugin's permission defaults are built separately and implement it.
+
+**Stance.** An agent runs as the person and can reach what the person can; gruntas limits what its own tools let an agent do. The headline: agents can see everything and steer what they should, a person never has to set anything up, and no agent can widen its own reach through gruntas.
+
+**Reading is open.** Listing sessions, reading a session's status and reading a transcript are open to every agent that has gruntas tools. Transcript text leaving the daemon for a reading agent has known secret shapes redacted: PEM private-key blocks, AWS access keys, GitHub tokens (`ghp_`, `gho_`, `ghs_`, `github_pat_`), OpenAI and Anthropic keys (`sk-`, `sk-ant-`), Slack tokens (`xox`), Stripe live keys, Google API keys (`AIza`), JWTs, and gruntas's own key prefixes, including the legacy one. It is paged and framed as foreign text. Redaction catches shapes, not every secret: a password in prose passes.
+
+**Steering is limited.** Steering is any command that acts on a session other than the caller's own: a prompt to an existing session, steer, interrupt, approve, model switch, and take (moving a session to another machine). Its reach is the global setting `steer`:
+
+- `children`: an agent steers only sessions it started.
+- `attended` (the default, so a person's agent works with no setup): an attended session may steer any session; an unattended one only its children.
+- `any`: anyone may steer.
+
+A session's parent is the session that started it: a subagent's parent session, or the sending session a host command or delegation names. A start that names no sending session has no parent, and is steerable only under `attended` or `any`. A session is **unattended** when gruntas started it headless on someone's behalf: launcher workers started headless, sessions started by a host command (`sync new --host`, delegation) and `-p` without a terminal. Every other session is attended. The start path records this explicitly in the session's start record; it is never inferred from other flags. Attendance is a label gruntas assigns, not a proof: a session gruntas did not start counts as attended, which is right for the risky case, since the unattended workers are the ones gruntas starts. The host checks the `steer` setting after today's session-key checks (a viewer may steer its own session, and interrupt and approve its children), never instead of them. A refusal names the setting and how a person changes it.
+
+**Only a person widens reach.** `gruntas config set steer` asks for confirmation on a terminal and refuses without one. `gruntas sync attach` counts as a person only when its input is a terminal; otherwise its commands are an agent origin and subject to the setting. Within a harness, the first use of a steering tool goes through the harness's own tool-permission prompt, which the person can allow for the session.
+
+**Origin framing.** Every steering command carries an origin: kind (person or agent), the steering session if an agent, and the machine's device name. The engine receives the text framed as `steer from <session> on <machine>, by an agent` or `by a person on <machine>`, neutralised the way handoffs already neutralise foreign text, so the target weighs it as input, not as the person's voice. The session log keeps the raw text with the origin beside it. The channel a command came through is the only signal used. Fields are optional on the wire, so older peers decode them, ignore the origin and see the raw text.
+
+**The sandbox rule.** A plugin cannot apply a sandbox, so the gruntas home is protected per session by settings the launcher applies to every session it starts. In Claude Code that is a block with the sandbox enabled, `failIfUnavailable`, `allowUnsandboxedCommands: false`, the home in `filesystem.denyRead`, and a `Read(<home>/**)` deny rule; all four parts are needed. In Codex it is a custom permissions profile that sets the home to `none`, because the built-in profiles still read it. For sessions a person starts, `gruntas doctor` checks their Claude settings and prints the block. This narrows the same-user risks below wherever it applies.
+
+**Accepted risks that remain.**
+
+- **A same-user process can step around gruntas's tools.** It can fake a terminal (`script`, `expect`), read the key files, edit files, or talk to the daemon directly. The limits hold for gruntas's tools and wherever the sandbox rule applies; nothing else stops it.
+- **Harnesses without a sandbox rule.** Where neither the Claude Code block nor the Codex profile applies, the gruntas home is as readable as any file the person owns. Accepted.
+- **Keys stay `0600` files.** Moving them to the OS keystore is later work (see Local malware above).
+- **Attendance is a label,** as above.
+- **Redaction is by shape,** as above.
+
+**The hard boundary.** If gruntas ever runs other people's work, these limits are not enough. The path is a hard boundary: unattended workers as a separate OS user or container with no gruntas identity, so there is nothing to read or ask of the daemon. It is recorded here as the way forward and is not built.
+
 ## Accepted risks
 
 Each is known, named here rather than left for a reader to find, and either accepted or owned by a later ticket.
@@ -99,6 +131,7 @@ Spec R-OSS-2: an independent audit of the crypto and the relay before sync reach
 
 ## Change log
 
+- **2026-11-22** — Agents in other harnesses (R-SEC-1): the stance, open reading with redaction, steering limited by the `steer` setting with attendance and origin, person-only ways to widen it, origin framing, the per-session sandbox settings, the accepted risks that remain, and the hard-boundary path.
 - **2026-11-19** — Sync paywall: a hostile registry can drop the start of a session's log, shown as expired history (`crypto.md` → An expired start).
 - **2026-10-25** — Harness P4 ticket 129: An iPhone in someone else's hand — the on-device cache of session lists and recent transcripts is readable only while the phone is unlocked (`.complete`), like the transcript on screen, and kept out of backups.
 - **2026-10-23** — Harness P4 ticket 91: A lost, stolen or removed device — what Face ID before an allow on the iPhone stops (an unlocked phone in someone else's hand approving a command) and what it doesn't (a persuaded owner, a known passcode, code inside the unlocked app, reading and denying) (R-IOS-11).

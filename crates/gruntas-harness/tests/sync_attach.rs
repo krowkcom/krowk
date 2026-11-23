@@ -416,7 +416,7 @@ impl World {
     }
 
     fn prompt(&self, session: Option<&str>, text: &str) -> Command {
-        Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(self.model()), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None }
+        Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(self.model()), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None }
     }
 
     /// A's bridge for `session`, running until the handle is stopped.
@@ -967,7 +967,7 @@ async fn r_switch_4_a_switch_from_b_runs_the_next_turn_on_that_model() {
     let w = World::new("switch-remote");
     let (session, mut v, mut frames, _bridge) = two_instances(&w).await;
     let to = gruntas_harness::protocol::ModelRef { instance: "twin".into(), model: "haiku".into() };
-    v.commands.send(Command::SwitchModel { session_id: Some(session.clone()), model: to.clone() }).unwrap();
+    v.commands.send(Command::SwitchModel { session_id: Some(session.clone()), model: to.clone(), origin: None }).unwrap();
     assert_eq!(ack(&mut v, &mut frames).await, None);
     let switched: Vec<_> = a_log(&w, &session).into_iter().filter(|e| e["type"] == "model.switched").collect();
     assert_eq!(switched.len(), 1, "{switched:?}");
@@ -1065,7 +1065,7 @@ async fn r_switch_4_a_switch_from_b_during_a_turn_is_kept_for_after_it() {
     v.commands.send(long).unwrap();
     assert_eq!(ack(&mut v, &mut frames).await, None, "the turn started");
     let to = gruntas_harness::protocol::ModelRef { instance: "twin".into(), model: "haiku".into() };
-    v.commands.send(Command::SwitchModel { session_id: Some(session.clone()), model: to }).unwrap();
+    v.commands.send(Command::SwitchModel { session_id: Some(session.clone()), model: to, origin: None }).unwrap();
     let got = until(&mut v, Duration::from_secs(15), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
     assert!(!got.iter().any(result_of), "acked before the turn ended: {got:?}");
     assert!(got.iter().any(|u| matches!(u, viewer::Update::Acked { error: None, .. })), "{got:?}");
@@ -1092,7 +1092,7 @@ async fn r_switch_4_a_switch_b_asks_for_an_instance_a_lacks_is_refused_and_the_s
     let before = a_log(&w, &session);
     let was = before.iter().find(|e| e["type"] == "turn.started").unwrap()["model"].clone();
     let nope = gruntas_harness::protocol::ModelRef { instance: "nope".into(), model: "x".into() };
-    v.commands.send(Command::SwitchModel { session_id: Some(session.clone()), model: nope }).unwrap();
+    v.commands.send(Command::SwitchModel { session_id: Some(session.clone()), model: nope, origin: None }).unwrap();
     let error = ack(&mut v, &mut frames).await.expect("refused");
     let stays = format!("— the session stays on {}/{}", was["instance"].as_str().unwrap(), was["model"].as_str().unwrap());
     assert!(error.ends_with(&stays), "{error}");
@@ -1130,7 +1130,7 @@ async fn r_switch_4_a_rate_limit_offer_is_accepted_from_b_and_the_prompt_runs_on
     assert!(!a_log(&w, &session).iter().any(|e| e["type"] == "model.switched"), "offered, never taken by itself");
 
     // The yes, from B: the switch, taken, then the prompt again.
-    v.commands.send(Command::SwitchModel { session_id: Some(session.clone()), model: offer.to.clone() }).unwrap();
+    v.commands.send(Command::SwitchModel { session_id: Some(session.clone()), model: offer.to.clone(), origin: None }).unwrap();
     assert_eq!(ack(&mut v, &mut frames).await, None);
     v.commands.send(limited).unwrap();
     let got = until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
@@ -1210,6 +1210,66 @@ async fn d8b_only_a_record_a_listed_device_signed_opens() {
     assert!(refused.contains("never held"), "{refused}");
 }
 
+/// R-SEC-4, D4: the host holds a viewer's steering to the `steer` setting
+/// after the session key let it through, read from the global config as each
+/// command arrives. B's interrupt of A's idle session is answered `no turn
+/// running` when the setting lets it through, and refused naming the
+/// setting when it does not.
+#[tokio::test]
+async fn r_sec_4_a_viewers_steering_is_held_to_the_steer_setting() {
+    use gruntas_harness::protocol::{Attendance, Origin, OriginKind};
+    let w = World::new("steer");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (_d, session) = first_turn(&w).await;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+
+    let sessions = log::sessions_dir(&w.env()).unwrap();
+    let config = sessions.parent().unwrap().join("config.json");
+    let (parent, other) = ("01a0ec7b-0000-7000-8000-0000000000b1", "01a0ec7b-0000-7000-8000-0000000000b2");
+    // The session was started by `parent`: what its start record says.
+    let events = sessions.join(&session).join("events.jsonl");
+    let text = std::fs::read_to_string(&events).unwrap();
+    let (first, rest) = text.split_once('\n').unwrap();
+    let mut root: serde_json::Value = serde_json::from_str(first).unwrap();
+    root["startedBySessionId"] = parent.into();
+    std::fs::write(&events, format!("{root}\n{rest}")).unwrap();
+
+    let agent = |session: Option<&str>, attendance: Option<Attendance>| Some(Box::new(Origin { kind: OriginKind::Agent, session_id: session.map(String::from), device: None, attendance }));
+    let person = Some(Box::new(Origin { kind: OriginKind::Person, session_id: None, device: Some("machine-b".into()), attendance: None }));
+    // (setting, who, origin, whether it passes the setting)
+    let cases = vec![
+        (None, "a person", person.clone(), true),
+        (None, "an older client's, with no origin", None, true),
+        (None, "the parent", agent(Some(parent), Some(Attendance::Unattended)), true),
+        (None, "an attended agent", agent(Some(other), None), true),
+        (None, "an unattended agent", agent(Some(other), Some(Attendance::Unattended)), false),
+        (None, "an agent with no session", agent(None, None), false),
+        (Some("children"), "a person", person.clone(), true),
+        (Some("children"), "the parent", agent(Some(parent), None), true),
+        (Some("children"), "an attended agent", agent(Some(other), None), false),
+        (Some("any"), "an unattended agent", agent(Some(other), Some(Attendance::Unattended)), true),
+        (Some("any"), "an agent with no session", agent(None, None), true),
+    ];
+    for (setting, who, origin, passes) in cases {
+        match setting {
+            Some(s) => std::fs::write(&config, serde_json::json!({ "steer": s }).to_string()).unwrap(),
+            None => drop(std::fs::remove_file(&config)),
+        }
+        v.commands.send(Command::Interrupt { session_id: session.clone(), origin }).unwrap();
+        let got = until(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
+        let error = got.iter().find_map(|u| match u { viewer::Update::Acked { error, .. } => error.clone(), _ => None }).unwrap_or_default();
+        let named = setting.unwrap_or("attended");
+        match passes {
+            true => assert!(error.contains("no turn running"), "{who} under {named}: {error}"),
+            false => assert!(error.contains(&format!("steer setting is {named}")) && error.contains("gruntas config set steer") && error.contains("terminal"), "{who} under {named}: {error}"),
+        }
+    }
+}
+
 #[tokio::test]
 async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
     let w = World::new("prompt");
@@ -1242,7 +1302,7 @@ async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
 
     // Nor write a rule into A's project (D11): a viewer allows a call once
     // or for the session, and A refuses the rest before looking it up.
-    v.commands.send(Command::Approve { session_id: session.clone(), request_id: "any".into(), decision: ApprovalDecision::AllowProject, answers: Vec::new() }).unwrap();
+    v.commands.send(Command::Approve { session_id: session.clone(), request_id: "any".into(), decision: ApprovalDecision::AllowProject, answers: Vec::new(), origin: None }).unwrap();
     let got = until(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
     assert!(got.iter().any(|u| matches!(u, viewer::Update::Acked { error: Some(e), .. } if e.contains("made on the host"))), "{got:?}");
 
@@ -1275,7 +1335,7 @@ async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
     let req = got.iter().find_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(r))) = u { Some(r.clone()) } else { None }).unwrap();
     assert_eq!(req.tool, "Bash");
     assert!(!w.repo().join("approved.txt").exists(), "A waits on the approval");
-    v.commands.send(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() }).unwrap();
+    v.commands.send(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new(), origin: None }).unwrap();
     until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
     assert!(w.repo().join("approved.txt").exists(), "R-PERM-2: B's answer unblocked A's turn");
 
@@ -1408,7 +1468,7 @@ async fn r_perm_2_a_question_the_terminal_still_follows_waits_and_a_viewer_can_a
     let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
     let mut frames = Vec::new();
     until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
-    v.commands.send(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() }).unwrap();
+    v.commands.send(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new(), origin: None }).unwrap();
     tokio::time::timeout(Duration::from_secs(15), turn).await.expect("B's answer ends the turn").unwrap();
     assert!(matches!(tool_results(&w, &session).as_slice(), [(_, false)]), "bash ran");
     assert!(w.repo().join("approved.txt").exists(), "B's answer unblocked the terminal's turn");
@@ -1877,7 +1937,7 @@ async fn ack_rtt(v: &mut viewer::Viewer, session: &str, frames: &mut Vec<Instant
     let mut rtts = Vec::new();
     for _ in 0..15 {
         let t = Instant::now();
-        v.commands.send(Command::Interrupt { session_id: session.into() }).unwrap();
+        v.commands.send(Command::Interrupt { session_id: session.into(), origin: None }).unwrap();
         until(v, Duration::from_secs(5), frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
         rtts.push(t.elapsed());
     }
@@ -2037,7 +2097,7 @@ async fn r_net_2_moving_to_the_direct_path_mid_session_stalls_nothing_and_shows_
     let asked: Vec<_> = got.iter().filter_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(r))) = u { Some(r.clone()) } else { None }).collect();
     assert_eq!(asked.len(), 1, "the approval request was shown {} times", asked.len());
     let req = asked[0].clone();
-    v.commands.send(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() }).unwrap();
+    v.commands.send(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new(), origin: None }).unwrap();
     got.extend(until(&mut v, Duration::from_secs(30), &mut frames, result_of).await);
     assert!(w.repo().join("approved.txt").exists(), "B's answer unblocked A's turn");
 
@@ -2630,7 +2690,7 @@ async fn r_hand_1_a_session_moves_to_b_mid_task_with_its_work_and_c_stays_attach
     cv.commands.send(w.prompt(Some(&session), "make the file")).unwrap();
     let got = until(&mut cv, Duration::from_secs(20), &mut frames, |u| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(_))))).await;
     let req = got.iter().find_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(r))) = u { Some(r.clone()) } else { None }).unwrap();
-    cv.commands.send(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() }).unwrap();
+    cv.commands.send(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new(), origin: None }).unwrap();
     until(&mut cv, Duration::from_secs(20), &mut frames, result_of).await;
     assert!(applied.cwd.join("approved.txt").exists(), "the turn ran on B, in B's worktree");
     {
@@ -2817,7 +2877,7 @@ async fn r_sub_12_a_viewer_answers_a_claude_agents_approval_and_nothing_elses() 
     w.serve_with(w.env(), "home", fake_claude(&w, &path));
     let d = w.daemon().await;
     let claude = gruntas_harness::protocol::ModelRef { instance: "claude".into(), model: "sonnet".into() };
-    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
+    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None };
     let (tx, mut rx) = mpsc::channel(4096);
     tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let first = d.execute(ask(None, "say hello"), tx).await.unwrap().unwrap();
@@ -2850,7 +2910,7 @@ async fn r_sub_12_a_viewer_answers_a_claude_agents_approval_and_nothing_elses() 
         until_or(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Acked { .. }), why).await
     };
     let error = |got: &[viewer::Update]| got.iter().find_map(|u| if let viewer::Update::Acked { error, .. } = u { Some(error.clone()) } else { None }).unwrap();
-    let answer = |session_id: &str| Command::Approve { session_id: session_id.into(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() };
+    let answer = |session_id: &str| Command::Approve { session_id: session_id.into(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new(), origin: None };
     for refused in [other.as_str(), "01a0ec7b-0000-7000-8000-00000000beef"] {
         let e = error(&ack(answer(refused)).await);
         assert!(e.as_deref().is_some_and(|e| e.contains("nothing else")), "{refused}: {e:?}");
@@ -2912,7 +2972,7 @@ async fn r_sub_12_a_viewer_stops_one_claude_agent() {
     w.serve_with(w.env(), "home", fake_claude(&w, &path));
     let d = w.daemon().await;
     let claude = gruntas_harness::protocol::ModelRef { instance: "claude".into(), model: "sonnet".into() };
-    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
+    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None };
     let (tx, mut rx) = mpsc::channel(4096);
     tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let session = d.execute(ask(None, "say hello"), tx).await.unwrap().unwrap().session_id;
@@ -2932,7 +2992,7 @@ async fn r_sub_12_a_viewer_stops_one_claude_agent() {
     };
     let got = until(&mut v, Duration::from_secs(20), &mut frames, |u| started(u).is_some()).await;
     let child = got.iter().find_map(started).unwrap();
-    v.commands.send(Command::Interrupt { session_id: child.clone() }).unwrap();
+    v.commands.send(Command::Interrupt { session_id: child.clone(), origin: None }).unwrap();
     let got = until(&mut v, Duration::from_secs(15), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
     let error = got.iter().find_map(|u| if let viewer::Update::Acked { error, .. } = u { Some(error.clone()) } else { None }).unwrap();
     assert_eq!(error, None, "the session's own Claude Code agent stops");
@@ -2973,7 +3033,7 @@ async fn r_sub_6_claude_codes_agents_ride_the_parents_chunks_as_gruntas_own_chil
     w.serve_with(w.env(), "home", fake_claude(&w, &path));
     let d = w.daemon().await;
     let claude = gruntas_harness::protocol::ModelRef { instance: "claude".into(), model: "sonnet".into() };
-    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
+    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None };
     let run = async |c: Command| {
         let (tx, mut rx) = mpsc::channel(4096);
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -3028,7 +3088,7 @@ async fn r_sub_6_a_claude_background_agents_lines_between_turns_reach_followers_
     w.serve_with(w.env(), "home", fake_claude(&w, &path));
     let d = w.daemon().await;
     let claude = gruntas_harness::protocol::ModelRef { instance: "claude".into(), model: "sonnet".into() };
-    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
+    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None };
     let run = async |c: Command| {
         let (tx, mut rx) = mpsc::channel(4096);
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -3391,7 +3451,7 @@ async fn r_sync_3_a_child_session_and_an_opted_out_directory_are_never_built() {
         parent_id: None,
         session_id: kid.into(),
         time_ms: 1,
-        body: gruntas_harness::protocol::LogBody::SessionStarted { cwd: w.repo().display().to_string(), gruntas_version: "test".into(), protocol_version: 1, parent_session_id: Some(parent.into()), agent: None },
+        body: gruntas_harness::protocol::LogBody::SessionStarted { cwd: w.repo().display().to_string(), gruntas_version: "test".into(), protocol_version: 1, parent_session_id: Some(parent.into()), agent: None, attendance: None, started_by_session_id: None },
     };
     std::fs::write(dir.join(log::EVENTS_FILE), format!("{}\n", serde_json::to_string(&started).unwrap())).unwrap();
     auto.turns.send(server::TurnEvent { session: kid.into(), running: true }).unwrap();
@@ -4602,6 +4662,37 @@ async fn r_host_4_a_start_from_b_runs_on_a_in_a_trusted_directory() {
     let (ran_in, ran_on, _) = turn_started_on_a(&w, &session_id, by).await;
     assert_eq!((ran_in.as_str(), &ran_on), (cwd.as_str(), &model));
     w.listed_on(&b, &session_id, by).await;
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// R-SEC-2, R-SEC-3 (D4, D5): a host-command start is unattended, and one
+/// that names a sending session records it as the session that started it —
+/// its steering parent, never a subagent's `parentSessionId`, so it still
+/// syncs; one that names none has no parent.
+#[tokio::test]
+async fn r_sec_2_a_host_command_start_is_unattended_and_records_its_sending_session_as_its_starter() {
+    let w = World::new("start-unattended");
+    let (a, b) = (w.device("start-host-a"), w.device("start-b"));
+    let mut auto = w.auto_with(&a, AutoOpts { announce: true, ..AutoOpts::default() });
+    w.announced_until(&b, &a, Instant::now() + Duration::from_secs(10), |p, _| p.online).await;
+    let (cwd, model) = (offered_dir(&w), w.model());
+    let sender = "0190f3c2-0000-7000-8000-0000000000aa";
+    let by = Instant::now() + Duration::from_secs(20);
+    for named in [Some(sender), None] {
+        let id = command_id();
+        let mut json = start_json(&cwd, &model, "hello from an agent");
+        if let Some(s) = named {
+            json["sendingSession"] = serde_json::json!(s);
+        }
+        send_command(&w, &b, &a, &id, &json);
+        let HostAnswer::Started { session_id } = answer_of(&w, &b, &a, &id, by).await else { panic!("refused") };
+        turn_started_on_a(&w, &session_id, by).await;
+        let path = log::sessions_dir(&w.env()).unwrap().join(&session_id).join(log::EVENTS_FILE);
+        let root: gruntas_harness::protocol::LogEvent = serde_json::from_str(std::fs::read_to_string(path).unwrap().lines().next().unwrap()).unwrap();
+        let LogBody::SessionStarted { parent_session_id, started_by_session_id, attendance, .. } = root.body else { panic!("not a start record") };
+        assert_eq!((started_by_session_id.as_deref(), attendance), (named, Some(gruntas_harness::protocol::Attendance::Unattended)));
+        assert_eq!(parent_session_id, None, "not a subagent: it is bridged for sync and takes a model switch");
+    }
     auto.stop(Duration::from_secs(10)).await;
 }
 

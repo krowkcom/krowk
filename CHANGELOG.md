@@ -19,6 +19,60 @@ breaking changes may affect it without notice.
 
 ## [Unreleased]
 
+### Added
+
+- **Sessions record whether anyone is at them, and steering commands say
+  where they came from.** A new session's start record notes whether a
+  person is attending it: `gruntas -p` without a terminal on its input, a
+  session another device starts on a host (`gruntas sync new --host`) and a
+  delegated task are unattended; everything else is attended. Commands that
+  act on an existing session (a prompt, steer, interrupt, approval, model
+  switch, take) can carry an origin (person or agent, the sending session,
+  the device), and a command that starts a session on a host can name the
+  session that sent it. All of it is optional on the wire, so older gruntas
+  still read the new frames; the `steer` setting below is enforced on it.
+
+- **A steered session sees who steered it.** A steer that carries an origin
+  now reaches the session's engine (Claude Code, Codex) framed as `steer
+  from <session> on <machine>, by an agent` or `steer from a person on
+  <machine>`, so the model weighs it as input from elsewhere and not as the
+  person's own words. Text in the steer cannot close that frame. The
+  session log keeps the steer's raw text with the origin beside it; a steer
+  with no origin (from an older gruntas) is delivered as before.
+
+### Security
+
+- **The threat model now covers agents in other harnesses.**
+  `docs/security/threat-model.md` has a new section, "Agents in other
+  harnesses", for Claude Code and Codex agents that run under gruntas: an
+  agent can reach what you can, gruntas limits what its own tools let it do,
+  reading is open to every agent, and steering another session is limited by
+  the `steer` setting. It also lists the risks that remain and the hard
+  boundary to use if gruntas ever runs other people's work.
+- **A new `steer` setting limits how far an agent can steer your other
+  sessions, and the host enforces it.** Steering is any command that acts on
+  a session other than the caller's own: a prompt to an existing session, a
+  steer, an interrupt, an approval, a model switch, and moving a session to
+  another machine. `children` lets an agent steer only sessions it started;
+  `attended` (the default, so a god agent works with no setup) lets an
+  attended session steer any session and an unattended one only its own
+  children; `any` lets every agent steer every session. Your own commands
+  always pass. The host checks commands that arrive from other machines
+  and from `gruntas sync attach`; a process on the same machine talking to
+  the daemon directly is the same-user risk the threat model accepts. A host
+  that refuses names the setting and says how to change
+  it. `gruntas config set steer <children|attended|any>` asks for a yes on a
+  terminal and refuses without one, so no agent can widen its own reach
+  through gruntas; `gruntas config get steer` prints the value and whether it
+  is the default or global. `gruntas sync attach` now counts as you only when
+  its input is a terminal: a script or an agent's shell piping lines into it
+  is an agent with no session, which only `any` lets steer (scripts that
+  pipe into it are now refused by default; set `steer` to `any` to allow
+  them). A session a
+  delegated task or a host command starts now records the session that sent
+  it as its steering parent without becoming a subagent: it still syncs, can
+  switch models, and is budgeted on its own.
+
 ## [2026.11.0] - 2026-11-23
 
 **krowk is now gruntas.** This is the first gruntas release, and versions are

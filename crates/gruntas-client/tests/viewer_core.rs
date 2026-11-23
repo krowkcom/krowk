@@ -32,7 +32,7 @@ fn approval(r: &str) -> Value {
 }
 
 fn stop(n: usize) -> Command {
-    Command::Interrupt { session_id: n.to_string() }
+    Command::Interrupt { session_id: n.to_string(), origin: None }
 }
 
 /// The relay between one `ViewerCore` and its `HostLink`, and what the

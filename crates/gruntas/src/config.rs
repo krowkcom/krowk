@@ -84,7 +84,7 @@ pub fn repo_path(dir: &str) -> Option<PathBuf> {
 
 /// The keys that only ever live in the global config, never a repo's.
 #[cfg(feature = "harness")]
-pub const GLOBAL_ONLY: &[&str] = &["defaultMode", "rollover"];
+pub const GLOBAL_ONLY: &[&str] = &["defaultMode", "rollover", "steer"];
 #[cfg(not(feature = "harness"))]
 pub const GLOBAL_ONLY: &[&str] = &[];
 

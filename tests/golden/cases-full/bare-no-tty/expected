@@ -684,7 +684,7 @@ stdout:
           "args": [
             {
               "name": "key",
-              "summary": "workspace, defaultMode or rollover",
+              "summary": "workspace, defaultMode, rollover or steer",
               "required": true
             }
           ],
@@ -697,7 +697,7 @@ stdout:
           "args": [
             {
               "name": "key",
-              "summary": "A configuration key: `workspace`, or `defaultMode` and `rollover`, which always write the global config",
+              "summary": "A configuration key: `workspace`, or `defaultMode`, `rollover` and `steer`, which always write the global config",
               "required": true
             },
             {
@@ -2773,7 +2773,7 @@ tty:
           "args": [
             {
               "name": "key",
-              "summary": "workspace, defaultMode or rollover",
+              "summary": "workspace, defaultMode, rollover or steer",
               "required": true
             }
           ],
@@ -2786,7 +2786,7 @@ tty:
           "args": [
             {
               "name": "key",
-              "summary": "A configuration key: `workspace`, or `defaultMode` and `rollover`, which always write the global config",
+              "summary": "A configuration key: `workspace`, or `defaultMode`, `rollover` and `steer`, which always write the global config",
               "required": true
             },
             {

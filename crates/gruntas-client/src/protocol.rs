@@ -154,6 +154,10 @@ pub enum Item {
         text: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<ImageRef>,
+        /// Where a steer came from, beside its raw text; absent for what
+        /// the person typed and for a steer that carried no origin.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<Box<Origin>>,
     },
     /// What the model answered, as text.
     AssistantText { text: String },
@@ -217,7 +221,7 @@ pub struct ImageRef {
 impl Item {
     /// The person's text, with no images.
     pub fn user(text: impl Into<String>) -> Item {
-        Item::UserText { text: text.into(), images: Vec::new() }
+        Item::UserText { text: text.into(), images: Vec::new(), origin: None }
     }
 }
 
@@ -528,6 +532,54 @@ pub struct QuestionAnswer {
     pub text: Option<String>,
 }
 
+/// Whether a person is at a session: the start path that makes the session
+/// records it, never inferred from other flags (such as whether the client
+/// answers approvals). Unattended is a session gruntas started headless on
+/// someone's behalf — a launcher worker, a session a host command starts
+/// (`sync new --host`, delegation), `-p` without a terminal; every other
+/// session is attended. A session whose record says nothing (an older
+/// gruntas started it) counts as attended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum Attendance {
+    Attended,
+    Unattended,
+}
+
+/// Who a steering command came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum OriginKind {
+    Person,
+    Agent,
+}
+
+/// Where a steering command came from (D7): the channel it arrived through,
+/// the only signal used. Every command that acts on a session other than
+/// the caller's own — a prompt to an existing session, `steer`, `interrupt`,
+/// `approve`, `switchModel`, and `take` — carries one when its sender knows
+/// it; a command without one (an older client's) has an unknown origin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Origin {
+    pub kind: OriginKind,
+    /// The session the command came from, when `kind` is `agent`. On a
+    /// prompt that starts a new session, the new session's parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// The name of the machine the command was sent from. Absent only
+    /// where the sender's name is not at hand: a host command carries just
+    /// the sending session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    /// Whether the steering session is attended, when `kind` is `agent` and
+    /// the sender knows it (its own session's start record says): the host
+    /// holds a steering session it has no log of to this word, since the
+    /// session may run on another machine. Absent: attended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attendance: Option<Attendance>,
+}
+
 /// What a client asks of the engine. `prompt`, `interrupt`, `steer`,
 /// `approve`, `switchModel` and `continue` are served today; the rest are typed now so
 /// every client is written against the whole vocabulary, and are refused
@@ -566,6 +618,15 @@ pub enum Command {
         /// limit when absent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         budget: Option<BudgetLimits>,
+        /// For a prompt that starts a session: whether a person is at it,
+        /// recorded in its start record. Ignored for an existing session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attendance: Option<Attendance>,
+        /// Where the prompt came from. For one that starts a session, an
+        /// agent origin's `sessionId` is recorded as the new session's
+        /// parent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<Box<Origin>>,
     },
     /// Keep one image's bytes on the host, ahead of the `prompt` or `steer`
     /// that names it by `sha256`: the host accepts it only when the hash
@@ -583,7 +644,12 @@ pub enum Command {
         data: String,
     },
     /// Stop the running turn, keeping what it produced so far.
-    Interrupt { session_id: String },
+    Interrupt {
+        session_id: String,
+        /// Where the command came from; absent when the sender did not say.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<Box<Origin>>,
+    },
     /// Add input to the running turn without stopping it. The engine takes
     /// it before its next model call, and it is logged there as a
     /// `userText` item.
@@ -592,6 +658,9 @@ pub enum Command {
         text: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<ImageInput>,
+        /// Where the command came from; absent when the sender did not say.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<Box<Origin>>,
     },
     /// Answer an `approval.requested`: for one with `questions`, `allow`
     /// with the person's `answers`.
@@ -601,6 +670,9 @@ pub enum Command {
         decision: ApprovalDecision,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         answers: Vec<QuestionAnswer>,
+        /// Where the command came from; absent when the sender did not say.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<Box<Origin>>,
     },
     /// Continue the session on another model, instance or engine
     /// (R-SWITCH-4): checked now — the instance, its key or login, its
@@ -613,6 +685,9 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
         model: ModelRef,
+        /// Where the command came from; absent when the sender did not say.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<Box<Origin>>,
     },
     /// Branch the session at an event: the new branch's first event names
     /// it as its parent.
@@ -774,6 +849,18 @@ pub enum LogBody {
         /// The agent definition a subagent runs, by name, when it runs one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<String>,
+        /// Whether a person is at the session, set by the path that started
+        /// it. Absent in an older session's record: attended.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attendance: Option<Attendance>,
+        /// The session that started this one — a host command's sending
+        /// session, an agent's prompt — which is its steering parent (D4):
+        /// the `steer` setting lets it steer this session. Not a subagent
+        /// relation: a session that has only this is synced, switchable and
+        /// budgeted on its own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(regex(pattern = UUID7_PATTERN))]
+        started_by_session_id: Option<String>,
     },
     /// A prompt arrived; the turn runs on `model`. The exact system prompt
     /// and tools it ran with are in the session's `context.jsonl` under

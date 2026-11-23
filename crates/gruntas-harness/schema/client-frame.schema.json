@@ -487,6 +487,28 @@
                 }
               ]
             },
+            "attendance": {
+              "description": "For a prompt that starts a session: whether a person is at it,\nrecorded in its start record. Ignored for an existing session.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Attendance"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "origin": {
+              "description": "Where the prompt came from. For one that starts a session, an\nagent origin's `sessionId` is recorded as the new session's\nparent.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Origin"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "type": {
               "type": "string",
               "const": "prompt"
@@ -536,6 +558,17 @@
             "sessionId": {
               "type": "string"
             },
+            "origin": {
+              "description": "Where the command came from; absent when the sender did not say.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Origin"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "type": {
               "type": "string",
               "const": "interrupt"
@@ -561,6 +594,17 @@
               "items": {
                 "$ref": "#/$defs/ImageInput"
               }
+            },
+            "origin": {
+              "description": "Where the command came from; absent when the sender did not say.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Origin"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": {
               "type": "string",
@@ -592,6 +636,17 @@
                 "$ref": "#/$defs/QuestionAnswer"
               }
             },
+            "origin": {
+              "description": "Where the command came from; absent when the sender did not say.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Origin"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "type": {
               "type": "string",
               "const": "approve"
@@ -616,6 +671,17 @@
             },
             "model": {
               "$ref": "#/$defs/ModelRef"
+            },
+            "origin": {
+              "description": "Where the command came from; absent when the sender did not say.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Origin"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "type": {
               "type": "string",
@@ -790,6 +856,59 @@
           "format": "int64"
         }
       }
+    },
+    "Attendance": {
+      "description": "Whether a person is at a session: the start path that makes the session\nrecords it, never inferred from other flags (such as whether the client\nanswers approvals). Unattended is a session gruntas started headless on\nsomeone's behalf — a launcher worker, a session a host command starts\n(`sync new --host`, delegation), `-p` without a terminal; every other\nsession is attended. A session whose record says nothing (an older\ngruntas started it) counts as attended.",
+      "type": "string",
+      "enum": [
+        "attended",
+        "unattended"
+      ]
+    },
+    "Origin": {
+      "description": "Where a steering command came from (D7): the channel it arrived through,\nthe only signal used. Every command that acts on a session other than\nthe caller's own — a prompt to an existing session, `steer`, `interrupt`,\n`approve`, `switchModel`, and `take` — carries one when its sender knows\nit; a command without one (an older client's) has an unknown origin.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/OriginKind"
+        },
+        "sessionId": {
+          "description": "The session the command came from, when `kind` is `agent`. On a\nprompt that starts a new session, the new session's parent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "device": {
+          "description": "The name of the machine the command was sent from. Absent only\nwhere the sender's name is not at hand: a host command carries just\nthe sending session.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "attendance": {
+          "description": "Whether the steering session is attended, when `kind` is `agent` and\nthe sender knows it (its own session's start record says): the host\nholds a steering session it has no log of to this word, since the\nsession may run on another machine. Absent: attended.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Attendance"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "OriginKind": {
+      "description": "Who a steering command came from.",
+      "type": "string",
+      "enum": [
+        "person",
+        "agent"
+      ]
     },
     "ApprovalDecision": {
       "description": "An answer to a permission request: allow this call, allow calls like it\nfor the rest of the session or for good in this project (the request's\n`remember` rules), or deny it.",

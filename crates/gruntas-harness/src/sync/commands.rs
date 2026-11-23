@@ -69,7 +69,7 @@ use super::announce::{Announcer, Options, FRESH_EVERY};
 use super::auto::Config;
 use crate::daemon::client::Client as Daemon;
 use super::handoff;
-use crate::protocol::{ApprovalDecision, Command, LiveEvent, LogBody, PermissionMode, StreamLine};
+use crate::protocol::{ApprovalDecision, Attendance, Command, LiveEvent, LogBody, PermissionMode, StreamLine};
 use serde::{Deserialize, Serialize};
 use gruntas_api::sync::DeliveredCommand;
 use gruntas_client::e2e::DeviceId;
@@ -325,9 +325,16 @@ fn run(me: &Arc<Commands>, c: &Config, host: &str, command: HostCommand, tell: &
         let pick = if offered.is_empty() { "it offers none yet".to_string() } else { format!("pick one of: {}", offered.join(", ")) };
         return tell(HostAnswer::refused("directory_not_offered", format!("{host} does not offer {cwd}: run `gruntas trust {}` on {host}, or {pick}", crate::worktree::manage::quote(Path::new(&cwd)))));
     }
-    let (model, prompt) = match command {
-        HostCommand::Start { model, prompt, .. } => (model, prompt),
-        HostCommand::Take { session_id, .. } if crate::log::valid_id(&session_id) => return take(me, c, o, host, &session_id, &cwd, tell),
+    let (model, prompt, sending_session) = match command {
+        HostCommand::Start { model, prompt, sending_session, .. } => (model, prompt, sending_session),
+        HostCommand::Take { session_id, origin, .. } if crate::log::valid_id(&session_id) => {
+            // The signature said whose command it is; the `steer` setting
+            // says whether its origin may move this session (D4, R-SEC-4).
+            if let Err(why) = crate::steer::allow(crate::steer::read(&c.sessions), origin.as_ref(), &session_id, &c.sessions) {
+                return tell(HostAnswer::refused("steer_refused", why));
+            }
+            return take(me, c, o, host, &session_id, &cwd, tell);
+        }
         HostCommand::Take { session_id, .. } => return tell(HostAnswer::refused("bad_command", format!("{:?} is not a session id", session_id.escape_debug().to_string()))),
         HostCommand::Run(_) => unreachable!("run is answered above"),
     };
@@ -341,7 +348,7 @@ fn run(me: &Arc<Commands>, c: &Config, host: &str, command: HostCommand, tell: &
     let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
         return tell(HostAnswer::refused("host_failed", format!("{host} has no async runtime for the start — try again")));
     };
-    rt.block_on(start(c, &cwd, model, prompt, mode, tell));
+    rt.block_on(start(c, &cwd, model, prompt, sending_session, mode, tell));
 }
 
 /// What a host holds a `run` to before it answers (R-ALLOC-5): what it
@@ -575,7 +582,7 @@ impl Following<'_> {
         self.stopping = Some(answer);
         if let Some(s) = &self.session {
             let (tx, _rx) = tokio::sync::mpsc::channel(1);
-            let _ = d.execute(Command::Interrupt { session_id: s.clone() }, tx).await;
+            let _ = d.execute(Command::Interrupt { session_id: s.clone(), origin: None }, tx).await;
         }
     }
 
@@ -598,7 +605,7 @@ impl Following<'_> {
                 // Kept before it is answered, so the result never misses it.
                 let _ = self.record();
                 let (tx, _rx) = tokio::sync::mpsc::channel(1);
-                let _ = d.execute(Command::Approve { session_id: r.session_id, request_id: r.request_id, decision: ApprovalDecision::Deny, answers: Vec::new() }, tx).await;
+                let _ = d.execute(Command::Approve { session_id: r.session_id, request_id: r.request_id, decision: ApprovalDecision::Deny, answers: Vec::new(), origin: None }, tx).await;
             }
             _ => {}
         }
@@ -699,13 +706,13 @@ async fn follow(c: &Config, a: &Announcer, task: &RunTask, child: &Child, ran: &
         }
     };
     let (tx, _rx) = tokio::sync::mpsc::channel(1);
-    if let Err(e) = d.execute(Command::SwitchModel { session_id: None, model: child.model.clone() }, tx).await {
+    if let Err(e) = d.execute(Command::SwitchModel { session_id: None, model: child.model.clone(), origin: None }, tx).await {
         tell(refused(e));
         return false;
     }
     let (tx, mut rx) = tokio::sync::mpsc::channel(256);
     let budget = (!task.budget.is_empty()).then_some(task.budget);
-    let prompt = Command::Prompt { session_id: None, text: child.prompt.clone(), images: Vec::new(), model: Some(child.model.clone()), permission_mode: child.mode, toolset: None, effort: None, rollover: None, budget };
+    let prompt = Command::Prompt { session_id: None, text: child.prompt.clone(), images: Vec::new(), model: Some(child.model.clone()), permission_mode: child.mode, toolset: None, effort: None, rollover: None, budget, attendance: Some(Attendance::Unattended), origin: sent_by(task.sending_session.as_deref()) };
     ran.store(true, std::sync::atomic::Ordering::SeqCst);
     let run = d.execute(prompt, tx);
     tokio::pin!(run);
@@ -765,7 +772,16 @@ async fn follow(c: &Config, a: &Announcer, task: &RunTask, child: &Child, ran: &
     }
 }
 
-async fn start(c: &Config, cwd: &str, model: crate::protocol::ModelRef, prompt: String, mode: PermissionMode, tell: &dyn Fn(HostAnswer)) {
+/// The origin a host command's prompt carries when an agent sent the
+/// command: its session, which the started session records as the session
+/// that started it (its steering parent, D4; not a subagent's parent). An id
+/// that is no session id is dropped, as a command from another device is
+/// not trusted to name what the log then records.
+fn sent_by(session: Option<&str>) -> Option<Box<crate::protocol::Origin>> {
+    session.filter(|s| crate::log::valid_id(s)).map(|s| Box::new(crate::protocol::Origin { kind: crate::protocol::OriginKind::Agent, session_id: Some(s.to_string()), device: None, attendance: None }))
+}
+
+async fn start(c: &Config, cwd: &str, model: crate::protocol::ModelRef, prompt: String, sending_session: Option<String>, mode: PermissionMode, tell: &dyn Fn(HostAnswer)) {
     let refused = |e: crate::engine::EngineError| HostAnswer::refused(&e.code, e.message);
     // Background, so it never keeps the daemon up; answering approvals, as
     // a bridge's client does, so the turn's are asked of its followers.
@@ -775,11 +791,11 @@ async fn start(c: &Config, cwd: &str, model: crate::protocol::ModelRef, prompt: 
         Err(crate::daemon::client::ConnectError::Absent) => return tell(HostAnswer::refused("host_unavailable", "the host daemon is not running — it starts again with the next gruntas there")),
     };
     let (tx, _rx) = tokio::sync::mpsc::channel(1);
-    if let Err(e) = d.execute(Command::SwitchModel { session_id: None, model: model.clone() }, tx).await {
+    if let Err(e) = d.execute(Command::SwitchModel { session_id: None, model: model.clone(), origin: None }, tx).await {
         return tell(refused(e));
     }
     let (tx, mut rx) = tokio::sync::mpsc::channel(256);
-    let prompt = Command::Prompt { session_id: None, text: prompt, images: Vec::new(), model: Some(model), permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None };
+    let prompt = Command::Prompt { session_id: None, text: prompt, images: Vec::new(), model: Some(model), permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None, attendance: Some(Attendance::Unattended), origin: sent_by(sending_session.as_deref()) };
     let run = d.execute(prompt, tx);
     tokio::pin!(run);
     let started = |l: &StreamLine| match l {
@@ -964,7 +980,7 @@ mod tests {
             budget: BudgetLimits::default(),
             requested_by: "00".repeat(16),
             permission_mode: None,
-            not_after_ms: 31_000,
+            not_after_ms: 31_000, sending_session: None,
         };
         let refused = |t: &RunTask, h: &Admission<'_>| admit(t, h).map(|_| ()).unwrap_err().0;
         assert_eq!(refused(&task, &Admission { now_ms: 31_001, ..here }), RunRefusal::BadJob, "past its deadline: the supervisor has moved on");
