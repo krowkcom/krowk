@@ -93,6 +93,8 @@ const TOKEN: &str = "krowk_sk_status_layer_00000000000000000";
 /// on the person's device list with its own key, as `sync init` and `sync
 /// join` leave a machine.
 struct Person {
+    /// In every path it makes: the tests run side by side in one process.
+    name: String,
     root: std::path::PathBuf,
     api: String,
     people: device_list::People,
@@ -116,7 +118,7 @@ impl Person {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let registry = gruntas_devregistry::start(std::net::TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
-        Person { root, api: format!("{}/v1", registry.url()), people: Default::default(), account: gruntas_client::e2e::AccountKey::generate(), homes: Vec::new(), _registry: registry }
+        Person { name: name.into(), root, api: format!("{}/v1", registry.url()), people: Default::default(), account: gruntas_client::e2e::AccountKey::generate(), homes: Vec::new(), _registry: registry }
     }
 
     /// Machine `name` added to the person's list: its index.
@@ -124,7 +126,7 @@ impl Person {
         let home = self.root.join(name);
         std::fs::create_dir_all(home.join(".gruntas")).unwrap();
         std::fs::write(home.join(".gruntas/config.json"), "{}").unwrap();
-        let run = std::path::PathBuf::from(format!("/tmp/gruntas-sl05-{name}-{}-{}", self.homes.len(), std::process::id()));
+        let run = std::path::PathBuf::from(format!("/tmp/gruntas-sl05-{}-{name}-{}", self.name, std::process::id()));
         let _ = std::fs::remove_dir_all(&run);
         std::fs::create_dir_all(&run).unwrap();
         use std::os::unix::fs::PermissionsExt;
@@ -179,7 +181,7 @@ impl Person {
             {
                 return b;
             }
-            assert!(std::time::Instant::now() < deadline, "machine {reader} never read machine {i}'s board as wanted: {read:?}\nhost.log: {}", std::fs::read_to_string(self.homes[i].home.join(".gruntas/host.log")).unwrap_or_default());
+            assert!(std::time::Instant::now() < deadline, "machine {reader} never read machine {i}'s board as wanted: {read:?}\n{}", self.homes[i].logs());
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
     }
@@ -192,9 +194,21 @@ impl Home {
         c
     }
 
+    /// What its daemon wrote, for a failure's message.
+    fn logs(&self) -> String {
+        let mut out = String::new();
+        for f in walk(&self.run).into_iter().chain([self.home.join(".gruntas/host.log")]) {
+            if f.extension().is_some_and(|e| e == "log" || e == "json") {
+                out += &format!("{}:\n{}\n", f.display(), std::fs::read_to_string(&f).unwrap_or_default());
+            }
+        }
+        out
+    }
+
     /// Its host daemon kept up, announcing it and publishing its board.
     fn serve(&mut self) {
-        let c = self.command(&["host", "serve"]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+        let log = std::fs::File::create(self.run.join("serve.log")).unwrap();
+        let c = self.command(&["host", "serve"]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(log).spawn().unwrap();
         self.serve = Some(c);
     }
 
@@ -227,6 +241,12 @@ impl Drop for Person {
         self.homes.clear();
         let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+
+/// Every file under `dir`.
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    entries.flatten().flat_map(|e| if e.path().is_dir() { walk(&e.path()) } else { vec![e.path()] }).collect()
 }
 
 /// When the stand-in last took machine `device`'s board, if it has one.
@@ -283,7 +303,8 @@ fn sl05_two_devices_read_each_others_boards_and_publishes_coalesce() {
     let times: Vec<jiff::Timestamp> = seen.iter().map(|s| s.parse().unwrap()).collect();
     assert!(times.len() >= 2, "the burst was published: {seen:?}");
     for w in times.windows(2) {
-        assert!(w[1].duration_since(w[0]) >= jiff::SignedDuration::from_millis(4900), "two publishes within 5 s: {seen:?}");
+        // The registry's arrival times: slack for a put held up in flight.
+        assert!(w[1].duration_since(w[0]) >= jiff::SignedDuration::from_secs(4), "two publishes within 5 s: {seen:?}");
     }
     let after = p.board_of(b, a, |x| x.sessions.len() == 21);
     assert_eq!(after.tasks.len(), 21, "every session of the burst is on the board");

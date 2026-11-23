@@ -2,7 +2,7 @@
 //!
 //! **Publishing** rides on the presence publisher's thread
 //! (`announce`): it reads the daemon's registrations as the daemon last
-//! wrote them (`registry::Registry::load`, beside the socket), so the
+//! wrote them (`registry::Registry::read`, beside the socket), so the
 //! daemon's own thread does nothing more for it. Whenever the board's Tasks
 //! change, and at least with every presence refresh, the board is sealed
 //! (`status::seal_board`, which brings it within its budget by D8's rule)
@@ -74,27 +74,42 @@ impl Coalescer {
 /// neither be read nor written: the caller then keeps one for its run.
 pub fn statistics_id(home: Option<&Path>) -> Option<String> {
     let path = home?.join(STATISTICS_ID_FILE);
-    if let Ok(s) = std::fs::read_to_string(&path)
-        && status::is_statistics_id(s.trim())
-    {
-        return Some(s.trim().to_string());
+    let kept = |path: &Path| std::fs::read_to_string(path).ok().map(|s| s.trim().to_string()).filter(|s| status::is_statistics_id(s));
+    if let Some(id) = kept(&path) {
+        return Some(id);
     }
+    // One that does not read is replaced; one another process writes
+    // meanwhile wins, so a machine sends under one id.
     let id = status::statistics_id();
+    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+    let written = write_new(&tmp, id.as_bytes()).and_then(|()| match std::fs::hard_link(&tmp, &path) {
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => match kept(&path) {
+            Some(_) => Ok(()),
+            None => std::fs::rename(&tmp, &path),
+        },
+        other => other,
+    });
+    let _ = std::fs::remove_file(&tmp);
+    written.ok()?;
+    kept(&path)
+}
+
+/// `bytes` written to a new file at `path`, `0600`, never through a link,
+/// and synced.
+fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
-    let mut f = std::fs::OpenOptions::new().create(true).truncate(true).write(true).mode(0o600).open(&tmp).ok()?;
-    f.write_all(id.as_bytes()).ok()?;
-    drop(f);
-    std::fs::rename(&tmp, &path).ok()?;
-    Some(id)
+    let _ = std::fs::remove_file(path);
+    let mut f = std::fs::OpenOptions::new().create_new(true).write(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(path)?;
+    f.write_all(bytes)?;
+    f.sync_all()
 }
 
 /// The board of the sessions registered with the daemon whose socket
 /// directory is `dir`, as `a.device` publishes it now: each Task's machine
 /// filled in.
 pub fn board(dir: &Path, device: &DeviceId) -> Board {
-    let tasks: Vec<Task> = Registry::load(dir)
+    let tasks: Vec<Task> = Registry::read(dir)
         .board_tasks()
         .into_iter()
         .map(|mut t| {
@@ -144,8 +159,8 @@ pub struct Read {
 /// Every board the person's devices published, as `api` (one of the
 /// person's keys) reads them: the devices listed through the presence list,
 /// each one's board fetched and opened against `chain` with `keys`. A
-/// device that published none is left out; one whose board does not open
-/// is listed with why. A registry that keeps no presences yet lists none.
+/// device that published none is left out; one whose board cannot be
+/// fetched or does not open is listed with why. A registry that keeps no presences yet lists none.
 pub fn read(api: &gruntas_api::Client, keys: &UserKeys, chain: &Chain) -> Result<Vec<Read>, gruntas_api::Error> {
     let presences = match api.list_presences() {
         Ok(p) => p,
@@ -154,9 +169,14 @@ pub fn read(api: &gruntas_api::Client, keys: &UserKeys, chain: &Chain) -> Result
     };
     let mut out = Vec::new();
     for p in presences {
-        let Some(record) = api.status_board(&p.device)? else { continue };
+        // One device's board that cannot be fetched is listed with why.
+        let record = match api.status_board(&p.device) {
+            Ok(None) => continue,
+            Ok(Some(r)) => Ok(r),
+            Err(e) => Err(format!("its status board could not be fetched: {} ({})", super::announce::words(&e), e.code())),
+        };
         let received_at = jiff::Timestamp::now();
-        let board = DeviceId::parse(&p.device).ok_or_else(|| "not a device id".to_string()).and_then(|d| status::open_board(&record.sealed, &d, keys, chain));
+        let board = record.and_then(|r| DeviceId::parse(&p.device).ok_or_else(|| "not a device id".to_string()).and_then(|d| status::open_board(&r.sealed, &d, keys, chain)));
         out.push(Read { device: p.device, online: p.online, received_at, board });
     }
     Ok(out)

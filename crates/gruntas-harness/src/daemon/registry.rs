@@ -36,24 +36,47 @@ pub struct Registry {
 
 impl Registry {
     /// The registry `dir` holds, its dead entries pruned; empty when there
-    /// is none or it cannot be read.
+    /// is none or it cannot be read, which is said.
     // blocking: once, as the daemon starts.
     pub fn load(dir: &Path) -> Registry {
+        Registry::from_file(dir, true)
+    }
+
+    /// `load`, saying nothing when the file cannot be read: for a reader
+    /// that reads it again and again (the status board's publisher).
+    // blocking: a file read.
+    pub fn read(dir: &Path) -> Registry {
+        Registry::from_file(dir, false)
+    }
+
+    fn from_file(dir: &Path, say: bool) -> Registry {
         let path = dir.join(FILE);
         let mut r = match std::fs::read(&path) {
             Ok(b) => serde_json::from_slice(&b).unwrap_or_else(|e| {
-                eprintln!("{} cannot be read ({e}): starting with no registrations", path.display());
+                if say {
+                    eprintln!("{} cannot be read ({e}): starting with no registrations", path.display());
+                }
                 Registry::default()
             }),
             Err(_) => Registry::default(),
         };
         r.prune(alive);
-        // One kept before registrations were timed: from now.
-        let now = jiff::Timestamp::now().to_string();
-        for id in r.sessions.keys() {
-            r.registered_at.entry(id.clone()).or_insert_with(|| now.clone());
-        }
         r
+    }
+
+    /// Times every session kept from before registrations were timed, from
+    /// now; whether any was. The daemon calls it as it loads the file, and
+    /// saves it when it was, so the time holds from then on.
+    pub fn stamp(&mut self) -> bool {
+        let now = jiff::Timestamp::now().to_string();
+        let mut stamped = false;
+        for id in self.sessions.keys() {
+            if !self.registered_at.contains_key(id) {
+                self.registered_at.insert(id.clone(), now.clone());
+                stamped = true;
+            }
+        }
+        stamped
     }
 
     /// Writes it to `dir`, whole, in place of what was there.
@@ -268,6 +291,9 @@ mod tests {
         assert_eq!(g.last_activity.as_ref().map(|f| &f.value), Some(&t.status.timestamp));
         r.apply(&Activity::Register(a));
         assert_eq!(r.board_tasks(), tasks, "the same registration again changes nothing");
+        assert!(!r.stamp(), "every registration is timed already");
+        r.registered_at.clear();
+        assert!(r.stamp() && !r.stamp(), "one kept untimed is timed once");
         r.apply(&Activity::Deregister { session_id: "a".into() });
         assert!(r.board_tasks().is_empty() && !r.registered_at.contains_key("a"));
     }
