@@ -88,7 +88,25 @@ pub fn read(sessions: &Path) -> Setting {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Start {
     pub parent: Option<String>,
+    /// The session that spawned it, when it is a subagent: it takes its
+    /// attendance from there when its own record says none.
+    pub subagent_of: Option<String>,
     pub attendance: Option<Attendance>,
+}
+
+/// Whether `session` is unattended: its own record says so, or it is a
+/// subagent (a few levels deep at most) of one that is.
+fn unattended_here(sessions: &Path, session: &str) -> bool {
+    let mut at = session.to_string();
+    for _ in 0..8 {
+        let Some(s) = start_of(sessions, &at) else { return false };
+        match (s.attendance, s.subagent_of) {
+            (Some(a), _) => return a == Attendance::Unattended,
+            (None, Some(up)) => at = up,
+            (None, None) => return false,
+        }
+    }
+    false
 }
 
 /// `session`'s start record on this machine, the first line of its log; none
@@ -102,7 +120,7 @@ pub fn start_of(sessions: &Path, session: &str) -> Option<Start> {
     let first = std::io::BufReader::new(f).lines().next()?.ok()?;
     let e: crate::protocol::LogEvent = serde_json::from_str(&first).ok()?;
     match e.body {
-        LogBody::SessionStarted { parent_session_id, started_by_session_id, attendance, .. } if e.session_id == session => Some(Start { parent: started_by_session_id.or(parent_session_id), attendance }),
+        LogBody::SessionStarted { parent_session_id, started_by_session_id, attendance, .. } if e.session_id == session => Some(Start { parent: started_by_session_id.or(parent_session_id.clone()), subagent_of: parent_session_id, attendance }),
         _ => None,
     }
 }
@@ -135,7 +153,7 @@ pub fn allow(setting: Setting, origin: Option<&Origin>, target: &str, sessions: 
     if start_of(sessions, target).and_then(|s| s.parent).as_deref() == Some(from) {
         return Ok(());
     }
-    let unattended = o.attendance == Some(Attendance::Unattended) || start_of(sessions, from).is_some_and(|s| s.attendance == Some(Attendance::Unattended));
+    let unattended = o.attendance == Some(Attendance::Unattended) || unattended_here(sessions, from);
     match setting {
         Setting::Attended if !unattended => Ok(()),
         Setting::Attended => refuse(&format!("session {from}, which runs unattended and did not start it,")),
@@ -251,6 +269,8 @@ mod tests {
         assert!(allow(Setting::Children, Some(&agent(Some(PARENT))), STRANGER, &sessions).is_err());
         assert!(allow(Setting::Attended, Some(&agent(Some(ATTENDED))), STRANGER, &sessions).is_ok());
         start(&home, STRANGER, None, Some(PARENT), None);
+        // A subagent of an unattended session is unattended with it.
+        assert!(allow(Setting::Attended, Some(&agent(Some(STRANGER))), TARGET, &sessions).is_err(), "the unattended label carries down to a subagent");
         assert!(allow(Setting::Children, Some(&agent(Some(PARENT))), STRANGER, &sessions).is_ok(), "a subagent's parent steers it");
         // No log at all: no parent either.
         assert!(allow(Setting::Children, Some(&agent(Some(PARENT))), "01a0ec7b-0000-7000-8000-0000000000ff", &sessions).is_err());

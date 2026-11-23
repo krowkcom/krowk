@@ -163,13 +163,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `attended` (the default, so a god agent works with no setup) lets an
   attended session steer any session and an unattended one only its own
   children; `any` lets every agent steer every session. Your own commands
-  always pass. A host that refuses names the setting and says how to change
+  always pass. The host checks commands that arrive from other machines
+  and from `gruntas sync attach`; a process on the same machine talking to
+  the daemon directly is the same-user risk the threat model accepts. A host
+  that refuses names the setting and says how to change
   it. `gruntas config set steer <children|attended|any>` asks for a yes on a
   terminal and refuses without one, so no agent can widen its own reach
   through gruntas; `gruntas config get steer` prints the value and whether it
   is the default or global. `gruntas sync attach` now counts as you only when
   its input is a terminal: a script or an agent's shell piping lines into it
-  is an agent with no session, which only `any` lets steer. A session a
+  is an agent with no session, which only `any` lets steer (scripts that
+  pipe into it are now refused by default; set `steer` to `any` to allow
+  them). A session a
   delegated task or a host command starts now records the session that sent
   it as its steering parent without becoming a subagent: it still syncs, can
   switch models, and is budgeted on its own.
