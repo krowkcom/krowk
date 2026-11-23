@@ -110,6 +110,7 @@ pub mod relay;
 pub mod sandbox;
 pub mod schema;
 pub mod slots;
+pub mod steer;
 #[cfg(unix)]
 pub mod sync;
 pub mod sse;

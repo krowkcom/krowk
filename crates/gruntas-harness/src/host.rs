@@ -679,8 +679,8 @@ impl Host {
                 let images = images::decode(&images)?;
                 // What a new session's start record says of how it started: the
                 // sender's word for attendance, and the sending session, if an
-                // agent, as its parent.
-                let begin = Begin { attendance, parent: origin.and_then(|o| o.session_id.filter(|_| o.kind == crate::protocol::OriginKind::Agent)) };
+                // agent, as the session that started it.
+                let begin = Begin { attendance, started_by: origin.and_then(|o| o.session_id.filter(|_| o.kind == crate::protocol::OriginKind::Agent)) };
                 shared.prompt(session_id.as_deref(), (text, images), model, permission_mode, toolset.as_deref(), effort, rollover, budget.unwrap_or_default(), &begin, out).await.map(Some)
             }
             // A subagent's session is a running turn like any other, so it
@@ -758,8 +758,9 @@ impl Host {
 #[derive(Debug, Default)]
 struct Begin {
     attendance: Option<crate::protocol::Attendance>,
-    /// The session that sent the prompt: the new session's parent.
-    parent: Option<String>,
+    /// The session that sent the prompt, when an agent did: the new
+    /// session's steering parent (`startedBySessionId`), not a subagent's.
+    started_by: Option<String>,
 }
 
 /// One turn, settled: the log it appends to, what the branch so far says,
@@ -1392,7 +1393,7 @@ impl Shared {
                 };
                 #[cfg(feature = "test-hooks")]
                 held(HoldAt::Open).await;
-                let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &id, &self.cfg.cwd, &self.cfg.gruntas_version, begin.parent.as_deref(), None, begin.attendance).await.map_err(log_failure)?;
+                let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &id, &self.cfg.cwd, &self.cfg.gruntas_version, None, None, begin.attendance, begin.started_by.as_deref()).await.map_err(log_failure)?;
                 // WT9: what kept worktrees left behind, cleared at most
                 // once a day, on a thread of its own the session never
                 // waits for.
@@ -2330,7 +2331,7 @@ impl Writer<'_> {
     async fn child_started(&mut self, session_id: &str, task_id: String, call_id: String, description: String, agent: Option<String>, model: &ModelRef) -> Result<(), EngineError> {
         let Some(k) = &self.kids else { return Ok(()) };
         let child = gruntas_store::new_id();
-        let (mut log, root) = match SessionLog::create_child_off(&k.sessions_dir, &child, &k.cwd, &k.gruntas_version, Some(session_id), agent.as_deref(), None).await {
+        let (mut log, root) = match SessionLog::create_child_off(&k.sessions_dir, &child, &k.cwd, &k.gruntas_version, Some(session_id), agent.as_deref(), None, None).await {
             Ok(made) => made,
             Err(e) => {
                 self.child_lost(session_id, &description, e, None).await;

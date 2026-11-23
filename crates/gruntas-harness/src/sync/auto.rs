@@ -1860,7 +1860,7 @@ mod tests {
             std::fs::write(sessions.join(id).join(crate::log::EVENTS_FILE), format!("{first}\n{{\"later\": true}}\n")).unwrap();
         };
         let started = |id: &str, of: &str, cwd: &str, parent: Option<&str>| {
-            let e = crate::protocol::LogEvent { id: id.into(), parent_id: None, session_id: of.into(), time_ms: 1, body: LogBody::SessionStarted { cwd: cwd.into(), gruntas_version: "t".into(), protocol_version: 1, parent_session_id: parent.map(String::from), agent: None, attendance: None } };
+            let e = crate::protocol::LogEvent { id: id.into(), parent_id: None, session_id: of.into(), time_ms: 1, body: LogBody::SessionStarted { cwd: cwd.into(), gruntas_version: "t".into(), protocol_version: 1, parent_session_id: parent.map(String::from), agent: None, attendance: None, started_by_session_id: None } };
             serde_json::to_string(&e).unwrap()
         };
         write(root, started(root, root, "/work/repo", None));
@@ -1891,7 +1891,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&sessions);
         let id = "01a0ec7b-0000-7000-8000-0000000000c1";
         std::fs::create_dir_all(sessions.join(id)).unwrap();
-        let e = crate::protocol::LogEvent { id: id.into(), parent_id: None, session_id: id.into(), time_ms: 1, body: LogBody::SessionStarted { cwd: sessions.display().to_string(), gruntas_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None, attendance: None } };
+        let e = crate::protocol::LogEvent { id: id.into(), parent_id: None, session_id: id.into(), time_ms: 1, body: LogBody::SessionStarted { cwd: sessions.display().to_string(), gruntas_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None, attendance: None, started_by_session_id: None } };
         std::fs::write(sessions.join(id).join(crate::log::EVENTS_FILE), format!("{}\n", serde_json::to_string(&e).unwrap())).unwrap();
         let on = Policy { on: true, off_by: None, exclude: Vec::new(), idle: None, accepting: true };
         let off = Policy { on: false, off_by: Some("GRUNTAS_SYNC_AUTO"), ..on.clone() };

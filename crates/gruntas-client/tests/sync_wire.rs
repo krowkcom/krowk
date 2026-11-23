@@ -147,7 +147,7 @@ fn r_client_1_uuid_gives_a_session_ids_bytes_and_zeros_for_anything_else() {
 fn r_sec_3_each_steering_command_carries_an_optional_origin() {
     use gruntas_client::protocol::{Attendance, LogBody, Origin, OriginKind};
     let origin = r#","origin":{"kind":"agent","sessionId":"01a0f731-f1c0-7000-92d7-64b247e51782","device":"laptop"}"#;
-    let want = Origin { kind: OriginKind::Agent, session_id: Some("01a0f731-f1c0-7000-92d7-64b247e51782".into()), device: Some("laptop".into()) };
+    let want = Origin { kind: OriginKind::Agent, session_id: Some("01a0f731-f1c0-7000-92d7-64b247e51782".into()), device: Some("laptop".into()), attendance: None };
     let model = r#"{"instance":"claude","model":"sonnet"}"#;
     let bodies = [
         format!(r#""type":"prompt","sessionId":"{SESSION}","text":"go","permissionMode":"default""#),
