@@ -285,6 +285,11 @@ const MOST_GIT_OUT: u64 = 64 << 10;
 /// stands.
 // blocking: the daemon runs it on the blocking pool.
 pub fn git(cwd: &Path) -> Option<Option<Git>> {
+    // A directory gone (a worktree removed under the session) is no
+    // repository any more.
+    if !cwd.is_dir() {
+        return Some(None);
+    }
     let deadline = std::time::Instant::now() + GIT_DEADLINE;
     let query = || {
         gruntas_api::git::query(cwd).ok().map(|mut c| {
@@ -299,17 +304,20 @@ pub fn git(cwd: &Path) -> Option<Option<Git>> {
     };
     let mut top = query()?;
     top.args(["rev-parse", "--show-toplevel"]);
-    let (out, ok) = bounded(top, deadline)?;
+    let (out, code) = bounded(top, deadline)?;
     let worktree = String::from_utf8_lossy(&out).trim_end_matches(['\n', '\r']).to_string();
-    if !ok || worktree.is_empty() {
-        return Some(None);
+    match code {
+        // git's own "not a git repository" (and a repository it refuses).
+        Some(128) => return Some(None),
+        Some(0) if !worktree.is_empty() => {}
+        _ => return None,
     }
     let mut status = query()?;
     status.args(["status", "--porcelain=v2", "--branch", "--ignore-submodules=all"]);
-    let (out, ok) = bounded(status, deadline)?;
+    let (out, code) = bounded(status, deadline)?;
     // Cut off at `MOST_GIT_OUT`, it fails for the pipe closed: what it said
     // is still so, and dirty.
-    if !ok && (out.len() as u64) < MOST_GIT_OUT {
+    if code != Some(0) && (out.len() as u64) < MOST_GIT_OUT {
         return None;
     }
     let (mut branch, mut head, mut dirty) = (None, None, false);
@@ -327,9 +335,10 @@ pub fn git(cwd: &Path) -> Option<Option<Git>> {
 }
 
 /// What `cmd` prints on stdout, at most `MOST_GIT_OUT` of it, before
-/// `deadline`, and whether it exited 0; it is killed after, whatever it is
-/// doing. None when it could not start or ran out of time.
-fn bounded(mut cmd: std::process::Command, deadline: std::time::Instant) -> Option<(Vec<u8>, bool)> {
+/// `deadline`, and its exit code: none when a signal ended it, this one's
+/// kill past the deadline included. None when it could not start or its
+/// output did not end in time.
+fn bounded(mut cmd: std::process::Command, deadline: std::time::Instant) -> Option<(Vec<u8>, Option<i32>)> {
     use std::io::Read;
     let mut child = cmd.stdout(Stdio::piped()).spawn().ok()?;
     let out = child.stdout.take()?;
@@ -342,18 +351,18 @@ fn bounded(mut cmd: std::process::Command, deadline: std::time::Instant) -> Opti
     let got = rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).ok();
     // Once its output is read it is given until the deadline to exit, and
     // its own status counts; past that, or with nothing read, it is killed.
-    let ok = loop {
+    let code = loop {
         match child.try_wait() {
-            Ok(Some(status)) => break status.success(),
+            Ok(Some(status)) => break status.code(),
             Ok(None) if got.is_some() && std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(2)),
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                break false;
+                break None;
             }
         }
     };
-    got.map(|out| (out, ok))
+    got.map(|out| (out, code))
 }
 
 #[cfg(test)]
@@ -509,6 +518,7 @@ mod tests {
         assert!(t.set_git("s", None));
         assert_eq!(t.get("s").unwrap().metadata.gruntas.branch, None);
         assert_eq!(git(Path::new("/")), Some(None));
+        assert_eq!(git(&root.join("gone")), Some(None), "a directory gone");
         let _ = std::fs::remove_dir_all(&root);
     }
 
