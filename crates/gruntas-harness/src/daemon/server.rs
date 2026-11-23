@@ -337,8 +337,16 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         eprintln!("the registrations cannot be written: {e}");
     }
     let mut tasks = Tasks::load(socket.parent().unwrap_or(Path::new("/")));
-    // The sessions whose harness went while no daemon ran.
-    let tasks_changed = tasks.vanished(|id| registry.get(id).is_some(), &super::tasks::now());
+    let now = super::tasks::now();
+    // A session registered before this daemon kept status (or whose status
+    // could not be read) has a Task from its registration; one whose
+    // harness went while no daemon ran is canceled.
+    let mut tasks_changed = false;
+    let untracked: Vec<Activity> = registry.sessions().filter(|r| tasks.get(&r.session_id).is_none()).map(|r| Activity::Register(r.clone())).collect();
+    for r in &untracked {
+        tasks_changed |= tasks.apply(r, &now);
+    }
+    tasks_changed |= tasks.vanished(|id| registry.get(id).is_some(), &now);
     // Each one still registered has its git context read at the first sweep.
     let git = registry.sessions().map(|r| (r.session_id.clone(), GitClock { due: true, ..GitClock::default() })).collect();
     let state: Shared = Rc::new(RefCell::new(State {
@@ -534,12 +542,20 @@ async fn sweep(state: Shared) {
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tick.tick().await;
+        // Once the daemon is on its way out its files are written for the
+        // last time, and a daemon started after may already be keeping them.
+        if state.borrow().stopping {
+            return;
+        }
         let reads = state.borrow_mut().sweep();
         for (id, cwd) in reads {
             let state = state.clone();
             tokio::task::spawn_local(async move {
                 let git = tokio::task::spawn_blocking(move || super::tasks::git(&cwd)).await.ok().flatten();
                 let mut s = state.borrow_mut();
+                if s.stopping {
+                    return;
+                }
                 if let Some(c) = s.git.get_mut(&id) {
                     c.running = false;
                 }

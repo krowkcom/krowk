@@ -29,14 +29,15 @@ use crate::protocol::{Activity, PluginHarness, Registration};
 use gruntas_client::status::{Field, Health, Provenance, Task, TaskMetadata, TaskState, TaskStatus, MAX_TASKS};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::Stdio;
+use std::time::Duration;
 
 pub const FILE: &str = "status.json";
 
 /// The most characters a branch name keeps, and a path: a Task's fields
-/// are capped as they come in, so a board fits its budget (D8).
+/// are capped as they come in, so a board fits its budget (D8). A session
+/// id longer than a name makes no Task.
 const MOST_NAME: usize = 256;
 const MOST_PATH: usize = 1024;
 
@@ -110,6 +111,7 @@ impl Tasks {
     /// daemon has none for changes nothing.
     pub fn apply(&mut self, a: &Activity, now: &str) -> bool {
         match a {
+            Activity::Register(r) if r.session_id.len() > MOST_NAME => false,
             Activity::Register(r) => {
                 self.make_room(&r.session_id);
                 let e = self.tasks.entry(r.session_id.clone()).or_insert_with(|| Entry { task: blank(&r.session_id, now), agent_state: None });
@@ -265,26 +267,43 @@ fn cap(s: &str, most: usize) -> String {
     s.chars().take(most).collect()
 }
 
+/// How long one git read may take before it is killed and nothing read:
+/// a huge tree or a stalled mount never holds a read, or the session's
+/// next one, past this.
+const GIT_DEADLINE: Duration = Duration::from_secs(3);
+
+/// The most of git's output read.
+const MOST_GIT_OUT: u64 = 64 << 10;
+
 /// `cwd`'s git context, as git reads it there (hooks and fsmonitor off, no
-/// optional locks): its worktree's top, branch, HEAD and whether anything
-/// is changed or untracked. None outside a repository. Reads `git status`
-/// only as far as its first changed path, however many there are.
+/// optional locks, submodules not looked into, and none of the daemon's
+/// own `GIT_*` variables, which are whichever session's started it): its
+/// worktree's top, branch, HEAD and whether anything is changed or
+/// untracked. None outside a repository, or past `GIT_DEADLINE`.
 // blocking: the daemon runs it on the blocking pool.
 pub fn git(cwd: &Path) -> Option<Git> {
-    let query = || gruntas_api::git::query(cwd).ok().map(|mut c| {
-        c.env_remove("GIT_DIR").env_remove("GIT_WORK_TREE").env_remove("GIT_INDEX_FILE").stderr(Stdio::null());
-        c
-    });
-    let top = query()?.args(["rev-parse", "--show-toplevel"]).output().ok().filter(|o| o.status.success())?;
-    let worktree = String::from_utf8_lossy(&top.stdout).trim_end_matches(['\n', '\r']).to_string();
+    let query = || {
+        gruntas_api::git::query(cwd).ok().map(|mut c| {
+            for (k, _) in std::env::vars_os() {
+                if k.to_string_lossy().starts_with("GIT_") {
+                    c.env_remove(k);
+                }
+            }
+            c.stderr(Stdio::null());
+            c
+        })
+    };
+    let mut top = query()?;
+    top.args(["rev-parse", "--show-toplevel"]);
+    let worktree = String::from_utf8_lossy(&bounded(top)?).trim_end_matches(['\n', '\r']).to_string();
     if worktree.is_empty() {
         return None;
     }
-    let mut child = query()?.args(["status", "--porcelain=v2", "--branch"]).stdout(Stdio::piped()).spawn().ok()?;
+    let mut status = query()?;
+    status.args(["status", "--porcelain=v2", "--branch", "--ignore-submodules=all"]);
+    let out = bounded(status)?;
     let (mut branch, mut head, mut dirty) = (None, None, false);
-    for line in BufReader::new(child.stdout.take()?).split(b'\n') {
-        let Ok(line) = line else { break };
-        let line = String::from_utf8_lossy(&line);
+    for line in String::from_utf8_lossy(&out).lines() {
         if let Some(oid) = line.strip_prefix("# branch.oid ") {
             head = Some(oid.to_string()).filter(|o| o != "(initial)");
         } else if let Some(name) = line.strip_prefix("# branch.head ") {
@@ -294,9 +313,26 @@ pub fn git(cwd: &Path) -> Option<Git> {
             break;
         }
     }
+    Some(Git { branch, head, worktree, dirty })
+}
+
+/// What `cmd` prints on stdout, at most `MOST_GIT_OUT` of it, within
+/// `GIT_DEADLINE`; it is killed after, whatever it is doing. None when it
+/// could not start or ran out of time.
+fn bounded(mut cmd: std::process::Command) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut child = cmd.stdout(Stdio::piped()).spawn().ok()?;
+    let out = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = out.take(MOST_GIT_OUT).read_to_end(&mut b);
+        let _ = tx.send(b);
+    });
+    let got = rx.recv_timeout(GIT_DEADLINE).ok();
     let _ = child.kill();
     let _ = child.wait();
-    Some(Git { branch, head, worktree, dirty })
+    got
 }
 
 #[cfg(test)]

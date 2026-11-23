@@ -380,15 +380,15 @@ fn sl04_a_vanished_harness_is_canceled_and_not_serving_and_git_context_is_the_da
     let head = git(&["rev-parse", "HEAD"]);
     std::fs::write(repo.join("b"), "untracked").unwrap();
 
-    // The harness: a process that is not a shell by name (a copy of sh), so
-    // the hook it runs names it, and that outlives the hook until killed.
-    let harness = s.0.join("fake-harness");
-    std::fs::copy("/bin/sh", &harness).unwrap();
+    // The harness: a process that is not a shell (perl, on every unix CI
+    // runs on), so the hook it runs names it, and that outlives the hook
+    // until killed. It times the hook as a harness would, to its exit.
     let id = "5b0e6a52-0000-4000-8000-000000000002";
     let payload = s.0.join("start.json");
     std::fs::write(&payload, hook_payload("SessionStart", id, &repo).to_string()).unwrap();
-    let script = format!("at=$(date +%s%N); '{}' hook claude SessionStart < '{}'; echo $(( ($(date +%s%N) - at) / 1000000 )) > '{}'; exec sleep 60", env!("CARGO_BIN_EXE_gruntas"), payload.display(), s.0.join("took").display());
-    let mut child = s.command(&harness).arg("-c").arg(script).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let took_file = s.0.join("took");
+    let script = r#"open(STDIN, "<", $ARGV[1]) or die; my $t = time; system($ARGV[0], "hook", "claude", "SessionStart"); open(my $f, ">", "$ARGV[2].tmp") or die; printf $f "%d", (time - $t) * 1000; close $f; rename("$ARGV[2].tmp", $ARGV[2]); sleep 60"#;
+    let mut child = s.command(std::path::Path::new("perl")).args(["-MTime::HiRes=time", "-e", script, env!("CARGO_BIN_EXE_gruntas")]).arg(&payload).arg(&took_file).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
 
     let t = s.task_once(id, "with its git context", |t| t.metadata.gruntas.head.is_some());
     let g = &t.metadata.gruntas;
@@ -398,7 +398,7 @@ fn sl04_a_vanished_harness_is_canceled_and_not_serving_and_git_context_is_the_da
     assert_eq!(g.dirty, Some(Field::harness(true)));
     assert_eq!(g.project, Some(Field::harness("github.com/acme/app".into())));
     assert_eq!(g.health, Some(Field::harness(Health::Serving)));
-    let took: u64 = std::fs::read_to_string(s.0.join("took")).unwrap().trim().parse().unwrap();
+    let took: u64 = std::fs::read_to_string(&took_file).unwrap().trim().parse().unwrap();
     assert!(took < HOOK_LIMIT.as_millis() as u64, "SessionStart took {took} ms");
 
     // A clean tree reads clean at the next read after activity.
