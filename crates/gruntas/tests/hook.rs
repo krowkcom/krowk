@@ -445,20 +445,26 @@ fn kt06_a_usage_event_lands_in_the_usage_record() {
             std::thread::sleep(Duration::from_millis(20));
         }
     };
+    // The fixture, its resets moved far out: a window whose reset has
+    // passed is not recorded, and the fixture's are fixed dates.
+    let mut payload: serde_json::Value = serde_json::from_slice(&fixture("claude", "usage")).unwrap();
+    payload["windows"][0]["resetsAtMs"] = 4_000_000_000_000u64.into();
+    payload["windows"][1]["resetsAtMs"] = 4_100_000_000_000u64.into();
+    let payload = payload.to_string();
     // Unknown: the fixture's home has no instance on it.
-    let (out, took) = s.hook("claude", "usage", &fixture("claude", "usage"));
+    let (out, took) = s.hook("claude", "usage", payload.as_bytes());
     assert!(out.status.success() && out.stdout.is_empty() && took < LIMIT, "{out:?} in {took:?}");
     let d = landed("/home/user/.claude");
     let five = &d.logins["/home/user/.claude"]["five_hour"];
-    assert_eq!((five.used_percent, five.resets_at_ms), (Some(37.5), Some(1_795_430_000_000)));
+    assert_eq!((five.used_percent, five.resets_at_ms), (Some(37.5), Some(4_000_000_000_000)));
     assert_eq!(d.logins["/home/user/.claude"]["seven_day"].used_percent, Some(12.0));
     // Known: an instance ran in that home signed in as a login.
     usage.record_account("claude", "ada@example.com", &[], Some("/home/user/.claude"), 1).unwrap();
-    let (out, _) = s.hook("claude", "usage", &fixture("claude", "usage"));
+    let (out, _) = s.hook("claude", "usage", payload.as_bytes());
     assert!(out.status.success() && out.stdout.is_empty(), "{out:?}");
     let d = landed("ada@example.com");
-    // As rollover reads it, before the fixture's resets.
-    assert_eq!(d.standing("ada@example.com", 1_795_400_000_000).map(|s| s.headroom), Some(62.5));
+    // As rollover reads it.
+    assert_eq!(d.standing("ada@example.com", gruntas_store::now_ms()).map(|s| s.headroom), Some(62.5));
 }
 
 /// KT07: `gruntas doctor` reports whether each known Claude config home's

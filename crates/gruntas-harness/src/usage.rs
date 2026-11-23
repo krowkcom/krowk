@@ -318,13 +318,17 @@ impl Usage {
                     continue;
                 }
                 let resets_at_ms = w.resets_at_ms.and_then(|r| i64::try_from(r).ok());
-                let mut used = w.used_percent.max(0.0);
-                if let Some(k) = was.filter(|k| resets_at_ms.is_some() && k.resets_at_ms == resets_at_ms) {
-                    used = used.max(k.used_percent.unwrap_or(0.0));
+                // A reading of a window already gone (one reset since, or
+                // older than the one kept) is an idle session's, not news.
+                if resets_at_ms.is_some_and(|r| r <= now_ms || was.and_then(|k| k.resets_at_ms).is_some_and(|k| r < k)) {
+                    continue;
                 }
+                let same = was.filter(|k| resets_at_ms.is_some() && k.resets_at_ms == resets_at_ms);
+                let used = same.and_then(|k| k.used_percent).map_or(w.used_percent.max(0.0), |k| k.max(w.used_percent));
                 let first_span_ms = was.and_then(|k| k.first_span_ms).or_else(|| resets_at_ms.map(|r| r - now_ms).filter(|n| *n > 0));
                 // As the host reads Claude Code's own report (`claude::stream`).
                 let status = match used {
+                    _ if same.is_some_and(|k| k.status == LimitState::Limited) => LimitState::Limited,
                     u if u >= 100.0 => LimitState::Limited,
                     u if u >= 80.0 => LimitState::Warning,
                     _ => LimitState::Allowed,
@@ -516,6 +520,15 @@ mod tests {
         assert_eq!(u.read().logins["a@x.com (Acme)"]["five_hour"].status, LimitState::Warning);
         u.record_windows("/h/.claude", &[five(5.0, 27_000_000)], 2_700).unwrap();
         assert_eq!(u.read().logins["a@x.com (Acme)"]["five_hour"].used_percent, Some(5.0));
+        // The window before it, re-sent by an idle session, or one whose
+        // reset has passed, changes nothing.
+        u.record_windows("/h/.claude", &[five(90.0, 9_000_000)], 2_800).unwrap();
+        u.record_windows("/h/.claude", &[five(90.0, 2_000)], 2_900).unwrap();
+        assert_eq!(u.read().logins["a@x.com (Acme)"]["five_hour"].seen_at_ms, 2_700);
+        // A limit gruntas saw itself holds through a lower reading of it.
+        u.record_limit("a@x.com (Acme)", &LimitStatus { status: LimitState::Limited, window: Some("five_hour".into()), used_percent: None, resets_at_ms: Some(27_000_000) }, 3_000).unwrap();
+        u.record_windows("/h/.claude", &[five(99.0, 27_000_000)], 3_100).unwrap();
+        assert_eq!(u.read().logins["a@x.com (Acme)"]["five_hour"].status, LimitState::Limited);
         let _ = std::fs::remove_dir_all(dir);
     }
 

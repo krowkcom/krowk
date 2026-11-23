@@ -1516,7 +1516,7 @@ impl Shared {
             handoff: None,
             kids,
             usage: crate::usage::Usage::in_home(self.cfg.sessions_dir.parent().unwrap_or(&self.cfg.sessions_dir)),
-            home: self.registry().get(&model.instance).ok().and_then(|i| i.backend.as_ref()).and_then(|b| b.home.as_ref()).map(|h| h.display().to_string()),
+            home: self.registry().get(&model.instance).ok().and_then(|i| i.backend.as_ref()).filter(|b| b.key.is_none()).and_then(|b| b.home.as_ref()).map(|h| h.display().to_string()),
             limits: Default::default(),
         };
         // What the login's usage read before the turn, for the early switch.
