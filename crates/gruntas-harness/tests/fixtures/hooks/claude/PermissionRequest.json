@@ -1,0 +1,15 @@
+{
+  "session_id": "2965e294-a0d4-4f50-9a48-0c9b4d0aca11",
+  "transcript_path": "/home/user/.claude/projects/-home-user-repo/2965e294-a0d4-4f50-9a48-0c9b4d0aca11.jsonl",
+  "cwd": "/home/user/repo",
+  "permission_mode": "default",
+  "hook_event_name": "PermissionRequest",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "rm -rf build",
+    "description": "Remove the build directory"
+  },
+  "permission_suggestions": [
+    { "type": "addRules", "rules": [{ "toolName": "Bash", "ruleContent": "rm -rf build" }], "behavior": "allow", "destination": "localSettings" }
+  ]
+}

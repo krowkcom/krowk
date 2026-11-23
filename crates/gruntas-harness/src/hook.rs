@@ -25,6 +25,11 @@
 //! `gruntas_report` (SL03, D2): a `block` the agent reads, never two in a
 //! row (`stop_hook_active`).
 //!
+//! `PermissionRequest` makes the session input-required, and any later
+//! event clears that (SL04, `daemon::tasks`); a tool call's start off the
+//! heavy list and `PermissionDenied` are told as plain activity. The hook
+//! never runs git for it: the daemon does, so hooks stay fast.
+//!
 //! Two other answers reach the harness (KT05). A `PreToolUse` whose bash call
 //! the paste guards refuse prints their deny (`guarded`), and only then.
 //! `WorktreeCreate` and `WorktreeRemove` place Claude Code's worktrees
@@ -105,6 +110,12 @@ pub enum HookEvent {
     /// The turn's end. `active`: the harness is already carrying on from
     /// a Stop hook's answer (`stop_hook_active`).
     Stop { session: Session, active: bool },
+    /// A permission prompt about to be shown: Claude Code's
+    /// `PermissionRequest`.
+    PermissionRequest { session: Session },
+    /// A permission refused without a prompt: Claude Code's
+    /// `PermissionDenied`.
+    PermissionDenied { session: Session },
     /// The account's usage windows, from the Claude plugin's mod.
     Usage { config_home: String, windows: Vec<UsageWindow> },
 }
@@ -180,6 +191,8 @@ pub fn normalise(_harness: PluginHarness, event: &str, payload: &Value) -> Resul
             HookEvent::ToolEnd { session: session()?, tool_call_id: t.tool_use_id, tool_name: t.tool_name, input: t.tool_input }
         }
         "Stop" => HookEvent::Stop { session: session()?, active: payload.get("stop_hook_active").and_then(Value::as_bool).unwrap_or(false) },
+        "PermissionRequest" => HookEvent::PermissionRequest { session: session()? },
+        "PermissionDenied" => HookEvent::PermissionDenied { session: session()? },
         "usage" => {
             let u = UsagePayload::deserialize(payload).map_err(|e| format!("a usage payload that is not one: {e}"))?;
             HookEvent::Usage { config_home: u.config_home, windows: u.windows }
@@ -189,11 +202,12 @@ pub fn normalise(_harness: PluginHarness, event: &str, payload: &Value) -> Resul
 }
 
 /// What the daemon is told of `event`, if anything. A tool call's start is
-/// told only when it runs a command on the heavy list (`ctx.heavy`); its end
-/// always, as the heavy command's end or as work the agent has not reported
-/// (SL03), save the report tool's own call, which is the report; the
-/// turn's end always, so a heavy command whose end never came counts no
-/// more (D5).
+/// told as a heavy command's when it runs one on the heavy list
+/// (`ctx.heavy`), else as plain activity (SL04); its end always, as the
+/// heavy command's end or as work the agent has not reported (SL03), save
+/// the report tool's own call, which is the report; the turn's end always,
+/// so a heavy command whose end never came counts no more (D5); a
+/// permission prompt as one, and a refused permission as plain activity.
 pub fn to_activity(harness: PluginHarness, event: &HookEvent, ctx: &Context) -> Option<Activity> {
     match event {
         HookEvent::SessionStart { session, .. } => Some(Activity::Register(Registration {
@@ -207,11 +221,16 @@ pub fn to_activity(harness: PluginHarness, event: &HookEvent, ctx: &Context) -> 
             attendance: ctx.attendance,
         })),
         HookEvent::SessionEnd { session } => Some(Activity::Deregister { session_id: session.id.clone() }),
-        HookEvent::ToolStart { session, tool_call_id, input, .. } => heavy(input, ctx).then(|| Activity::HeavyStart { session_id: session.id.clone(), tool_call_id: tool_call_id.clone() }),
+        HookEvent::ToolStart { session, tool_call_id, input, .. } => Some(match heavy(input, ctx) {
+            true => Activity::HeavyStart { session_id: session.id.clone(), tool_call_id: tool_call_id.clone() },
+            false => Activity::Active { session_id: session.id.clone() },
+        }),
         HookEvent::ToolEnd { session, tool_call_id, input, .. } if heavy(input, ctx) => Some(Activity::HeavyEnd { session_id: session.id.clone(), tool_call_id: tool_call_id.clone() }),
         HookEvent::ToolEnd { tool_name, .. } if reports(tool_name) => None,
         HookEvent::ToolEnd { session, .. } => Some(Activity::ToolEnd { session_id: session.id.clone() }),
         HookEvent::Stop { session, .. } => Some(Activity::TurnEnd { session_id: session.id.clone() }),
+        HookEvent::PermissionRequest { session } => Some(Activity::PermissionRequest { session_id: session.id.clone() }),
+        HookEvent::PermissionDenied { session } => Some(Activity::Active { session_id: session.id.clone() }),
         HookEvent::Usage { config_home, windows } => Some(Activity::Usage { config_home: config_home.clone(), windows: windows.clone() }),
     }
 }
@@ -437,7 +456,13 @@ pub fn run(args: &[String], stdin: impl Read, env: &dyn Fn(&str) -> String, vers
     };
     let Some(activity) = to_activity(h, &ev, &ctx) else { return (None, None) };
     let cwd = match &ev {
-        HookEvent::SessionStart { session, .. } | HookEvent::SessionEnd { session } | HookEvent::ToolStart { session, .. } | HookEvent::ToolEnd { session, .. } | HookEvent::Stop { session, .. } => session.cwd.clone(),
+        HookEvent::SessionStart { session, .. }
+        | HookEvent::SessionEnd { session }
+        | HookEvent::ToolStart { session, .. }
+        | HookEvent::ToolEnd { session, .. }
+        | HookEvent::Stop { session, .. }
+        | HookEvent::PermissionRequest { session }
+        | HookEvent::PermissionDenied { session } => session.cwd.clone(),
         HookEvent::Usage { .. } => None,
     };
     let cwd = cwd.or_else(|| std::env::current_dir().ok().map(|d| d.display().to_string())).unwrap_or_else(|| "/".into());
@@ -446,12 +471,12 @@ pub fn run(args: &[String], stdin: impl Read, env: &dyn Fn(&str) -> String, vers
         Err(e) => return (None, Some(format!("{event}: {e}"))),
     };
     // A session that ends with no daemon has nothing to deregister from,
-    // and a heavy command or turn's end nothing to clear; a heavy command's
-    // start is not held up for a daemon to start (its session's start
-    // started one). Only the rest start one.
+    // and a heavy command, turn's end or other activity nothing to clear; a
+    // tool call or permission prompt is not held up for a daemon to start
+    // (its session's start started one). Only the rest start one.
     let stream = match &activity {
         Activity::Register(_) | Activity::Usage { .. } => connect_or_start(env, &socket),
-        Activity::Deregister { .. } | Activity::HeavyStart { .. } | Activity::HeavyEnd { .. } | Activity::TurnEnd { .. } | Activity::ToolEnd { .. } | Activity::Report { .. } => std::os::unix::net::UnixStream::connect(&socket).map_err(|e| format!("no daemon on {}: {e}", socket.display())),
+        Activity::Deregister { .. } | Activity::HeavyStart { .. } | Activity::HeavyEnd { .. } | Activity::TurnEnd { .. } | Activity::ToolEnd { .. } | Activity::Report { .. } | Activity::PermissionRequest { .. } | Activity::Active { .. } => std::os::unix::net::UnixStream::connect(&socket).map_err(|e| format!("no daemon on {}: {e}", socket.display())),
     };
     let active = matches!(ev, HookEvent::Stop { active: true, .. });
     match stream.and_then(|s| talk(s, &cwd, version, activity)) {

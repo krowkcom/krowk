@@ -1,0 +1,14 @@
+{
+  "session_id": "2965e294-a0d4-4f50-9a48-0c9b4d0aca11",
+  "transcript_path": "/home/user/.claude/projects/-home-user-repo/2965e294-a0d4-4f50-9a48-0c9b4d0aca11.jsonl",
+  "cwd": "/home/user/repo",
+  "permission_mode": "auto",
+  "hook_event_name": "PermissionDenied",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "rm -rf build",
+    "description": "Remove the build directory"
+  },
+  "tool_use_id": "toolu_01HTh5vFPUMgCcLz8rj6s46g",
+  "reason": "Auto mode denied the command"
+}

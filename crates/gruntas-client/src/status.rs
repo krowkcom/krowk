@@ -96,6 +96,15 @@ pub enum Health {
     Unknown,
 }
 
+impl Health {
+    /// A machine's health (D4) from its presence as the registry lists it
+    /// (`online`, by the registry's clock against the record's 30-second
+    /// lifetime): `SERVING` while live, `UNKNOWN` once it lapses.
+    pub fn of_machine(online: bool) -> Health {
+        if online { Health::Serving } else { Health::Unknown }
+    }
+}
+
 /// Who said a field (D1): the agent reported it, or the harness observed it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]

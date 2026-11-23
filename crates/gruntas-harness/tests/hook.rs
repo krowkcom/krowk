@@ -76,9 +76,9 @@ fn kt01_session_start_registers_and_session_end_deregisters() {
         Some(Activity::Register(Registration { session_id: CLAUDE.into(), harness: c, harness_pid: Some(7), config_home: Some("/home/user/.claude".into()), cwd: Some("/home/user/repo".into()), repository: Some("git@github.com:o/r.git".into()), transcript_path: claude_session().transcript_path, attendance: Some(Attendance::Attended) }))
     );
     assert_eq!(hook::to_activity(PluginHarness::Codex, &normalised(PluginHarness::Codex, "SessionEnd"), &ctx), Some(Activity::Deregister { session_id: CODEX.into() }));
-    // A tool call off the heavy list (`echo hi`) tells the daemon nothing
-    // as it starts; its end is work the agent has not reported (SL03).
-    assert_eq!(hook::to_activity(c, &normalised(c, "PreToolUse"), &ctx), None);
+    // A tool call off the heavy list (`echo hi`) is plain activity as it
+    // starts (SL04); its end is work the agent has not reported (SL03).
+    assert_eq!(hook::to_activity(c, &normalised(c, "PreToolUse"), &ctx), Some(Activity::Active { session_id: CLAUDE.into() }));
     assert_eq!(hook::to_activity(c, &normalised(c, "PostToolUse"), &ctx), Some(Activity::ToolEnd { session_id: CLAUDE.into() }));
 }
 
@@ -99,6 +99,17 @@ fn sl03_the_report_tools_own_call_is_not_unreported_work() {
     assert_eq!(hook::normalise(c, "Stop", &active).unwrap(), Some(HookEvent::Stop { session: claude_session(), active: true }));
 }
 
+/// SL04: a permission prompt is told as one, a refused permission as plain
+/// activity.
+#[test]
+fn sl04_a_permission_request_and_a_denial_are_told() {
+    let c = PluginHarness::Claude;
+    let ctx = Context::default();
+    assert_eq!(normalised(c, "PermissionRequest"), HookEvent::PermissionRequest { session: claude_session() });
+    assert_eq!(hook::to_activity(c, &normalised(c, "PermissionRequest"), &ctx), Some(Activity::PermissionRequest { session_id: CLAUDE.into() }));
+    assert_eq!(hook::to_activity(c, &normalised(c, "PermissionDenied"), &ctx), Some(Activity::Active { session_id: CLAUDE.into() }));
+}
+
 /// KT03: a heavy command's start and end, and the turn's end, as the
 /// daemon is told them; the list is config.json's when it sets one.
 #[test]
@@ -111,10 +122,11 @@ fn kt03_heavy_tool_calls_and_the_turns_end_are_told() {
     assert_eq!(hook::to_activity(x, &normalised(x, "Stop"), &ctx), Some(Activity::TurnEnd { session_id: CODEX.into() }));
     // `cargo test` is not on a list that names only `make`.
     let make_only = Context { heavy: vec!["make".into()], ..Context::default() };
-    assert_eq!(hook::to_activity(x, &normalised(x, "PreToolUse"), &make_only), None);
+    let active = Some(Activity::Active { session_id: CODEX.into() });
+    assert_eq!(hook::to_activity(x, &normalised(x, "PreToolUse"), &make_only), active);
     // A tool without a command is never heavy.
     let read = HookEvent::ToolStart { session: codex_session(true), tool_call_id: "t".into(), tool_name: "Read".into(), input: serde_json::json!({"file_path": "cargo test"}) };
-    assert_eq!(hook::to_activity(x, &read, &ctx), None);
+    assert_eq!(hook::to_activity(x, &read, &ctx), active);
 
     let root = scratch::root("hook-heavy-list");
     let home = root.join("home");

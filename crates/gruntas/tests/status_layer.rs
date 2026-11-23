@@ -6,7 +6,7 @@
 
 #![cfg(all(feature = "harness", unix))]
 
-use gruntas_client::status::{Board, Field, Health, Message, Task, TaskMetadata, TaskState, TaskStatus};
+use gruntas_client::status::{Board, Field, Health, Message, Provenance, Task, TaskMetadata, TaskState, TaskStatus};
 
 /// A Task as a daemon would publish it, for the views' fixtures.
 fn task(id: &str, state: TaskState, project: &str, parent: Option<&str>, summary: &str, last_activity: &str) -> Task {
@@ -244,23 +244,189 @@ fn sl03_stop_reminds_only_after_unreported_work() {
 
 // ---- SL04: observe states and git context from the harness ----
 
+/// The most a hook may take, as the harness sees it.
+const HOOK_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A test's own home and runtime directory, under /tmp so the daemon's
+/// socket path fits `sun_path`; the daemon a hook started is stopped as it
+/// goes.
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Scratch {
+        let root = std::path::PathBuf::from("/tmp").join(format!("gruntas-sl-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for d in ["home", "run"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        Scratch(root)
+    }
+
+    fn env(&self) -> impl Fn(&str) -> String + '_ {
+        move |k| match k {
+            "HOME" => self.0.join("home").display().to_string(),
+            "XDG_RUNTIME_DIR" => self.0.join("run").display().to_string(),
+            _ => String::new(),
+        }
+    }
+
+    fn command(&self, program: &std::path::Path) -> std::process::Command {
+        let mut c = std::process::Command::new(program);
+        c.env_clear().env("HOME", self.0.join("home")).env("XDG_RUNTIME_DIR", self.0.join("run")).env("PATH", std::env::var("PATH").unwrap_or_default());
+        c
+    }
+
+    /// Runs `gruntas hook claude <event>` with `payload` on stdin, as the
+    /// harness does: exit 0, nothing on stdout, inside the limit.
+    fn hook(&self, event: &str, payload: &serde_json::Value) {
+        use std::io::Write;
+        use std::process::Stdio;
+        let at = std::time::Instant::now();
+        let mut child = self.command(std::path::Path::new(env!("CARGO_BIN_EXE_gruntas"))).args(["hook", "claude", event]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+        let out = child.wait_with_output().unwrap();
+        let took = at.elapsed();
+        assert!(out.status.success() && out.stdout.is_empty() && took < HOOK_LIMIT, "{event}: {out:?} in {took:?}");
+    }
+
+    /// The session's Task once `want` holds of it, as the daemon writes it.
+    fn task_once(&self, id: &str, what: &str, want: impl Fn(&Task) -> bool) -> Task {
+        let dir = gruntas_harness::daemon::dir(&self.env()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let t = gruntas_harness::daemon::tasks::Tasks::load(&dir).get(id).cloned();
+            if let Some(t) = t.as_ref().filter(|t| want(t)) {
+                return t.clone();
+            }
+            assert!(std::time::Instant::now() < deadline, "never {what}: {t:#?}\n{}", std::fs::read_to_string(dir.join("hook.log")).unwrap_or_default());
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        use std::process::Stdio;
+        if gruntas_harness::daemon::socket(&self.env()).is_ok_and(|s| s.exists()) {
+            let _ = self.command(std::path::Path::new(env!("CARGO_BIN_EXE_gruntas"))).args(["host", "stop", "--force"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
+        }
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn hook_payload(event: &str, session: &str, cwd: &std::path::Path) -> serde_json::Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../gruntas-harness/tests/fixtures/hooks/claude").join(format!("{event}.json"));
+    let mut p: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    p["session_id"] = session.into();
+    p["cwd"] = cwd.display().to_string().into();
+    p
+}
+
+fn state_of(t: &Task) -> (TaskState, Option<Provenance>) {
+    (t.status.state, t.metadata.gruntas.state_source)
+}
+
 /// SL04: `PermissionRequest` makes the session input-required (harness
 /// provenance); `PostToolUse`, `PermissionDenied` or the next activity
 /// clears it to the agent's last state; `SessionEnd` with no terminal
-/// report makes it completed.
+/// report makes it completed. Before any report the agent's last state is
+/// working as the harness sees it; after one, what it reported.
 #[test]
-#[ignore = "SL04: observe states and git context from the harness"]
 fn sl04_hook_events_set_and_clear_observed_states() {
-    todo!("SL04: register via SessionStart, report working, pipe PermissionRequest (expect TASK_STATE_INPUT_REQUIRED, stateSource harness), PostToolUse (back to working, agent), SessionEnd (TASK_STATE_COMPLETED, harness)")
+    let s = Scratch::new("sl04-states");
+    let id = "5b0e6a52-0000-4000-8000-000000000001";
+    let cwd = s.0.clone();
+    s.hook("SessionStart", &hook_payload("SessionStart", id, &cwd));
+    let t = s.task_once(id, "registered", |t| t.metadata.gruntas.health.is_some());
+    assert_eq!(state_of(&t), (TaskState::Working, Some(Provenance::Harness)));
+    assert_eq!(t.metadata.gruntas.health, Some(Field::harness(Health::Serving)));
+    assert_eq!(t.metadata.gruntas.harness, Some(Field::harness("claude".into())));
+    // Cleared with nothing reported: working, as the harness sees it.
+    s.hook("PermissionRequest", &hook_payload("PermissionRequest", id, &cwd));
+    s.task_once(id, "input-required", |t| t.status.state == TaskState::InputRequired);
+    s.hook("PostToolUse", &hook_payload("PostToolUse", id, &cwd));
+    let t = s.task_once(id, "cleared", |t| t.status.state != TaskState::InputRequired);
+    assert_eq!(state_of(&t), (TaskState::Working, Some(Provenance::Harness)));
+    // The agent reports working, as gruntas_report sends it (SL03).
+    let socket = gruntas_harness::daemon::socket(&s.env()).unwrap();
+    let report = gruntas_harness::protocol::Activity::Report { session_id: id.into(), summary: "on it".into(), report: gruntas_client::status::Report { state: Some(TaskState::Working), ..Default::default() } };
+    gruntas_harness::hook::send(&socket, &cwd.display().to_string(), "test", report).unwrap();
+    s.task_once(id, "reported", |t| t.metadata.gruntas.state_source == Some(Provenance::Agent));
+    for clearing in ["PostToolUse", "PermissionDenied", "PreToolUse"] {
+        s.hook("PermissionRequest", &hook_payload("PermissionRequest", id, &cwd));
+        let t = s.task_once(id, "input-required", |t| t.status.state == TaskState::InputRequired);
+        assert_eq!(state_of(&t), (TaskState::InputRequired, Some(Provenance::Harness)));
+        assert!(t.metadata.gruntas.last_activity.as_ref().is_some_and(|a| a.source == Provenance::Harness));
+        s.hook(clearing, &hook_payload(clearing, id, &cwd));
+        let t = s.task_once(id, &format!("cleared by {clearing}"), |t| t.status.state != TaskState::InputRequired);
+        assert_eq!(state_of(&t), (TaskState::Working, Some(Provenance::Agent)), "back to the agent's last state after {clearing}");
+    }
+    s.hook("SessionEnd", &hook_payload("SessionEnd", id, &cwd));
+    let t = s.task_once(id, "completed", |t| t.status.state == TaskState::Completed);
+    assert_eq!(state_of(&t), (TaskState::Completed, Some(Provenance::Harness)));
+    assert_eq!(t.metadata.gruntas.health, Some(Field::harness(Health::NotServing)));
 }
 
 /// SL04: a harness process gone without `SessionEnd` makes its session
 /// canceled and NOT_SERVING; branch, HEAD, worktree and dirty come from the
 /// daemon's own git run, and the hooks stay within their 2 s limit.
 #[test]
-#[ignore = "SL04: observe states and git context from the harness"]
 fn sl04_a_vanished_harness_is_canceled_and_not_serving_and_git_context_is_the_daemons() {
-    todo!("SL04: register a session whose harness_pid is a child the test kills; expect TASK_STATE_CANCELED with health NOT_SERVING; in a git repo expect branch/head/worktree/dirty with harness provenance")
+    use std::process::{Command, Stdio};
+    let s = Scratch::new("sl04-vanished");
+    let repo = s.0.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let o = Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgSign=false"]).args(args).current_dir(&repo).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    };
+    git(&["init", "-q", "-b", "sl04-branch"]);
+    git(&["remote", "add", "origin", "git@github.com:acme/app.git"]);
+    std::fs::write(repo.join("a"), "a").unwrap();
+    git(&["add", "a"]);
+    git(&["commit", "-q", "-m", "a"]);
+    let head = git(&["rev-parse", "HEAD"]);
+    std::fs::write(repo.join("b"), "untracked").unwrap();
+
+    // The harness: a process that is not a shell (perl, on every unix CI
+    // runs on), so the hook it runs names it, and that outlives the hook
+    // until killed. It times the hook as a harness would, to its exit.
+    let id = "5b0e6a52-0000-4000-8000-000000000002";
+    let payload = s.0.join("start.json");
+    std::fs::write(&payload, hook_payload("SessionStart", id, &repo).to_string()).unwrap();
+    let took_file = s.0.join("took");
+    let script = r#"open(STDIN, "<", $ARGV[1]) or die; my $t = time; system($ARGV[0], "hook", "claude", "SessionStart"); open(my $f, ">", "$ARGV[2].tmp") or die; printf $f "%d", (time - $t) * 1000; close $f; rename("$ARGV[2].tmp", $ARGV[2]); sleep 60"#;
+    let mut child = s.command(std::path::Path::new("perl")).args(["-MTime::HiRes=time", "-e", script, env!("CARGO_BIN_EXE_gruntas")]).arg(&payload).arg(&took_file).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+
+    let t = s.task_once(id, "with its git context", |t| t.metadata.gruntas.head.is_some());
+    let g = &t.metadata.gruntas;
+    assert_eq!(g.branch, Some(Field::harness("sl04-branch".into())));
+    assert_eq!(g.head, Some(Field::harness(head)));
+    assert_eq!(g.worktree, Some(Field::harness(repo.canonicalize().unwrap().display().to_string())));
+    assert_eq!(g.dirty, Some(Field::harness(true)));
+    assert_eq!(g.project, Some(Field::harness("github.com/acme/app".into())));
+    assert_eq!(g.health, Some(Field::harness(Health::Serving)));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let took: u64 = loop {
+        match std::fs::read_to_string(&took_file) {
+            Ok(t) => break t.trim().parse().unwrap(),
+            Err(_) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(e) => panic!("the harness never timed its hook: {e}"),
+        }
+    };
+    assert!(took < HOOK_LIMIT.as_millis() as u64, "SessionStart took {took} ms");
+
+    // A clean tree reads clean at the next read after activity.
+    std::fs::remove_file(repo.join("b")).unwrap();
+    s.hook("PostToolUse", &hook_payload("PostToolUse", id, &repo));
+    s.task_once(id, "clean", |t| t.metadata.gruntas.dirty == Some(Field::harness(false)));
+
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let t = s.task_once(id, "canceled", |t| t.status.state == TaskState::Canceled);
+    assert_eq!(state_of(&t), (TaskState::Canceled, Some(Provenance::Harness)));
+    assert_eq!(t.metadata.gruntas.health, Some(Field::harness(Health::NotServing)));
 }
 
 // ---- SL05: publish and read sealed status boards ----

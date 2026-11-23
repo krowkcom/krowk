@@ -37,6 +37,7 @@ use crate::host::{Host, HostConfig};
 use crate::log;
 use super::outbox::{self, Caps, Out, Outbox, Pushed};
 use super::registry::Registry;
+use super::tasks::Tasks;
 use super::replay::{self, Tail};
 use crate::protocol::{Activity, ClientFrame, Command, ErrorInfo, HostSession, HostStatus, LogBody, ServerFrame, StreamLine, PROTOCOL_VERSION};
 use std::cell::RefCell;
@@ -193,6 +194,30 @@ pub(super) struct State {
     /// one's never puts the older registry back.
     registry_seq: u64,
     registry_written: std::sync::Arc<std::sync::Mutex<u64>>,
+    /// Those sessions' status (`tasks`), kept beside the registry: written
+    /// by the sweep (`sweep`) when it changed, at most once a `SWEEP`.
+    pub(super) tasks: Tasks,
+    tasks_changed: bool,
+    tasks_seq: u64,
+    tasks_written: std::sync::Arc<std::sync::Mutex<u64>>,
+    /// When each registered session's git context is to be read again.
+    git: HashMap<String, GitClock>,
+}
+
+/// How often the daemon looks for harnesses gone, git context due and
+/// status to write.
+const SWEEP: Duration = Duration::from_secs(1);
+
+/// A session's git context is read at most this often (D3).
+const GIT_EVERY: Duration = Duration::from_secs(5);
+
+/// When a session's git context was last read, and whether activity since
+/// asks for it again.
+#[derive(Default)]
+struct GitClock {
+    last: Option<Instant>,
+    due: bool,
+    running: bool,
 }
 
 /// How long a prompt's `clientRef` is kept.
@@ -311,6 +336,19 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
     {
         eprintln!("the registrations cannot be written: {e}");
     }
+    let mut tasks = Tasks::load(socket.parent().unwrap_or(Path::new("/")));
+    let now = super::tasks::now();
+    // A session registered before this daemon kept status (or whose status
+    // could not be read) has a Task from its registration; one whose
+    // harness went while no daemon ran is canceled.
+    let mut tasks_changed = false;
+    let untracked: Vec<Activity> = registry.sessions().filter(|r| tasks.get(&r.session_id).is_none()).map(|r| Activity::Register(r.clone())).collect();
+    for r in &untracked {
+        tasks_changed |= tasks.apply(r, &now);
+    }
+    tasks_changed |= tasks.vanished(|id| registry.get(id).is_some(), &now);
+    // Each one still registered has its git context read at the first sweep.
+    let git = registry.sessions().map(|r| (r.session_id.clone(), GitClock { due: true, ..GitClock::default() })).collect();
     let state: Shared = Rc::new(RefCell::new(State {
         factory: std::sync::Arc::from(factory),
         websocket: websocket.as_ref().map(|(l, t)| (l.local_addr().expect("a bound listener has an address"), t.clone())),
@@ -333,6 +371,11 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         registry,
         registry_seq: 0,
         registry_written: std::sync::Arc::default(),
+        tasks,
+        tasks_changed,
+        tasks_seq: 0,
+        tasks_written: std::sync::Arc::default(),
+        git,
         working: 0,
         started: Instant::now(),
         opts,
@@ -369,6 +412,7 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
             }
         });
     }
+    tokio::task::spawn_local(sweep(state.clone()));
     if let Some((listener, _)) = websocket {
         eprintln!("gruntas host WebSocket listening on ws://{}", listener.local_addr().map_err(|e| e.to_string())?);
         tokio::task::spawn_local(super::ws::accept(listener, state.clone()));
@@ -446,6 +490,14 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
                 Err(e) => eprintln!("the registrations cannot be written: {e}"),
             }
         }
+        // And the status, likewise.
+        let mut last = s.tasks_written.lock().unwrap_or_else(|e| e.into_inner());
+        if s.tasks_changed || s.tasks_seq > *last {
+            if let Err(e) = s.tasks.save(socket.parent().unwrap_or(Path::new("/"))) {
+                eprintln!("the status cannot be written: {e}");
+            }
+            *last = s.tasks_seq;
+        }
     }
     // Only the socket this daemon bound: one a newer daemon put in its
     // place is that one's.
@@ -479,6 +531,59 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         _ = int.recv() => eprintln!("interrupted again: exiting now"),
     }
     Ok(())
+}
+
+/// Every `SWEEP`: the sessions whose harness is gone canceled
+/// (`Tasks::vanished`), git context read where activity asked for it and
+/// `GIT_EVERY` has passed (on the blocking pool, one read a session at a
+/// time), and the status written when it changed.
+async fn sweep(state: Shared) {
+    let mut tick = tokio::time::interval(SWEEP);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        // Once the daemon is on its way out its files are written for the
+        // last time, and a daemon started after may already be keeping them.
+        if state.borrow().stopping {
+            return;
+        }
+        let reads = state.borrow_mut().sweep();
+        for (id, cwd) in reads {
+            let state = state.clone();
+            tokio::task::spawn_local(async move {
+                let git = tokio::task::spawn_blocking(move || super::tasks::git(&cwd)).await;
+                let mut s = state.borrow_mut();
+                if s.stopping {
+                    return;
+                }
+                if let Some(c) = s.git.get_mut(&id) {
+                    c.running = false;
+                }
+                // A read git could not finish leaves the last one standing.
+                if let Ok(Some(git)) = git
+                    && s.tasks.set_git(&id, git)
+                {
+                    s.tasks_changed = true;
+                }
+            });
+        }
+    }
+}
+
+/// The session an activity is of, if it is of one.
+fn activity_session(a: &Activity) -> Option<&str> {
+    match a {
+        Activity::Register(r) => Some(&r.session_id),
+        Activity::Deregister { session_id }
+        | Activity::HeavyStart { session_id, .. }
+        | Activity::HeavyEnd { session_id, .. }
+        | Activity::TurnEnd { session_id }
+        | Activity::ToolEnd { session_id }
+        | Activity::Report { session_id, .. }
+        | Activity::PermissionRequest { session_id }
+        | Activity::Active { session_id } => Some(session_id),
+        Activity::Usage { .. } => None,
+    }
 }
 
 fn stopping_error() -> EngineError {
@@ -1155,9 +1260,9 @@ impl State {
 
     /// Takes one session's activity: its heavy commands counted
     /// (`builds::RUNNING`), its account's usage windows written to the usage
-    /// record (R-KIT-7), and the registry, with the entries whose
-    /// harness has gone pruned, written off the thread when it changed
-    /// (R-LAG-9).
+    /// record (R-KIT-7), the registry, with the entries whose harness has
+    /// gone pruned, written off the thread when it changed (R-LAG-9), and
+    /// the session's status (`tasks`), its git context due again.
     fn activity(&mut self, a: &Activity) {
         {
             let mut running = crate::builds::RUNNING.lock().unwrap_or_else(|e| e.into_inner());
@@ -1165,7 +1270,7 @@ impl State {
                 Activity::HeavyStart { session_id, tool_call_id } => running.start(session_id, tool_call_id, std::time::Instant::now()),
                 Activity::HeavyEnd { session_id, tool_call_id } => running.end(session_id, tool_call_id),
                 Activity::TurnEnd { session_id } | Activity::Deregister { session_id } => running.end_session(session_id),
-                Activity::Register(_) | Activity::Usage { .. } | Activity::ToolEnd { .. } | Activity::Report { .. } => {}
+                Activity::Register(_) | Activity::Usage { .. } | Activity::ToolEnd { .. } | Activity::Report { .. } | Activity::PermissionRequest { .. } | Activity::Active { .. } => {}
             }
         }
         if let (Activity::Usage { config_home, windows }, Some(usage)) = (a, &self.opts.usage) {
@@ -1181,9 +1286,66 @@ impl State {
             }
         }
         let changed = self.registry.apply(a) | self.registry.prune(super::registry::alive);
-        if !changed {
-            return;
+        let now = super::tasks::now();
+        if self.tasks.apply(a, &now) {
+            self.tasks_changed = true;
         }
+        if let Some(id) = activity_session(a) {
+            match self.registry.get(id) {
+                Some(_) => self.git.entry(id.to_string()).or_default().due = true,
+                None => drop(self.git.remove(id)),
+            }
+        }
+        if changed {
+            self.registry_changed();
+        }
+    }
+
+    /// The sweep's work on the daemon's thread: harnesses gone, the git
+    /// reads due (session and directory) and marked under way, and the
+    /// status written off the thread when it changed.
+    fn sweep(&mut self) -> Vec<(String, PathBuf)> {
+        let now = super::tasks::now();
+        if self.registry.prune(super::registry::alive) {
+            self.registry_changed();
+        }
+        let registry = &self.registry;
+        if self.tasks.vanished(|id| registry.get(id).is_some(), &now) {
+            self.tasks_changed = true;
+        }
+        self.git.retain(|id, _| registry.get(id).is_some());
+        let mut reads = Vec::new();
+        for (id, c) in &mut self.git {
+            if !c.due || c.running || c.last.is_some_and(|at| at.elapsed() < GIT_EVERY) {
+                continue;
+            }
+            c.due = false;
+            if let Some(cwd) = registry.get(id).and_then(|r| r.cwd.as_deref()).filter(|d| Path::new(d).is_absolute()) {
+                c.running = true;
+                c.last = Some(Instant::now());
+                reads.push((id.clone(), PathBuf::from(cwd)));
+            }
+        }
+        if std::mem::take(&mut self.tasks_changed) {
+            self.tasks_seq += 1;
+            let (seq, tasks, written) = (self.tasks_seq, self.tasks.clone(), self.tasks_written.clone());
+            let dir = self.opts.socket.parent().unwrap_or(Path::new("/")).to_path_buf();
+            tokio::task::spawn_blocking(move || {
+                let mut last = written.lock().unwrap_or_else(|e| e.into_inner());
+                if seq <= *last {
+                    return;
+                }
+                match tasks.save(&dir) {
+                    Ok(()) => *last = seq,
+                    Err(e) => eprintln!("{} cannot be written: {e}", dir.join(super::tasks::FILE).display()),
+                }
+            });
+        }
+        reads
+    }
+
+    /// The registry changed: written off the thread, in order.
+    fn registry_changed(&mut self) {
         self.registry_seq += 1;
         let (seq, bytes, written) = (self.registry_seq, self.registry.to_json(), self.registry_written.clone());
         let dir = self.opts.socket.parent().unwrap_or(Path::new("/")).to_path_buf();

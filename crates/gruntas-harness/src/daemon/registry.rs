@@ -132,7 +132,7 @@ impl Registry {
             Activity::ToolEnd { session_id } | Activity::HeavyEnd { session_id, .. } => self.sessions.contains_key(session_id) && self.unreported.insert(session_id.clone()),
             Activity::TurnEnd { session_id } => self.unreported.remove(session_id),
             Activity::Report { session_id, summary, report } => self.report(session_id, summary, report, jiff::Timestamp::now()),
-            Activity::HeavyStart { .. } | Activity::Usage { .. } => false,
+            Activity::HeavyStart { .. } | Activity::PermissionRequest { .. } | Activity::Active { .. } | Activity::Usage { .. } => false,
         }
     }
 
@@ -274,13 +274,19 @@ fn cap(s: &str, most: usize) -> String {
 /// Writes `bytes` as `dir`'s registry: to a temporary file, then renamed
 /// over, so a reader never sees half of one.
 pub fn save_json(dir: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    write_private(dir, FILE, bytes)
+}
+
+/// Writes `bytes` as `dir`'s `file`, `0600`, as `save_json` writes the
+/// registry. One writer at a time: the temporary file is per process.
+pub fn write_private(dir: &Path, file: &str, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let tmp = dir.join(format!("{FILE}.{}.tmp", std::process::id()));
+    let tmp = dir.join(format!("{file}.{}.tmp", std::process::id()));
     let mut f = std::fs::OpenOptions::new().create(true).truncate(true).write(true).mode(0o600).open(&tmp)?;
     f.write_all(bytes)?;
     drop(f);
-    std::fs::rename(&tmp, dir.join(FILE))
+    std::fs::rename(&tmp, dir.join(file))
 }
 
 /// Whether process `pid` is still there: one that exists but is another

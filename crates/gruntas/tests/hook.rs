@@ -571,7 +571,7 @@ fn kt07_doctor_reports_the_sandbox_block() {
 fn kt07_the_plugins_hooks_run_gruntas_hook_for_their_own_event() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     for (file, harness, events) in [
-        ("hooks/hooks.json", "claude", &["SessionStart", "SessionEnd", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "WorktreeCreate", "WorktreeRemove"][..]),
+        ("hooks/hooks.json", "claude", &["SessionStart", "SessionEnd", "PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "PermissionDenied", "Stop", "WorktreeCreate", "WorktreeRemove"][..]),
         ("hooks/codex.json", "codex", &["SessionStart", "SessionEnd", "PreToolUse", "PostToolUse", "Stop"][..]),
     ] {
         let hooks: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join(file)).unwrap()).unwrap();
