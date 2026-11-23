@@ -7,7 +7,100 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 the versions are the `v*` tags a release is cut from. Entries land under
 `[Unreleased]` as the work merges, and move under a version when it is tagged.
 
+Versions are calendar versions, `YYYY.M.N`: the release's year, its month,
+and `N` counting that month's releases from 0 (`2026.11.0`, `2026.11.1`,
+`2026.12.0`); a prerelease adds `-rcK`. Releases up to `0.18.0` used semver.
+The number promises nothing about compatibility. A breaking change — removing
+or changing the meaning of a command, flag, environment variable, config key,
+or MCP tool or its arguments — is announced here at least one release ahead,
+with the date it takes effect, and the release that makes it lists it under
+**Breaking change**. Each release is supported for one year, after which
+breaking changes may affect it without notice.
+
 ## [Unreleased]
+
+### Added
+
+- **Sessions record whether anyone is at them, and steering commands say
+  where they came from.** A new session's start record notes whether a
+  person is attending it: `gruntas -p` without a terminal on its input, a
+  session another device starts on a host (`gruntas sync new --host`) and a
+  delegated task are unattended; everything else is attended. Commands that
+  act on an existing session (a prompt, steer, interrupt, approval, model
+  switch, take) can carry an origin (person or agent, the sending session,
+  the device), and a command that starts a session on a host can name the
+  session that sent it. All of it is optional on the wire, so older gruntas
+  still read the new frames; the `steer` setting below is enforced on it.
+
+- **A steered session sees who steered it.** A steer that carries an origin
+  now reaches the session's engine (Claude Code, Codex) framed as `steer
+  from <session> on <machine>, by an agent` or `steer from a person on
+  <machine>`, so the model weighs it as input from elsewhere and not as the
+  person's own words. Text in the steer cannot close that frame. The
+  session log keeps the steer's raw text with the origin beside it; a steer
+  with no origin (from an older gruntas) is delivered as before.
+
+### Security
+
+- **The threat model now covers agents in other harnesses.**
+  `docs/security/threat-model.md` has a new section, "Agents in other
+  harnesses", for Claude Code and Codex agents that run under gruntas: an
+  agent can reach what you can, gruntas limits what its own tools let it do,
+  reading is open to every agent, and steering another session is limited by
+  the `steer` setting. It also lists the risks that remain and the hard
+  boundary to use if gruntas ever runs other people's work.
+- **A new `steer` setting limits how far an agent can steer your other
+  sessions, and the host enforces it.** Steering is any command that acts on
+  a session other than the caller's own: a prompt to an existing session, a
+  steer, an interrupt, an approval, a model switch, and moving a session to
+  another machine. `children` lets an agent steer only sessions it started;
+  `attended` (the default, so a god agent works with no setup) lets an
+  attended session steer any session and an unattended one only its own
+  children; `any` lets every agent steer every session. Your own commands
+  always pass. The host checks commands that arrive from other machines
+  and from `gruntas sync attach`; a process on the same machine talking to
+  the daemon directly is the same-user risk the threat model accepts. A host
+  that refuses names the setting and says how to change
+  it. `gruntas config set steer <children|attended|any>` asks for a yes on a
+  terminal and refuses without one, so no agent can widen its own reach
+  through gruntas; `gruntas config get steer` prints the value and whether it
+  is the default or global. `gruntas sync attach` now counts as you only when
+  its input is a terminal: a script or an agent's shell piping lines into it
+  is an agent with no session, which only `any` lets steer (scripts that
+  pipe into it are now refused by default; set `steer` to `any` to allow
+  them). A session a
+  delegated task or a host command starts now records the session that sent
+  it as its steering parent without becoming a subagent: it still syncs, can
+  switch models, and is budgeted on its own.
+
+## [2026.11.0] - 2026-11-23
+
+**krowk is now gruntas.** This is the first gruntas release, and versions are
+now calendar versions (`YYYY.M.N`). A krowk install can't upgrade itself
+into gruntas, so install it fresh:
+
+- **Installer:** `curl -fsSL https://gruntas.com/install | bash`
+- **npm:** `npm i -g @gruntas/cli` (the MCP server is `@gruntas/mcp`; the
+  `@krowk/*` packages are retired)
+- **Claude Code plugin:** `/plugin marketplace add gruntas/gruntas`, then
+  `/plugin install gruntas@gruntas`; GitHub workflows use
+  `uses: gruntas/gruntas@v0`
+
+**What moved:** the command, its home (`~/.gruntas`, copied once from
+`~/.krowk` on the first run), its environment variables (`GRUNTAS_*`), a
+repository's `.gruntas/`, the packages, the MCP registry entry
+(`io.github.gruntas/gruntas`), this repository (`gruntas/gruntas`) and the
+hosts, now on gruntas.com (`api.gruntas.com`, `relay.gruntas.com`,
+`app.gruntas.com`).
+
+**What didn't:** your account, workspaces, API keys (`krowk_sk_…`), devices
+and artifacts. Links on krowk.com redirect to the same page on gruntas.com.
+
+**Until 2027-01-20:** `api.krowk.com` and `relay.krowk.com` keep serving, so
+krowk installs not yet switched keep working until then. After that date
+they may stop. Switch before it.
+
+The details, and every breaking change, follow.
 
 ### Breaking change
 
@@ -16,8 +109,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   (`gruntas/gruntas`) are renamed, with no fallback to the old names: there
   is no `krowk` command, and `KROWK_*`, `.krowk/` and (after a one-time
   copy) `~/.krowk` are no longer read.
-  Your account, API keys (`krowk_sk_…`) and links on krowk.com are
-  unchanged. To switch:
+  Your account, API keys (`krowk_sk_…`) and links on krowk.com (which
+  redirect to gruntas.com) keep working. To switch:
   - **Install gruntas fresh.** A krowk binary cannot upgrade itself into
     gruntas. Release archives are `gruntas_<version>_<os>_<arch>` and
     `gruntas-lean_…`, holding `gruntas` and `gruntas-mcp`; npm packages are
@@ -71,31 +164,48 @@ the versions are the `v*` tags a release is cut from. Entries land under
     sessions record their harness as `gruntas`; sessions stored as `krowk`
     read as the same harness, so `sessions --harness gruntas` lists both,
     and `sessions import --from gruntas` reads gruntas's own logs.
-- **krowk no longer runs models itself, and the SuperGrok sign-in is gone.**
-  Every session now runs inside Claude Code or Codex, so `krowk -p`, the host
+- **gruntas no longer runs models itself, and the SuperGrok sign-in is gone.**
+  Every session now runs inside Claude Code or Codex, so `gruntas -p`, the host
   and delegation need a connected Claude Code or Codex account. API keys and
-  gateways keep working: `krowk connect` turns them into Claude Code or Codex
-  accounts, and the key stays in krowk's credentials. Signing in with
+  gateways keep working: `gruntas connect` turns them into Claude Code or Codex
+  accounts, and the key stays in gruntas's credentials. Signing in with
   SuperGrok is not carried over; connect a Claude Code or Codex account
   instead. A key that is only in your environment (`ANTHROPIC_API_KEY`,
   `OPENAI_API_KEY`) is no longer an account by itself: connect it once with
-  `krowk connect anthropic --method api-key` (or `openai`). Gone with
-  krowk's own agent: its tools and `subagent` tool, agent definitions read
-  from `.krowk/agents`, its reading of `AGENTS.md`, `CLAUDE.md` and
+  `gruntas connect anthropic --method api-key` (or `openai`). Gone with
+  gruntas's own agent: its tools and `subagent` tool, agent definitions read
+  from `.gruntas/agents`, its reading of `AGENTS.md`, `CLAUDE.md` and
   `.cursor/rules`, and its running of hooks (Claude Code and Codex read and
   run their own); placing that `subagent` tool's subagents on another of
   your machines, new in 0.18.0 (Claude Code and Codex hand a task to the
-  machine with room through krowk-mcp's `krowk_delegate`, as before);
-  `--sandbox` with a profile, which only held krowk's own tools, is refused;
+  machine with room through gruntas-mcp's `gruntas_delegate`, as before);
+  `--sandbox` with a profile, which only held gruntas's own tools, is refused;
   and `--client-id`, which only SuperGrok took. It is announced and removed
   in the same release.
 
 ### Changed
 
+- **gruntas now runs on gruntas.com.** It talks to `api.gruntas.com` and
+  syncs through `relay.gruntas.com` by default, and links, the installer,
+  docs and the security contact (`security@gruntas.com`) point at
+  gruntas.com. Your account, keys and devices are unchanged. Pointing
+  `GRUNTAS_API_URL` at the old `https://api.krowk.com/v1` still counts as
+  production and syncs through `relay.krowk.com`, and krowk.com links
+  redirect to gruntas.com, so the bare-link guard for agents treats a bare
+  `gruntas.com/a/…` or `krowk.com/a/…` link alike.
+
+- **Versions are calendar versions now.** The release after `0.18.0` is
+  `YYYY.M.0` for the month it ships (see the top of this file), so the
+  number no longer says how big a change is; this file does, and a
+  breaking change is announced a release ahead with its date. The update
+  notice follows: a release in a newer month (or the jump from `0.x`) is
+  mentioned once, a second release in the same month is not, and a
+  security fix still is, daily. `uses: gruntas/gruntas@v0` follows every
+  stable release, whatever its number.
+
 - **The help text, the greeting and every message say gruntas.** Hints
   print `gruntas <command>`, `gruntas help` and `gruntas-mcp` describe
   themselves as gruntas, and no `krowk` binary is built any more.
-  Hosts stay on krowk.com for now.
 
 - **Requests and run metadata say gruntas.** The user agent is
   `gruntas-cli/<version>`, and the client recorded on runs and artifacts
@@ -105,7 +215,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   prefixes and the crypto labels. `gruntas mcp remove` of a server another
   file defines now fails as `not_gruntas` (was `not_krowks`).
 
-- **API keys and gateways now run in Claude Code or Codex.** `krowk connect`
+- **API keys and gateways now run in Claude Code or Codex.** `gruntas connect`
   turns an Anthropic API key into a Claude Code account, and an
   Anthropic-compatible gateway (`--base-url`) into one that sends to it; an
   OpenAI, xAI, OpenRouter or OpenAI-compatible key becomes a Codex account
@@ -113,88 +223,54 @@ the versions are the `v*` tags a release is cut from. Entries land under
   Responses API (Codex no longer accepts the chat wire API, so an
   OpenAI-compatible server must offer `/responses`, as recent Ollama and
   vLLM do; one such account already written on the chat wire API is moved
-  to the Responses API the first time krowk uses it, with one line). Each
+  to the Responses API the first time gruntas uses it, with one line). Each
   keeps the name it had (`anthropic`, `openai:work`), gets a directory of its
-  own under `~/.krowk/accounts`, and its key stays where it was: in krowk's
+  own under `~/.gruntas/accounts`, and its key stays where it was: in gruntas's
   credentials file (pasted, `$VAR` or `!command`) or the variable it names,
   handed to Claude Code or Codex when it starts, never written into that
   directory. A key or gateway your `config.json` already defines is turned
-  into one the first time krowk uses it, with one line saying so; a default
+  into one the first time gruntas uses it, with one line saying so; a default
   model naming it still works. SuperGrok can no longer be
-  connected: `krowk connect` says "krowk no longer runs models directly;
+  connected: `gruntas connect` says "gruntas no longer runs models directly;
   connect a Claude Code or Codex account."
 
-- **Every session runs on a Claude Code or Codex account.** `krowk -p`,
-  sessions the host starts (`krowk sync new --host`) and a model switch go
+- **Every session runs on a Claude Code or Codex account.** `gruntas -p`,
+  sessions the host starts (`gruntas sessions new`) and a model switch go
   only to a Claude Code or Codex account: the one named, else the default,
   else the one that is ready. With none connected, or when `--model`,
-  `defaultModel` or a resumed session names a provider krowk no longer runs
-  (an API key krowk ran itself, SuperGrok), they stop with one line: "krowk
+  `defaultModel` or a resumed session names a provider gruntas no longer runs
+  (an API key gruntas ran itself, SuperGrok), they stop with one line: "gruntas
   no longer runs models directly; connect a Claude Code or Codex account."
-  (exit 3, `none_ready` or `removed_provider`). `krowk status`, `providers
-  list` and `doctor` list only those accounts, and `krowk connect`, `login`,
+  (exit 3, `none_ready` or `removed_provider`). `gruntas status`, `providers
+  list` and `doctor` list only those accounts, and `gruntas connect`, `login`,
   the first run's "Connect a model" step and the help no longer offer
   SuperGrok.
 
-- **`krowk connect` names a Codex account on an API key as one.** When it
+- **`gruntas connect` names a Codex account on an API key as one.** When it
   refused a name already taken, or listed accounts to pick from, a Codex
   account you wrote by hand on a key read "ChatGPT subscription"; it now
-  reads "Codex, API key", as `krowk status` already says.
+  reads "Codex, API key", as `gruntas status` already says.
 
-- **A turn waiting on Claude Code or Codex no longer wakes krowk up.** krowk
+- **A turn waiting on Claude Code or Codex no longer wakes gruntas up.** gruntas
   checked for steering ten times a second while a turn ran; it now waits for
   the steering itself, so a long silent turn costs no CPU, and steering is
   passed on the moment you send it rather than within a tenth of a second.
 
-### Security
+- **npm packages can be published without a stored token.** The release
+  workflow publishes the `@gruntas/*` packages with npm's trusted publishing
+  (the workflow's own GitHub identity) when no npm token is set, with
+  provenance either way, and a release with neither now fails instead of
+  skipping npm.
 
-- **The threat model now covers agents in other harnesses.**
-  `docs/security/threat-model.md` has a new section, "Agents in other
-  harnesses", for Claude Code and Codex agents that run under gruntas: an
-  agent can reach what you can, gruntas limits what its own tools let it do,
-  reading is open to every agent, and steering another session is limited by
-  the `steer` setting. It also lists the risks that remain and the hard
-  boundary to use if gruntas ever runs other people's work.
-- **A new `steer` setting limits how far an agent can steer your other
-  sessions, and the host enforces it.** Steering is any command that acts on
-  a session other than the caller's own: a prompt to an existing session, a
-  steer, an interrupt, an approval, a model switch, and moving a session to
-  another machine. `children` lets an agent steer only sessions it started;
-  `attended` (the default, so a god agent works with no setup) lets an
-  attended session steer any session and an unattended one only its own
-  children; `any` lets every agent steer every session. Your own commands
-  always pass. The host checks commands that arrive from other machines
-  and from `gruntas sync attach`; a process on the same machine talking to
-  the daemon directly is the same-user risk the threat model accepts. A host
-  that refuses names the setting and says how to change
-  it. `gruntas config set steer <children|attended|any>` asks for a yes on a
-  terminal and refuses without one, so no agent can widen its own reach
-  through gruntas; `gruntas config get steer` prints the value and whether it
-  is the default or global. `gruntas sync attach` now counts as you only when
-  its input is a terminal: a script or an agent's shell piping lines into it
-  is an agent with no session, which only `any` lets steer (scripts that
-  pipe into it are now refused by default; set `steer` to `any` to allow
-  them). A session a
-  delegated task or a host command starts now records the session that sent
-  it as its steering parent without becoming a subagent: it still syncs, can
-  switch models, and is budgeted on its own.
+- **The MCP registry entry follows every release.** Each stable release now
+  publishes `io.github.gruntas/gruntas` to the MCP registry once npm carries
+  `@gruntas/mcp`, signing in as the release workflow (no stored token), so
+  MCP clients that install from the registry get the new version without a
+  manual step. A prerelease leaves the entry where it was.
 
 ## [0.18.0] - 2026-11-20
 
 ### Added
-
-- **Sessions record whether anyone is at them, and steering commands say
-  where they came from.** A new session's start record notes whether a
-  person is attending it: `gruntas -p` without a terminal on its input, a
-  session another device starts on a host (`gruntas sync new --host`) and a
-  delegated task are unattended; everything else is attended. Commands that
-  act on an existing session (a prompt, steer, interrupt, approval, model
-  switch, take) can carry an origin (person or agent, the sending session,
-  the device), and a command that starts a session on a host can name the
-  session that sent it, which becomes the new session's parent. All of it
-  is optional on the wire, so older gruntas still read the new frames. Nothing
-  enforces anything on it yet: this is the record the steering limits build
-  on.
 
 - **`krowk trust` grants, revokes and lists repo trust.** `krowk trust
   [<path>]` trusts the repository `<path>` (default: the current directory)
@@ -3779,7 +3855,8 @@ was released on GitHub but never published to npm.
   credentials travel, and a refusal is written to stderr and into the JSON
   envelope.
 
-[Unreleased]: https://github.com/krowkcom/krowk/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/gruntas/gruntas/compare/v2026.11.0...HEAD
+[2026.11.0]: https://github.com/gruntas/gruntas/compare/v0.18.0...v2026.11.0
 [0.18.0]: https://github.com/krowkcom/krowk/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/krowkcom/krowk/compare/v0.16.2...v0.17.0
 [0.16.2]: https://github.com/krowkcom/krowk/compare/v0.16.1...v0.16.2

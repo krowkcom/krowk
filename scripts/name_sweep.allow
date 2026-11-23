@@ -39,8 +39,14 @@ in crates/gruntas-store/src/writer.rs :: "krowk"|reads krowk as
 in crates/gruntas/tests/sessions_vintage.rs :: \bkrowk\b
 in crates/gruntas/tests/sync_cli.rs :: "krowk"
 
-# --- Hosts: krowk.com stays until the domain move.
-(?i:([a-z0-9-]+\.)*krowk\.(com|localhost))
+# --- Hosts. api./relay.krowk.com serve CLIs released before the rename until
+# at least 2027-01-20, so either API host counts as production and gets the
+# hosted relay on its domain (Move to gruntas.com, D7); the paste guard still
+# knows a bare krowk.com/a/ link, which redirects to gruntas.com.
+in crates/gruntas-api/src/lib.rs :: (api|relay)\.krowk\.com
+in crates/gruntas/src/cli/synced.rs :: (api|relay)\.krowk\.com
+in crates/gruntas-harness/src/paste_guard.rs :: \bkrowk\.com\b
+# User content stays on its own domain (Move to gruntas.com, D2).
 krowkusercontent\.com
 
 # --- The old home: the first run copies ~/.krowk once (D5), and the copy

@@ -1333,7 +1333,7 @@ impl SigningPublic {
 /// lowercased, an IPv6 address in brackets, the port only when it is not
 /// the scheme's default (80, 443), and nothing after the authority. The
 /// signer and the verifier each reduce what they have to this, so `wss://
-/// Relay.krowk.com:443/v1/relay/…` and `https://relay.krowk.com` sign alike.
+/// Relay.gruntas.com:443/v1/relay/…` and `https://relay.gruntas.com` sign alike.
 /// None for anything else, a user name or an empty host included.
 pub fn canonical_origin(url: &str) -> Option<String> {
     let (scheme, rest) = url.split_once("://")?;
@@ -1471,25 +1471,25 @@ mod tests {
         let again = SigningKey::from_secret(&k.secret_bytes()[..]).unwrap();
         assert_eq!(again.public(), k.public());
         let (s, n, d) = ([7u8; 16], [9u8; 32], DeviceId([3u8; 16]));
-        let sig = k.sign_relay_join(RELAY_ROLE_VIEWER, &s, &n, &d, "wss://relay.krowk.com").unwrap();
+        let sig = k.sign_relay_join(RELAY_ROLE_VIEWER, &s, &n, &d, "wss://relay.gruntas.com").unwrap();
         let p = k.public();
-        p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &d, "wss://relay.krowk.com").unwrap();
-        assert!(p.verify_relay_join(&sig, RELAY_ROLE_HOST, &s, &n, &d, "wss://relay.krowk.com").is_err(), "a viewer's signature is not a host's");
-        assert!(p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &[8u8; 16], &n, &d, "wss://relay.krowk.com").is_err());
-        assert!(p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &[1u8; 32], &d, "wss://relay.krowk.com").is_err());
-        assert!(p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &DeviceId([4u8; 16]), "wss://relay.krowk.com").is_err());
+        p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &d, "wss://relay.gruntas.com").unwrap();
+        assert!(p.verify_relay_join(&sig, RELAY_ROLE_HOST, &s, &n, &d, "wss://relay.gruntas.com").is_err(), "a viewer's signature is not a host's");
+        assert!(p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &[8u8; 16], &n, &d, "wss://relay.gruntas.com").is_err());
+        assert!(p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &[1u8; 32], &d, "wss://relay.gruntas.com").is_err());
+        assert!(p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &DeviceId([4u8; 16]), "wss://relay.gruntas.com").is_err());
         assert!(p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &d, "wss://evil.example").is_err(), "another relay's challenge does not pass through");
-        assert!(SigningKey::generate().public().verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &d, "wss://relay.krowk.com").is_err());
-        assert!(p.verify_relay_join(&sig[..63], RELAY_ROLE_VIEWER, &s, &n, &d, "wss://relay.krowk.com").is_err());
+        assert!(SigningKey::generate().public().verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &d, "wss://relay.gruntas.com").is_err());
+        assert!(p.verify_relay_join(&sig[..63], RELAY_ROLE_VIEWER, &s, &n, &d, "wss://relay.gruntas.com").is_err());
         assert!(SigningPublic([0u8; 32]).verify_relay_join(&[0u8; 64], RELAY_ROLE_VIEWER, &s, &n, &d, "wss://x").is_err(), "a small-order key verifies nothing");
         // The origin is signed canonically: the forms a Worker, a proxy and
         // a client may each hold of one relay verify alike.
-        for same in ["wss://Relay.Krowk.com", "wss://relay.krowk.com:443", "https://relay.krowk.com/v1/relay/x", "WSS://relay.krowk.com/"] {
+        for same in ["wss://Relay.Gruntas.com", "wss://relay.gruntas.com:443", "https://relay.gruntas.com/v1/relay/x", "WSS://relay.gruntas.com/"] {
             p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &d, same).unwrap();
         }
-        assert!(p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &d, "ws://relay.krowk.com").is_err(), "the scheme is signed");
-        assert!(p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &d, "wss://relay.krowk.com:8443").is_err());
-        assert!(k.sign_relay_join(RELAY_ROLE_VIEWER, &s, &n, &d, "relay.krowk.com").is_err());
+        assert!(p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &d, "ws://relay.gruntas.com").is_err(), "the scheme is signed");
+        assert!(p.verify_relay_join(&sig, RELAY_ROLE_VIEWER, &s, &n, &d, "wss://relay.gruntas.com:8443").is_err());
+        assert!(k.sign_relay_join(RELAY_ROLE_VIEWER, &s, &n, &d, "relay.gruntas.com").is_err());
     }
 
     #[test]

@@ -151,13 +151,14 @@ dev: ## Fast build, linked into ~/.cargo/bin: the latest gruntas from this check
 	for b in gruntas gruntas-mcp; do ln -sfn "$(CURDIR)/target/quick/$$b" "$(DEV_BIN_DIR)/$$b"; done
 	@echo "$(DEV_BIN_DIR)/gruntas -> $(CURDIR)/target/quick/gruntas"
 
-mock: ## Local stand-in for api.krowk.com on :8787
+mock: ## Local stand-in for api.gruntas.com on :8787
 	cargo run --release -p gruntas-devregistry --bin devregistry
 
 release-check: ## Validate the release layout, the npm launchers and the installer, offline
 	bash -n scripts/dist.sh
 	node --check npm/cli/bin/gruntas.js
 	node --check npm/mcp/bin/gruntas-mcp.js
+	node --test npm/publish_test.mjs
 	node scripts/descriptions_check.mjs
 	# The installer downloads what this file produces, so it belongs to the
 	# release pipeline rather than to `check`: it needs python3,

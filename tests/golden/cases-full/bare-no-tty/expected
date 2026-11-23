@@ -1995,7 +1995,7 @@ stdout:
     {
       "name": "GRUNTAS_API_URL",
       "usage": "API base URL",
-      "default": "https://api.krowk.com/v1"
+      "default": "https://api.gruntas.com/v1"
     },
     {
       "name": "GRUNTAS_DEV",
@@ -4084,7 +4084,7 @@ tty:
     {
       "name": "GRUNTAS_API_URL",
       "usage": "API base URL",
-      "default": "https://api.krowk.com/v1"
+      "default": "https://api.gruntas.com/v1"
     },
     {
       "name": "GRUNTAS_DEV",

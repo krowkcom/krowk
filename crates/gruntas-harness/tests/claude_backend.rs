@@ -656,7 +656,7 @@ fn r_evid_1_claude_code_publishes_through_gruntas_bridge() {
     let seen = asked.clone();
     let publisher: gruntas_harness::evidence::Publisher = Arc::new(move |r: &gruntas_harness::evidence::PublishRequest| {
         seen.lock().unwrap().push(r.clone());
-        Ok(gruntas_harness::evidence::Published { text: "Artifact art_1 — shot.png\nhttps://krowk.com/a/art_1".into(), run: Some("run_1".into()), for_person: Vec::new() })
+        Ok(gruntas_harness::evidence::Published { text: "Artifact art_1 — shot.png\nhttps://gruntas.com/a/art_1".into(), run: Some("run_1".into()), for_person: Vec::new() })
     });
     let host = home.host_publishing(vec![("claude:work", home.instance(&dir, Some("publish.jsonl")))], trust::allow_all(), Some(publisher));
     rt().block_on(async {
@@ -668,7 +668,7 @@ fn r_evid_1_claude_code_publishes_through_gruntas_bridge() {
             Item::ToolResult { output, is_error: false, .. } => Some(output.clone()),
             _ => None,
         });
-        assert_eq!(result.as_deref(), Some("Artifact art_1 — shot.png\nhttps://krowk.com/a/art_1"), "{items:?}");
+        assert_eq!(result.as_deref(), Some("Artifact art_1 — shot.png\nhttps://gruntas.com/a/art_1"), "{items:?}");
         let asked = asked.lock().unwrap().clone();
         assert_eq!(asked.len(), 1);
         assert_eq!((asked[0].session_id.as_str(), asked[0].files.clone(), asked[0].root.clone()), (r.session_id.as_str(), vec!["shot.png".to_string()], home.root.join("repo")));

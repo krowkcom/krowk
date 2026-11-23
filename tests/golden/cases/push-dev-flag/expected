@@ -188,7 +188,7 @@ exit: 1
 
 $ gruntas doctor --jq .api
 stdout:
-https://api.krowk.com/v1
+https://api.gruntas.com/v1
 stderr:
 {
   "ok": false,

@@ -9,7 +9,7 @@ No account is needed: pushes without a key work immediately as anonymous uploads
 The installer picks the platform, verifies checksums, and installs the `gruntas` binary:
 
 ```bash
-curl -fsSL https://krowk.com/install | bash
+curl -fsSL https://gruntas.com/install | bash
 ```
 
 If `curl | bash` is not permitted in this environment, use one of:

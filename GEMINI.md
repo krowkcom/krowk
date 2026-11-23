@@ -16,4 +16,4 @@ uploads expire in 24 hours too.
 
 Deleting an upload is immediate and unrecoverable — confirm with the user first.
 
-Docs: https://krowk.com/docs/gemini-cli
+Docs: https://gruntas.com/docs/gemini-cli

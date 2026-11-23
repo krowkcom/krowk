@@ -23,7 +23,7 @@ fn failure(kind: &str) -> String {
 
 fn example(kind: &str) -> String {
     if kind == KIND_ARTIFACT {
-        return "the artifact slug, like art_…, or the link gruntas handed back, like https://krowk.com/a/art_…".into();
+        return "the artifact slug, like art_…, or the link gruntas handed back, like https://gruntas.com/a/art_…".into();
     }
     format!("the {} slug, like {kind}_…, or a link carrying it", noun(kind))
 }
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn a_link_yields_the_one_slug_it_carries() {
-        let card = format!("https://krowk.com/a/{}", ART.to_uppercase());
+        let card = format!("https://gruntas.com/a/{}", ART.to_uppercase());
         assert_eq!(parse_slug(KIND_ARTIFACT, &card).unwrap(), ART);
         let cdn = format!("https://cdn.krowkusercontent.com/weur/ws_x/{ART}/shot.png");
         assert_eq!(parse_slug(KIND_ARTIFACT, &cdn).unwrap(), ART);
@@ -131,10 +131,10 @@ mod tests {
 
     #[test]
     fn a_link_naming_the_other_kind_or_two_slugs_is_refused() {
-        let run = "https://krowk.com/r/run_abcdefghijklmnopqrstuvwx";
+        let run = "https://gruntas.com/r/run_abcdefghijklmnopqrstuvwx";
         assert!(parse_slug(KIND_ARTIFACT, run).unwrap_err().fix().contains("names a run"));
         let two = format!("https://x/{ART}/art_zzzzzzzzzzzzzzzzzzzzzzzz");
         assert!(parse_slug(KIND_ARTIFACT, &two).unwrap_err().fix().contains("more than one"));
-        assert!(parse_slug(KIND_RUN, "https://krowk.com/").unwrap_err().fix().starts_with("that carries no run slug"));
+        assert!(parse_slug(KIND_RUN, "https://gruntas.com/").unwrap_err().fix().starts_with("that carries no run slug"));
     }
 }

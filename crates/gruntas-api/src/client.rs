@@ -1502,12 +1502,12 @@ mod tests {
 
     #[test]
     fn upload_targets_must_be_public_https_unless_the_user_chose_otherwise() {
-        let prod = Client::new("https://api.krowk.com/v1", "");
+        let prod = Client::new("https://api.gruntas.com/v1", "");
         assert!(prod.storage_origin("https://bucket.r2.cloudflarestorage.com/x").is_ok());
         assert_eq!(prod.storage_origin("http://bucket.example.com/x").unwrap_err().code(), "insecure_upload_url");
         assert_eq!(prod.storage_origin("https://10.0.0.1/x").unwrap_err().code(), "untrusted_endpoint");
         assert_eq!(prod.storage_origin("file:///etc/passwd").unwrap_err().code(), "bad_upload_url");
-        assert!(prod.storage_origin("https://api.krowk.com/_storage/x").is_ok());
+        assert!(prod.storage_origin("https://api.gruntas.com/_storage/x").is_ok());
         let local = Client::new("http://127.0.0.1:8787/v1", "");
         assert!(local.storage_origin("http://127.0.0.1:8787/_storage/x").is_ok());
         let private = Client::new("http://10.0.0.5/v1", "");
@@ -1697,7 +1697,7 @@ mod boundary {
 
     #[test]
     fn the_proxy_is_exempt_on_its_own_port_only() {
-        let g = guard("https://api.krowk.com/v1", Some(("proxy.corp", 3128)));
+        let g = guard("https://api.gruntas.com/v1", Some(("proxy.corp", 3128)));
         assert!(g.permit(&uri("http://proxy.corp:3128"), "10.0.0.2:3128".parse().unwrap()).is_ok());
         assert!(g.permit(&uri("http://proxy.corp:9999/secret"), "10.0.0.2:9999".parse().unwrap()).is_err());
     }
@@ -1720,7 +1720,7 @@ mod boundary {
     #[test]
     fn a_public_registry_never_dials_loopback_however_it_is_spelled() {
         let (port, _) = server(vec![respond("200 OK", "", "{}")]);
-        let c = no_wait(Client::new("https://api.krowk.com/v1", ""));
+        let c = no_wait(Client::new("https://api.gruntas.com/v1", ""));
         for target in [format!("http://127.0.0.1:{port}/"), format!("http://[::1]:{port}/"), format!("http://localhost:{port}/")] {
             let e = c.request_url::<Value>("GET", &target, None, 1, None, None).unwrap_err();
             assert_eq!(e.code(), "untrusted_endpoint", "{target}");
@@ -1827,14 +1827,14 @@ mod boundary {
         ] {
             assert!(retry_after(&spelled).is_some_and(|d| d > Duration::from_secs(20)), "{spelled}");
         }
-        let from = "https://api.krowk.com/v1/runs/x?y=1";
+        let from = "https://api.gruntas.com/v1/runs/x?y=1";
         for (location, want) in [
             ("https://other/x", "https://other/x"),
             ("//host/x", "https://host/x"),
-            ("/v2/z", "https://api.krowk.com/v2/z"),
-            ("z", "https://api.krowk.com/v1/runs/z"),
-            ("?q=1", "https://api.krowk.com/v1/runs/x?q=1"),
-            ("/r?to=https://x", "https://api.krowk.com/r?to=https://x"),
+            ("/v2/z", "https://api.gruntas.com/v2/z"),
+            ("z", "https://api.gruntas.com/v1/runs/z"),
+            ("?q=1", "https://api.gruntas.com/v1/runs/x?q=1"),
+            ("/r?to=https://x", "https://api.gruntas.com/r?to=https://x"),
         ] {
             assert_eq!(resolve_location(from, location).as_deref(), Some(want), "{location}");
         }
@@ -1847,19 +1847,19 @@ mod boundary {
     #[test]
     fn a_signed_call_signs_the_registrys_lines_over_the_target_as_sent() {
         let target = "/v1/sessions/x/relay_ticket?device=ab&env=production";
-        let lines = String::from_utf8(signing_input("GET", target, "1790000000000", b"", "0123456789abcdef0123456789abcdef", "https://api.krowk.com")).unwrap();
+        let lines = String::from_utf8(signing_input("GET", target, "1790000000000", b"", "0123456789abcdef0123456789abcdef", "https://api.gruntas.com")).unwrap();
         assert_eq!(
             lines,
-            "krowk/registry/v2\nGET\n/v1/sessions/x/relay_ticket?device=ab&env=production\n1790000000000\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n0123456789abcdef0123456789abcdef\nhttps://api.krowk.com"
+            "krowk/registry/v2\nGET\n/v1/sessions/x/relay_ticket?device=ab&env=production\n1790000000000\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n0123456789abcdef0123456789abcdef\nhttps://api.gruntas.com"
         );
-        assert_eq!(api_origin(crate::DEFAULT_BASE_URL), "https://api.krowk.com");
-        assert_eq!(api_origin("HTTPS://API.krowk.com:443/v1"), "https://api.krowk.com");
-        assert_eq!(api_origin("http://api.krowk.localhost:3000/v1"), "http://api.krowk.localhost:3000");
+        assert_eq!(api_origin(crate::DEFAULT_BASE_URL), "https://api.gruntas.com");
+        assert_eq!(api_origin("HTTPS://API.gruntas.com:443/v1"), "https://api.gruntas.com");
+        assert_eq!(api_origin("http://api.gruntas.localhost:3000/v1"), "http://api.gruntas.localhost:3000");
         assert_eq!(api_origin("http://[::1]:4000/v1"), "http://[::1]:4000");
-        assert_eq!(request_target("https://api.krowk.com/v1/devices"), "/v1/devices");
+        assert_eq!(request_target("https://api.gruntas.com/v1/devices"), "/v1/devices");
         assert_eq!(request_target("http://127.0.0.1:4000/v1/sessions/x?after=1"), "/v1/sessions/x?after=1");
-        assert_eq!(request_target("https://api.krowk.com"), "/");
-        let unsigned = Client::new("https://api.krowk.com/v1", "krowk_sk_x");
+        assert_eq!(request_target("https://api.gruntas.com"), "/");
+        let unsigned = Client::new("https://api.gruntas.com/v1", "krowk_sk_x");
         assert_eq!(unsigned.acquire_lease("x", "ab", 60, "production").unwrap_err().code(), "device_signature_missing");
     }
 
@@ -1983,7 +1983,7 @@ mod boundary {
     /// do without has less of each.
     #[test]
     fn r_reg_1_the_limits_are_thirty_seconds_of_quiet_under_five_minutes() {
-        let c = Client::new("https://api.krowk.com/v1", "");
+        let c = Client::new("https://api.gruntas.com/v1", "");
         assert_eq!((c.limits.global, c.limits.connect, c.limits.quiet), (Duration::from_secs(300), Duration::from_secs(30), Duration::from_secs(30)));
         let k = c.keyless_within(Duration::from_secs(5)).limits;
         assert_eq!((k.global, k.connect), (Duration::from_secs(5), Duration::from_secs(5)));

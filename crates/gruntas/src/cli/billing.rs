@@ -52,7 +52,7 @@ fn refusal(name: &str, can_manage: Option<bool>, contacts: &[String]) -> String 
 }
 
 /// The dashboard beside a registry: the API's origin, its `api.` host
-/// swapped for `app.` (api.krowk.com → app.krowk.com); any other host is
+/// swapped for `app.` (api.gruntas.com → app.gruntas.com); any other host is
 /// kept as it is. Credentials in the URL are left behind.
 fn app_url(base_url: &str) -> String {
     let (scheme, rest) = base_url.split_once("://").unwrap_or(("https", base_url));
@@ -68,7 +68,7 @@ mod tests {
 
     #[test]
     fn r_bill_6_the_dashboard_sits_beside_the_api() {
-        assert_eq!(app_url("https://api.krowk.com/v1"), "https://app.krowk.com");
+        assert_eq!(app_url("https://api.gruntas.com/v1"), "https://app.gruntas.com");
         assert_eq!(app_url("http://localhost:8787/v1"), "http://localhost:8787");
         assert_eq!(app_url("https://registry.example.com/v1/"), "https://registry.example.com");
         assert_eq!(app_url("https://user:pass@api.example.com/v1"), "https://app.example.com");
