@@ -303,7 +303,14 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         None => None,
     };
     // blocking: at start, before the runtime serves anyone.
-    let registry = Registry::load(socket.parent().unwrap_or(Path::new("/")));
+    let mut registry = Registry::load(socket.parent().unwrap_or(Path::new("/")));
+    // Sessions kept from before registrations were timed, timed from now
+    // and kept so, or the status board would see a new time at every read.
+    if registry.stamp()
+        && let Err(e) = registry.save(socket.parent().unwrap_or(Path::new("/")))
+    {
+        eprintln!("the registrations cannot be written: {e}");
+    }
     let state: Shared = Rc::new(RefCell::new(State {
         factory: std::sync::Arc::from(factory),
         websocket: websocket.as_ref().map(|(l, t)| (l.local_addr().expect("a bound listener has an address"), t.clone())),

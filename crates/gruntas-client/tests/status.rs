@@ -377,3 +377,19 @@ fn d9_a_statistics_id_is_random_and_not_the_device_id() {
     assert!(!status::is_statistics_id("ABCDEF0123456789abcdef0123456789"));
     assert!(!status::is_statistics_id("../0123456789abcdef0123456789abc"));
 }
+
+/// SL05 (D6): "quiet for" is the board's publish time less the Task's last
+/// activity, both by the publisher's clock, plus the time since the reader
+/// received it by the reader's own: a publisher's clock an hour off moves
+/// neither.
+#[test]
+fn sl05_quiet_for_never_compares_clocks_across_machines() {
+    let mut t = task("q", TaskState::Working, "2026-11-23T11:58:00Z");
+    let b = board(&DeviceId([7; 16]), Vec::new());
+    let (received, now): (jiff::Timestamp, jiff::Timestamp) = ("2030-01-01T00:00:00Z".parse().unwrap(), "2030-01-01T00:00:30Z".parse().unwrap());
+    assert_eq!(status::quiet_for(&b, &t, received, now), None, "no last activity, no quiet");
+    t.metadata.gruntas.last_activity = Some(Field::harness("2026-11-23T11:58:00Z".into()));
+    assert_eq!(status::quiet_for(&b, &t, received, now), Some(jiff::SignedDuration::from_secs(150)), "2 min before the publish, received 30 s ago");
+    t.metadata.gruntas.last_activity = Some(Field::harness("2026-11-23T12:01:00Z".into()));
+    assert_eq!(status::quiet_for(&b, &t, received, received), Some(jiff::SignedDuration::ZERO), "never negative");
+}

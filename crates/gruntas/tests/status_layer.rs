@@ -84,23 +84,302 @@ fn sl04_a_vanished_harness_is_canceled_and_not_serving_and_git_context_is_the_da
 
 // ---- SL05: publish and read sealed status boards ----
 
+#[path = "common/device_list.rs"]
+mod device_list;
+
+const TOKEN: &str = "krowk_sk_status_layer_00000000000000000";
+
+/// One person's devices on the stand-in registry: each a home of its own,
+/// on the person's device list with its own key, as `sync init` and `sync
+/// join` leave a machine.
+struct Person {
+    /// In every path it makes: the tests run side by side in one process.
+    name: String,
+    root: std::path::PathBuf,
+    api: String,
+    people: device_list::People,
+    account: gruntas_client::e2e::AccountKey,
+    homes: Vec<Home>,
+    _registry: gruntas_devregistry::Running,
+}
+
+/// A machine: its home, its runtime directory (short, for the socket), its
+/// environment, and its `gruntas host serve` once started.
+struct Home {
+    home: std::path::PathBuf,
+    run: std::path::PathBuf,
+    env: Vec<(String, String)>,
+    serve: Option<std::process::Child>,
+}
+
+impl Person {
+    fn new(name: &str) -> Person {
+        let root = std::env::temp_dir().join(format!("gruntas-sl05-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let registry = gruntas_devregistry::start(std::net::TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
+        Person { name: name.into(), root, api: format!("{}/v1", registry.url()), people: Default::default(), account: gruntas_client::e2e::AccountKey::generate(), homes: Vec::new(), _registry: registry }
+    }
+
+    /// Machine `name` added to the person's list: its index.
+    fn machine(&mut self, name: &str) -> usize {
+        let home = self.root.join(name);
+        std::fs::create_dir_all(home.join(".gruntas")).unwrap();
+        std::fs::write(home.join(".gruntas/config.json"), "{}").unwrap();
+        let run = std::path::PathBuf::from(format!("/tmp/gruntas-sl05-{}-{name}-{}", self.name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&run);
+        std::fs::create_dir_all(&run).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let ks = gruntas_client::keystore::Keystore::new(&home.join(".gruntas"));
+        ks.recover(gruntas_client::e2e::AccountKey::from_bytes(*self.account.as_bytes())).unwrap();
+        self.people.enlist(&ks, name);
+        self.people.publish(&self.api, TOKEN);
+        let env = vec![
+            ("HOME".into(), home.display().to_string()),
+            ("XDG_RUNTIME_DIR".into(), run.display().to_string()),
+            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("GRUNTAS_NO_UPDATE_CHECK".into(), "1".into()),
+            ("GRUNTAS_HOST_IDLE".into(), "0".into()),
+            ("GRUNTAS_API_URL".into(), self.api.clone()),
+            ("GRUNTAS_TOKEN".into(), device_list::key(TOKEN, name)),
+            ("GRUNTAS_RELAY_URL".into(), "ws://127.0.0.1:9".into()),
+            ("GRUNTAS_TAILSCALE_SOCKET".into(), run.join("no-tailscaled.sock").display().to_string()),
+        ];
+        self.homes.push(Home { home, run, env, serve: None });
+        self.homes.len() - 1
+    }
+
+    /// The registry as machine `i`.
+    fn client(&self, i: usize) -> gruntas_api::Client {
+        self.people.client(&self.api, TOKEN, i)
+    }
+
+    fn device(&self, i: usize) -> String {
+        self.people.chain().devices()[i].id().to_string()
+    }
+
+    /// Every board machine `i` reads, by device.
+    fn read(&self, i: usize) -> Vec<gruntas_harness::sync::boards::Read> {
+        let keys = gruntas_client::user_key::UserKeys::new(self.people.user().clone(), []).unwrap();
+        gruntas_harness::sync::boards::read(&self.client(i), &keys, self.people.chain()).unwrap()
+    }
+
+    /// What the stand-in holds of boards and counts.
+    fn held(&self) -> serde_json::Value {
+        let url = format!("{}/_status_layer", self.api.trim_end_matches("/v1"));
+        serde_json::from_str(&ureq::get(&url).call().unwrap().body_mut().read_to_string().unwrap()).unwrap()
+    }
+
+    /// Machine `i`'s board as machine `reader` opens it, once `want` holds.
+    fn board_of(&self, reader: usize, i: usize, want: impl Fn(&Board) -> bool) -> Board {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let read = self.read(reader);
+            if let Some(Ok(b)) = read.iter().find(|r| r.device == self.device(i)).map(|r| r.board.clone())
+                && want(&b)
+            {
+                return b;
+            }
+            assert!(std::time::Instant::now() < deadline, "machine {reader} never read machine {i}'s board as wanted: {read:?}\n{}", self.homes[i].logs());
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+}
+
+impl Home {
+    fn command(&self, args: &[&str]) -> std::process::Command {
+        let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_gruntas"));
+        c.args(args).env_clear().envs(self.env.iter().map(|(k, v)| (k, v))).current_dir(&self.home);
+        c
+    }
+
+    /// What its daemon wrote, for a failure's message.
+    fn logs(&self) -> String {
+        let mut out = String::new();
+        for f in walk(&self.run).into_iter().chain([self.home.join(".gruntas/host.log")]) {
+            if f.extension().is_some_and(|e| e == "log" || e == "json") {
+                out += &format!("{}:\n{}\n", f.display(), std::fs::read_to_string(&f).unwrap_or_default());
+            }
+        }
+        out
+    }
+
+    /// Its host daemon kept up, announcing it and publishing its board.
+    fn serve(&mut self) {
+        let log = std::fs::File::create(self.run.join("serve.log")).unwrap();
+        let c = self.command(&["host", "serve"]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(log).spawn().unwrap();
+        self.serve = Some(c);
+    }
+
+    /// A Claude Code session registered through the plugin's hook, this
+    /// test its harness process.
+    fn register(&self, session: &str) {
+        let mut payload: serde_json::Value = serde_json::from_slice(&std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../gruntas-harness/tests/fixtures/hooks/claude/SessionStart.json")).unwrap()).unwrap();
+        payload["session_id"] = session.into();
+        payload["cwd"] = self.home.display().to_string().into();
+        let mut child = self.command(&["hook", "claude", "SessionStart"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+        use std::io::Write;
+        child.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+        assert!(child.wait().unwrap().success());
+    }
+}
+
+impl Drop for Home {
+    fn drop(&mut self) {
+        let _ = self.command(&["host", "stop", "--force"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+        if let Some(mut c) = self.serve.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        let _ = std::fs::remove_dir_all(&self.run);
+    }
+}
+
+impl Drop for Person {
+    fn drop(&mut self) {
+        self.homes.clear();
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+/// Every file under `dir`.
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    entries.flatten().flat_map(|e| if e.path().is_dir() { walk(&e.path()) } else { vec![e.path()] }).collect()
+}
+
+/// When the stand-in last took machine `device`'s board, if it has one.
+fn board_updated_at(held: &serde_json::Value, device: &str) -> Option<String> {
+    held["status_boards"].as_array()?.iter().find(|b| b["device"] == device).and_then(|b| b["updated_at"].as_str()).map(String::from)
+}
+
 /// SL05: two devices on the dev registry each read the other's board
 /// (listed through presences, fetched and opened per device); a burst of
-/// changes publishes at most once per 5 s; an over-budget board is trimmed
-/// in D8's order (`Board::fit`); "quiet for" is computed from the board's
-/// publish time and its receipt, never across clocks.
+/// changes publishes at most once per 5 s; "quiet for" is computed from
+/// the board's publish time and its receipt, never across clocks.
 #[test]
-#[ignore = "SL05: publish and read sealed status boards"]
 fn sl05_two_devices_read_each_others_boards_and_publishes_coalesce() {
-    todo!("SL05: two paired homes on gruntas-devregistry with daemons up, sessions registered on each; read the other's board via `status_board`; 20 changes in 1 s show at most one new `updated_at` on /_status_layer")
+    let mut p = Person::new("two");
+    let (a, b) = (p.machine("a"), p.machine("b"));
+    p.homes[a].serve();
+    p.homes[b].serve();
+    // Both daemons up and publishing before any session registers, so no
+    // hook starts a daemon of its own.
+    p.board_of(b, a, |_| true);
+    p.board_of(a, b, |_| true);
+    p.homes[a].register("a-session-0");
+    p.homes[b].register("b-session-0");
+    let on_a = p.board_of(b, a, |x| x.sessions == ["a-session-0"]);
+    let on_b = p.board_of(a, b, |x| x.sessions == ["b-session-0"]);
+    for (board, device) in [(&on_a, p.device(a)), (&on_b, p.device(b))] {
+        let t = &board.tasks[0];
+        assert_eq!((t.status.state, board.device.as_str()), (TaskState::Working, device.as_str()));
+        assert_eq!(t.metadata.gruntas.machine.as_ref().map(|m| m.value.as_str()), Some(device.as_str()));
+        let quiet = gruntas_client::status::quiet_for(board, t, jiff::Timestamp::now(), jiff::Timestamp::now()).expect("a last activity");
+        assert!(quiet < jiff::SignedDuration::from_secs(60), "{quiet:?}");
+    }
+
+    // A burst: twenty sessions registered as fast as the hook goes, the
+    // stand-in's record watched meanwhile and for 12 s after.
+    let device = p.device(a);
+    let mut seen: Vec<String> = board_updated_at(&p.held(), &device).into_iter().collect();
+    let watch = |seen: &mut Vec<String>| {
+        if let Some(at) = board_updated_at(&p.held(), &device)
+            && seen.last() != Some(&at)
+        {
+            seen.push(at);
+        }
+    };
+    for i in 1..=20 {
+        p.homes[a].register(&format!("a-session-{i}"));
+        watch(&mut seen);
+    }
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(12);
+    while std::time::Instant::now() < until {
+        watch(&mut seen);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let times: Vec<jiff::Timestamp> = seen.iter().map(|s| s.parse().unwrap()).collect();
+    assert!(times.len() >= 2, "the burst was published: {seen:?}");
+    for w in times.windows(2) {
+        // The registry's arrival times: slack for a put held up in flight.
+        assert!(w[1].duration_since(w[0]) >= jiff::SignedDuration::from_secs(4), "two publishes within 5 s: {seen:?}");
+    }
+    let after = p.board_of(b, a, |x| x.sessions.len() == 21);
+    assert_eq!(after.tasks.len(), 21, "every session of the burst is on the board");
 }
 
 /// SL05: each publish sends the counts under the device's random
 /// statistics id, and the registry holds nothing else of the board.
 #[test]
-#[ignore = "SL05: publish and read sealed status boards"]
 fn sl05_the_counts_carry_only_the_allowed_fields() {
-    todo!("SL05: after a publish, /_status_layer's statistics row has exactly id, health, states, health_counts, updated_at, and its id is not the device id")
+    let mut p = Person::new("counts");
+    let a = p.machine("a");
+    p.machine("b");
+    p.homes[a].serve();
+    p.board_of(1, a, |_| true);
+    p.homes[a].register("counted-1");
+    p.homes[a].register("counted-2");
+    p.board_of(1, a, |x| x.sessions.len() == 2);
+    let id = std::fs::read_to_string(p.homes[a].home.join(".gruntas").join(gruntas_harness::sync::boards::STATISTICS_ID_FILE)).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let row = loop {
+        let held = p.held();
+        let row = held["statistics"].as_array().and_then(|s| s.iter().find(|r| r["id"] == id.as_str()).cloned());
+        if let Some(r) = row.filter(|r| r["states"]["TASK_STATE_WORKING"] == 2) {
+            break r;
+        }
+        assert!(std::time::Instant::now() < deadline, "no counts of two working sessions under {id}: {held}");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    };
+    let mut keys: Vec<&str> = row.as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["health", "health_counts", "id", "states", "updated_at"], "{row}");
+    assert_eq!((row["health"].as_str(), &row["health_counts"]), (Some("SERVING"), &serde_json::json!({"SERVING": 2})), "{row}");
+    assert_eq!(row["states"], serde_json::json!({"TASK_STATE_WORKING": 2}), "{row}");
+    assert!(gruntas_client::status::is_statistics_id(&id) && id != p.device(a), "a random id, not the device's");
+    let held = p.held();
+    let board = held["status_boards"].as_array().unwrap().iter().find(|b| b["device"] == p.device(a).as_str()).unwrap();
+    let mut keys: Vec<&str> = board.as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["device", "sealed", "updated_at"], "only the sealed bytes of the board");
+    let sealed = String::from_utf8_lossy(&gruntas_client::e2e::unhex(board["sealed"].as_str().unwrap()).unwrap()).into_owned();
+    assert!(!sealed.contains("counted-1"), "the board is sealed");
+}
+
+/// SL05 (D8): a board over budget, published through the same path the
+/// daemon takes, is trimmed in order (old finished Tasks, then history
+/// beyond three reports, then summaries) and still opens on another device.
+#[test]
+fn sl05_an_over_budget_board_is_trimmed_in_order_and_read_elsewhere() {
+    use gruntas_client::status::{MessageMetadata, Report, MAX_HISTORY, MAX_SEALED, SHORT_SUMMARY, TRIMMED_HISTORY};
+    let mut p = Person::new("budget");
+    let (a, b) = (p.machine("a"), p.machine("b"));
+    let device = gruntas_client::e2e::DeviceId::parse(&p.device(a)).unwrap();
+    let keys = gruntas_client::user_key::UserKeys::new(p.people.user().clone(), []).unwrap();
+    let announcer = gruntas_harness::sync::announce::Announcer { api: std::sync::Arc::new(p.client(a)), keys, chain: p.people.chain().clone(), device };
+    p.client(a).put_presence(b"a", 30).unwrap();
+    let long = "x".repeat(2000);
+    let report = |i: usize| {
+        let mut m = Message::text(format!("r{i}"), long.clone());
+        m.metadata = Some(MessageMetadata { report: Report { timestamp: "2026-11-23T11:59:00Z".into(), ..Default::default() } });
+        m
+    };
+    let mut tasks: Vec<Task> = (0..30).map(|i| task(&format!("old-{i}"), TaskState::Completed, "github.com/acme/app", None, &long, "2026-11-23T09:00:00Z")).collect();
+    tasks.extend((0..40).map(|i| {
+        let mut t = task(&format!("live-{i}"), TaskState::Working, "github.com/acme/app", None, &long, "2026-11-23T11:59:00Z");
+        t.history = (0..MAX_HISTORY).map(report).collect();
+        t
+    }));
+    let board = Board { device: p.device(a), published_at: "2026-11-23T12:00:00Z".into(), sessions: tasks.iter().map(|t| t.id.clone()).collect(), tasks };
+    assert!(board.sealed_len() > MAX_SEALED);
+    gruntas_harness::sync::boards::publish(&board, &announcer, &gruntas_client::status::statistics_id()).unwrap();
+    let read = p.board_of(b, a, |_| true);
+    assert!(read.tasks.iter().all(|t| t.id.starts_with("live-")) && read.tasks.len() == 40, "old finished Tasks went first");
+    assert!(read.tasks.iter().all(|t| t.history.len() == TRIMMED_HISTORY), "then history beyond three reports");
+    assert!(read.tasks.iter().all(|t| t.status.message.as_ref().unwrap().summary().chars().count() == SHORT_SUMMARY), "then summaries");
+    assert_eq!(read.sessions.len(), 70, "every session still listed");
 }
 
 // ---- SL06: show status and ping machines and sessions ----

@@ -497,6 +497,19 @@ pub fn open_board(sealed: &[u8], device: &DeviceId, keys: &UserKeys, chain: &Cha
     Ok(b)
 }
 
+/// How long `task` has been quiet (D6), as a reader that received its
+/// board at `received` sees it `now`, both by the reader's clock: the
+/// board's publish time less the Task's `lastActivity`, both by the
+/// publisher's clock, plus the time since the board was received, so no
+/// time on one machine is ever compared with another's. None when the
+/// Task has no last activity or a time does not read; never negative.
+pub fn quiet_for(board: &Board, task: &Task, received: jiff::Timestamp, now: jiff::Timestamp) -> Option<jiff::SignedDuration> {
+    let published = timestamp(&board.published_at)?;
+    let active = timestamp(&task.metadata.gruntas.last_activity.as_ref()?.value)?;
+    let quiet = published.duration_since(active).max(jiff::SignedDuration::ZERO) + now.duration_since(received).max(jiff::SignedDuration::ZERO);
+    Some(quiet)
+}
+
 /// What the registry receives about a machine (D9), under a random
 /// statistics id (`statistics_id`) rather than the device id: the machine's
 /// health and how many of its agents are in each A2A state and each health

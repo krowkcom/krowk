@@ -10,7 +10,9 @@
 //! One that cannot be read is started over, never refused: the next
 //! `SessionStart` registers its session again.
 
-use crate::protocol::{Activity, Registration};
+use crate::protocol::{Activity, PluginHarness, Registration};
+use gruntas_client::presence::normalise_origin;
+use gruntas_client::status::{Field, Health, Provenance, Task, TaskMetadata, TaskState, TaskStatus};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -26,23 +28,55 @@ pub struct Registry {
     /// By session id.
     #[serde(default)]
     sessions: BTreeMap<String, Registration>,
+    /// When each session was first registered, RFC 3339 by this machine's
+    /// clock: its status's time until anything newer is known.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    registered_at: BTreeMap<String, String>,
 }
 
 impl Registry {
     /// The registry `dir` holds, its dead entries pruned; empty when there
-    /// is none or it cannot be read.
+    /// is none or it cannot be read, which is said.
     // blocking: once, as the daemon starts.
     pub fn load(dir: &Path) -> Registry {
+        Registry::from_file(dir, true)
+    }
+
+    /// `load`, saying nothing when the file cannot be read: for a reader
+    /// that reads it again and again (the status board's publisher).
+    // blocking: a file read.
+    pub fn read(dir: &Path) -> Registry {
+        Registry::from_file(dir, false)
+    }
+
+    fn from_file(dir: &Path, say: bool) -> Registry {
         let path = dir.join(FILE);
         let mut r = match std::fs::read(&path) {
             Ok(b) => serde_json::from_slice(&b).unwrap_or_else(|e| {
-                eprintln!("{} cannot be read ({e}): starting with no registrations", path.display());
+                if say {
+                    eprintln!("{} cannot be read ({e}): starting with no registrations", path.display());
+                }
                 Registry::default()
             }),
             Err(_) => Registry::default(),
         };
         r.prune(alive);
         r
+    }
+
+    /// Times every session kept from before registrations were timed, from
+    /// now; whether any was. The daemon calls it as it loads the file, and
+    /// saves it when it was, so the time holds from then on.
+    pub fn stamp(&mut self) -> bool {
+        let now = jiff::Timestamp::now().to_string();
+        let mut stamped = false;
+        for id in self.sessions.keys() {
+            if !self.registered_at.contains_key(id) {
+                self.registered_at.insert(id.clone(), now.clone());
+                stamped = true;
+            }
+        }
+        stamped
     }
 
     /// Writes it to `dir`, whole, in place of what was there.
@@ -68,15 +102,47 @@ impl Registry {
                 if self.sessions.len() >= MOST && !self.sessions.contains_key(&r.session_id) {
                     let first = self.sessions.keys().next().cloned();
                     if let Some(k) = first {
-                        self.sessions.remove(&k);
+                        self.forget(&k);
                     }
                 }
+                self.registered_at.entry(r.session_id.clone()).or_insert_with(|| jiff::Timestamp::now().to_string());
                 self.sessions.insert(r.session_id.clone(), r.clone());
                 true
             }
-            Activity::Deregister { session_id } => self.sessions.remove(session_id).is_some(),
+            Activity::Deregister { session_id } => self.forget(session_id),
             Activity::HeavyStart { .. } | Activity::HeavyEnd { .. } | Activity::TurnEnd { .. } | Activity::Usage { .. } => false,
         }
+    }
+
+    /// Drops a session; whether it was there.
+    fn forget(&mut self, session_id: &str) -> bool {
+        self.registered_at.remove(session_id);
+        self.sessions.remove(session_id).is_some()
+    }
+
+    /// The status board's Tasks (D1, D8): one per session whose harness
+    /// process is still there, by session id, with what registration
+    /// observed (the harness, the project, health `SERVING`, and the
+    /// registration as its last activity), all with harness provenance.
+    /// A session's state is `working` until a report or a hook says
+    /// otherwise. The machine is the publisher's to fill.
+    pub fn board_tasks(&self) -> Vec<Task> {
+        self.sessions()
+            .map(|r| {
+                let at = self.registered_at.get(&r.session_id).cloned().unwrap_or_else(|| jiff::Timestamp::UNIX_EPOCH.to_string());
+                let mut t = Task { id: r.session_id.clone(), status: TaskStatus { state: TaskState::Working, message: None, timestamp: at.clone() }, history: Vec::new(), metadata: TaskMetadata::default() };
+                let g = &mut t.metadata.gruntas;
+                g.state_source = Some(Provenance::Harness);
+                g.health = Some(Field::harness(Health::Serving));
+                g.harness = Some(Field::harness(match r.harness {
+                    PluginHarness::Claude => "claude".into(),
+                    PluginHarness::Codex => "codex".into(),
+                }));
+                g.project = r.repository.as_deref().and_then(normalise_origin).map(Field::harness);
+                g.last_activity = Some(Field::harness(at));
+                t
+            })
+            .collect()
     }
 
     /// Drops every entry whose harness process `alive` says is gone;
@@ -85,6 +151,8 @@ impl Registry {
     pub fn prune(&mut self, alive: impl Fn(u32) -> bool) -> bool {
         let before = self.sessions.len();
         self.sessions.retain(|_, r| r.harness_pid.is_none_or(&alive));
+        let sessions = &self.sessions;
+        self.registered_at.retain(|id, _| sessions.contains_key(id));
         self.sessions.len() != before
     }
 
@@ -202,6 +270,32 @@ mod tests {
         }
         assert_eq!(r.sessions().count(), MOST);
         assert!(r.get(&format!("s{:05}", MOST + 4)).is_some());
+    }
+
+    /// SL05: the board lists one Task per live session, with what
+    /// registration observed and a time that holds until the session
+    /// changes, so an unchanged registry is an unchanged board.
+    #[test]
+    fn sl05_the_board_has_a_task_per_live_session_with_harness_fields() {
+        let mut r = Registry::default();
+        let mut a = reg("a", None);
+        a.repository = Some("git@github.com:acme/app.git".into());
+        r.apply(&Activity::Register(a.clone()));
+        r.apply(&Activity::Register(reg("b", Some(u32::MAX))));
+        let tasks = r.board_tasks();
+        assert_eq!(tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["a"], "a session whose harness is gone is not on it");
+        let (t, g) = (&tasks[0], &tasks[0].metadata.gruntas);
+        assert_eq!((t.status.state, g.state_source), (TaskState::Working, Some(Provenance::Harness)));
+        assert_eq!((g.harness.as_ref().map(|f| f.value.as_str()), g.project.as_ref().map(|f| f.value.as_str())), (Some("claude"), Some("github.com/acme/app")));
+        assert_eq!(g.health, Some(Field::harness(Health::Serving)));
+        assert_eq!(g.last_activity.as_ref().map(|f| &f.value), Some(&t.status.timestamp));
+        r.apply(&Activity::Register(a));
+        assert_eq!(r.board_tasks(), tasks, "the same registration again changes nothing");
+        assert!(!r.stamp(), "every registration is timed already");
+        r.registered_at.clear();
+        assert!(r.stamp() && !r.stamp(), "one kept untimed is timed once");
+        r.apply(&Activity::Deregister { session_id: "a".into() });
+        assert!(r.board_tasks().is_empty() && !r.registered_at.contains_key("a"));
     }
 
     #[test]
