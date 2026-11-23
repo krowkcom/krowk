@@ -35,7 +35,8 @@
 use crate::budget::Budget;
 use crate::evidence::Evidence;
 use crate::catalog::ModelInfo;
-use crate::protocol::{ApprovalDecision, ApprovalRequest, BackendAgent, Billing, Delta, Effort, ErrorInfo, HandoffKind, ImageRef, Item, ItemKind, LimitStatus, ModelRef, PermissionMode, ToolDefinition, Usage, WireApi};
+use crate::neutral;
+use crate::protocol::{Origin, ApprovalDecision, ApprovalRequest, BackendAgent, Billing, Delta, Effort, ErrorInfo, HandoffKind, ImageRef, Item, ItemKind, LimitStatus, ModelRef, PermissionMode, ToolDefinition, Usage, WireApi};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -226,17 +227,30 @@ struct SteerQueue {
 pub struct Steer {
     pub text: String,
     pub images: Vec<ImageRef>,
+    /// Where it came from; `None` for an older peer's, delivered as it is.
+    pub origin: Option<Box<Origin>>,
 }
 
 impl From<&str> for Steer {
     fn from(text: &str) -> Steer {
-        Steer { text: text.to_string(), images: Vec::new() }
+        Steer { text: text.to_string(), images: Vec::new(), origin: None }
     }
 }
 
 impl Steer {
     pub fn item(self) -> Item {
-        Item::UserText { text: self.text, images: self.images }
+        Item::UserText { text: self.text, images: self.images, origin: self.origin }
+    }
+
+    /// What the engine reads: the raw text when no origin came with it
+    /// (D7), else the text framed with where it came from and neutralised
+    /// like any foreign text. The log keeps `text` and the origin as they
+    /// came; every engine takes a steer through this.
+    pub fn framed(&self) -> String {
+        match &self.origin {
+            Some(o) => neutral::steer_framed(&self.text, o),
+            None => self.text.clone(),
+        }
     }
 }
 

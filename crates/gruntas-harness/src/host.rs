@@ -707,7 +707,7 @@ impl Host {
             }
             // Queued for the engine's next step; it comes back in the log as
             // a `userText` item where the turn took it.
-            Command::Steer { session_id, text, images, .. } => {
+            Command::Steer { session_id, text, images, origin } => {
                 if text.trim().is_empty() {
                     return Err(EngineError::new("empty_prompt", "the steering text is empty"));
                 }
@@ -733,7 +733,7 @@ impl Host {
                     false => tokio::task::spawn_blocking(move || images::save(&dir, &decoded)).await.map_err(|e| EngineError::new("log_failed", e.to_string()))??,
                 };
                 match Some(&steers) {
-                    Some(r) if r.push(Steer { text, images }).is_ok() => Ok(None),
+                    Some(r) if r.push(Steer { text, images, origin }).is_ok() => Ok(None),
                     // The turn has taken its last input and is ending.
                     Some(_) => Err(EngineError::new("turn_ending", format!("the turn in session {session_id} is finishing and reads no more input — send it as the next prompt"))),
                     _ => unreachable!("the turn's queue was found"),
@@ -2196,7 +2196,7 @@ impl Writer<'_> {
             true => Vec::new(),
             false => tokio::task::spawn_blocking(move || images::save(&dir, &decoded)).await.map_err(|e| EngineError::new("log_failed", e.to_string()))??,
         };
-        let prompt_item = Item::UserText { text, images };
+        let prompt_item = Item::UserText { text, images, origin: None };
         self.log(LogBody::ItemCompleted { turn_id: self.turn_id.clone(), item_id: gruntas_store::new_id(), item: prompt_item.clone() }).await?;
         // `/name` for a skill, in a session's own turn on any engine: its
         // instructions come right after the prompt. A vendor's agent cannot

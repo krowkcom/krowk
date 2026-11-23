@@ -596,7 +596,7 @@ impl Engine for CodexEngine {
                     }
                 }
                 let (prompt, images) = match ctx.history.last().map(|h| &h.item) {
-                    Some(Item::UserText { text, images }) => (text.clone(), images.clone()),
+                    Some(Item::UserText { text, images, .. }) => (text.clone(), images.clone()),
                     _ => return Err(EngineError::new("empty_prompt", "a backend turn needs the prompt as its last item")),
                 };
                 // What the thread did not run goes ahead of the prompt, in
@@ -605,7 +605,7 @@ impl Engine for CodexEngine {
                 if let Some(ev) = handoff {
                     let _ = events.send(ev).await;
                 }
-                p.turn(Steer { text: prompt, images }, &mut ctx, &ask, &events, &mut stops, &self.instance.name).await
+                p.turn(Steer { text: prompt, images, origin: None }, &mut ctx, &ask, &events, &mut stops, &self.instance.name).await
             }
             .await;
             *self.stopper.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -1079,7 +1079,7 @@ fn text_input(input: &[Steer], session_dir: &Path) -> Value {
     let text = |t: &str| json!({"type": "text", "text": t, "text_elements": []});
     let mut out = Vec::new();
     for s in input {
-        out.push(text(&s.text));
+        out.push(text(&s.framed()));
         for r in &s.images {
             match crate::images::path(session_dir, r).filter(|p| p.is_file()) {
                 Some(p) => {
