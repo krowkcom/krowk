@@ -1210,6 +1210,66 @@ async fn d8b_only_a_record_a_listed_device_signed_opens() {
     assert!(refused.contains("never held"), "{refused}");
 }
 
+/// R-SEC-4, D4: the host holds a viewer's steering to the `steer` setting
+/// after the session key let it through, read from the global config as each
+/// command arrives. B's interrupt of A's idle session is answered `no turn
+/// running` when the setting lets it through, and refused naming the
+/// setting when it does not.
+#[tokio::test]
+async fn r_sec_4_a_viewers_steering_is_held_to_the_steer_setting() {
+    use gruntas_harness::protocol::{Attendance, Origin, OriginKind};
+    let w = World::new("steer");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (_d, session) = first_turn(&w).await;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+
+    let sessions = log::sessions_dir(&w.env()).unwrap();
+    let config = sessions.parent().unwrap().join("config.json");
+    let (parent, other) = ("01a0ec7b-0000-7000-8000-0000000000b1", "01a0ec7b-0000-7000-8000-0000000000b2");
+    // The session was started by `parent`: what its start record says.
+    let events = sessions.join(&session).join("events.jsonl");
+    let text = std::fs::read_to_string(&events).unwrap();
+    let (first, rest) = text.split_once('\n').unwrap();
+    let mut root: serde_json::Value = serde_json::from_str(first).unwrap();
+    root["startedBySessionId"] = parent.into();
+    std::fs::write(&events, format!("{root}\n{rest}")).unwrap();
+
+    let agent = |session: Option<&str>, attendance: Option<Attendance>| Some(Box::new(Origin { kind: OriginKind::Agent, session_id: session.map(String::from), device: None, attendance }));
+    let person = Some(Box::new(Origin { kind: OriginKind::Person, session_id: None, device: Some("machine-b".into()), attendance: None }));
+    // (setting, who, origin, whether it passes the setting)
+    let cases = vec![
+        (None, "a person", person.clone(), true),
+        (None, "an older client's, with no origin", None, true),
+        (None, "the parent", agent(Some(parent), Some(Attendance::Unattended)), true),
+        (None, "an attended agent", agent(Some(other), None), true),
+        (None, "an unattended agent", agent(Some(other), Some(Attendance::Unattended)), false),
+        (None, "an agent with no session", agent(None, None), false),
+        (Some("children"), "a person", person.clone(), true),
+        (Some("children"), "the parent", agent(Some(parent), None), true),
+        (Some("children"), "an attended agent", agent(Some(other), None), false),
+        (Some("any"), "an unattended agent", agent(Some(other), Some(Attendance::Unattended)), true),
+        (Some("any"), "an agent with no session", agent(None, None), true),
+    ];
+    for (setting, who, origin, passes) in cases {
+        match setting {
+            Some(s) => std::fs::write(&config, serde_json::json!({ "steer": s }).to_string()).unwrap(),
+            None => drop(std::fs::remove_file(&config)),
+        }
+        v.commands.send(Command::Interrupt { session_id: session.clone(), origin }).unwrap();
+        let got = until(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
+        let error = got.iter().find_map(|u| match u { viewer::Update::Acked { error, .. } => error.clone(), _ => None }).unwrap_or_default();
+        let named = setting.unwrap_or("attended");
+        match passes {
+            true => assert!(error.contains("no turn running"), "{who} under {named}: {error}"),
+            false => assert!(error.contains(&format!("steer setting is {named}")) && error.contains("gruntas config set steer") && error.contains("terminal"), "{who} under {named}: {error}"),
+        }
+    }
+}
+
 #[tokio::test]
 async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
     let w = World::new("prompt");
@@ -4606,10 +4666,11 @@ async fn r_host_4_a_start_from_b_runs_on_a_in_a_trusted_directory() {
 }
 
 /// R-SEC-2, R-SEC-3 (D4, D5): a host-command start is unattended, and one
-/// that names a sending session records it as the parent; one that names
-/// none has no parent.
+/// that names a sending session records it as the session that started it —
+/// its steering parent, never a subagent's `parentSessionId`, so it still
+/// syncs; one that names none has no parent.
 #[tokio::test]
-async fn r_sec_2_a_host_command_start_is_unattended_and_records_its_sending_session_as_parent() {
+async fn r_sec_2_a_host_command_start_is_unattended_and_records_its_sending_session_as_its_starter() {
     let w = World::new("start-unattended");
     let (a, b) = (w.device("start-host-a"), w.device("start-b"));
     let mut auto = w.auto_with(&a, AutoOpts { announce: true, ..AutoOpts::default() });
@@ -4628,8 +4689,9 @@ async fn r_sec_2_a_host_command_start_is_unattended_and_records_its_sending_sess
         turn_started_on_a(&w, &session_id, by).await;
         let path = log::sessions_dir(&w.env()).unwrap().join(&session_id).join(log::EVENTS_FILE);
         let root: gruntas_harness::protocol::LogEvent = serde_json::from_str(std::fs::read_to_string(path).unwrap().lines().next().unwrap()).unwrap();
-        let LogBody::SessionStarted { parent_session_id, attendance, .. } = root.body else { panic!("not a start record") };
-        assert_eq!((parent_session_id.as_deref(), attendance), (named, Some(gruntas_harness::protocol::Attendance::Unattended)));
+        let LogBody::SessionStarted { parent_session_id, started_by_session_id, attendance, .. } = root.body else { panic!("not a start record") };
+        assert_eq!((started_by_session_id.as_deref(), attendance), (named, Some(gruntas_harness::protocol::Attendance::Unattended)));
+        assert_eq!(parent_session_id, None, "not a subagent: it is bridged for sync and takes a model switch");
     }
     auto.stop(Duration::from_secs(10)).await;
 }

@@ -167,3 +167,143 @@ pub fn stamp(c: &mut Command, origin: &Origin) {
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::LogEvent;
+
+    const TARGET: &str = "01a0ec7b-0000-7000-8000-0000000000a1";
+    const PARENT: &str = "01a0ec7b-0000-7000-8000-0000000000b1";
+    const ATTENDED: &str = "01a0ec7b-0000-7000-8000-0000000000c1";
+    const UNATTENDED: &str = "01a0ec7b-0000-7000-8000-0000000000c2";
+    const STRANGER: &str = "01a0ec7b-0000-7000-8000-0000000000c3";
+
+    fn start(home: &Path, id: &str, parent: Option<&str>, subagent: Option<&str>, attendance: Option<Attendance>) {
+        let dir = home.join("sessions").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let e = LogEvent {
+            id: id.into(),
+            parent_id: None,
+            session_id: id.into(),
+            time_ms: 1,
+            body: LogBody::SessionStarted { cwd: "/r".into(), gruntas_version: "t".into(), protocol_version: 1, parent_session_id: subagent.map(String::from), agent: None, attendance, started_by_session_id: parent.map(String::from) },
+        };
+        std::fs::write(dir.join(crate::log::EVENTS_FILE), format!("{}\n", serde_json::to_string(&e).unwrap())).unwrap();
+    }
+
+    /// A home with the target, started by `PARENT`, and an attended and an
+    /// unattended session; `stranger` has no log here.
+    fn home(name: &str) -> std::path::PathBuf {
+        let home = std::env::temp_dir().join(format!("gruntas-steer-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        start(&home, TARGET, Some(PARENT), None, Some(Attendance::Attended));
+        start(&home, PARENT, None, None, Some(Attendance::Unattended));
+        start(&home, ATTENDED, None, None, Some(Attendance::Attended));
+        start(&home, UNATTENDED, None, None, Some(Attendance::Unattended));
+        home
+    }
+
+    fn agent(session: Option<&str>) -> Origin {
+        Origin { kind: OriginKind::Agent, session_id: session.map(String::from), device: None, attendance: None }
+    }
+
+    /// R-SEC-4, D4: each setting against a person, the parent, an attended
+    /// and an unattended agent, one that is unknown here, one with no
+    /// session, and a command with no origin.
+    #[test]
+    fn r_sec_4_each_setting_decides_by_origin() {
+        let home = home("matrix");
+        let sessions = home.join("sessions");
+        let person = Origin { kind: OriginKind::Person, session_id: None, device: Some("laptop".into()), attendance: None };
+        let says_unattended = Origin { attendance: Some(Attendance::Unattended), ..agent(Some(STRANGER)) };
+        // (who, children, attended, any)
+        let cases: Vec<(&str, Option<Origin>, [bool; 3])> = vec![
+            ("a person", Some(person), [true, true, true]),
+            ("no origin: an older client", None, [true, true, true]),
+            ("the parent, though it is unattended", Some(agent(Some(PARENT))), [true, true, true]),
+            ("an attended agent", Some(agent(Some(ATTENDED))), [false, true, true]),
+            ("an unattended agent", Some(agent(Some(UNATTENDED))), [false, false, true]),
+            ("an agent on another machine, attended by its word", Some(agent(Some(STRANGER))), [false, true, true]),
+            ("an agent on another machine, unattended by its word", Some(says_unattended), [false, false, true]),
+            ("an agent with no session", Some(agent(None)), [false, false, true]),
+        ];
+        for (who, origin, expect) in cases {
+            for (setting, ok) in [Setting::Children, Setting::Attended, Setting::Any].into_iter().zip(expect) {
+                let got = allow(setting, origin.as_ref(), TARGET, &sessions);
+                assert_eq!(got.is_ok(), ok, "{who} under {}: {got:?}", setting.name());
+                if let Err(why) = got {
+                    assert!(why.contains(&format!("steer setting is {}", setting.name())) && why.contains("gruntas config set steer") && why.contains("on a terminal"), "{why}");
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A session with no parent (a start from a terminal) is steerable by
+    /// no agent under `children`; one started by a subagent's spawn counts
+    /// that session as its parent too.
+    #[test]
+    fn r_sec_4_a_session_with_no_parent_is_steered_by_nobody_under_children() {
+        let home = home("parentless");
+        let sessions = home.join("sessions");
+        start(&home, STRANGER, None, None, None);
+        assert!(allow(Setting::Children, Some(&agent(Some(PARENT))), STRANGER, &sessions).is_err());
+        assert!(allow(Setting::Attended, Some(&agent(Some(ATTENDED))), STRANGER, &sessions).is_ok());
+        start(&home, STRANGER, None, Some(PARENT), None);
+        assert!(allow(Setting::Children, Some(&agent(Some(PARENT))), STRANGER, &sessions).is_ok(), "a subagent's parent steers it");
+        // No log at all: no parent either.
+        assert!(allow(Setting::Children, Some(&agent(Some(PARENT))), "01a0ec7b-0000-7000-8000-0000000000ff", &sessions).is_err());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The setting is read from the config beside the sessions directory,
+    /// as each command arrives; none is `attended`, and a file or value that
+    /// cannot be read is `children`, never looser.
+    #[test]
+    fn r_sec_5_the_setting_is_read_from_the_global_config_and_fails_closed() {
+        let home = home("read");
+        let sessions = home.join("sessions");
+        let config = home.join(gruntas_api::home::CONFIG);
+        assert_eq!(read(&sessions), Setting::Attended, "none named");
+        for (text, want) in [(r#"{"steer":"any"}"#, Setting::Any), (r#"{"steer":"children"}"#, Setting::Children), (r#"{"other":1}"#, Setting::Attended), (r#"{"steer":null}"#, Setting::Attended), (r#"{"steer":"everyone"}"#, Setting::Children), (r#"{"steer":7}"#, Setting::Children), ("not json", Setting::Children)] {
+            std::fs::write(&config, text).unwrap();
+            assert_eq!(read(&sessions), want, "{text}");
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// What is steering: a prompt to an existing session, steer, interrupt,
+    /// approve, a model switch; not a prompt that starts a session, a
+    /// switch with no session, nor an image.
+    #[test]
+    fn r_sec_4_only_commands_on_another_session_are_steering() {
+        let o = Some(Box::new(agent(Some(PARENT))));
+        let prompt = |id: Option<&str>| Command::Prompt { session_id: id.map(String::from), text: "t".into(), images: Vec::new(), model: None, permission_mode: Default::default(), toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: o.clone() };
+        assert_eq!(steers(&prompt(Some(TARGET))).map(|(s, _)| s), Some(TARGET));
+        assert!(steers(&prompt(None)).is_none(), "a prompt that starts a session steers nothing");
+        let model = crate::protocol::ModelRef { instance: "i".into(), model: "m".into() };
+        assert!(steers(&Command::SwitchModel { session_id: None, model: model.clone(), origin: o.clone() }).is_none());
+        for c in [
+            Command::SwitchModel { session_id: Some(TARGET.into()), model, origin: o.clone() },
+            Command::Steer { session_id: TARGET.into(), text: "t".into(), images: Vec::new(), origin: o.clone() },
+            Command::Interrupt { session_id: TARGET.into(), origin: o.clone() },
+            Command::Approve { session_id: TARGET.into(), request_id: "r".into(), decision: crate::protocol::ApprovalDecision::Allow, answers: Vec::new(), origin: o.clone() },
+        ] {
+            assert_eq!(steers(&c).map(|(s, origin)| (s, origin.map(|o| o.kind))), Some((TARGET, Some(OriginKind::Agent))), "{c:?}");
+        }
+        assert!(steers(&Command::PutImage { session_id: Some(TARGET.into()), sha256: String::new(), media_type: "image/png".into(), data: String::new() }).is_none());
+    }
+
+    /// D6: attach is a person only when its input is a terminal, and the
+    /// origin it stamps replaces whatever a typed command carried.
+    #[test]
+    fn r_sec_5_attach_is_a_person_only_on_a_terminal() {
+        let (tty, piped) = (attach_origin(true, Some("laptop".into())), attach_origin(false, Some("laptop".into())));
+        assert_eq!((tty.kind, tty.session_id.as_deref(), tty.device.as_deref()), (OriginKind::Person, None, Some("laptop")));
+        assert_eq!((piped.kind, piped.session_id.as_deref()), (OriginKind::Agent, None));
+        let mut c = Command::Interrupt { session_id: TARGET.into(), origin: Some(Box::new(agent(Some(PARENT)))) };
+        stamp(&mut c, &piped);
+        assert!(matches!(c, Command::Interrupt { origin: Some(o), .. } if *o == piped));
+    }
+}

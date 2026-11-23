@@ -6,8 +6,6 @@ use crate::config;
 use crate::output::workspace::{self as render, ConfigView, Workspaces};
 use gruntas_api::creds::{self, WorkspaceKey};
 use gruntas_api::{fail, Error};
-#[cfg(feature = "harness")]
-use std::io::Write as _;
 
 /// Which workspace this command was pointed at, and by whom. Empty means
 /// nothing asked — "use the stored default", which only the credential store

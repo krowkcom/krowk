@@ -1467,7 +1467,8 @@ mod tests {
         let f = fleet(true, &["b"], &[("b", vec![started()])]);
         *f.events.lock().unwrap() = completed_child();
         let p = placer(&f);
-        let h = p.start(spec(), Here::Caller);
+        let delegating = "01a0ec7b-0000-7000-8000-0000000000d1";
+        let h = p.start(TaskSpec { sending_session: Some(delegating.into()), ..spec() }, Here::Caller);
         let running = p.placed(&h, Duration::from_secs(5)).unwrap();
         assert_eq!(stream_line(&running).unwrap(), "Running on b: this machine is busy (4 of 4 build slots in use).");
         let Ok(Progress::Done(out)) = p.wait(&h, Duration::from_secs(5)) else { panic!("not done") };
@@ -1479,6 +1480,7 @@ mod tests {
         let run = &sent[0].1;
         assert_eq!((run.origin.as_str(), run.requested_by.as_str(), run.job.session.as_str()), (ORIGIN, "here-id", "job-session"));
         assert!(run.not_after_ms > 0);
+        assert_eq!(run.sending_session.as_deref(), Some(delegating), "the child records who delegated it (D4)");
         assert_eq!((f.spent.load(Ordering::SeqCst), f.closed.load(Ordering::SeqCst)), (2, 1), "the job spent once a child started and the result once read, its own session let go");
     }
 
