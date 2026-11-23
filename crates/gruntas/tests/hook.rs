@@ -192,9 +192,11 @@ fn kt03_heavy_commands_move_the_announced_busy_slots_and_decide_nothing() {
     // The daemon in this process, so its count is the one `capacity` reads,
     // as the announcer's is in `gruntas host serve`.
     let socket = s.socket();
-    let daemon = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         let factory: server::Factory = Box::new(|_, _| Err(gruntas_harness::engine::EngineError::new("no_sessions", "this test runs none")));
-        server::run(server::Options { socket, idle: Some(Duration::from_secs(2)), gruntas_version: "test".into(), ..Default::default() }, factory)
+        // Never idle out between two hooks of a slow run; it ends with the
+        // test's process.
+        server::run(server::Options { socket, idle: None, gruntas_version: "test".into(), ..Default::default() }, factory)
     });
     let deadline = Instant::now() + Duration::from_secs(5);
     while std::os::unix::net::UnixStream::connect(s.socket()).is_err() {
@@ -230,6 +232,14 @@ fn kt03_heavy_commands_move_the_announced_busy_slots_and_decide_nothing() {
     // Codex's ends: the other two still count, one past the total.
     hook("codex", "PostToolUse", &codex("PostToolUse"));
     assert_eq!(busy().in_use, 2);
+    // Claude's fails (`cargo clippy` exits non-zero): it ends all the same.
+    let mut failed = claude_cargo.clone();
+    failed["hook_event_name"] = "PostToolUseFailure".into();
+    failed["error"] = "Exit code 101".into();
+    hook("claude", "PostToolUseFailure", &failed);
+    assert_eq!(busy().in_use, 1);
+    hook("claude", "PreToolUse", &claude_cargo);
+    assert_eq!(busy().in_use, 2);
     // Codex's turn ends with its third never ended: it clears.
     hook("codex", "Stop", &codex("Stop"));
     assert_eq!(busy().in_use, 1);
@@ -243,7 +253,6 @@ fn kt03_heavy_commands_move_the_announced_busy_slots_and_decide_nothing() {
             hook(harness, event, &serde_json::from_slice(&fixture(harness, event)).unwrap());
         }
     }
-    daemon.join().unwrap().unwrap();
 }
 
 /// KT04: gruntas_session_info answers the registration of the harness

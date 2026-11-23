@@ -606,7 +606,7 @@
           "minimum": 0
         },
         "heavy": {
-          "description": "The commands the Claude Code and Codex plugin's hooks count toward\nthe machine's busy build slots, each a program and the words that\nfollow it (`cargo test`, `make`); `LISTED` when absent. A statistic\nfor placing work, never a gate: nothing waits on it.",
+          "description": "The commands the Claude Code and Codex plugin's hooks count toward\nthe machine's busy build slots, each a program and the words that\nfollow it (`cargo test`, `make`). When absent: `cargo` build, test,\ncheck and clippy; `npm`, `pnpm` and `bun` test and build (and `run\ntest`, `run build`); `go` test and build; `make`. A statistic for\nplacing work, never a gate: nothing waits on it.",
           "type": [
             "array",
             "null"

@@ -48,8 +48,10 @@ pub struct BuildsConfig {
     pub slots: Option<usize>,
     /// The commands the Claude Code and Codex plugin's hooks count toward
     /// the machine's busy build slots, each a program and the words that
-    /// follow it (`cargo test`, `make`); `LISTED` when absent. A statistic
-    /// for placing work, never a gate: nothing waits on it.
+    /// follow it (`cargo test`, `make`). When absent: `cargo` build, test,
+    /// check and clippy; `npm`, `pnpm` and `bun` test and build (and `run
+    /// test`, `run build`); `go` test and build; `make`. A statistic for
+    /// placing work, never a gate: nothing waits on it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heavy: Option<Vec<String>>,
 }
@@ -366,7 +368,7 @@ pub fn heavy(command: &str) -> bool {
 /// it, options (`-p x`, `+nightly`) skipped between them.
 pub const LISTED: &[&str] = &[
     "cargo build", "cargo test", "cargo check", "cargo clippy",
-    "npm test", "npm run test", "npm run build", "pnpm test", "pnpm build", "pnpm run test", "pnpm run build", "bun test", "bun run test", "bun run build",
+    "npm test", "npm run test", "npm run build", "pnpm test", "pnpm build", "pnpm run test", "pnpm run build", "bun test", "bun build", "bun run test", "bun run build",
     "go test", "go build",
     "make",
 ];
@@ -521,7 +523,7 @@ mod tests {
     #[test]
     fn kt03_the_heavy_list_names_a_program_and_its_first_words() {
         let list = BuildsConfig::default().heavy_list();
-        for c in ["cargo test", "cargo +nightly clippy --all", "cd x && cargo -q build", "RUST_LOG=1 timeout 60 cargo check", "make", "make -j8 check", "npm test", "npm run build", "pnpm build", "bun test", "go test ./...", "ls; go build", "/usr/bin/make all"] {
+        for c in ["cargo test", "cargo +nightly clippy --all", "cd x && cargo -q build", "RUST_LOG=1 timeout 60 cargo check", "make", "make -j8 check", "npm test", "bun build ./src", "npm run build", "pnpm build", "bun test", "go test ./...", "ls; go build", "/usr/bin/make all"] {
             assert!(listed(c, &list), "{c:?} is on the list");
         }
         for c in ["cargo fmt", "cargo", "npm install", "npm run lint", "go vet", "echo cargo test", "git commit -m 'cargo test'", "bun run dev", "", "command -v make"] {

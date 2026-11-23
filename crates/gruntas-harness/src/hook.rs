@@ -91,7 +91,7 @@ pub enum HookEvent {
     SessionEnd { session: Session },
     /// A tool call about to run: `PreToolUse`.
     ToolStart { session: Session, tool_call_id: String, tool_name: String, input: Value },
-    /// And done: `PostToolUse`.
+    /// And done: `PostToolUse`, or `PostToolUseFailure`.
     ToolEnd { session: Session, tool_call_id: String, tool_name: String, input: Value },
     /// The turn's end.
     Stop { session: Session },
@@ -163,7 +163,9 @@ pub fn normalise(_harness: PluginHarness, event: &str, payload: &Value) -> Resul
             let t = tool()?;
             HookEvent::ToolStart { session: session()?, tool_call_id: t.tool_use_id, tool_name: t.tool_name, input: t.tool_input }
         }
-        "PostToolUse" => {
+        // A call that failed (a build or test that exited non-zero) ends
+        // with `PostToolUseFailure` in Claude Code, not `PostToolUse`.
+        "PostToolUse" | "PostToolUseFailure" => {
             let t = tool()?;
             HookEvent::ToolEnd { session: session()?, tool_call_id: t.tool_use_id, tool_name: t.tool_name, input: t.tool_input }
         }
