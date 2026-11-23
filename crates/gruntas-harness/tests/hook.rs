@@ -42,7 +42,7 @@ fn kt01_claude_codes_payloads_normalise_to_one_event_each() {
     assert_eq!(normalised(c, "SessionStart"), HookEvent::SessionStart { session: claude_session(), source: Some("startup".into()) });
     assert_eq!(normalised(c, "SessionEnd"), HookEvent::SessionEnd { session: claude_session() });
     assert_eq!(normalised(c, "PreToolUse"), HookEvent::ToolStart { session: claude_session(), tool_call_id: "toolu_01HTh5vFPUMgCcLz8rj6s46g".into(), tool_name: "Bash".into(), input: serde_json::json!({"command": "echo hi", "description": "Print hi via echo"}) });
-    assert_eq!(normalised(c, "PostToolUse"), HookEvent::ToolEnd { session: claude_session(), tool_call_id: "toolu_01HTh5vFPUMgCcLz8rj6s46g".into(), tool_name: "Bash".into() });
+    assert_eq!(normalised(c, "PostToolUse"), HookEvent::ToolEnd { session: claude_session(), tool_call_id: "toolu_01HTh5vFPUMgCcLz8rj6s46g".into(), tool_name: "Bash".into(), input: serde_json::json!({"command": "echo hi", "description": "Print hi via echo"}) });
     assert_eq!(normalised(c, "Stop"), HookEvent::Stop { session: claude_session() });
     assert_eq!(
         normalised(c, "usage"),
@@ -57,7 +57,7 @@ fn kt01_codexs_payloads_normalise_to_the_same_events() {
     // Codex may send a null transcript path.
     assert_eq!(normalised(x, "SessionEnd"), HookEvent::SessionEnd { session: codex_session(false) });
     assert_eq!(normalised(x, "PreToolUse"), HookEvent::ToolStart { session: codex_session(true), tool_call_id: "call_Xq3mB7rT2kLp9vNw".into(), tool_name: "Bash".into(), input: serde_json::json!({"command": "cargo test"}) });
-    assert_eq!(normalised(x, "PostToolUse"), HookEvent::ToolEnd { session: codex_session(true), tool_call_id: "call_Xq3mB7rT2kLp9vNw".into(), tool_name: "Bash".into() });
+    assert_eq!(normalised(x, "PostToolUse"), HookEvent::ToolEnd { session: codex_session(true), tool_call_id: "call_Xq3mB7rT2kLp9vNw".into(), tool_name: "Bash".into(), input: serde_json::json!({"command": "cargo test"}) });
     assert_eq!(normalised(x, "Stop"), HookEvent::Stop { session: codex_session(true) });
 }
 
@@ -69,18 +69,46 @@ fn kt01_a_payload_missing_its_session_or_tool_call_is_an_error_not_a_guess() {
 
 #[test]
 fn kt01_session_start_registers_and_session_end_deregisters() {
-    let ctx = Context { harness_pid: Some(7), config_home: Some("/home/user/.claude".into()), repository: Some("git@github.com:o/r.git".into()), attendance: Some(Attendance::Attended) };
+    let ctx = Context { harness_pid: Some(7), config_home: Some("/home/user/.claude".into()), repository: Some("git@github.com:o/r.git".into()), attendance: Some(Attendance::Attended), heavy: gruntas_harness::builds::BuildsConfig::default().heavy_list() };
     let c = PluginHarness::Claude;
     assert_eq!(
         hook::to_activity(c, &normalised(c, "SessionStart"), &ctx),
         Some(Activity::Register(Registration { session_id: CLAUDE.into(), harness: c, harness_pid: Some(7), config_home: Some("/home/user/.claude".into()), cwd: Some("/home/user/repo".into()), repository: Some("git@github.com:o/r.git".into()), transcript_path: claude_session().transcript_path, attendance: Some(Attendance::Attended) }))
     );
     assert_eq!(hook::to_activity(PluginHarness::Codex, &normalised(PluginHarness::Codex, "SessionEnd"), &ctx), Some(Activity::Deregister { session_id: CODEX.into() }));
-    // Tool calls and the turn's end tell the daemon nothing until the heavy
-    // list (KT03) says which do.
-    for e in ["PreToolUse", "PostToolUse", "Stop"] {
+    // A tool call off the heavy list (`echo hi`) tells the daemon nothing.
+    for e in ["PreToolUse", "PostToolUse"] {
         assert_eq!(hook::to_activity(c, &normalised(c, e), &ctx), None, "{e}");
     }
+}
+
+/// KT03: a heavy command's start and end, and the turn's end, as the
+/// daemon is told them; the list is config.json's when it sets one.
+#[test]
+fn kt03_heavy_tool_calls_and_the_turns_end_are_told() {
+    let x = PluginHarness::Codex;
+    let ctx = Context { heavy: gruntas_harness::builds::BuildsConfig::default().heavy_list(), ..Context::default() };
+    let call = "call_Xq3mB7rT2kLp9vNw".to_string();
+    assert_eq!(hook::to_activity(x, &normalised(x, "PreToolUse"), &ctx), Some(Activity::HeavyStart { session_id: CODEX.into(), tool_call_id: call.clone() }));
+    assert_eq!(hook::to_activity(x, &normalised(x, "PostToolUse"), &ctx), Some(Activity::HeavyEnd { session_id: CODEX.into(), tool_call_id: call }));
+    assert_eq!(hook::to_activity(x, &normalised(x, "Stop"), &ctx), Some(Activity::TurnEnd { session_id: CODEX.into() }));
+    // `cargo test` is not on a list that names only `make`.
+    let make_only = Context { heavy: vec!["make".into()], ..Context::default() };
+    assert_eq!(hook::to_activity(x, &normalised(x, "PreToolUse"), &make_only), None);
+    // A tool without a command is never heavy.
+    let read = HookEvent::ToolStart { session: codex_session(true), tool_call_id: "t".into(), tool_name: "Read".into(), input: serde_json::json!({"file_path": "cargo test"}) };
+    assert_eq!(hook::to_activity(x, &read, &ctx), None);
+
+    let root = scratch::root("hook-heavy-list");
+    let home = root.join("home");
+    std::fs::create_dir_all(home.join(".gruntas")).unwrap();
+    let env = |k: &str| if k == "HOME" { home.display().to_string() } else { String::new() };
+    assert!(hook::heavy_list(&env).contains(&"cargo test".to_string()), "the default with no config");
+    std::fs::write(home.join(".gruntas/config.json"), r#"{"builds": {"heavy": ["just ci"]}}"#).unwrap();
+    assert_eq!(hook::heavy_list(&env), ["just ci"]);
+    std::fs::write(home.join(".gruntas/config.json"), r#"{"builds": {"heavy": "make"}}"#).unwrap();
+    assert!(hook::heavy_list(&env).contains(&"make".to_string()), "a list that is not one is the default");
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// A daemon too old to know `activity`: it welcomes, skips the line it

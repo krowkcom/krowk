@@ -75,7 +75,7 @@ impl Registry {
                 true
             }
             Activity::Deregister { session_id } => self.sessions.remove(session_id).is_some(),
-            Activity::HeavyStart { .. } | Activity::HeavyEnd { .. } | Activity::Usage { .. } => false,
+            Activity::HeavyStart { .. } | Activity::HeavyEnd { .. } | Activity::TurnEnd { .. } | Activity::Usage { .. } => false,
         }
     }
 

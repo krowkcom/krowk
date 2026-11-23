@@ -50,6 +50,20 @@ breaking changes may affect it without notice.
   which keeps one that has work in it. A worktree gruntas did not make is
   left where it is, and the hook notes it in `hook.log`.
 
+- **Claude Code and Codex builds will count toward this machine's busy build
+  slots.** When a plugin session's `PreToolUse` and `PostToolUse` (or
+  `PostToolUseFailure`) hooks see a shell command on the heavy list start and
+  end, the daemon adds it to the
+  build slots in use that it announces for allocation, never past the total.
+  The list is `builds.heavy` in config.json (default `cargo
+  build|test|check|clippy`, `npm`/`pnpm`/`bun` test or build scripts, `go
+  test|build`, `make`). It is only a statistic: counting never decides on,
+  delays or rewrites a tool call. A command whose end never comes stops
+  counting at the turn's end (`Stop`, a new `turnEnd` activity), at the
+  session's end, or after 20 minutes. These hooks never start the daemon: with
+  none running they count nothing. Like `gruntas hook` itself, nothing
+  sends these yet: the plugin that does is still to come.
+
 - **`gruntas_session_info` in `gruntas-mcp`.** A Claude Code or Codex
   session that runs `gruntas-mcp` can ask what gruntas knows about it: the
   registration its plugin's `SessionStart` hook made (session id, harness,

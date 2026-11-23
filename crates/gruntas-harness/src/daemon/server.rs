@@ -1130,10 +1130,20 @@ impl State {
         *n
     }
 
-    /// Takes one session's activity: the registry, with the entries whose
+    /// Takes one session's activity: its heavy commands counted
+    /// (`builds::RUNNING`), and the registry, with the entries whose
     /// harness has gone pruned, written off the thread when it changed
     /// (R-LAG-9).
     fn activity(&mut self, a: &Activity) {
+        {
+            let mut running = crate::builds::RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+            match a {
+                Activity::HeavyStart { session_id, tool_call_id } => running.start(session_id, tool_call_id, std::time::Instant::now()),
+                Activity::HeavyEnd { session_id, tool_call_id } => running.end(session_id, tool_call_id),
+                Activity::TurnEnd { session_id } | Activity::Deregister { session_id } => running.end_session(session_id),
+                Activity::Register(_) | Activity::Usage { .. } => {}
+            }
+        }
         let changed = self.registry.apply(a) | self.registry.prune(super::registry::alive);
         if !changed {
             return;

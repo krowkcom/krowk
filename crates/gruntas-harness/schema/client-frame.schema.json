@@ -969,7 +969,7 @@
       ]
     },
     "Activity": {
-      "description": "What a session gruntas does not run did, one `activity` frame each:\nregistering at its start, leaving at its end, a heavy command starting\nand ending, and its account's usage windows.",
+      "description": "What a session gruntas does not run did, one `activity` frame each:\nregistering at its start, leaving at its end, a heavy command starting\nand ending, a turn's end, and its account's usage windows.",
       "oneOf": [
         {
           "description": "A session started (or resumed): the daemon keeps it until it ends or\nits harness process is gone.",
@@ -1042,6 +1042,23 @@
             "type",
             "sessionId",
             "toolCallId"
+          ]
+        },
+        {
+          "description": "A turn of the session ended: the heavy commands it had not ended\ncount no more.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "turnEnd"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId"
           ]
         },
         {

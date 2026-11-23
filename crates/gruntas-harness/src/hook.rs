@@ -91,8 +91,8 @@ pub enum HookEvent {
     SessionEnd { session: Session },
     /// A tool call about to run: `PreToolUse`.
     ToolStart { session: Session, tool_call_id: String, tool_name: String, input: Value },
-    /// And done: `PostToolUse`.
-    ToolEnd { session: Session, tool_call_id: String, tool_name: String },
+    /// And done: `PostToolUse`, or `PostToolUseFailure`.
+    ToolEnd { session: Session, tool_call_id: String, tool_name: String, input: Value },
     /// The turn's end.
     Stop { session: Session },
     /// The account's usage windows, from the Claude plugin's mod.
@@ -109,6 +109,9 @@ pub struct Context {
     /// The working directory's origin remote.
     pub repository: Option<String>,
     pub attendance: Option<Attendance>,
+    /// The commands that count toward the busy build slots
+    /// (`builds.heavy`); read for a tool call only.
+    pub heavy: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -160,9 +163,11 @@ pub fn normalise(_harness: PluginHarness, event: &str, payload: &Value) -> Resul
             let t = tool()?;
             HookEvent::ToolStart { session: session()?, tool_call_id: t.tool_use_id, tool_name: t.tool_name, input: t.tool_input }
         }
-        "PostToolUse" => {
+        // A call that failed (a build or test that exited non-zero) ends
+        // with `PostToolUseFailure` in Claude Code, not `PostToolUse`.
+        "PostToolUse" | "PostToolUseFailure" => {
             let t = tool()?;
-            HookEvent::ToolEnd { session: session()?, tool_call_id: t.tool_use_id, tool_name: t.tool_name }
+            HookEvent::ToolEnd { session: session()?, tool_call_id: t.tool_use_id, tool_name: t.tool_name, input: t.tool_input }
         }
         "Stop" => HookEvent::Stop { session: session()? },
         "usage" => {
@@ -174,8 +179,9 @@ pub fn normalise(_harness: PluginHarness, event: &str, payload: &Value) -> Resul
 }
 
 /// What the daemon is told of `event`, if anything. A tool call is told
-/// only when its command is on the heavy list, which is KT03's; the turn's
-/// end likewise.
+/// only when it runs a command on the heavy list (`ctx.heavy`), its start
+/// and its end; the turn's end always, so a heavy command whose end never
+/// came counts no more (D5).
 pub fn to_activity(harness: PluginHarness, event: &HookEvent, ctx: &Context) -> Option<Activity> {
     match event {
         HookEvent::SessionStart { session, .. } => Some(Activity::Register(Registration {
@@ -189,9 +195,29 @@ pub fn to_activity(harness: PluginHarness, event: &HookEvent, ctx: &Context) -> 
             attendance: ctx.attendance,
         })),
         HookEvent::SessionEnd { session } => Some(Activity::Deregister { session_id: session.id.clone() }),
-        HookEvent::ToolStart { .. } | HookEvent::ToolEnd { .. } | HookEvent::Stop { .. } => None,
+        HookEvent::ToolStart { session, tool_call_id, input, .. } => heavy(input, ctx).then(|| Activity::HeavyStart { session_id: session.id.clone(), tool_call_id: tool_call_id.clone() }),
+        HookEvent::ToolEnd { session, tool_call_id, input, .. } => heavy(input, ctx).then(|| Activity::HeavyEnd { session_id: session.id.clone(), tool_call_id: tool_call_id.clone() }),
+        HookEvent::Stop { session } => Some(Activity::TurnEnd { session_id: session.id.clone() }),
         HookEvent::Usage { config_home, windows } => Some(Activity::Usage { config_home: config_home.clone(), windows: windows.clone() }),
     }
+}
+
+/// Whether a tool call's input is a shell command on the heavy list: any
+/// tool's, Claude Code's `Bash` and Codex's alike, that has a `command`.
+fn heavy(input: &Value, ctx: &Context) -> bool {
+    input.get("command").and_then(Value::as_str).is_some_and(|c| crate::builds::listed(c, &ctx.heavy))
+}
+
+/// The heavy list config.json sets (`builds.heavy`), else the default
+/// (`builds::LISTED`): a config that cannot be read changes nothing here,
+/// as the hook never fails its session.
+pub fn heavy_list(env: &dyn Fn(&str) -> String) -> Vec<String> {
+    let set = gruntas_api::home::resolve(env)
+        .ok()
+        .and_then(|h| std::fs::read(h.join(gruntas_api::home::CONFIG)).ok())
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v.get("builds")?.get("heavy")?.clone()).ok());
+    crate::builds::BuildsConfig { heavy: set, ..Default::default() }.heavy_list()
 }
 
 /// The account a hook of `harness` runs as: its config home.
@@ -360,7 +386,8 @@ pub fn run(args: &[String], stdin: impl Read, env: &dyn Fn(&str) -> String, vers
         return (Some(deny), None);
     }
     let ctx = match &ev {
-        HookEvent::SessionStart { session, .. } => Context { harness_pid: harness_pid(), config_home: config_home(h, env), repository: session.cwd.as_deref().and_then(repository), attendance: Some(attendance()) },
+        HookEvent::SessionStart { session, .. } => Context { harness_pid: harness_pid(), config_home: config_home(h, env), repository: session.cwd.as_deref().and_then(repository), attendance: Some(attendance()), heavy: Vec::new() },
+        HookEvent::ToolStart { .. } | HookEvent::ToolEnd { .. } => Context { config_home: config_home(h, env), heavy: heavy_list(env), ..Context::default() },
         _ => Context { config_home: config_home(h, env), ..Context::default() },
     };
     let Some(activity) = to_activity(h, &ev, &ctx) else { return (None, None) };
@@ -373,11 +400,13 @@ pub fn run(args: &[String], stdin: impl Read, env: &dyn Fn(&str) -> String, vers
         Ok(s) => s,
         Err(e) => return (None, Some(format!("{event}: {e}"))),
     };
-    // A session that ends with no daemon has nothing to deregister from:
-    // only the rest start one.
+    // A session that ends with no daemon has nothing to deregister from,
+    // and a heavy command or turn's end nothing to clear; a heavy command's
+    // start is not held up for a daemon to start (its session's start
+    // started one). Only the rest start one.
     let stream = match &activity {
-        Activity::Deregister { .. } => std::os::unix::net::UnixStream::connect(&socket).map_err(|e| format!("no daemon on {}: {e}", socket.display())),
-        _ => connect_or_start(env, &socket),
+        Activity::Register(_) | Activity::Usage { .. } => connect_or_start(env, &socket),
+        Activity::Deregister { .. } | Activity::HeavyStart { .. } | Activity::HeavyEnd { .. } | Activity::TurnEnd { .. } => std::os::unix::net::UnixStream::connect(&socket).map_err(|e| format!("no daemon on {}: {e}", socket.display())),
     };
     match stream.and_then(|s| talk(s, &cwd, version, activity)) {
         Ok(()) => (None, None),

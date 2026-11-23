@@ -1568,7 +1568,7 @@ pub enum PluginHarness {
 
 /// What a session gruntas does not run did, one `activity` frame each:
 /// registering at its start, leaving at its end, a heavy command starting
-/// and ending, and its account's usage windows.
+/// and ending, a turn's end, and its account's usage windows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Activity {
@@ -1581,6 +1581,9 @@ pub enum Activity {
     HeavyStart { session_id: String, tool_call_id: String },
     /// And ended.
     HeavyEnd { session_id: String, tool_call_id: String },
+    /// A turn of the session ended: the heavy commands it had not ended
+    /// count no more.
+    TurnEnd { session_id: String },
     /// An account's usage windows, as its harness reads them.
     Usage {
         /// The account's config home (`CLAUDE_CONFIG_DIR`, `~/.claude`).

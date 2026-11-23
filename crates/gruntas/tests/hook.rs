@@ -185,9 +185,75 @@ fn kt02_session_start_registers_with_d4s_fields_and_session_end_deregisters() {
 /// clears at the turn's end or the time limit, the count never passes the
 /// total, and no hook output carries a decision or `updatedInput`.
 #[test]
-#[ignore = "KT03: count heavy commands toward build slots"]
 fn kt03_heavy_commands_move_the_announced_busy_slots_and_decide_nothing() {
-    todo!("KT03: drive PreToolUse/PostToolUse (fixtures codex/PreToolUse.json runs `cargo test`) and read the announced busy slots")
+    use gruntas_harness::daemon::server;
+    use gruntas_harness::sync::announce::capacity;
+    let s = Scratch::new("kt03");
+    // The daemon in this process, so its count is the one `capacity` reads,
+    // as the announcer's is in `gruntas host serve`.
+    let socket = s.socket();
+    let daemon = std::thread::spawn(move || {
+        let factory: server::Factory = Box::new(|_, _| Err(gruntas_harness::engine::EngineError::new("no_sessions", "this test runs none")));
+        // Never idle out between two hooks of a slow run; it ends with the
+        // test's process.
+        server::run(server::Options { socket, idle: None, gruntas_version: "test".into(), ..Default::default() }, factory)
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while std::os::unix::net::UnixStream::connect(s.socket()).is_err() {
+        assert!(!daemon.is_finished(), "the daemon did not start: {:?}", daemon.join());
+        assert!(Instant::now() < deadline, "the daemon never listened");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let builds = gruntas_harness::slots::Pool::new(s.0.join("slots"), "build-slots", 2);
+    let agents = gruntas_harness::slots::Pool::new(s.0.join("slots"), "agent-slots", 2);
+    let busy = || capacity(&builds, &agents).build_slots;
+    // Runs a hook as the harness would: exit 0 and nothing on stdout, so no
+    // decision and no `updatedInput`, whatever it is given.
+    let hook = |harness: &str, event: &str, payload: &serde_json::Value| {
+        let (out, took) = s.hook(harness, event, payload.to_string().as_bytes());
+        assert!(out.status.success() && out.stdout.is_empty() && took < LIMIT, "{harness} {event}: {out:?} in {took:?}");
+    };
+    let codex = |event: &str| serde_json::from_slice::<serde_json::Value>(&fixture("codex", event)).unwrap();
+    let mut claude_cargo: serde_json::Value = serde_json::from_slice(&fixture("claude", "PreToolUse")).unwrap();
+    claude_cargo["tool_input"]["command"] = "cd crates && cargo clippy --all-targets".into();
+    assert_eq!(busy().in_use, 0);
+
+    // Codex's `cargo test` starts: one slot busy; Claude's `cargo clippy` too: two.
+    hook("codex", "PreToolUse", &codex("PreToolUse"));
+    assert_eq!(busy().in_use, 1);
+    hook("claude", "PreToolUse", &claude_cargo);
+    assert_eq!(busy().in_use, 2);
+    // A third never takes the count past the total.
+    let mut third = codex("PreToolUse");
+    third["tool_use_id"] = "call_third".into();
+    hook("codex", "PreToolUse", &third);
+    assert_eq!(busy().in_use, 2, "clamped to the total");
+    // A command off the list counts nothing.
+    hook("claude", "PreToolUse", &serde_json::from_slice(&fixture("claude", "PreToolUse")).unwrap());
+    // Codex's ends: the other two still count, one past the total.
+    hook("codex", "PostToolUse", &codex("PostToolUse"));
+    assert_eq!(busy().in_use, 2);
+    // Claude's fails (`cargo clippy` exits non-zero): it ends all the same.
+    let mut failed = claude_cargo.clone();
+    failed["hook_event_name"] = "PostToolUseFailure".into();
+    failed["error"] = "Exit code 101".into();
+    hook("claude", "PostToolUseFailure", &failed);
+    assert_eq!(busy().in_use, 1);
+    hook("claude", "PreToolUse", &claude_cargo);
+    assert_eq!(busy().in_use, 2);
+    // Codex's turn ends with its third never ended: it clears.
+    hook("codex", "Stop", &codex("Stop"));
+    assert_eq!(busy().in_use, 1);
+    // Claude's turn ends: none.
+    hook("claude", "Stop", &serde_json::from_slice(&fixture("claude", "Stop")).unwrap());
+    assert_eq!(busy().in_use, 0);
+
+    // Every event, heavy or not, decides nothing.
+    for harness in ["claude", "codex"] {
+        for event in EVENTS {
+            hook(harness, event, &serde_json::from_slice(&fixture(harness, event)).unwrap());
+        }
+    }
 }
 
 /// KT04: gruntas_session_info answers the registration of the harness
