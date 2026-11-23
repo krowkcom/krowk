@@ -1,9 +1,9 @@
 //! The status board, published and read (R-STA-5, D6, D8, D9).
 //!
 //! **Publishing** rides on the presence publisher's thread
-//! (`announce`): it reads the daemon's registrations as the daemon last
-//! wrote them (`registry::Registry::read`, beside the socket), so the
-//! daemon's own thread does nothing more for it. Whenever the board's Tasks
+//! (`announce`): it reads the daemon's status and registrations as the
+//! daemon last wrote them (`tasks::Tasks::read`, `registry::Registry::read`,
+//! beside the socket), so the daemon's own thread does nothing more for it. Whenever the board's Tasks
 //! change, and at least with every presence refresh, the board is sealed
 //! (`status::seal_board`, which brings it within its budget by D8's rule)
 //! and put as this device's board record, at most once every `COALESCE`;
@@ -17,6 +17,7 @@
 
 use super::announce::Announcer;
 use crate::daemon::registry::Registry;
+use crate::daemon::tasks::Tasks;
 use gruntas_client::device_chain::Chain;
 use gruntas_client::e2e::DeviceId;
 use gruntas_client::status::{self, Board, Counts, Field, Task};
@@ -109,8 +110,14 @@ fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// directory is `dir`, as `a.device` publishes it now: each Task's machine
 /// filled in.
 pub fn board(dir: &Path, device: &DeviceId) -> Board {
-    let tasks: Vec<Task> = Registry::read(dir)
-        .board_tasks()
+    // The daemon's Tasks (`daemon::tasks`: observed states, health, git
+    // context), and for a session registered since it last wrote them, what
+    // its registration says.
+    let kept = Tasks::read(dir);
+    let mut tasks: Vec<Task> = kept.tasks().cloned().collect();
+    tasks.extend(Registry::read(dir).board_tasks().into_iter().filter(|t| kept.get(&t.id).is_none()));
+    tasks.sort_by(|a, b| a.id.cmp(&b.id));
+    let tasks: Vec<Task> = tasks
         .into_iter()
         .map(|mut t| {
             t.metadata.gruntas.machine = Some(Field::harness(device.to_string()));
@@ -222,6 +229,31 @@ mod tests {
         assert!(c.due(&tasks, at + COALESCE), "owed, and due once 5 s passed");
         c.failed(at + COALESCE);
         assert!(!c.due(&tasks, at + COALESCE + POLL) && c.due(&tasks, at + COALESCE * 2), "a refused publish is owed, tried again 5 s on");
+    }
+
+    /// SL04: the board carries the daemon's observed states, and a session
+    /// registered since they were last written as its registration says.
+    #[test]
+    fn sl04_the_board_is_the_daemons_tasks_then_the_registrations() {
+        use crate::daemon::{registry, tasks};
+        use crate::protocol::{Activity, PluginHarness, Registration};
+        let dir = std::env::temp_dir().join(format!("gruntas-board-tasks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let reg = |id: &str| Activity::Register(Registration { session_id: id.into(), harness: PluginHarness::Claude, harness_pid: None, config_home: None, cwd: None, repository: None, transcript_path: None, attendance: None });
+        let mut t = tasks::Tasks::default();
+        t.apply(&reg("kept"), "2026-11-23T12:00:00Z");
+        t.apply(&Activity::PermissionRequest { session_id: "kept".into() }, "2026-11-23T12:00:01Z");
+        t.save(&dir).unwrap();
+        let mut r = registry::Registry::default();
+        r.apply(&reg("kept"));
+        r.apply(&reg("new"));
+        r.save(&dir).unwrap();
+        let b = board(&dir, &DeviceId([7; 16]));
+        let states: Vec<(&str, TaskState)> = b.tasks.iter().map(|t| (t.id.as_str(), t.status.state)).collect();
+        assert_eq!(states, [("kept", TaskState::InputRequired), ("new", TaskState::Working)]);
+        assert_eq!(b.sessions, ["kept", "new"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

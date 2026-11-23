@@ -77,10 +77,23 @@ impl Tasks {
     /// The Tasks `dir` holds; none when there are none or they cannot be read.
     // blocking: once, as the daemon starts.
     pub fn load(dir: &Path) -> Tasks {
+        Tasks::from_file(dir, true)
+    }
+
+    /// `load`, saying nothing when the file cannot be read: for a reader
+    /// that reads it again and again (the status board's publisher).
+    // blocking: a file read.
+    pub fn read(dir: &Path) -> Tasks {
+        Tasks::from_file(dir, false)
+    }
+
+    fn from_file(dir: &Path, say: bool) -> Tasks {
         let path = dir.join(FILE);
         match std::fs::read(&path) {
             Ok(b) => serde_json::from_slice(&b).unwrap_or_else(|e| {
-                eprintln!("{} cannot be read ({e}): starting with no status", path.display());
+                if say {
+                    eprintln!("{} cannot be read ({e}): starting with no status", path.display());
+                }
                 Tasks::default()
             }),
             Err(_) => Tasks::default(),

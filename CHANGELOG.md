@@ -86,7 +86,8 @@ breaking changes may affect it without notice.
   runs and `NOT_SERVING` after. The daemon reads the session's branch, HEAD,
   worktree and dirty flag with git itself, at the session's start and at
   most every 5 seconds after activity, so the hooks stay fast. Kept in
-  `status.json` beside `registrations.json`. The Claude plugin adds
+  `status.json` beside `registrations.json`, and that is what the status
+  board publishes. The Claude plugin adds
   `PermissionRequest` and `PermissionDenied` hooks, which never answer the
   prompt; the `activity` frame gains `permissionRequest` and `active`. Codex
   has no permission hook, so its sessions are never shown input-required
