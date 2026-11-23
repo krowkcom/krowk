@@ -267,7 +267,8 @@ fn cap(s: &str, most: usize) -> String {
     s.chars().take(most).collect()
 }
 
-/// How long one git read may take before it is killed and nothing read:
+/// How long one git read (both its runs) may take before it is killed and
+/// nothing read:
 /// a huge tree or a stalled mount never holds a read, or the session's
 /// next one, past this.
 const GIT_DEADLINE: Duration = Duration::from_secs(3);
@@ -279,9 +280,12 @@ const MOST_GIT_OUT: u64 = 64 << 10;
 /// optional locks, submodules not looked into, and none of the daemon's
 /// own `GIT_*` variables, which are whichever session's started it): its
 /// worktree's top, branch, HEAD and whether anything is changed or
-/// untracked. None outside a repository, or past `GIT_DEADLINE`.
+/// untracked. `Some(None)` outside a repository; None when git could not
+/// say (it failed, or ran past `GIT_DEADLINE`), so what was read before
+/// stands.
 // blocking: the daemon runs it on the blocking pool.
-pub fn git(cwd: &Path) -> Option<Git> {
+pub fn git(cwd: &Path) -> Option<Option<Git>> {
+    let deadline = std::time::Instant::now() + GIT_DEADLINE;
     let query = || {
         gruntas_api::git::query(cwd).ok().map(|mut c| {
             for (k, _) in std::env::vars_os() {
@@ -295,13 +299,19 @@ pub fn git(cwd: &Path) -> Option<Git> {
     };
     let mut top = query()?;
     top.args(["rev-parse", "--show-toplevel"]);
-    let worktree = String::from_utf8_lossy(&bounded(top)?).trim_end_matches(['\n', '\r']).to_string();
-    if worktree.is_empty() {
-        return None;
+    let (out, ok) = bounded(top, deadline)?;
+    let worktree = String::from_utf8_lossy(&out).trim_end_matches(['\n', '\r']).to_string();
+    if !ok || worktree.is_empty() {
+        return Some(None);
     }
     let mut status = query()?;
     status.args(["status", "--porcelain=v2", "--branch", "--ignore-submodules=all"]);
-    let out = bounded(status)?;
+    let (out, ok) = bounded(status, deadline)?;
+    // Cut off at `MOST_GIT_OUT`, it fails for the pipe closed: what it said
+    // is still so, and dirty.
+    if !ok && (out.len() as u64) < MOST_GIT_OUT {
+        return None;
+    }
     let (mut branch, mut head, mut dirty) = (None, None, false);
     for line in String::from_utf8_lossy(&out).lines() {
         if let Some(oid) = line.strip_prefix("# branch.oid ") {
@@ -313,13 +323,13 @@ pub fn git(cwd: &Path) -> Option<Git> {
             break;
         }
     }
-    Some(Git { branch, head, worktree, dirty })
+    Some(Some(Git { branch, head, worktree, dirty }))
 }
 
-/// What `cmd` prints on stdout, at most `MOST_GIT_OUT` of it, within
-/// `GIT_DEADLINE`; it is killed after, whatever it is doing. None when it
-/// could not start or ran out of time.
-fn bounded(mut cmd: std::process::Command) -> Option<Vec<u8>> {
+/// What `cmd` prints on stdout, at most `MOST_GIT_OUT` of it, before
+/// `deadline`, and whether it exited 0; it is killed after, whatever it is
+/// doing. None when it could not start or ran out of time.
+fn bounded(mut cmd: std::process::Command, deadline: std::time::Instant) -> Option<(Vec<u8>, bool)> {
     use std::io::Read;
     let mut child = cmd.stdout(Stdio::piped()).spawn().ok()?;
     let out = child.stdout.take()?;
@@ -329,10 +339,21 @@ fn bounded(mut cmd: std::process::Command) -> Option<Vec<u8>> {
         let _ = out.take(MOST_GIT_OUT).read_to_end(&mut b);
         let _ = tx.send(b);
     });
-    let got = rx.recv_timeout(GIT_DEADLINE).ok();
-    let _ = child.kill();
-    let _ = child.wait();
-    got
+    let got = rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).ok();
+    // Once its output is read it is given until the deadline to exit, and
+    // its own status counts; past that, or with nothing read, it is killed.
+    let ok = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None) if got.is_some() && std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(2)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break false;
+            }
+        }
+    };
+    got.map(|out| (out, ok))
 }
 
 #[cfg(test)]
@@ -469,17 +490,17 @@ mod tests {
         let root = root.canonicalize().unwrap();
         let git_ = |args: &[&str]| assert!(std::process::Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgSign=false"]).args(args).current_dir(&root).stdout(Stdio::null()).status().unwrap().success());
         git_(&["init", "-q", "-b", "trunk"]);
-        let g = git(&root.join("sub")).unwrap();
+        let g = git(&root.join("sub")).unwrap().unwrap();
         assert_eq!((g.branch.as_deref(), g.head.as_deref(), g.worktree.as_str(), g.dirty), (Some("trunk"), None, root.to_str().unwrap(), false));
         std::fs::write(root.join("f"), "x").unwrap();
-        assert!(git(&root).unwrap().dirty, "untracked counts");
+        assert!(git(&root).unwrap().unwrap().dirty, "untracked counts");
         git_(&["add", "f"]);
         git_(&["commit", "-q", "-m", "c"]);
-        let g = git(&root).unwrap();
+        let g = git(&root).unwrap().unwrap();
         assert_eq!(g.head.as_ref().map(String::len), Some(40));
         assert!(!g.dirty);
         git_(&["checkout", "-q", "--detach"]);
-        assert_eq!(git(&root).unwrap().branch, None);
+        assert_eq!(git(&root).unwrap().unwrap().branch, None);
         let mut t = Tasks::default();
         t.apply(&reg("s"), T0);
         assert!(t.set_git("s", Some(g.clone())));
@@ -487,7 +508,7 @@ mod tests {
         assert_eq!(t.get("s").unwrap().metadata.gruntas.worktree, Some(Field::harness(root.display().to_string())));
         assert!(t.set_git("s", None));
         assert_eq!(t.get("s").unwrap().metadata.gruntas.branch, None);
-        assert_eq!(git(Path::new("/")), None);
+        assert_eq!(git(Path::new("/")), Some(None));
         let _ = std::fs::remove_dir_all(&root);
     }
 

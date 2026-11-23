@@ -551,7 +551,7 @@ async fn sweep(state: Shared) {
         for (id, cwd) in reads {
             let state = state.clone();
             tokio::task::spawn_local(async move {
-                let git = tokio::task::spawn_blocking(move || super::tasks::git(&cwd)).await.ok().flatten();
+                let git = tokio::task::spawn_blocking(move || super::tasks::git(&cwd)).await;
                 let mut s = state.borrow_mut();
                 if s.stopping {
                     return;
@@ -559,7 +559,10 @@ async fn sweep(state: Shared) {
                 if let Some(c) = s.git.get_mut(&id) {
                     c.running = false;
                 }
-                if s.tasks.set_git(&id, git) {
+                // A read git could not finish leaves the last one standing.
+                if let Ok(Some(git)) = git
+                    && s.tasks.set_git(&id, git)
+                {
                     s.tasks_changed = true;
                 }
             });

@@ -398,7 +398,14 @@ fn sl04_a_vanished_harness_is_canceled_and_not_serving_and_git_context_is_the_da
     assert_eq!(g.dirty, Some(Field::harness(true)));
     assert_eq!(g.project, Some(Field::harness("github.com/acme/app".into())));
     assert_eq!(g.health, Some(Field::harness(Health::Serving)));
-    let took: u64 = std::fs::read_to_string(&took_file).unwrap().trim().parse().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let took: u64 = loop {
+        match std::fs::read_to_string(&took_file) {
+            Ok(t) => break t.trim().parse().unwrap(),
+            Err(_) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(e) => panic!("the harness never timed its hook: {e}"),
+        }
+    };
     assert!(took < HOOK_LIMIT.as_millis() as u64, "SessionStart took {took} ms");
 
     // A clean tree reads clean at the next read after activity.
