@@ -4028,7 +4028,8 @@ was released on GitHub but never published to npm.
   credentials travel, and a refusal is written to stderr and into the JSON
   envelope.
 
-[Unreleased]: https://github.com/gruntas/gruntas/compare/v2026.11.0...HEAD
+[Unreleased]: https://github.com/gruntas/gruntas/compare/v2026.11.1...HEAD
+[2026.11.1]: https://github.com/gruntas/gruntas/compare/v2026.11.0...v2026.11.1
 [2026.11.0]: https://github.com/gruntas/gruntas/compare/v0.18.0...v2026.11.0
 [0.18.0]: https://github.com/krowkcom/krowk/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/krowkcom/krowk/compare/v0.16.2...v0.17.0
