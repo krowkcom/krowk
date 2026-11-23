@@ -173,6 +173,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   enforces anything on it yet: this is the record the steering limits build
   on.
 
+- **A steered session sees who steered it.** A steer that carries an origin
+  now reaches the session's engine (Claude Code, Codex) framed as `steer
+  from <session> on <machine>, by an agent` or `steer from a person on
+  <machine>`, so the model weighs it as input from elsewhere and not as the
+  person's own words. Text in the steer cannot close that frame. The
+  session log keeps the steer's raw text with the origin beside it; a steer
+  with no origin (from an older gruntas) is delivered as before.
+
 - **`krowk trust` grants, revokes and lists repo trust.** `krowk trust
   [<path>]` trusts the repository `<path>` (default: the current directory)
   is in, so `krowk -p`, the host and `sync take` may run its hooks and MCP

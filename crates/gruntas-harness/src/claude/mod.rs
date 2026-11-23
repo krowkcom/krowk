@@ -616,7 +616,7 @@ impl Engine for ClaudeEngine {
                 ctx.compat.mcp.warm(&|s, t| crate::mcp::denied_by(&ctx.gate, s, t));
             }
             let (prompt, images) = match ctx.history.last().map(|h| &h.item) {
-                Some(Item::UserText { text, images }) => (text.clone(), images.clone()),
+                Some(Item::UserText { text, images, .. }) => (text.clone(), images.clone()),
                 _ => return Err(EngineError::new("empty_prompt", "a backend turn needs the prompt as its last item")),
             };
             // A turn Claude Code began runs where it began, whatever the
@@ -1540,7 +1540,7 @@ impl Proc {
         let mut left = steers.into_iter();
         while let Some(steer) = left.next() {
             let uuid = gruntas_store::new_id();
-            let content = user_content(&steer.text, &steer.images, session_dir).await;
+            let content = user_content(&steer.framed(), &steer.images, session_dir).await;
             if let Err(e) = self.send(&json!({"type": "user", "message": {"role": "user", "content": content}, "parent_tool_use_id": null, "session_id": "", "uuid": uuid})).await {
                 queue.put_back(std::iter::once(steer).chain(left).collect());
                 return Err(e);

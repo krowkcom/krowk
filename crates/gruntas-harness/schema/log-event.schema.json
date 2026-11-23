@@ -735,6 +735,17 @@
                 "$ref": "#/$defs/ImageRef"
               }
             },
+            "origin": {
+              "description": "Where a steer came from, beside its raw text; absent for what\nthe person typed and for a steer that carried no origin.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Origin"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "kind": {
               "type": "string",
               "const": "userText"
@@ -873,6 +884,40 @@
         "number",
         "mediaType",
         "file"
+      ]
+    },
+    "Origin": {
+      "description": "Where a steering command came from (D7): the channel it arrived through,\nthe only signal used. Every command that acts on a session other than\nthe caller's own — a prompt to an existing session, `steer`, `interrupt`,\n`approve`, `switchModel`, and `take` — carries one when its sender knows\nit; a command without one (an older client's) has an unknown origin.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/OriginKind"
+        },
+        "sessionId": {
+          "description": "The session the command came from, when `kind` is `agent`. On a\nprompt that starts a new session, the new session's parent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "device": {
+          "description": "The name of the machine the command was sent from. Absent only\nwhere the sender's name is not at hand: a host command carries just\nthe sending session.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "OriginKind": {
+      "description": "Who a steering command came from.",
+      "type": "string",
+      "enum": [
+        "person",
+        "agent"
       ]
     },
     "ProviderBlob": {
