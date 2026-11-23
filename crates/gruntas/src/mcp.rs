@@ -867,8 +867,8 @@ mod session {
 
     /// The registrations naming the harness process that started this
     /// server (more than one for a Codex app-server running several
-    /// threads, or a file an older daemon wrote), and the processes looked
-    /// at.
+    /// threads, or a session that ended without its SessionEnd hook), and
+    /// the processes looked at.
     fn mine(registry: &Registry) -> (Vec<&gruntas_harness::protocol::Registration>, Vec<u32>) {
         let line = starters(std::process::id(), parent, |pid| name(pid).is_some_and(|n| LAUNCHERS.contains(&n.as_str()) || n.starts_with("npm ")));
         let found = line.iter().map(|pid| registry.sessions().filter(|r| r.harness_pid == Some(*pid)).collect::<Vec<_>>()).find(|m| !m.is_empty()).unwrap_or_default();
@@ -959,7 +959,7 @@ mod session {
             [r] => *r,
             // Never a guess: a report on another session's Task misleads
             // whoever reads it.
-            many => return Err(fail("ambiguous_session", format!("{} sessions are registered for the process that started this MCP server (a Codex app-server running several threads), so gruntas cannot tell which one is reporting", many.len()))),
+            many => return Err(fail("ambiguous_session", format!("{} sessions are registered for the process that started this MCP server (a Codex app-server running several threads, or a session ended without its SessionEnd hook), so gruntas cannot tell which one is reporting: one that has ended without its SessionEnd hook goes when its harness process does", many.len()))),
         };
         let socket = gruntas_harness::daemon::socket(env).map_err(|why| fail("no_daemon_dir", why))?;
         let report = gruntas_client::status::Report { state, phase: a.phase, blocked_on: a.blocked_on, pr: a.pr, next: a.next, timestamp: String::new() };

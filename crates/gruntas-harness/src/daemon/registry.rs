@@ -118,19 +118,6 @@ impl Registry {
                 if self.sessions.get(&r.session_id) == Some(r) {
                     return false;
                 }
-                // A Claude Code process runs one session at a time: one it
-                // ran before (`/clear`, `/resume`, its SessionEnd lost or
-                // still on its way) is over, so a report from the process
-                // lands on the session it runs now. Codex's app-server may
-                // run several threads in one process, so its stay. Another
-                // harness's entry on the same pid is a process that is
-                // gone, its pid reused.
-                if let Some(pid) = r.harness_pid {
-                    let before: Vec<String> = self.sessions.iter().filter(|(id, x)| **id != r.session_id && x.harness_pid == Some(pid) && (r.harness == PluginHarness::Claude || x.harness != r.harness)).map(|(id, _)| id.clone()).collect();
-                    for id in before {
-                        self.forget(&id);
-                    }
-                }
                 if self.sessions.len() >= MOST && !self.sessions.contains_key(&r.session_id) {
                     let first = self.sessions.keys().next().cloned();
                     if let Some(k) = first {
@@ -497,29 +484,6 @@ mod tests {
         let long = Report { pr: Some(format!("https://x.example/{}", "y".repeat(PR_MOST))), timestamp: String::new(), ..Report::default() };
         r.report("a", "x", &long, jiff::Timestamp::now());
         assert_eq!(r.task("a").unwrap().metadata.gruntas.pr, None, "too long is dropped, never cut");
-    }
-
-    #[test]
-    fn sl03_a_harness_process_that_registers_again_runs_that_session_now() {
-        let mut r = Registry::default();
-        r.apply(&Activity::Register(reg("old", Some(7))));
-        r.report("old", "x", &report(None), jiff::Timestamp::now());
-        r.apply(&Activity::Register(reg("unnamed", None)));
-        r.apply(&Activity::Register(reg("new", Some(7))));
-        let ids: Vec<&str> = r.sessions.keys().map(String::as_str).collect();
-        assert_eq!(ids, ["new", "unnamed"]);
-        assert_eq!(r.task("old"), None);
-        // Codex's threads may share a process.
-        let codex = |id: &str, pid: u32| Activity::Register(Registration { harness: PluginHarness::Codex, ..reg(id, Some(pid)) });
-        r.apply(&codex("c1", 9));
-        r.apply(&codex("c2", 9));
-        assert!(r.sessions.contains_key("c1") && r.sessions.contains_key("c2"));
-        // Another harness on the same pid is a reused pid: the old entries go.
-        r.apply(&codex("c3", 7));
-        assert!(!r.sessions.contains_key("new") && r.sessions.contains_key("c3"));
-        r.apply(&Activity::Register(reg("claude", Some(9))));
-        let ids: Vec<&str> = r.sessions.keys().map(String::as_str).collect();
-        assert_eq!(ids, ["c3", "claude", "unnamed"]);
     }
 
     #[test]

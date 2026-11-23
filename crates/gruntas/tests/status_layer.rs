@@ -194,8 +194,8 @@ fn sl03_a_report_updates_the_task_and_its_history_keeps_ten() {
         assert_eq!(r["isError"], true, "{r}");
     }
 
-    // Two Codex threads in this one process: which is reporting cannot be
-    // told, so neither is guessed.
+    // More sessions in this one process: which is reporting cannot be
+    // told, so none is guessed.
     for id in ["x1", "x2"] {
         let reg = Registration { session_id: id.into(), harness: PluginHarness::Codex, harness_pid: Some(std::process::id()), config_home: None, cwd: None, repository: None, transcript_path: None, attendance: None };
         gruntas_harness::hook::send(&m.socket(), "/r", "test", Activity::Register(reg)).unwrap();
