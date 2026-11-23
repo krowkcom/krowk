@@ -56,7 +56,7 @@ breaking changes may affect it without notice.
   end, the daemon adds it to the
   build slots in use that it announces for allocation, never past the total.
   The list is `builds.heavy` in config.json (default `cargo
-  build|test|check|clippy`, `npm`/`pnpm`/`bun` test or build, `go
+  build|test|check|clippy`, `npm`/`pnpm`/`bun` test or build scripts, `go
   test|build`, `make`). It is only a statistic: the hook never decides on,
   delays or rewrites a tool call. A command whose end never comes stops
   counting at the turn's end (`Stop`, a new `turnEnd` activity), at the

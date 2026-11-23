@@ -192,7 +192,7 @@ fn kt03_heavy_commands_move_the_announced_busy_slots_and_decide_nothing() {
     // The daemon in this process, so its count is the one `capacity` reads,
     // as the announcer's is in `gruntas host serve`.
     let socket = s.socket();
-    std::thread::spawn(move || {
+    let daemon = std::thread::spawn(move || {
         let factory: server::Factory = Box::new(|_, _| Err(gruntas_harness::engine::EngineError::new("no_sessions", "this test runs none")));
         // Never idle out between two hooks of a slow run; it ends with the
         // test's process.
@@ -200,6 +200,7 @@ fn kt03_heavy_commands_move_the_announced_busy_slots_and_decide_nothing() {
     });
     let deadline = Instant::now() + Duration::from_secs(5);
     while std::os::unix::net::UnixStream::connect(s.socket()).is_err() {
+        assert!(!daemon.is_finished(), "the daemon did not start: {:?}", daemon.join());
         assert!(Instant::now() < deadline, "the daemon never listened");
         std::thread::sleep(Duration::from_millis(5));
     }

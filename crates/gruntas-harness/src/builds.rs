@@ -49,8 +49,9 @@ pub struct BuildsConfig {
     /// The commands the Claude Code and Codex plugin's hooks count toward
     /// the machine's busy build slots, each a program and the words that
     /// follow it (`cargo test`, `make`). When absent: `cargo` build, test,
-    /// check and clippy; `npm`, `pnpm` and `bun` test and build (and `run
-    /// test`, `run build`); `go` test and build; `make`. A statistic for
+    /// check and clippy; `npm test`, `npm run test`, `npm run build`; `pnpm`
+    /// and `bun` test and build (and `run test`, `run build`); `go` test and
+    /// build; `make`. A statistic for
     /// placing work, never a gate: nothing waits on it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heavy: Option<Vec<String>>,
