@@ -20,6 +20,8 @@
 //! - `device_chain`: the signed, append-only device list and its verifier.
 //! - `session_record`: a synced session's record, signed by the device
 //!   that published it and checked against the device list.
+//! - `status`: each agent session's A2A Task, the sealed board a machine
+//!   publishes of them, and the counts the registry sees.
 //! - `presence`: a host's announcement of itself — its instances, models,
 //!   directories and session ids — sealed to the person's devices.
 //! - `host_command`: a command one device sends a host (`start`), and the
@@ -47,6 +49,7 @@ pub mod relay_ticket;
 pub mod device_chain;
 pub mod recovery;
 pub mod session_record;
+pub mod status;
 pub mod sync;
 pub mod user_key;
 
