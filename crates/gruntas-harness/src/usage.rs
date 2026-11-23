@@ -296,8 +296,13 @@ impl Usage {
     /// seen at `now_ms`: under the login of the instance that runs in
     /// `config_home` when one recorded it, else under the config home.
     /// Claude Code's `fiveHour` and `sevenDay` are kept as rollover names
-    /// them. Answers the key they went under.
+    /// them; any other kind is not one, and dropped. Within one window (the
+    /// same reset) use never goes down, so an idle session's old reading
+    /// never undoes a later, higher one. Answers the key they went under.
     pub fn record_windows(&self, config_home: &str, windows: &[UsageWindow], now_ms: i64) -> Result<String, String> {
+        if !config_home.starts_with('/') || config_home.chars().any(char::is_control) {
+            return Err(format!("{config_home:?} is not a config directory"));
+        }
         let mut key = String::new();
         self.change(|d| {
             key = d.login_for_home(config_home).map_or_else(|| home_key(config_home), str::to_string);
@@ -306,15 +311,25 @@ impl Usage {
                 let name = match w.kind.as_str() {
                     "fiveHour" => "five_hour",
                     "sevenDay" => "seven_day",
-                    other => other,
+                    _ => continue,
                 };
-                if !w.used_percent.is_finite() || kept.get(name).is_some_and(|k| k.seen_at_ms > now_ms) {
+                let was = kept.get(name);
+                if !w.used_percent.is_finite() || was.is_some_and(|k| k.seen_at_ms > now_ms) {
                     continue;
                 }
                 let resets_at_ms = w.resets_at_ms.and_then(|r| i64::try_from(r).ok());
-                let first_span_ms = kept.get(name).and_then(|k| k.first_span_ms).or_else(|| resets_at_ms.map(|r| r - now_ms).filter(|n| *n > 0));
-                let status = if w.used_percent >= 100.0 { LimitState::Limited } else { LimitState::Allowed };
-                kept.insert(name.into(), Window { status, used_percent: Some(w.used_percent.max(0.0)), resets_at_ms, seen_at_ms: now_ms, first_span_ms });
+                let mut used = w.used_percent.max(0.0);
+                if let Some(k) = was.filter(|k| resets_at_ms.is_some() && k.resets_at_ms == resets_at_ms) {
+                    used = used.max(k.used_percent.unwrap_or(0.0));
+                }
+                let first_span_ms = was.and_then(|k| k.first_span_ms).or_else(|| resets_at_ms.map(|r| r - now_ms).filter(|n| *n > 0));
+                // As the host reads Claude Code's own report (`claude::stream`).
+                let status = match used {
+                    u if u >= 100.0 => LimitState::Limited,
+                    u if u >= 80.0 => LimitState::Warning,
+                    _ => LimitState::Allowed,
+                };
+                kept.insert(name.into(), Window { status, used_percent: Some(used), resets_at_ms, seen_at_ms: now_ms, first_span_ms });
             }
             if kept.is_empty() {
                 d.logins.remove(&key);
@@ -489,8 +504,18 @@ mod tests {
         let d = u.read();
         assert_eq!(d.standing("a@x.com (Acme)", 3_000).map(|s| s.headroom), Some(40.0));
         // Another home, and a figure that is no figure, change nothing there.
-        assert_eq!(u.record_windows("/h/other", &[five(f64::NAN, 1)], 2_000).unwrap(), "/h/other");
+        assert_eq!(u.record_windows("/h/other", &[five(f64::NAN, 1), UsageWindow { kind: "x".into(), used_percent: 100.0, resets_at_ms: None }], 2_000).unwrap(), "/h/other");
         assert!(!u.read().logins.contains_key("/h/other"));
+        assert!(u.record_windows("a@x.com (Acme)", &[five(100.0, 1)], 2_000).is_err(), "a key that is no directory");
+        // An idle session's older reading of the same window, sent later,
+        // never lowers it; a new window (another reset) starts over.
+        u.record_windows("/h/.claude", &[five(20.0, 9_000_000)], 2_500).unwrap();
+        let w = &u.read().logins["a@x.com (Acme)"]["five_hour"];
+        assert_eq!((w.used_percent, w.status, w.seen_at_ms), (Some(60.0), LimitState::Allowed, 2_500));
+        u.record_windows("/h/.claude", &[five(85.0, 9_000_000)], 2_600).unwrap();
+        assert_eq!(u.read().logins["a@x.com (Acme)"]["five_hour"].status, LimitState::Warning);
+        u.record_windows("/h/.claude", &[five(5.0, 27_000_000)], 2_700).unwrap();
+        assert_eq!(u.read().logins["a@x.com (Acme)"]["five_hour"].used_percent, Some(5.0));
         let _ = std::fs::remove_dir_all(dir);
     }
 

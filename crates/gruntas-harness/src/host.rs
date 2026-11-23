@@ -2471,9 +2471,12 @@ impl Writer<'_> {
     }
 
     /// Saves who `instance` is signed in as, and its models. Without a login
-    /// the instance keeps the one it had, or is its own.
+    /// the instance keeps the one it had, or is its own. Its config home goes
+    /// with a vendor login alone: a keyed instance (a router) sharing
+    /// `~/.claude` must not take the account's usage windows (R-KIT-7).
     async fn save_account(&self, instance: &str, login: Option<String>, models: Vec<String>) {
-        let (usage, instance, home) = (self.usage.clone(), instance.to_string(), self.home.clone());
+        let home = self.home.clone().filter(|_| login.is_some());
+        let (usage, instance) = (self.usage.clone(), instance.to_string());
         let _ = tokio::task::spawn_blocking(move || {
             let login = login.unwrap_or_else(|| usage.read().login_of(&instance).to_string());
             usage.record_account(&instance, &login, &models, home.as_deref(), gruntas_store::now_ms())

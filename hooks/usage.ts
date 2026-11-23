@@ -38,17 +38,21 @@ export function configHome(dir: string | undefined, home: string | undefined): s
 
 /** Runs the hook with `limits`; any failure is the hook's to log, never the session's. */
 async function send($: EngineInterface, limits: readonly SessionRateLimit[]): Promise<void> {
-  const home = configHome(await $.env.get('CLAUDE_CONFIG_DIR'), await $.env.get('HOME'))
-  const stdin = home === undefined ? undefined : payload(home, limits)
-  if (stdin === undefined) return
   try {
-    await $.process.run(['gruntas', 'hook', 'claude', 'usage'], { stdin, timeoutMs: 3_000 })
+    const home = configHome(await $.env.get('CLAUDE_CONFIG_DIR'), await $.env.get('HOME'))
+    const stdin = home === undefined ? undefined : payload(home, limits)
+    if (stdin === undefined) return
+    // The hook itself gives up inside 2 s.
+    await $.process.run(['gruntas', 'hook', 'claude', 'usage'], { stdin, timeoutMs: 2_000 })
   } catch {
     // No gruntas on the PATH, or one that did not finish in time.
   }
 }
 
-/** Reads the windows, free, and sends them. */
+/**
+ * Reads the windows, free, and sends them. A new session has none until its
+ * first response: its first `session.measure` sends them then.
+ */
 async function report($: EngineInterface): Promise<void> {
   try {
     await send($, (await $.session.usage()).rateLimits)
@@ -66,7 +70,8 @@ export const register: Register = on => {
   })
 
   on('session.measure', async ($, e, next) => {
-    if (e.changed.includes('rateLimits')) await send($, e.rateLimits)
+    // Not awaited: the measurement goes on at once.
+    if (e.changed.includes('rateLimits')) void send($, e.rateLimits)
     return next(e)
   })
 }

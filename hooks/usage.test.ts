@@ -31,7 +31,7 @@ test('a moved window runs `gruntas hook claude usage` with the windows on stdin'
   const ran: { argv: readonly string[]; stdin?: string }[] = []
   on('process.run', (_, e) => {
     ran.push({ argv: e.argv, stdin: e.init?.stdin })
-    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('env.get', (_, e) => ({ value: e.name === 'CLAUDE_CONFIG_DIR' ? '/work/.claude-b' : '/home/ada' }))
   on('session.measure', (_, e) => ({ changed: e.changed }))
@@ -39,6 +39,8 @@ test('a moved window runs `gruntas hook claude usage` with the windows on stdin'
   await $.session.measure({ context, rateLimits: LIMITS, changed: ['context'] })
   expect(ran).toEqual([])
   await $.session.measure({ context, rateLimits: LIMITS, changed: ['rateLimits'] })
+  // The send is not awaited by the measurement: let it run.
+  for (let i = 0; i < 100 && ran.length === 0; i++) await Promise.resolve()
   expect(ran.map(r => r.argv)).toEqual([['gruntas', 'hook', 'claude', 'usage']])
   expect(JSON.parse(ran[0]?.stdin ?? 'null').configHome).toBe('/work/.claude-b')
 })

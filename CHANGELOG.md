@@ -66,11 +66,13 @@ breaking changes may affect it without notice.
 
 - **The Claude Code plugin reports the account's usage windows.** A small
   mod in the plugin (`hooks/usage.ts`) reads the 5-hour and 7-day windows
-  Claude Code already has, at session start, whenever one moves and every
+  Claude Code already has, at session start (a resumed one's; a new
+  session's come with its first response), whenever one moves and every
   5 minutes, and runs `gruntas hook claude usage` with them and the
   account's config home. The host daemon writes them into `usage.json`, the
-  record rollover ranks accounts by: under the login of the instance that
-  last ran in that config home, else under the config home itself. Without
+  record rollover ranks accounts by: under the login gruntas last saw
+  signed in there, else under the config home itself. Within one window a
+  reading never lowers the one kept. Without
   `gruntas` on the PATH the mod does nothing.
 
 - **`gruntas_session_info` in `gruntas-mcp`.** A Claude Code or Codex
