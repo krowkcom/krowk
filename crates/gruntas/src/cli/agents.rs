@@ -287,7 +287,7 @@ pub(super) fn ping(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let started = std::time::Instant::now();
     api.send_host_command(&device.to_string(), &id, &sealed)?;
     if ctx.format == Format::Human {
-        let _ = writeln!(ctx.io.stderr, "gruntas: pinged {name} — it answers at its next presence refresh, within 10 s…");
+        let _ = writeln!(ctx.io.stderr, "gruntas: pinged {name} — it answers at its next presence refresh, within about 10 s (waiting up to {} s)…", ANSWER_WAIT.as_secs());
     }
     let deadline = started + ANSWER_WAIT;
     let answer = loop {
