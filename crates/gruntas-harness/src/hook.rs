@@ -11,8 +11,14 @@
 //! Everything runs on a worker thread the main thread waits on for at most
 //! `GIVE_UP`: past that the process exits whatever the worker is doing, so
 //! the hook is done well inside the 2 seconds it is allowed.
+//!
+//! `SessionStart` registers the session with what the hook can find beside
+//! the payload (D4): the harness's process, the working directory's origin
+//! remote, and whether a person is at it; it starts the daemon when none
+//! runs. `SessionEnd` hands its deregistration to a detached copy of
+//! itself and returns at once (`background`).
 
-use crate::protocol::{Activity, ClientFrame, PluginHarness, Registration, ServerFrame, UsageWindow, PROTOCOL_VERSION};
+use crate::protocol::{Activity, Attendance, ClientFrame, PluginHarness, Registration, ServerFrame, UsageWindow, PROTOCOL_VERSION};
 use serde::Deserialize;
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -32,6 +38,14 @@ const MOST_STDIN: u64 = 16 << 20;
 
 /// `hook.log` is started over past this.
 const LOG_MOST: u64 = 256 << 10;
+
+/// Set on the detached copy `SessionEnd` hands its work to, so that copy
+/// does it rather than handing it on again.
+const BACKGROUND: &str = "GRUNTAS_HOOK_BACKGROUND";
+
+/// How long a hook that started the daemon waits for its socket: inside
+/// `GIVE_UP`, which bounds it anyway.
+const START_WAIT: Duration = Duration::from_millis(1300);
 
 /// One session's part of a payload: every event carries it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +79,9 @@ pub struct Context {
     pub harness_pid: Option<u32>,
     /// The account's config home.
     pub config_home: Option<String>,
+    /// The working directory's origin remote.
+    pub repository: Option<String>,
+    pub attendance: Option<Attendance>,
 }
 
 #[derive(Deserialize)]
@@ -140,9 +157,9 @@ pub fn to_activity(harness: PluginHarness, event: &HookEvent, ctx: &Context) -> 
             harness_pid: ctx.harness_pid,
             config_home: ctx.config_home.clone(),
             cwd: session.cwd.clone(),
-            repository: None,
+            repository: ctx.repository.clone(),
             transcript_path: session.transcript_path.clone(),
-            attendance: None,
+            attendance: ctx.attendance,
         })),
         HookEvent::SessionEnd { session } => Some(Activity::Deregister { session_id: session.id.clone() }),
         HookEvent::ToolStart { .. } | HookEvent::ToolEnd { .. } | HookEvent::Stop { .. } => None,
@@ -167,12 +184,111 @@ pub fn config_home(harness: PluginHarness, env: &dyn Fn(&str) -> String) -> Opti
     })
 }
 
+/// The harness's process: the hook's parent, or past it the first that is
+/// not a shell, as a harness may run the hook's command line in one. None
+/// when that is init (the harness already gone).
+pub fn harness_pid() -> Option<u32> {
+    // SAFETY: getppid takes nothing and cannot fail.
+    let mut pid = u32::try_from(unsafe { libc::getppid() }).ok()?;
+    for _ in 0..4 {
+        if pid <= 1 {
+            return None;
+        }
+        let (ppid, name) = process(pid)?;
+        if !matches!(name.as_str(), "sh" | "bash" | "dash" | "zsh" | "ksh" | "mksh" | "fish") {
+            return Some(pid);
+        }
+        pid = ppid;
+    }
+    None
+}
+
+/// Process `pid`'s parent and name.
+#[cfg(target_os = "linux")]
+fn process(pid: u32) -> Option<(u32, String)> {
+    // `pid (name) state ppid …`; the name may hold anything, `)` too.
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (open, close) = (stat.find('(')?, stat.rfind(')')?);
+    let ppid = stat.get(close + 1..)?.split_whitespace().nth(1)?.parse().ok()?;
+    Some((ppid, stat.get(open + 1..close)?.to_string()))
+}
+
+/// Process `pid`'s parent and name.
+#[cfg(not(target_os = "linux"))]
+fn process(pid: u32) -> Option<(u32, String)> {
+    let out = std::process::Command::new("ps").args(["-o", "ppid=", "-o", "comm=", "-p", &pid.to_string()]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
+    let line = String::from_utf8_lossy(&out.stdout);
+    let (ppid, comm) = line.trim().split_once(char::is_whitespace)?;
+    let name = comm.trim().rsplit('/').next()?.trim_start_matches('-');
+    Some((ppid.parse().ok()?, name.to_string()))
+}
+
+/// `cwd`'s origin remote, as git reads it (with its own hooks and
+/// fsmonitor off): none outside a repository or without one.
+pub fn repository(cwd: &str) -> Option<String> {
+    let out = gruntas_api::git::query(Path::new(cwd)).ok()?.env_remove("GIT_DIR").env_remove("GIT_WORK_TREE").args(["remote", "get-url", "origin"]).stderr(std::process::Stdio::null()).output().ok().filter(|o| o.status.success())?;
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|u| !u.is_empty())
+}
+
+/// Whether a person is at the session: the harness runs on a terminal,
+/// which its hook shares as its controlling one. A session started with no
+/// terminal (a script, a service, `claude -p` from cron) is unattended, as
+/// `gruntas -p` without one is.
+pub fn attendance() -> Attendance {
+    use std::os::unix::fs::OpenOptionsExt;
+    match std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOCTTY).open("/dev/tty") {
+        Ok(_) => Attendance::Attended,
+        Err(_) => Attendance::Unattended,
+    }
+}
+
 /// Sends `activity` to the daemon on `socket` and waits for its answer:
 /// the hello and the frame in one write, then the writing half closed, so
 /// a daemon too old to know the frame closes the connection at once rather
 /// than leaving the hook to wait. Blocks: the caller bounds it (`GIVE_UP`).
 pub fn send(socket: &Path, cwd: &str, version: &str, activity: Activity) -> Result<(), String> {
-    let mut stream = std::os::unix::net::UnixStream::connect(socket).map_err(|e| format!("no daemon on {}: {e}", socket.display()))?;
+    let stream = std::os::unix::net::UnixStream::connect(socket).map_err(|e| format!("no daemon on {}: {e}", socket.display()))?;
+    talk(stream, cwd, version, activity)
+}
+
+/// The daemon on `socket`, started when none runs: under its lock, as
+/// `daemon::ensure` starts it, from this very binary, its output to
+/// `host.log` in gruntas's home.
+fn connect_or_start(env: &dyn Fn(&str) -> String, socket: &Path) -> Result<std::os::unix::net::UnixStream, String> {
+    use std::os::unix::net::UnixStream;
+    let absent = |e: std::io::Error| if crate::daemon::absent(&e) { Ok(()) } else { Err(format!("no daemon on {}: {e}", socket.display())) };
+    match UnixStream::connect(socket) {
+        Ok(s) => return Ok(s),
+        Err(e) => absent(e)?,
+    }
+    let dir = socket.parent().unwrap_or(Path::new("/"));
+    let _lock = crate::daemon::Lock::take(dir)?;
+    match UnixStream::connect(socket) {
+        Ok(s) => return Ok(s),
+        Err(e) => absent(e)?,
+    }
+    let _ = std::fs::remove_file(socket);
+    let exe = std::env::current_exe().map_err(|e| format!("no daemon, and gruntas cannot find its own binary to start one: {e}"))?;
+    let log = gruntas_api::home::dir(env).map_err(|e| format!("no daemon, and none started: {}", e.fix()))?.join("host.log");
+    let mut child = crate::daemon::spawn_detached(&exe, &["host", "serve"], &log).map_err(|e| format!("no daemon, and none started: {e}"))?;
+    let deadline = std::time::Instant::now() + START_WAIT;
+    loop {
+        match UnixStream::connect(socket) {
+            Ok(s) => return Ok(s),
+            Err(e) => absent(e)?,
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(format!("the daemon it started exited as it started ({status}): {} says why", log.display()));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("the daemon it started did not open {} within {} ms", socket.display(), START_WAIT.as_millis()));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// The hello and `activity` on `stream`, and the daemon's answer.
+fn talk(mut stream: std::os::unix::net::UnixStream, cwd: &str, version: &str, activity: Activity) -> Result<(), String> {
     let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: cwd.to_string(), gruntas_version: version.to_string(), answers_approvals: false, token: None, background: true };
     let mut out = serde_json::to_vec(&hello).expect("a frame serializes");
     out.push(b'\n');
@@ -211,7 +327,10 @@ pub fn run(args: &[String], stdin: impl Read, env: &dyn Fn(&str) -> String, vers
         Ok(None) => return (None, None),
         Err(e) => return (None, Some(e)),
     };
-    let ctx = Context { harness_pid: None, config_home: config_home(h, env) };
+    let ctx = match &ev {
+        HookEvent::SessionStart { session, .. } => Context { harness_pid: harness_pid(), config_home: config_home(h, env), repository: session.cwd.as_deref().and_then(repository), attendance: Some(attendance()) },
+        _ => Context { config_home: config_home(h, env), ..Context::default() },
+    };
     let Some(activity) = to_activity(h, &ev, &ctx) else { return (None, None) };
     let cwd = match &ev {
         HookEvent::SessionStart { session, .. } | HookEvent::SessionEnd { session } | HookEvent::ToolStart { session, .. } | HookEvent::ToolEnd { session, .. } | HookEvent::Stop { session } => session.cwd.clone(),
@@ -222,10 +341,45 @@ pub fn run(args: &[String], stdin: impl Read, env: &dyn Fn(&str) -> String, vers
         Ok(s) => s,
         Err(e) => return (None, Some(format!("{event}: {e}"))),
     };
-    match send(&socket, &cwd, version, activity) {
+    // A session that ends with no daemon has nothing to deregister from:
+    // only the rest start one.
+    let stream = match &activity {
+        Activity::Deregister { .. } => std::os::unix::net::UnixStream::connect(&socket).map_err(|e| format!("no daemon on {}: {e}", socket.display())),
+        _ => connect_or_start(env, &socket),
+    };
+    match stream.and_then(|s| talk(s, &cwd, version, activity)) {
         Ok(()) => (None, None),
         Err(e) => (None, Some(format!("{event}: {e}"))),
     }
+}
+
+/// Hands this hook to a copy of itself in a session of its own, which
+/// reads the payload from the same stdin and outlives this process: so a
+/// `SessionEnd` returns at once, however slow the daemon, and is not cut
+/// short as the harness exits.
+fn background(args: &[String]) -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg(ARG).args(args).env(BACKGROUND, "1").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    // Read before the fork: sysconf is not async-signal-safe.
+    // SAFETY: sysconf only reads a limit.
+    let limit = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
+    let limit = if limit < 0 { 1 << 16 } else { limit.min(1 << 20) as libc::c_int };
+    // SAFETY: setsid and close_on_exec_from_3 are async-signal-safe, and
+    // nothing else runs between fork and exec. Only stdin is handed on:
+    // the harness waits on its hook's output, and none of it is the copy's.
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            crate::daemon::close_on_exec_from_3(limit);
+            Ok(())
+        });
+    }
+    // Not waited for: init reaps it once this process is gone.
+    cmd.spawn().map(drop).map_err(|e| e.to_string())
 }
 
 /// `gruntas hook <harness> <event>` (`args` after `hook`): runs `run` on a
@@ -233,6 +387,12 @@ pub fn run(args: &[String], stdin: impl Read, env: &dyn Fn(&str) -> String, vers
 /// up, and is always exit 0.
 pub fn main(args: &[String], version: &str) -> i32 {
     let env = |k: &str| std::env::var(k).unwrap_or_default();
+    if args.get(1).map(String::as_str) == Some("SessionEnd") && env(BACKGROUND).is_empty() {
+        match background(args) {
+            Ok(()) => return 0,
+            Err(e) => note(&env, &format!("SessionEnd: not handed to the background ({e}): deregistering here")),
+        }
+    }
     let (tx, rx) = std::sync::mpsc::channel();
     {
         let (args, version) = (args.to_vec(), version.to_string());
@@ -300,5 +460,30 @@ mod tests {
         };
         assert_eq!(config_home(PluginHarness::Claude, &env).as_deref(), Some("/h/.claude"));
         assert_eq!(config_home(PluginHarness::Codex, &env).as_deref(), Some("/x/codex"));
+    }
+
+    #[test]
+    fn kt02_a_process_is_read_as_its_parent_and_name() {
+        let mut child = std::process::Command::new("sleep").arg("5").spawn().unwrap();
+        // SAFETY: getpid takes nothing and cannot fail.
+        let me = u32::try_from(unsafe { libc::getpid() }).unwrap();
+        assert_eq!(process(child.id()), Some((me, "sleep".to_string())));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(process(child.id()), None);
+    }
+
+    #[test]
+    fn kt02_the_repository_is_the_origin_remote_and_none_without_one() {
+        let root = std::env::temp_dir().join(format!("gruntas-hook-origin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").args(args).current_dir(&root).status().unwrap().success());
+        git(&["init", "-q"]);
+        assert_eq!(repository(&root.display().to_string()), None, "no origin");
+        git(&["remote", "add", "origin", "https://github.com/o/r.git"]);
+        assert_eq!(repository(&root.join("sub").display().to_string()).as_deref(), Some("https://github.com/o/r.git"));
+        assert_eq!(repository("/nonexistent/gruntas"), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

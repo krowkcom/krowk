@@ -298,7 +298,7 @@ unsafe fn detached(program: &Path, args: &[&str], cwd: &Path, log: &Path, first:
 ///
 /// Only between fork and exec: it touches every descriptor the process
 /// has, whoever owns it.
-unsafe fn close_on_exec_from_3(limit: libc::c_int) {
+pub(crate) unsafe fn close_on_exec_from_3(limit: libc::c_int) {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     // SAFETY: close_range takes plain integers and changes only flags.
     if unsafe { libc::syscall(libc::SYS_close_range, 3 as libc::c_long, libc::c_uint::MAX as libc::c_long, libc::CLOSE_RANGE_CLOEXEC as libc::c_long) } == 0 {

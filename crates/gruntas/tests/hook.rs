@@ -67,6 +67,10 @@ impl Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
+        // A daemon a hook started, stopped before its directory goes.
+        if self.socket().exists() {
+            let _ = Command::new(env!("CARGO_BIN_EXE_gruntas")).args(["host", "stop", "--force"]).env_clear().env("HOME", self.0.join("home")).env("XDG_RUNTIME_DIR", self.0.join("run")).env("PATH", std::env::var("PATH").unwrap_or_default()).output();
+        }
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
@@ -77,19 +81,34 @@ fn fixture(harness: &str, event: &str) -> Vec<u8> {
 
 const EVENTS: [&str; 5] = ["SessionStart", "SessionEnd", "PreToolUse", "PostToolUse", "Stop"];
 
+/// Polls `hook.log` until it says `what`: a backgrounded `SessionEnd`
+/// writes it after its hook has returned.
+fn log_says(s: &Scratch, what: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let log = std::fs::read_to_string(s.daemon_dir().join("hook.log")).unwrap_or_default();
+        if log.contains(what) || Instant::now() >= deadline {
+            return log;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// `SessionStart` is left out: it starts the daemon (KT02).
 #[test]
 fn kt01_with_no_daemon_every_hook_exits_0_at_once_and_notes_why() {
     let s = Scratch::new("none");
     for harness in ["claude", "codex"] {
-        for event in EVENTS {
+        for event in EVENTS.into_iter().filter(|e| *e != "SessionStart") {
             let (out, took) = s.hook(harness, event, &fixture(harness, event));
             assert!(out.status.success(), "{harness} {event}: {out:?}");
             assert!(out.stdout.is_empty(), "{harness} {event} printed {:?}", String::from_utf8_lossy(&out.stdout));
             assert!(took < LIMIT, "{harness} {event} took {took:?}");
         }
     }
-    let log = std::fs::read_to_string(s.daemon_dir().join("hook.log")).unwrap();
-    assert!(log.contains("SessionStart: no daemon on"), "{log}");
+    let log = log_says(&s, "SessionEnd: no daemon on");
+    assert!(log.contains("SessionEnd: no daemon on"), "{log}");
+    assert!(!s.socket().exists(), "a SessionEnd started a daemon");
 }
 
 #[test]
@@ -127,7 +146,6 @@ fn kt01_a_hook_never_fails_its_session_whatever_it_is_given() {
 /// session with D4's fields (the harness process, the repository's origin,
 /// attendance); `SessionEnd` deregisters it and still returns at once.
 #[test]
-#[ignore = "KT02: register sessions from Claude Code and Codex hooks"]
 fn kt02_session_start_registers_with_d4s_fields_and_session_end_deregisters() {
     use gruntas_harness::daemon::registry::Registry;
     let s = Scratch::new("kt02");
@@ -149,8 +167,16 @@ fn kt02_session_start_registers_with_d4s_fields_and_session_end_deregisters() {
     };
     assert_eq!(r.repository.as_deref(), Some("git@github.com:o/r.git"));
     assert!(r.harness_pid.is_some() && r.attendance.is_some(), "{r:?}");
+    assert_eq!(r.harness_pid, Some(std::process::id()), "the hook's parent is the harness");
+    assert_eq!(r.config_home, Some(s.0.join("home/.claude").display().to_string()));
+    assert_eq!(r.cwd, Some(repo.display().to_string()));
     let (out, took) = s.hook("claude", "SessionEnd", &fixture("claude", "SessionEnd"));
     assert!(out.status.success() && took < Duration::from_millis(200), "{took:?}");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Registry::load(&s.daemon_dir()).get("2965e294-a0d4-4f50-9a48-0c9b4d0aca11").is_some() {
+        assert!(Instant::now() < deadline, "never deregistered: {}", std::fs::read_to_string(s.daemon_dir().join("hook.log")).unwrap_or_default());
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// KT03: a heavy command's `PreToolUse` and `PostToolUse` raise and lower
