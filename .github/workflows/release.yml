@@ -1,15 +1,17 @@
 name: Release
 
-# A tag is the whole trigger. `git tag -a v0.1.0 -m ... && git push origin v0.1.0`
+# A tag is the whole trigger. `git tag -a v2026.11.0 -m ... && git push origin v2026.11.0`
 # checks the tag, builds both builds of gruntas (full and lean) and gruntas-mcp for
 # five platforms in parallel (dist.yml), rebuilds one platform on a second
 # runner and refuses to go on unless the bytes match, signs the checksums and
 # the SBOMs, opens the GitHub Release with all of it on it, and publishes the
-# seven npm packages with provenance. SECURITY.md says how to verify each.
+# seven npm packages with provenance and, for a stable release, server.json to
+# the MCP registry. SECURITY.md says how to verify each.
 #
-# Three components, deliberately: the moving major tag this workflow pushes at
+# Three components, deliberately: the moving `v0` tag this workflow pushes at
 # the end is also `v*`, and a release run for `v0` would cut a release of
-# version "0" and ask npm to publish it.
+# version "0" and ask npm to publish it. Which three is the `check` job's
+# first step (scripts/release_tag.sh): calendar versions, YYYY.M.N.
 on:
   push:
     tags: ["v[0-9]*.[0-9]*.[0-9]*"]
@@ -32,8 +34,13 @@ jobs:
         with:
           persist-credentials: false
 
+      # vYYYY.M.N or vYYYY.M.N-rcK, with no leading zero in the month or N;
+      # any other tag stops here, before anything is built or published. The
+      # bare assignment is what fails the step: inside `echo` it would not.
       - id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          v=$(scripts/release_tag.sh "$GITHUB_REF_NAME")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
 
       # The release notes are the tag's CHANGELOG.md section, written for the
       # people upgrading, rather than a list of every commit.
@@ -42,7 +49,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          # A pre-release (v0.12.0-rc1) carries its release's notes, so
+          # A pre-release (v2026.11.0-rc1) carries its release's notes, so
           # every rc of one version reads the same CHANGELOG.md section.
           v="${VERSION%%-*}"
           awk -v v="$v" '
@@ -369,8 +376,8 @@ jobs:
     permissions:
       # Creates the release and uploads the archives to it.
       contents: write
-      # npm's provenance: the OIDC token names this workflow at this tag on
-      # each package it publishes.
+      # npm's trusted publishing and provenance: the OIDC token names this
+      # workflow at this tag on each package it publishes.
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -469,28 +476,43 @@ jobs:
       - name: Assemble the npm packages
         run: node npm/build.mjs
 
-      # Skips with a notice when NPM_TOKEN is unset: the first @gruntas publish
-      # uses a token the owner adds for the scope (trusted publishing follows). The release above has already happened by then.
-      # With provenance: npm records, from the OIDC token above, which
-      # workflow at which commit published each package, and shows it. It
-      # needs npm 9.5 or later (Node 22 ships 10) and, like the publish
-      # itself, NPM_TOKEN: without the token nothing is published, so there
-      # is no provenance either.
+      # Trusted publishing (publishing through the OIDC token above, no stored
+      # secret) needs npm 11.5.1 or later; Node 22 ships 10. Pinned, like the
+      # actions here.
+      - name: Install an npm that supports trusted publishing
+        run: npm install -g npm@11.21.3
+
+      # With NPM_TOKEN set, npm/publish.mjs publishes with it; without, through
+      # trusted publishing; with neither it fails the step. Provenance either
+      # way: npm records, from the OIDC token above, which workflow at which
+      # commit published each package, and shows it.
+      #
+      # NPM_TOKEN is a granular token with publish rights on @gruntas, there
+      # because trusted publishers can only be set on packages that already
+      # exist. To finish the switch once a release has published all seven:
+      #   1. On npmjs.com, for each package in dist/npm/manifest.json (@gruntas/cli,
+      #      @gruntas/mcp and the five @gruntas/cli-<platform>), Settings →
+      #      Trusted publisher → GitHub Actions: organization gruntas,
+      #      repository gruntas, workflow release.yml, no environment.
+      #   2. Delete the NPM_TOKEN repo secret, and revoke the token on npmjs.com.
+      # The next release publishes through OIDC; a package missing step 1 fails
+      # the step and names itself.
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: "true"
         run: node npm/publish.mjs
 
-      # The moving major tag, so `uses: gruntas/gruntas@v0` follows the 0.x line
-      # instead of freezing a workflow on one patch release. It moves last, once
-      # the release exists and npm carries the packages: a tag pointing at bytes
+      # The moving `v0` tag, so `uses: gruntas/gruntas@v0` follows every
+      # stable release instead of freezing a workflow on one. Named here, not
+      # derived from the version: a calendar version's first number is a year,
+      # and `v2026` is a tag nobody uses. It moves once the
+      # release exists and npm carries the packages: a tag pointing at bytes
       # nobody can download yet is worse than a tag that lags by a minute.
       #
       # Pushed through the API rather than git, because the checkout above keeps
       # no credentials on disk. A ref moved by GITHUB_TOKEN starts no workflow
       # run either way, and the narrowed trigger above would ignore it.
-      - name: Move the major tag
+      - name: Move the v0 tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -498,13 +520,66 @@ jobs:
           # A prerelease is not what `@v0` should hand an unsuspecting workflow.
           case "$GITHUB_REF_NAME" in
             *-*)
-              echo "::notice::$GITHUB_REF_NAME is a prerelease, so the major tag stays where it is"
+              echo "::notice::$GITHUB_REF_NAME is a prerelease, so v0 stays where it is"
               exit 0
               ;;
           esac
-          major="${GITHUB_REF_NAME%%.*}"
-          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$major" \
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/v0" \
             -f sha="$GITHUB_SHA" -F force=true >/dev/null \
             || gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
-              -f ref="refs/tags/$major" -f sha="$GITHUB_SHA" >/dev/null
-          echo "\`$major\` now points at $GITHUB_REF_NAME." >> "$GITHUB_STEP_SUMMARY"
+              -f ref="refs/tags/v0" -f sha="$GITHUB_SHA" >/dev/null
+          echo "\`v0\` now points at $GITHUB_REF_NAME." >> "$GITHUB_STEP_SUMMARY"
+
+      # The MCP registry entry, io.github.gruntas/gruntas, from the tag's
+      # server.json (the check job held its versions to the tag). The registry
+      # checks that npm carries @gruntas/mcp at that version naming this entry,
+      # so it goes after npm; and last, so a registry that refuses it fails
+      # this job visibly with the release, npm and v0 already done,
+      # and nothing is taken back. Re-running the job, whose steps above each
+      # finish what is half done, publishes it then. A prerelease keeps the
+      # entry where it was.
+      #
+      # mcp-publisher is pinned and checked against its Sigstore signature, as
+      # the registry's GitHub Actions guide does. `login github-oidc` trades
+      # this job's OIDC token (id-token: write, above) for a registry token
+      # for io.github.gruntas/*, so no secret is stored.
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        if: ${{ !contains(needs.check.outputs.version, '-') }}
+        with:
+          cosign-release: v3.1.3
+
+      - name: Download mcp-publisher
+        if: ${{ !contains(needs.check.outputs.version, '-') }}
+        env:
+          MCP_PUBLISHER_VERSION: v1.8.13
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          archive=mcp-publisher_linux_amd64.tar.gz
+          base="https://github.com/modelcontextprotocol/registry/releases/download/$MCP_PUBLISHER_VERSION"
+          curl -fsSL --output "$archive" "$base/$archive"
+          curl -fsSL --output "$archive.sigstore.json" "$base/$archive.sigstore.json"
+          cosign verify-blob --bundle "$archive.sigstore.json" \
+            --certificate-identity "https://github.com/modelcontextprotocol/registry/.github/workflows/release.yml@refs/tags/$MCP_PUBLISHER_VERSION" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$archive"
+          tar -xzf "$archive" mcp-publisher
+
+      - name: Publish to the MCP registry
+        if: ${{ !contains(needs.check.outputs.version, '-') }}
+        run: |
+          set -euo pipefail
+          name=$(jq -r .name server.json)
+          version=$(jq -r .version server.json)
+          # A version is published once and refused after that, so a re-run
+          # of a release that got this far skips it. Anything but a clean hit
+          # publishes and finds out.
+          seen=$(curl -s -o /dev/null -w '%{http_code}' \
+            "https://registry.modelcontextprotocol.io/v0/servers/${name/\//%2F}/versions/$version" || true)
+          if [[ "$seen" == 200 ]]; then
+            echo "::notice::$name $version is already on the MCP registry"
+            exit 0
+          fi
+          "$RUNNER_TEMP/mcp-publisher" login github-oidc
+          "$RUNNER_TEMP/mcp-publisher" publish
+          echo "\`$name\` $version is on the MCP registry." >> "$GITHUB_STEP_SUMMARY"

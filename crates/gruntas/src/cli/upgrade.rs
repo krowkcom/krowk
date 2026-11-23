@@ -1,7 +1,6 @@
 //! `gruntas upgrade`, and the notice that a newer release exists — said as
-//! often as the gap is worth: a major release once and once more a week
-//! later, a minor once, a patch never, a security fix daily until it is
-//! installed (canon, harness.md → Update notice). Which installer put this binary here decides how: a source build and an
+//! often as the gap is worth: a newer year or month once, a newer release in
+//! the same month never, a security fix daily until it is installed. Which installer put this binary here decides how: a source build and an
 //! npm install are told their own command rather than having files swapped
 //! under a manager that believes it owns them.
 
@@ -18,16 +17,18 @@ use std::time::Duration;
 const RELEASE_API: &str = "https://api.github.com/repos/gruntas/gruntas/releases/latest";
 /// The recent releases, for the check: a security fix in one skipped counts
 /// as much as one in the newest. A hundred is GitHub's most to a page; a
-/// gruntas further behind than that is a major release behind regardless.
+/// gruntas further behind than that is months behind regardless.
 const RELEASES_API: &str = "https://api.github.com/repos/gruntas/gruntas/releases?per_page=100";
 const DAY: i64 = 24 * 3600;
 const RELEASE_DOWNLOAD: &str = "https://github.com/gruntas/gruntas/releases/download";
 
-/// A release version: three numbers. `dev`, `0.9.0-12-gabc` and the golden
-/// stamp are source builds, and nothing here touches a build git owns.
+/// A release version: three numbers, none with a leading zero — a calendar
+/// version, `YYYY.M.N` (scripts/release_tag.sh), or a `0.x` one from before.
+/// `dev`, `0.9.0-12-gabc` and the golden stamp are source builds, and nothing
+/// here touches a build git owns.
 fn is_release(v: &str) -> bool {
     let parts: Vec<&str> = v.split('.').collect();
-    parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) && (p.len() == 1 || !p.starts_with('0')))
 }
 
 fn numbers(v: &str) -> Vec<u64> {
@@ -38,13 +39,15 @@ fn version_less(a: &str, b: &str) -> bool {
     is_release(a) && is_release(b) && numbers(a) < numbers(b)
 }
 
-/// How far behind `current` is. Before 1.0 the middle number is the one
-/// that breaks things, so 0.12 → 0.13 is a major release.
+/// How far behind `current` is. A calendar version's number promises
+/// nothing about compatibility (the CHANGELOG announces breaking changes), so
+/// there are two sizes: a newer year or month, or any jump from a `0.x`
+/// version (`0.17.0` → `2026.11.0`), is an update; a newer `N` in the same
+/// month is a patch.
 #[derive(Debug, PartialEq, Clone, Copy)]
 enum Gap {
     Patch,
-    Minor,
-    Major,
+    Update,
 }
 
 fn gap(current: &str, latest: &str) -> Option<Gap> {
@@ -52,13 +55,7 @@ fn gap(current: &str, latest: &str) -> Option<Gap> {
         return None;
     }
     let (a, b) = (numbers(current), numbers(latest));
-    Some(if a[0] != b[0] || (a[0] == 0 && a[1] != b[1]) {
-        Gap::Major
-    } else if a[1] != b[1] {
-        Gap::Minor
-    } else {
-        Gap::Patch
-    })
+    Some(if a[..2] != b[..2] { Gap::Update } else { Gap::Patch })
 }
 
 fn agent(timeout: Duration) -> ureq::Agent {
@@ -339,12 +336,12 @@ pub(crate) struct Newer {
     line: String,
 }
 
-/// What a notice is kept against: the release line the gap is to — `0.13`
-/// before 1.0, `2` for a major release after, `1.4` for a minor — so a patch
-/// on a line already mentioned is not news, and a security fix is its own.
-fn line(latest: &str, gap: Gap, security: bool) -> String {
+/// What a notice is kept against: the month the gap is to (`2026.11`), so
+/// a patch in a month already mentioned is not news, and a security fix is
+/// its own.
+fn line(latest: &str, security: bool) -> String {
     let n = numbers(latest);
-    let line = if gap == Gap::Major && n[0] > 0 { n[0].to_string() } else { format!("{}.{}", n[0], n[1]) };
+    let line = format!("{}.{}", n[0], n[1]);
     if security { format!("{line} security") } else { line }
 }
 
@@ -356,17 +353,14 @@ fn newer(state: &Value, current: &str, now: jiff::Timestamp) -> Option<Newer> {
         .get("security")
         .and_then(Value::as_array)
         .is_some_and(|s| s.iter().filter_map(Value::as_str).any(|v| version_less(current, v) && !version_less(&latest, v)));
-    let key = line(&latest, gap, security);
+    let key = line(&latest, security);
     let shown = state.get("shown").filter(|s| s.get("line").and_then(Value::as_str) == Some(key.as_str()));
-    let first = shown.and_then(|s| since(at(s, "first"), now));
     let last = shown.and_then(|s| since(at(s, "last"), now));
-    let times = shown.and_then(|s| s.get("times")).and_then(Value::as_u64).unwrap_or(0);
     let due = if security {
         last.is_none_or(|s| s >= DAY)
     } else {
         match gap {
-            Gap::Major => shown.is_none() || (times < 2 && first.is_some_and(|s| s >= 7 * DAY)),
-            Gap::Minor => shown.is_none(),
+            Gap::Update => shown.is_none(),
             Gap::Patch => false,
         }
     };
@@ -412,20 +406,23 @@ mod tests {
     #[test]
     fn only_three_numbers_are_a_release_and_order_is_numeric() {
         assert!(is_release("1.2.3") && !is_release("dev") && !is_release("0.0.0-golden") && !is_release("0.9.0-12-gabc"));
+        assert!(is_release("2026.11.0") && is_release("2026.1.3") && is_release("0.17.0"));
+        assert!(!is_release("2026.03.0") && !is_release("2026.11.01") && !is_release("1.2"), "no leading zero, as scripts/release_tag.sh");
         assert!(version_less("1.9.0", "1.10.0") && !version_less("1.10.0", "1.9.0") && !version_less("dev", "9.9.9"));
+        assert!(version_less("0.17.0", "2026.11.0") && version_less("2026.9.4", "2026.10.0") && version_less("2026.12.3", "2027.1.0"));
         let build = if cfg!(feature = "sessions") { "gruntas" } else { "gruntas-lean" };
         assert!(archive_name("1.2.3").starts_with(&format!("{build}_1.2.3_")) && archive_name("1.2.3").ends_with(".tar.gz"));
     }
 
     #[test]
-    fn before_1_0_the_middle_number_is_a_major_release() {
-        assert_eq!(gap("0.12.1", "0.13.0"), Some(Gap::Major));
-        assert_eq!(gap("0.11.2", "0.12.1"), Some(Gap::Major), "the gap, not the newest release's own size");
-        assert_eq!(gap("0.12.0", "0.12.3"), Some(Gap::Patch));
-        assert_eq!(gap("1.2.0", "2.0.0"), Some(Gap::Major));
-        assert_eq!(gap("1.2.9", "1.3.0"), Some(Gap::Minor));
-        assert_eq!(gap("1.3.0", "1.3.0"), None);
-        assert_eq!(gap("dev", "1.3.0"), None);
+    fn a_newer_year_or_month_is_an_update_and_a_newer_n_a_patch() {
+        assert_eq!(gap("2026.12.3", "2027.1.0"), Some(Gap::Update), "a year change");
+        assert_eq!(gap("2026.11.2", "2026.12.0"), Some(Gap::Update), "a month change");
+        assert_eq!(gap("2026.11.0", "2026.11.1"), Some(Gap::Patch), "a same-month patch");
+        assert_eq!(gap("0.17.0", "2026.11.0"), Some(Gap::Update), "the jump from 0.x");
+        assert_eq!(gap("0.12.1", "0.13.0"), Some(Gap::Update));
+        assert_eq!(gap("2026.11.0", "2026.11.0"), None);
+        assert_eq!(gap("dev", "2026.11.0"), None);
     }
 
     #[test]
@@ -456,34 +453,25 @@ mod tests {
     }
 
     #[test]
-    fn a_major_release_is_said_once_and_once_more_a_week_later() {
-        let mut s = json!({ "latest": "0.13.0" });
-        assert!(start(&mut s, "0.12.1", "2026-10-01T09:00:00Z"));
-        assert!(!start(&mut s, "0.12.1", "2026-10-01T10:00:00Z"));
-        assert!(!start(&mut s, "0.12.1", "2026-10-07T09:00:00Z"));
-        assert!(start(&mut s, "0.12.1", "2026-10-08T09:00:00Z"), "the reminder");
-        assert!(!start(&mut s, "0.12.1", "2026-10-30T09:00:00Z"), "and then nothing");
-        s["latest"] = json!("0.13.1");
-        assert!(!start(&mut s, "0.12.1", "2026-10-30T10:00:00Z"), "a patch on a line already said is not news");
-        s["latest"] = json!("0.14.0");
-        assert!(start(&mut s, "0.12.1", "2026-10-31T09:00:00Z"), "a newer line is news again");
-        let mut s = json!({ "latest": "2.0.0" });
-        assert!(start(&mut s, "1.4.0", "2026-10-01T09:00:00Z"));
-        s["latest"] = json!("2.1.0");
-        assert!(!start(&mut s, "1.4.0", "2026-10-02T09:00:00Z"), "after 1.0 a major line is its first number");
-    }
-
-    #[test]
-    fn a_minor_release_is_said_once_and_a_patch_never() {
-        let mut s = json!({ "latest": "1.3.0" });
-        assert!(start(&mut s, "1.2.0", "2026-10-01T09:00:00Z"));
-        assert!(!start(&mut s, "1.2.0", "2026-10-09T09:00:00Z"));
-        s["latest"] = json!("1.3.4");
-        assert!(!start(&mut s, "1.2.0", "2026-10-10T09:00:00Z"));
+    fn an_update_is_said_once_and_a_patch_never() {
+        let mut s = json!({ "latest": "2026.11.0" });
+        assert!(start(&mut s, "0.17.0", "2026-11-23T09:00:00Z"), "the jump from 0.x");
+        assert!(!start(&mut s, "0.17.0", "2026-11-23T10:00:00Z"));
+        assert!(!start(&mut s, "0.17.0", "2026-12-01T09:00:00Z"), "no reminder a week later");
+        s["latest"] = json!("2026.11.1");
+        assert!(!start(&mut s, "0.17.0", "2026-12-01T10:00:00Z"), "a patch in a month already said is not news");
+        s["latest"] = json!("2026.12.0");
+        assert!(start(&mut s, "0.17.0", "2026-12-02T09:00:00Z"), "a newer month is news again");
+        let mut s = json!({ "latest": "2027.1.0" });
+        assert!(start(&mut s, "2026.12.3", "2027-01-05T09:00:00Z"), "a newer year");
+        let mut s = json!({ "latest": "2026.12.0" });
+        assert!(start(&mut s, "2026.11.2", "2026-12-05T09:00:00Z"), "a newer month");
         let mut s = json!({ "latest": "0.12.2" });
-        assert!(!start(&mut s, "0.12.1", "2026-10-01T09:00:00Z"));
-        let n = newer(&s, "0.12.1", ts("2026-10-01T09:00:00Z")).unwrap();
-        assert!(n.latest == "0.12.2" && !n.due, "known, for the details overlay, but not said");
+        assert!(!start(&mut s, "0.12.1", "2026-10-01T09:00:00Z"), "a same-line patch before calendar versions");
+        let mut s = json!({ "latest": "2026.11.1" });
+        assert!(!start(&mut s, "2026.11.0", "2026-11-25T09:00:00Z"), "a same-month patch");
+        let n = newer(&s, "2026.11.0", ts("2026-11-25T09:00:00Z")).unwrap();
+        assert!(n.latest == "2026.11.1" && !n.due, "known, for the details overlay, but not said");
     }
 
     #[test]

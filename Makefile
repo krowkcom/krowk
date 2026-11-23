@@ -158,6 +158,7 @@ release-check: ## Validate the release layout, the npm launchers and the install
 	bash -n scripts/dist.sh
 	node --check npm/cli/bin/gruntas.js
 	node --check npm/mcp/bin/gruntas-mcp.js
+	node --test npm/publish_test.mjs
 	node scripts/descriptions_check.mjs
 	# The installer downloads what this file produces, so it belongs to the
 	# release pipeline rather than to `check`: it needs python3,

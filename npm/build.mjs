@@ -76,8 +76,9 @@ const version = metadata.version;
 if (!version) die("no version in " + path.join(distDir, "metadata.json"));
 
 // npm has no opinion about a leading v; a tag does. scripts/dist.sh strips it, and
-// this is the assertion that it stayed stripped.
-if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.test(version)) {
+// this is the assertion that it stayed stripped. No number has a leading zero
+// (2026.03.0 is not semver), as scripts/release_tag.sh holds a release tag to.
+if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.test(version)) {
   die("version " + JSON.stringify(version) + " is not a version npm will accept");
 }
 

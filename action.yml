@@ -79,7 +79,7 @@ runs:
         fi
         # No version asked for and the action pinned to a release tag: install
         # that release, so pinning the action pins the binary too. Any other
-        # ref — the moving major tag, main, a SHA, a branch — has no release of
+        # ref — the moving v0 tag, main, a SHA, a branch — has no release of
         # its own, so latest it is.
         if [ -z "${GRUNTAS_VERSION:-}" ]; then
           case "${GITHUB_ACTION_REF:-}" in
@@ -119,24 +119,10 @@ runs:
         bash "${GITHUB_ACTION_PATH:?}/scripts/install.sh" --lean
         echo "$GRUNTAS_BIN_DIR" >> "$GITHUB_PATH"
         # `@v0` resolved to the latest release just now, which is what that tag
-        # means for as long as 0.x is the latest line and not one release after.
-        # Nothing here can ask for "the newest 0.x" without hard-coding a host
-        # this action would then not resolve on GitHub Enterprise, so the major
-        # is checked instead: a workflow that asked for 0.x gets told, rather
-        # than handed a 1.x binary and a changed command surface.
-        if [ -z "${GRUNTAS_VERSION:-}" ]; then
-          case "${GITHUB_ACTION_REF:-}" in
-            v[0-9]*.*) ;;
-            v[0-9]*)
-              want="${GITHUB_ACTION_REF#v}"
-              got=$(gruntas --version)
-              if [ "${got%%.*}" != "$want" ]; then
-                echo "::error::gruntas@${GITHUB_ACTION_REF} resolved to the latest release, ${got}, which is not on the ${want}.x line. Pin a release tag to stay on ${want}.x, or move the action to @v${got%%.*}." >&2
-                exit 1
-              fi
-              ;;
-          esac
-        fi
+        # means: the release workflow moves `v0` to every stable release, and a
+        # calendar version (2026.11.0) promises nothing about compatibility for
+        # a major line to guard. Breaking changes are announced in the
+        # CHANGELOG a release ahead; pin a release tag to stay put.
 
     - name: Push files
       id: push
