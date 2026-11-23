@@ -11,7 +11,7 @@
     {
       "name": "gruntas",
       "displayName": "Gruntas",
-      "description": "Gruntas, the coding agent harness, for Claude Code: every session registers with the gruntas daemon, counts toward its machine's capacity, and gets the gruntas MCP server (publishing, session info, delegation) and skill. Hooks run the gruntas on your PATH; without one they do nothing.",
+      "description": "Gruntas, the coding agent harness, for Claude Code: every session registers with the gruntas daemon, reports its status, and gets the gruntas MCP server (status, publishing, delegation) and skill. Hooks run the gruntas on your PATH, else nothing.",
       "author": { "name": "Gruntas" },
       "category": "development",
       "source": "./",

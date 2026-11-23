@@ -19,6 +19,15 @@ breaking changes may affect it without notice.
 
 ## [Unreleased]
 
+## [2026.11.1] - 2026-11-23
+
+**Every agent on every machine of yours, in one place.** Agent sessions in
+Claude Code and Codex now report a standard status that your devices can
+read and the registry can't. `gruntas agents` shows it as a tree across your
+machines, and `gruntas ping` checks a machine or a session is alive. Next
+release, `gruntas status` becomes that tree; move readiness scripts to
+`gruntas providers list --check` now (see Deprecated).
+
 ### Added
 
 - **`gruntas agents [project]`: every agent on every machine of yours, as
