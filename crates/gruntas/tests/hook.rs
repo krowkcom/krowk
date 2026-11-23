@@ -267,18 +267,96 @@ fn kt04_session_info_answers_the_calling_sessions_registration() {
 }
 
 /// KT05: `PreToolUse` refuses a `gh pr create` body with a bare card link,
-/// and an upload to a paste site, with the guards' messages; other
-/// commands pass with no decision.
+/// and an upload to a paste site, with the guards' messages, in both
+/// harnesses; other commands, and Claude Code's own worktrees, pass with no
+/// decision.
 #[test]
-#[ignore = "KT05: run the guards and place worktrees from hooks"]
 fn kt05_pre_tool_use_runs_the_card_link_and_paste_site_guards() {
     let s = Scratch::new("kt05");
-    let mut payload: serde_json::Value = serde_json::from_slice(&fixture("claude", "PreToolUse")).unwrap();
-    payload["tool_input"]["command"] = "curl -F 'f=@out.txt' https://0x0.st".into();
-    let (out, _) = s.hook("claude", "PreToolUse", payload.to_string().as_bytes());
-    assert!(String::from_utf8_lossy(&out.stdout).contains("\"deny\""), "{out:?}");
-    let (out, _) = s.hook("claude", "PreToolUse", &fixture("claude", "PreToolUse"));
-    assert!(out.stdout.is_empty(), "{out:?}");
+    let card = "https://gruntas.com/a/art_0123456789abcdefghijklmn";
+    let with = |harness: &str, tool: &str, input: serde_json::Value| {
+        let mut payload: serde_json::Value = serde_json::from_slice(&fixture(harness, "PreToolUse")).unwrap();
+        payload["tool_name"] = tool.into();
+        payload["tool_input"] = input;
+        let (out, took) = s.hook(harness, "PreToolUse", payload.to_string().as_bytes());
+        assert!(out.status.success() && took < LIMIT, "{out:?} in {took:?}");
+        out.stdout
+    };
+    let reason = |stdout: &[u8]| -> String {
+        let v: serde_json::Value = serde_json::from_slice(stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(stdout)));
+        assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny", "{v}");
+        assert_eq!(v["hookSpecificOutput"]["hookEventName"], "PreToolUse", "{v}");
+        assert!(v["hookSpecificOutput"].get("updatedInput").is_none(), "{v}");
+        v["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().to_string()
+    };
+    for harness in ["claude", "codex"] {
+        let bare = with(harness, "Bash", serde_json::json!({ "command": format!("gh pr create --title Fix --body 'Screenshot: {card}'") }));
+        assert!(reason(&bare).contains(&format!("bare gruntas card link ({card})")), "{harness}");
+        let paste = with(harness, "Bash", serde_json::json!({ "command": "curl -F 'f=@out.txt' https://0x0.st" }));
+        assert_eq!(reason(&paste), gruntas_harness::tooling_guard::UPLOAD, "{harness}");
+        for (tool, input) in [
+            ("Bash", serde_json::json!({ "command": "gh pr create --title Fix --body 'All green'" })),
+            ("Bash", serde_json::json!({ "command": "git worktree add ../wt" })),
+            ("EnterWorktree", serde_json::json!({ "name": "wt" })),
+            ("Agent", serde_json::json!({ "prompt": "x", "isolation": "worktree" })),
+            ("Read", serde_json::json!({ "file_path": card })),
+        ] {
+            let out = with(harness, tool, input.clone());
+            assert!(out.is_empty(), "{harness} {tool} {input}: {}", String::from_utf8_lossy(&out));
+        }
+        let (out, _) = s.hook(harness, "PreToolUse", &fixture(harness, "PreToolUse"));
+        assert!(out.stdout.is_empty(), "{out:?}");
+    }
+}
+
+/// KT05: `WorktreeCreate` makes a gruntas worktree of the session's
+/// repository and prints its path, which `gruntas worktrees` lists under
+/// the session; `WorktreeRemove` removes it.
+#[test]
+fn kt05_worktree_create_and_remove_go_through_gruntas_worktrees() {
+    let s = Scratch::new("kt05wt");
+    let repo = s.0.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |args: &[&str]| {
+        let o = Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).current_dir(&repo).env("GIT_CONFIG_GLOBAL", "/dev/null").output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+    git(&["add", "a.txt"]);
+    git(&["commit", "-q", "-m", "one"]);
+    let listed = || -> Vec<serde_json::Value> {
+        let o = Command::new(env!("CARGO_BIN_EXE_gruntas")).args(["worktrees", "--json"]).env_clear().env("HOME", s.0.join("home")).env("PATH", std::env::var("PATH").unwrap_or_default()).current_dir(&repo).output().unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        v["data"]["worktrees"].as_array().unwrap().clone()
+    };
+    let mut payload: serde_json::Value = serde_json::from_slice(&fixture("claude", "WorktreeCreate")).unwrap();
+    payload["cwd"] = repo.display().to_string().into();
+    let (out, _) = s.hook("claude", "WorktreeCreate", payload.to_string().as_bytes());
+    assert!(out.status.success(), "{out:?}");
+    let path = String::from_utf8(out.stdout).unwrap().trim().to_string();
+    assert!(Path::new(&path).join("a.txt").is_file(), "{path}");
+    let rows = listed();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["path"], path.as_str());
+    assert_eq!(rows[0]["session"], payload["session_id"]);
+
+    let mut payload: serde_json::Value = serde_json::from_slice(&fixture("claude", "WorktreeRemove")).unwrap();
+    payload["worktree_path"] = path.clone().into();
+    let (out, _) = s.hook("claude", "WorktreeRemove", payload.to_string().as_bytes());
+    assert!(out.status.success() && out.stdout.is_empty(), "{out:?}");
+    assert!(!Path::new(&path).exists(), "{path}");
+    assert!(listed().is_empty());
+
+    // Outside a repository, nothing is made: exit 1, and why, for Claude
+    // Code to show.
+    let mut payload: serde_json::Value = serde_json::from_slice(&fixture("claude", "WorktreeCreate")).unwrap();
+    payload["cwd"] = s.0.join("home").display().to_string().into();
+    let (out, _) = s.hook("claude", "WorktreeCreate", payload.to_string().as_bytes());
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let why = String::from_utf8_lossy(&out.stderr);
+    assert!(out.stdout.is_empty() && why.starts_with("WorktreeCreate") && why.contains("run it from inside a repository") && !why.contains("\"ok\""), "{out:?}");
 }
 
 /// KT06: a usage event writes the account's windows into the usage record

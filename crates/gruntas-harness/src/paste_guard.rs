@@ -79,10 +79,21 @@ pub fn pre_tool_use(input: &Value) -> Value {
         Some(tool) => crate::tooling_guard::tool_refusal(tool, input.get("tool_input").unwrap_or(&Value::Null)).map(String::from),
         None => None,
     };
-    match why {
-        Some(why) => json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": why}}),
-        None => json!({}),
-    }
+    why.map_or_else(|| json!({}), |why| deny(&why))
+}
+
+/// The deny a `PreToolUse` hook answers with: Claude Code's shape, which
+/// Codex also reads.
+pub fn deny(why: &str) -> Value {
+    json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": why}})
+}
+
+/// Why a bash call `command` is not run in a session of gruntas's plugin
+/// (`gruntas hook <harness> PreToolUse`): a paste-site upload or a bare
+/// card link. Its worktrees are not refused: there, `WorktreeCreate` makes
+/// them through `gruntas worktrees add` (D6).
+pub fn plugin_guard(command: &str, cwd: &Path) -> Option<String> {
+    crate::tooling_guard::upload_refusal(command).map(String::from).or_else(|| refusal(command, cwd))
 }
 
 /// `pre_tool_use` over the hook's stdin, for `gruntas __paste-guard`: an
