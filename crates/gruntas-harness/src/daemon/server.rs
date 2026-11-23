@@ -36,8 +36,9 @@ use crate::engine::EngineError;
 use crate::host::{Host, HostConfig};
 use crate::log;
 use super::outbox::{self, Caps, Out, Outbox, Pushed};
+use super::registry::Registry;
 use super::replay::{self, Tail};
-use crate::protocol::{ClientFrame, Command, ErrorInfo, HostSession, HostStatus, LogBody, ServerFrame, StreamLine, PROTOCOL_VERSION};
+use crate::protocol::{Activity, ClientFrame, Command, ErrorInfo, HostSession, HostStatus, LogBody, ServerFrame, StreamLine, PROTOCOL_VERSION};
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
@@ -182,6 +183,13 @@ pub(super) struct State {
     /// Each `execute.clientRef` seen in the last `REF_KEPT`: what its
     /// prompt has named, for a client cut before it learned (`attach.clientRef`).
     refs: HashMap<String, Ref>,
+    /// The sessions of Claude Code and Codex their plugin registered
+    /// (`activity`), kept beside the socket (`registry`).
+    pub(super) registry: Registry,
+    /// Each change to it numbered, so a write that lands after a later
+    /// one's never puts the older registry back.
+    registry_seq: u64,
+    registry_written: std::sync::Arc<std::sync::Mutex<u64>>,
 }
 
 /// How long a prompt's `clientRef` is kept.
@@ -291,6 +299,8 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         Some(addr) => Some(super::ws::bind(addr, opts.socket.parent().unwrap_or(Path::new("/"))).await?),
         None => None,
     };
+    // blocking: at start, before the runtime serves anyone.
+    let registry = Registry::load(socket.parent().unwrap_or(Path::new("/")));
     let state: Shared = Rc::new(RefCell::new(State {
         factory: std::sync::Arc::from(factory),
         websocket: websocket.as_ref().map(|(l, t)| (l.local_addr().expect("a bound listener has an address"), t.clone())),
@@ -310,6 +320,9 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         epoch: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_millis() as u64),
         unauthenticated: 0,
         refs: HashMap::new(),
+        registry,
+        registry_seq: 0,
+        registry_written: std::sync::Arc::default(),
         working: 0,
         started: Instant::now(),
         opts,
@@ -746,6 +759,17 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
                 tokio::task::spawn_local(reload(state.clone()));
             }
         }
+        ClientFrame::Activity { id: cmd_id, activity } => {
+            let mut s = state.borrow_mut();
+            let error = match s.clients.get(&id).is_some_and(|c| c.local) {
+                true => {
+                    s.activity(&activity);
+                    None
+                }
+                false => Some(error_info(&EngineError::new("local_only", "a session's activity is taken on the daemon's unix socket only"))),
+            };
+            s.send(id, "", control(&ServerFrame::Activity { id: cmd_id, error }));
+        }
         ClientFrame::Leave { session_id } => {
             let mut s = state.borrow_mut();
             if let Some(h) = s.hubs.get_mut(&session_id) {
@@ -1084,6 +1108,29 @@ impl State {
         let n = self.seqs.entry(session.to_string()).or_insert(0);
         *n += 1;
         *n
+    }
+
+    /// Takes one session's activity: the registry, with the entries whose
+    /// harness has gone pruned, written off the thread when it changed
+    /// (R-LAG-9).
+    fn activity(&mut self, a: &Activity) {
+        let changed = self.registry.apply(a) | self.registry.prune(super::registry::alive);
+        if !changed {
+            return;
+        }
+        self.registry_seq += 1;
+        let (seq, bytes, written) = (self.registry_seq, self.registry.to_json(), self.registry_written.clone());
+        let dir = self.opts.socket.parent().unwrap_or(Path::new("/")).to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let mut last = written.lock().unwrap_or_else(|e| e.into_inner());
+            if seq <= *last {
+                return;
+            }
+            match super::registry::save_json(&dir, &bytes) {
+                Ok(()) => *last = seq,
+                Err(e) => eprintln!("{} cannot be written: {e}", dir.join(super::registry::FILE).display()),
+            }
+        });
     }
 
     /// Lets `client` go: its outbox closes once what it has is handed on,

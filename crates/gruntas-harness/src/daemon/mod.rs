@@ -15,6 +15,8 @@
 //!   a client up, bounded by a snapshot (R-LAG-10).
 //! - `ws` — the WebSocket listener: the same frames in batches, compressed,
 //!   windowed, with heartbeats of their own (R-PROTO-1, R-LAG-3/5/9).
+//! - `registry` — the sessions of Claude Code and Codex their plugin's
+//!   hooks registered (`activity` frames), kept in the runtime directory.
 //! - `service` — `gruntas machines always-on on`: the systemd user unit and the launchd
 //!   agent that keep it running on an always-on machine (R-HOST-2).
 //!
@@ -30,6 +32,7 @@
 
 pub mod client;
 pub mod outbox;
+pub mod registry;
 pub mod remote;
 pub mod replay;
 pub mod server;
