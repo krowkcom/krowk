@@ -2,8 +2,9 @@
 //! payload on stdin, exit 0, done inside 2 s whatever the daemon is doing,
 //! and nothing on stdout that could change a tool call (D3, R-KIT-3).
 //!
-//! KT01 lands the contract; the `#[ignore]`d tests below are the later
-//! tickets' acceptance, each un-ignored by the ticket it names.
+//! KT01 landed the contract and each later ticket its acceptance test,
+//! named for it; none is pending. KT08 checked the same against a live
+//! Claude Code (its results are on the ticket).
 
 #![cfg(all(feature = "harness", unix))]
 
@@ -11,6 +12,29 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
+
+/// Every process this file starts, started one at a time. On macOS a pipe
+/// is made close-on-exec only after it is made, so a child another test
+/// started in between would inherit it and hold a hook's stdin or output
+/// open past the hook (likely the 2.6 s KT05 saw there).
+static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// `cmd` started under `SPAWN`, and when: after the wait for the lock, so
+/// another test's start is not counted as this one's.
+fn spawn_at(cmd: &mut Command) -> std::io::Result<(std::process::Child, Instant)> {
+    let _one = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
+    let at = Instant::now();
+    cmd.spawn().map(|c| (c, at))
+}
+
+fn spawn(cmd: &mut Command) -> std::process::Child {
+    spawn_at(cmd).unwrap().0
+}
+
+/// `cmd`'s output, as `Command::output` gives it, started through `spawn`.
+fn output(cmd: &mut Command) -> Output {
+    spawn(cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())).wait_with_output().unwrap()
+}
 
 /// The most a hook may take, as the harness sees it.
 const LIMIT: Duration = Duration::from_secs(2);
@@ -45,20 +69,21 @@ impl Scratch {
         gruntas_harness::daemon::socket(&self.env()).unwrap()
     }
 
-    /// Runs the hook with `payload` on stdin; its output and how long it took.
+    /// Runs the hook with `payload` on stdin; its output and how long until
+    /// it exited and its pipes closed, as a harness waits for both.
     fn hook(&self, harness: &str, event: &str, payload: &[u8]) -> (Output, Duration) {
-        let at = Instant::now();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_gruntas"))
-            .args(["hook", harness, event])
-            .env_clear()
-            .env("HOME", self.0.join("home"))
-            .env("XDG_RUNTIME_DIR", self.0.join("run"))
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let (mut child, at) = spawn_at(
+            Command::new(env!("CARGO_BIN_EXE_gruntas"))
+                .args(["hook", harness, event])
+                .env_clear()
+                .env("HOME", self.0.join("home"))
+                .env("XDG_RUNTIME_DIR", self.0.join("run"))
+                .env("PATH", std::env::var("PATH").unwrap_or_default())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+        )
+        .unwrap();
         child.stdin.take().unwrap().write_all(payload).unwrap();
         let out = child.wait_with_output().unwrap();
         (out, at.elapsed())
@@ -69,7 +94,10 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         // A daemon a hook started, stopped before its directory goes.
         if self.socket().exists() {
-            let _ = Command::new(env!("CARGO_BIN_EXE_gruntas")).args(["host", "stop", "--force"]).env_clear().env("HOME", self.0.join("home")).env("XDG_RUNTIME_DIR", self.0.join("run")).env("PATH", std::env::var("PATH").unwrap_or_default()).output();
+            // Never a panic here: this may run as a failed test unwinds.
+            if let Ok((c, _)) = spawn_at(Command::new(env!("CARGO_BIN_EXE_gruntas")).args(["host", "stop", "--force"]).env_clear().env("HOME", self.0.join("home")).env("XDG_RUNTIME_DIR", self.0.join("run")).env("PATH", std::env::var("PATH").unwrap_or_default()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())) {
+                let _ = c.wait_with_output();
+            }
         }
         let _ = std::fs::remove_dir_all(&self.0);
     }
@@ -133,15 +161,14 @@ fn kt01_a_hook_never_fails_its_session_whatever_it_is_given() {
         assert!(out.status.success() && out.stdout.is_empty() && took < LIMIT, "{args:?}: {out:?} in {took:?}");
     }
     // Stdin left open by the harness: the hook still goes inside the limit.
-    let at = Instant::now();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_gruntas")).args(["hook", "claude", "SessionStart"]).env("XDG_RUNTIME_DIR", s.0.join("run")).env("HOME", s.0.join("home")).stdin(Stdio::piped()).stdout(Stdio::null()).spawn().unwrap();
+    let (mut child, at) = spawn_at(Command::new(env!("CARGO_BIN_EXE_gruntas")).args(["hook", "claude", "SessionStart"]).env("XDG_RUNTIME_DIR", s.0.join("run")).env("HOME", s.0.join("home")).stdin(Stdio::piped()).stdout(Stdio::null())).unwrap();
     let open = child.stdin.take();
     let status = child.wait().unwrap();
     assert!(status.success() && at.elapsed() < LIMIT, "{status:?} in {:?}", at.elapsed());
     drop(open);
 }
 
-// ---- Pending: the later tickets' acceptance, un-ignored by each. ----
+// ---- The later tickets' acceptance, KT02 to KT07. ----
 
 /// KT02: `SessionStart` starts the daemon when none runs and registers the
 /// session with D4's fields (the harness process, the repository's origin,
@@ -152,8 +179,10 @@ fn kt02_session_start_registers_with_d4s_fields_and_session_end_deregisters() {
     let s = Scratch::new("kt02");
     let repo = s.0.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
-    assert!(Command::new("git").args(["init", "-q"]).current_dir(&repo).status().unwrap().success());
-    assert!(Command::new("git").args(["remote", "add", "origin", "git@github.com:o/r.git"]).current_dir(&repo).status().unwrap().success());
+    for args in [&["init", "-q"][..], &["remote", "add", "origin", "git@github.com:o/r.git"]] {
+        let o = output(Command::new("git").args(args).current_dir(&repo));
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    }
     let mut payload: serde_json::Value = serde_json::from_slice(&fixture("claude", "SessionStart")).unwrap();
     payload["cwd"] = repo.display().to_string().into();
     let (out, took) = s.hook("claude", "SessionStart", payload.to_string().as_bytes());
@@ -273,7 +302,7 @@ fn kt04_session_info_answers_the_calling_sessions_registration() {
             let _ = self.0.wait();
         }
     }
-    let other = Reaped(Command::new("sleep").arg("30").spawn().unwrap());
+    let other = Reaped(spawn(Command::new("sleep").arg("30")));
     let save = |regs: &[Registration]| {
         let mut r = Registry::default();
         for x in regs {
@@ -289,17 +318,16 @@ fn kt04_session_info_answers_the_calling_sessions_registration() {
             cmd = Command::new("sh");
             cmd.args(["-c", &format!("'{}'; true", env!("CARGO_BIN_EXE_gruntas-mcp"))]);
         }
-        let mut child = cmd
-            .env_clear()
-            .env("HOME", s.0.join("home"))
-            .env("XDG_RUNTIME_DIR", s.0.join("run"))
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .current_dir(&s.0)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+        let mut child = spawn(
+            cmd.env_clear()
+                .env("HOME", s.0.join("home"))
+                .env("XDG_RUNTIME_DIR", s.0.join("run"))
+                .env("PATH", std::env::var("PATH").unwrap_or_default())
+                .current_dir(&s.0)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null()),
+        );
         let lines = [
             r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#,
             r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
@@ -384,7 +412,7 @@ fn kt05_worktree_create_and_remove_go_through_gruntas_worktrees() {
     let repo = s.0.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     let git = |args: &[&str]| {
-        let o = Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).current_dir(&repo).env("GIT_CONFIG_GLOBAL", "/dev/null").output().unwrap();
+        let o = output(Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).current_dir(&repo).env("GIT_CONFIG_GLOBAL", "/dev/null"));
         assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
     };
     git(&["init", "-q", "-b", "main"]);
@@ -392,7 +420,7 @@ fn kt05_worktree_create_and_remove_go_through_gruntas_worktrees() {
     git(&["add", "a.txt"]);
     git(&["commit", "-q", "-m", "one"]);
     let listed = || -> Vec<serde_json::Value> {
-        let o = Command::new(env!("CARGO_BIN_EXE_gruntas")).args(["worktrees", "--json"]).env_clear().env("HOME", s.0.join("home")).env("PATH", std::env::var("PATH").unwrap_or_default()).current_dir(&repo).output().unwrap();
+        let o = output(Command::new(env!("CARGO_BIN_EXE_gruntas")).args(["worktrees", "--json"]).env_clear().env("HOME", s.0.join("home")).env("PATH", std::env::var("PATH").unwrap_or_default()).current_dir(&repo));
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
         let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
         v["data"]["worktrees"].as_array().unwrap().clone()
@@ -490,18 +518,18 @@ fn kt07_doctor_reports_the_sandbox_block() {
     std::fs::write(work.join("settings.json"), block(&gruntas_home).to_string()).unwrap();
     std::fs::write(gruntas_home.join("config.json"), serde_json::json!({ "instances": { "work": { "kind": "claude-code", "configDir": work } } }).to_string()).unwrap();
     let doctor = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_gruntas"))
-            .arg("doctor")
-            .args(args)
-            .env_clear()
-            .env("HOME", &home)
-            .env("XDG_RUNTIME_DIR", s.0.join("run"))
-            .env("PATH", "/usr/bin:/bin")
-            .env("GRUNTAS_API_URL", "http://127.0.0.1:9")
-            .env("GRUNTAS_NO_UPDATE_CHECK", "1")
-            .current_dir(&home)
-            .output()
-            .unwrap()
+        output(
+            Command::new(env!("CARGO_BIN_EXE_gruntas"))
+                .arg("doctor")
+                .args(args)
+                .env_clear()
+                .env("HOME", &home)
+                .env("XDG_RUNTIME_DIR", s.0.join("run"))
+                .env("PATH", "/usr/bin:/bin")
+                .env("GRUNTAS_API_URL", "http://127.0.0.1:9")
+                .env("GRUNTAS_NO_UPDATE_CHECK", "1")
+                .current_dir(&home),
+        )
     };
     let sandbox = || {
         let out = doctor(&["--format", "json"]);
