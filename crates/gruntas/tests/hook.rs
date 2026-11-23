@@ -529,3 +529,23 @@ fn kt07_doctor_reports_the_sandbox_block() {
     let human = String::from_utf8(doctor(&["--format", "human"]).stdout).unwrap();
     assert!(!human.contains("failIfUnavailable"), "{human}");
 }
+
+/// KT07: each hook the plugin declares runs `gruntas hook <harness> <event>`
+/// for an event there is a recorded payload of, so `gruntas hook` reads it.
+#[test]
+fn kt07_the_plugins_hooks_run_gruntas_hook_for_their_own_event() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for (file, harness, events) in [
+        ("hooks/hooks.json", "claude", &["SessionStart", "SessionEnd", "PreToolUse", "PostToolUse", "Stop", "WorktreeCreate", "WorktreeRemove"][..]),
+        ("hooks/codex.json", "codex", &["SessionStart", "SessionEnd", "PreToolUse", "PostToolUse", "Stop"][..]),
+    ] {
+        let hooks: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join(file)).unwrap()).unwrap();
+        let declared: Vec<&str> = hooks["hooks"].as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(declared.len(), events.len(), "{file}: {declared:?}");
+        for event in events {
+            let command = hooks["hooks"][event][0]["hooks"][0]["command"].as_str().unwrap_or_else(|| panic!("{file}: no {event}"));
+            assert!(command.starts_with("command -v gruntas >/dev/null 2>&1 ||") && command.ends_with(&format!("; exec gruntas hook {harness} {event}")), "{file} {event}: {command}");
+            assert!(!fixture(harness, event).is_empty());
+        }
+    }
+}
