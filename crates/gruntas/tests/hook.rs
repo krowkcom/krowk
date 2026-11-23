@@ -173,7 +173,14 @@ fn kt04_session_info_answers_the_calling_sessions_registration() {
     let s = Scratch::new("kt04");
     let reg = |id: &str, pid: u32| Registration { session_id: id.into(), harness: PluginHarness::Claude, harness_pid: Some(pid), config_home: Some("/h/.claude".into()), cwd: Some("/r".into()), repository: None, transcript_path: None, attendance: None };
     // Alive, and nobody's parent: a session in another harness.
-    let mut other = Command::new("sleep").arg("30").spawn().unwrap();
+    struct Reaped(std::process::Child);
+    impl Drop for Reaped {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let other = Reaped(Command::new("sleep").arg("30").spawn().unwrap());
     let save = |regs: &[Registration]| {
         let mut r = Registry::default();
         for x in regs {
@@ -181,9 +188,15 @@ fn kt04_session_info_answers_the_calling_sessions_registration() {
         }
         r.save(&s.daemon_dir()).unwrap();
     };
-    // This test is the harness: it starts gruntas-mcp, as Claude Code does.
-    let mcp = || {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_gruntas-mcp"))
+    // This test is the harness: it starts gruntas-mcp, as Claude Code does,
+    // itself or through a launcher (`npx`, a shell) that stays between.
+    let mcp = |launcher: bool| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_gruntas-mcp"));
+        if launcher {
+            cmd = Command::new("sh");
+            cmd.args(["-c", &format!("'{}'; true", env!("CARGO_BIN_EXE_gruntas-mcp"))]);
+        }
+        let mut child = cmd
             .env_clear()
             .env("HOME", s.0.join("home"))
             .env("XDG_RUNTIME_DIR", s.0.join("run"))
@@ -206,8 +219,8 @@ fn kt04_session_info_answers_the_calling_sessions_registration() {
         answers
     };
 
-    save(&[reg("other", other.id()), reg("mine", std::process::id())]);
-    let answers = mcp();
+    save(&[reg("other", other.0.id()), reg("mine", std::process::id())]);
+    let answers = mcp(false);
     let mut names: Vec<&str> = answers[1]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
     names.sort_unstable();
     assert_eq!(names, ["gruntas_claim_artifact", "gruntas_collect", "gruntas_delegate", "gruntas_get_artifact", "gruntas_get_run", "gruntas_list_artifacts", "gruntas_machines", "gruntas_push", "gruntas_session_info", "gruntas_verify_key"]);
@@ -216,14 +229,14 @@ fn kt04_session_info_answers_the_calling_sessions_registration() {
     assert_eq!(info["structuredContent"]["registered"], true, "{info}");
     assert_eq!(info["structuredContent"]["registration"]["sessionId"], "mine", "{info}");
     assert!(info["content"][0]["text"].as_str().unwrap().contains("session: mine"), "{info}");
+    let info = &mcp(true)[2]["result"];
+    assert_eq!(info["structuredContent"]["registration"]["sessionId"], "mine", "through a launcher: {info}");
 
-    save(&[reg("other", other.id())]);
-    let info = &mcp()[2]["result"];
+    save(&[reg("other", other.0.id())]);
+    let info = &mcp(false)[2]["result"];
     assert_eq!(info["isError"], false, "{info}");
     assert_eq!(info["structuredContent"], serde_json::json!({ "registered": false }), "{info}");
     assert!(info["content"][0]["text"].as_str().unwrap().contains("not registered"), "{info}");
-    let _ = other.kill();
-    let _ = other.wait();
 }
 
 /// KT05: `PreToolUse` refuses a `gh pr create` body with a bare card link,
