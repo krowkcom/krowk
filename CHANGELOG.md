@@ -33,6 +33,19 @@ breaking changes may affect it without notice.
   yet: `gruntas status` and `gruntas ping` arrive with the rest of the
   status layer.
 
+- **Each machine publishes a sealed status board of its sessions, which
+  your other devices can read.** With sync set up, the host daemon seals a
+  board of its registered Claude Code and Codex sessions to your devices
+  and puts it on the registry when a session changes, at most once every
+  5 seconds, and again with every presence refresh. Over 256 KB it drops
+  finished sessions older than an hour, then reports beyond the last 3,
+  then shortens summaries. With each publish the registry gets only the
+  machine's health and how many sessions are in each state and health,
+  under a random statistics id kept in `~/.gruntas/status-statistics-id`
+  and never the device id. Any of your devices reads every machine's board,
+  and a session's "quiet for" is worked out from the board's own publish
+  time, so it never compares two machines' clocks.
+
 - **`gruntas hook <harness> <event>`, the entry point for the Claude
   Code and Codex plugin's hooks.** It reads the harness's hook payload on
   stdin and tells the host daemon about the session over its socket, in a
