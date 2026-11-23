@@ -914,6 +914,17 @@
             "string",
             "null"
           ]
+        },
+        "attendance": {
+          "description": "Whether the steering session is attended, when `kind` is `agent` and\nthe sender knows it (its own session's start record says): the host\nholds a steering session it has no log of to this word, since the\nsession may run on another machine. Absent: attended.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Attendance"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
