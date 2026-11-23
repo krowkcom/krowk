@@ -1441,6 +1441,11 @@ pub enum ClientFrame {
     /// its connection closed. Answered by `done`, with `no_such_server` when
     /// the session has no such server. Protocol 3.
     McpSignOut { id: u64, session_id: String, server: String },
+    /// Something a session of a harness gruntas does not run itself (Claude
+    /// Code, Codex) did, as its plugin's hook (`gruntas hook`) tells it:
+    /// answered by `activity`. Taken only on the unix socket. Protocol 3: a
+    /// daemon that does not know it skips the line and answers nothing.
+    Activity { id: u64, activity: Activity },
     /// Reads the instances again — config.json and the credentials file —
     /// for every host, after a client connected or signed one out
     /// (`gruntas connect`): `changed` is that instance, whose backend processes are
@@ -1545,6 +1550,85 @@ pub enum ServerFrame {
     /// before a turn began. A client following it, not running it, stops
     /// waiting here.
     Settled { session: String },
+    /// The answer to `activity`: taken, or why not.
+    Activity {
+        id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<ErrorInfo>,
+    },
+}
+
+/// A harness whose sessions gruntas's plugin reports from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum PluginHarness {
+    Claude,
+    Codex,
+}
+
+/// What a session gruntas does not run did, one `activity` frame each:
+/// registering at its start, leaving at its end, a heavy command starting
+/// and ending, a turn's end, and its account's usage windows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum Activity {
+    /// A session started (or resumed): the daemon keeps it until it ends or
+    /// its harness process is gone.
+    Register(Registration),
+    /// A session ended.
+    Deregister { session_id: String },
+    /// A command on the heavy list started, as tool call `toolCallId`.
+    HeavyStart { session_id: String, tool_call_id: String },
+    /// And ended.
+    HeavyEnd { session_id: String, tool_call_id: String },
+    /// A turn of the session ended: the heavy commands it had not ended
+    /// count no more.
+    TurnEnd { session_id: String },
+    /// An account's usage windows, as its harness reads them.
+    Usage {
+        /// The account's config home (`CLAUDE_CONFIG_DIR`, `~/.claude`).
+        config_home: String,
+        windows: Vec<UsageWindow>,
+    },
+}
+
+/// A session of a harness gruntas does not run, as the daemon knows it.
+/// Everything past the id and the harness is what its hook could tell.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Registration {
+    /// The harness's own id for it.
+    pub session_id: String,
+    pub harness: PluginHarness,
+    /// The harness's process: the entry goes when it is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_pid: Option<u32>,
+    /// The account it runs as, by its config home.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_home: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// The working directory's repository, as its origin remote's URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<String>,
+    /// Absent: attended (`Attendance`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attendance: Option<Attendance>,
+}
+
+/// One of an account's usage windows: the 5-hour or the 7-day.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageWindow {
+    /// `fiveHour` or `sevenDay`.
+    pub kind: String,
+    /// How much of it is used, 0 to 100.
+    pub used_percent: f64,
+    /// When it resets, in ms since the epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at_ms: Option<u64>,
 }
 
 /// One MCP server of a session, as its host holds it.

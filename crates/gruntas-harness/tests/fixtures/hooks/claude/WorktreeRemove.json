@@ -1,0 +1,7 @@
+{
+  "session_id": "2965e294-a0d4-4f50-9a48-0c9b4d0aca11",
+  "transcript_path": "/home/user/.claude/projects/-home-user-repo/2965e294-a0d4-4f50-9a48-0c9b4d0aca11.jsonl",
+  "cwd": "/home/user/repo",
+  "hook_event_name": "WorktreeRemove",
+  "worktree_path": "/home/user/.local/share/gruntas/worktrees/0123456789abcdef/2965e294"
+}

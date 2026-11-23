@@ -59,6 +59,41 @@ stdout:
     "status": "skip",
     "message": "this build runs no model"
   },
+  "sandbox": {
+    "name": "sandbox",
+    "status": "warn",
+    "message": "Claude sessions can read <scratch>/home/.gruntas without the sandbox block: <scratch>/home/.claude/settings.json (the sandbox is not enabled, no failIfUnavailable, unsandboxed commands allowed, the gruntas home not in filesystem.denyRead, no Read deny rule for the gruntas home)",
+    "hint": "add this block to each settings.json named (gruntas never edits them)",
+    "settings": [
+      {
+        "path": "<scratch>/home/.claude/settings.json",
+        "gaps": [
+          "the sandbox is not enabled",
+          "no failIfUnavailable",
+          "unsandboxed commands allowed",
+          "the gruntas home not in filesystem.denyRead",
+          "no Read deny rule for the gruntas home"
+        ]
+      }
+    ],
+    "block": {
+      "sandbox": {
+        "enabled": true,
+        "failIfUnavailable": true,
+        "allowUnsandboxedCommands": false,
+        "filesystem": {
+          "denyRead": [
+            "<scratch>/home/.gruntas"
+          ]
+        }
+      },
+      "permissions": {
+        "deny": [
+          "Read(/<scratch>/home/.gruntas/**)"
+        ]
+      }
+    }
+  },
   "context": {
     "vcs.repository.name": "gruntas/golden",
     "vcs.ref.head.revision": "0123456789abcdef0123456789abcdef01234567",
@@ -117,6 +152,42 @@ stdout:
       "message": "no price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build",
       "hint": "run `gruntas pricing refresh`, or `gruntas sessions sync`, which refreshes prices once a day",
       "fix": "run `gruntas pricing refresh`, or `gruntas sessions sync`, which refreshes prices once a day"
+    },
+    {
+      "name": "sandbox",
+      "status": "warn",
+      "message": "Claude sessions can read <scratch>/home/.gruntas without the sandbox block: <scratch>/home/.claude/settings.json (the sandbox is not enabled, no failIfUnavailable, unsandboxed commands allowed, the gruntas home not in filesystem.denyRead, no Read deny rule for the gruntas home)",
+      "hint": "add this block to each settings.json named (gruntas never edits them)",
+      "settings": [
+        {
+          "path": "<scratch>/home/.claude/settings.json",
+          "gaps": [
+            "the sandbox is not enabled",
+            "no failIfUnavailable",
+            "unsandboxed commands allowed",
+            "the gruntas home not in filesystem.denyRead",
+            "no Read deny rule for the gruntas home"
+          ]
+        }
+      ],
+      "block": {
+        "sandbox": {
+          "enabled": true,
+          "failIfUnavailable": true,
+          "allowUnsandboxedCommands": false,
+          "filesystem": {
+            "denyRead": [
+              "<scratch>/home/.gruntas"
+            ]
+          }
+        },
+        "permissions": {
+          "deny": [
+            "Read(/<scratch>/home/.gruntas/**)"
+          ]
+        }
+      },
+      "fix": "add this block to each settings.json named (gruntas never edits them)"
     }
   ]
 }

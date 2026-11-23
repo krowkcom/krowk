@@ -36,6 +36,7 @@ pub(crate) fn doctor(ctx: &mut Ctx) -> Result<(), gruntas_api::Error> {
     report.insert("providers".into(), providers_check(ctx));
     #[cfg(feature = "harness")]
     report.insert("rollover".into(), rollover_check(ctx));
+    report.insert("sandbox".into(), sandbox_check(ctx));
     report.insert("context".into(), serde_json::to_value(crate::runctx::detect(ctx.io.env)).expect("context serializes"));
     let checks = all_checks(ctx, &report, signed_in, &verified);
     let failing = checks.iter().filter(|c| c["status"] == "fail").count();
@@ -71,7 +72,7 @@ fn all_checks(ctx: &Ctx, report: &Map<String, Value>, signed_in: bool, verified:
     ours.extend([health::trusted(&health::trust_here(ctx)), health::recovery_kit(&machine), health::plan(plan, &machine)]);
     let mut out: Vec<Value> = ours.iter().map(Check::json).collect();
     // The older checks, which carry a `hint` for the fix.
-    let mut older = ["providers", "store", "pricing", "rollover"].into_iter().filter_map(|k| report.get(k)).map(|c| {
+    let mut older = ["providers", "store", "pricing", "rollover", "sandbox"].into_iter().filter_map(|k| report.get(k)).map(|c| {
         let mut c = c.clone();
         if c["status"] != "pass"
             && let Some(hint) = c.get("hint").cloned()
@@ -131,11 +132,16 @@ fn human(report: &Map<String, Value>, colour: bool) -> String {
         let fix = crate::output::fix::sentence(text("fix"));
         // The older checks keep their label and a line for the fix; the rest
         // read as a sentence with the command after a dash.
-        match [("store", "Store"), ("pricing", "Pricing"), ("providers", "Providers"), ("rollover", "Rollover")].iter().find(|(n, _)| *n == name) {
+        match [("store", "Store"), ("pricing", "Pricing"), ("providers", "Providers"), ("rollover", "Rollover"), ("sandbox", "Sandbox")].iter().find(|(n, _)| *n == name) {
             Some((_, label)) => {
                 lines.push(format!("{mark} {label:<13} {}", crate::output::fix::capitalised(text("message"))));
                 if !text("fix").is_empty() {
                     lines.push(paint(colour, DIM, &format!("  {:<13} {fix}", "")));
+                }
+                // The settings to add, as they are written.
+                if let Some(block) = check.get("block").filter(|_| text("status") != "pass") {
+                    let block = serde_json::to_string_pretty(block).expect("a block serializes");
+                    lines.extend(block.lines().map(|l| format!("  {:<13} {l}", "")));
                 }
             }
             None if text("fix").is_empty() => lines.push(format!("{mark} {}", text("message"))),
@@ -231,6 +237,144 @@ fn rollover_check(ctx: &Ctx) -> Value {
     json!({ "name": "rollover", "status": "warn", "message": ignored.join("; "), "ignored": ignored, "hint": "edit rolloverOrder in ~/.gruntas/config.json: list instances of one kind, without a model" })
 }
 
+/// D9, R-KIT-8: whether the settings of each Claude config home gruntas
+/// knows, and of the default one, carry the sandbox block that keeps a
+/// session out of the gruntas home; the block to add when one does not.
+/// Read, never written: the person's settings are theirs to change. A
+/// warning, not a failure: the plugin runs without it.
+fn sandbox_check(ctx: &Ctx) -> Value {
+    let skip = |why: &str| json!({ "name": "sandbox", "status": "skip", "message": why });
+    if cfg!(not(unix)) {
+        return skip("Claude Code's sandbox does not run on this platform");
+    }
+    let Ok(home) = gruntas_api::home::resolve(ctx.io.env) else { return skip("there is no gruntas home to keep agents out of") };
+    let homes = claude_homes(ctx);
+    if homes.is_empty() {
+        return skip("there is no Claude config home to check");
+    }
+    let user_home = ctx.env("HOME");
+    let settings: Vec<Value> = homes
+        .iter()
+        .map(|dir| {
+            let path = dir.join("settings.json");
+            let gaps = match std::fs::read(&path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => sandbox_gaps(&Value::Null, &home, &user_home, dir),
+                Err(e) => vec![format!("unreadable: {e}")],
+                Ok(raw) => match serde_json::from_slice::<Value>(&raw) {
+                    Ok(v) => sandbox_gaps(&v, &home, &user_home, dir),
+                    Err(e) => vec![format!("not JSON: {e}")],
+                },
+            };
+            json!({ "path": path.display().to_string(), "gaps": gaps })
+        })
+        .collect();
+    let lacking: Vec<String> = settings.iter().filter(|s| s["gaps"].as_array().is_some_and(|g| !g.is_empty())).map(|s| format!("{} ({})", s["path"].as_str().unwrap_or_default(), s["gaps"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))).collect();
+    if lacking.is_empty() {
+        let n = settings.len();
+        return json!({ "name": "sandbox", "status": "pass", "message": format!("the sandbox block keeps agents out of {} in {}", home.display(), if n == 1 { "the one Claude settings file".to_string() } else { format!("all {n} Claude settings files") }), "settings": settings });
+    }
+    json!({
+        "name": "sandbox",
+        "status": "warn",
+        "message": format!("Claude sessions can read {} without the sandbox block: {}", home.display(), lacking.join("; ")),
+        "hint": "add this block to each settings.json named (gruntas never edits them)",
+        "settings": settings,
+        "block": sandbox_block(&home),
+    })
+}
+
+/// The Claude config homes gruntas knows: the default, `~/.claude`, and
+/// each Claude Code instance's.
+fn claude_homes(ctx: &Ctx) -> Vec<std::path::PathBuf> {
+    let mut homes = Vec::new();
+    let user_home = ctx.env("HOME");
+    if !user_home.trim().is_empty() {
+        homes.push(std::path::PathBuf::from(user_home).join(".claude"));
+    }
+    #[cfg(feature = "harness")]
+    if let Ok(cfg) = super::prompt::load_instances() {
+        let reg = gruntas_harness::instances::Registry::resolve(&cfg, ctx.io.env);
+        homes.extend(reg.instances.values().filter(|i| i.wire_api == gruntas_harness::protocol::WireApi::ClaudeCode).filter_map(|i| i.backend.as_ref()?.home.clone()));
+    }
+    let mut seen = std::collections::HashSet::new();
+    homes.retain(|h| seen.insert(h.clone()));
+    homes
+}
+
+/// The settings that keep a Claude session out of `home`: the sandbox on,
+/// no session without it, no command outside it, the home unreadable to
+/// commands, and a `Read` deny rule for Claude's own file tools (`//` is
+/// Claude Code's spelling of an absolute path in a rule).
+fn sandbox_block(home: &std::path::Path) -> Value {
+    let home = home.display().to_string();
+    json!({
+        "sandbox": { "enabled": true, "failIfUnavailable": true, "allowUnsandboxedCommands": false, "filesystem": { "denyRead": [home] } },
+        "permissions": { "deny": [format!("Read(/{home}/**)")] },
+    })
+}
+
+/// What `settings` lacks of `sandbox_block`, a phrase each; none when it
+/// carries all of it. A path may name the home absolutely, with Claude's
+/// `//`, or under `~/`.
+fn sandbox_gaps(settings: &Value, home: &std::path::Path, user_home: &str, dir: &std::path::Path) -> Vec<String> {
+    // The directory an entry names; a rule's must end in `/**`, and its
+    // `/path` is relative to the settings file, so it names none here.
+    let path_of = |entry: &str, rule: bool| -> Option<std::path::PathBuf> {
+        let e = entry.trim();
+        let e = if rule { e.strip_suffix("/**")? } else { e.trim_end_matches("/**") };
+        // `/`, `//` and `/**` are the root.
+        let e = match e.trim_end_matches('/') {
+            "" if e.starts_with('/') || entry.trim().starts_with('/') => "/",
+            t => t,
+        };
+        let user_home = user_home.trim();
+        let abs = if e == "~" && !user_home.is_empty() {
+            user_home.to_string()
+        } else if let Some(rest) = e.strip_prefix("~/").filter(|_| !user_home.is_empty()) {
+            format!("{}/{rest}", user_home.trim_end_matches('/'))
+        } else if let Some(rest) = e.strip_prefix("//") {
+            format!("/{rest}")
+        } else if !rule && e.starts_with('/') {
+            e.to_string()
+        } else {
+            return None;
+        };
+        Some(gruntas_api::home::lexical(std::path::Path::new(&abs)))
+    };
+    // A sandbox path with no prefix is relative to the settings file's
+    // directory. `..` is taken as written, in every form.
+    let within = |entry: &str| {
+        path_of(entry, false).or_else(|| {
+            let e = entry.trim();
+            (!e.is_empty() && !e.starts_with('~')).then(|| gruntas_api::home::lexical(&dir.join(e.trim_end_matches("/**"))))
+        })
+    };
+    let names_home = |entry: &str, rule: bool| path_of(entry, rule).is_some_and(|p| p == home);
+    let sandbox = &settings["sandbox"];
+    let mut gaps = Vec::new();
+    if sandbox["enabled"] != true {
+        gaps.push("the sandbox is not enabled".to_string());
+    }
+    if sandbox["failIfUnavailable"] != true {
+        gaps.push("no failIfUnavailable".into());
+    }
+    if sandbox["allowUnsandboxedCommands"] != false {
+        gaps.push("unsandboxed commands allowed".into());
+    }
+    if !sandbox["filesystem"]["denyRead"].as_array().into_iter().flatten().filter_map(Value::as_str).any(|p| names_home(p, false)) {
+        gaps.push("the gruntas home not in filesystem.denyRead".into());
+    }
+    // allowRead wins over denyRead where they meet.
+    if sandbox["filesystem"]["allowRead"].as_array().into_iter().flatten().filter_map(Value::as_str).filter_map(within).any(|p| home.starts_with(&p) || p.starts_with(home)) {
+        gaps.push("filesystem.allowRead opens the gruntas home again".into());
+    }
+    let denied = settings["permissions"]["deny"].as_array().into_iter().flatten().filter_map(Value::as_str).filter_map(|r| r.trim().strip_prefix("Read(")?.strip_suffix(')')).any(|p| names_home(p, true));
+    if !denied {
+        gaps.push("no Read deny rule for the gruntas home".into());
+    }
+    gaps
+}
+
 fn registry_mode(ctx: &Ctx, client: &Client) -> &'static str {
     if client.base_url == gruntas_api::DEV_BASE_URL.trim_end_matches('/') {
         "local"
@@ -297,4 +441,44 @@ fn config_summary() -> String {
         parts.push(format!("repo {}", existing(repo)));
     }
     parts.join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn kt07_the_sandbox_block_is_found_however_the_home_is_spelled_and_each_gap_is_named() {
+        let home = Path::new("/u/me/.gruntas");
+        let claude = Path::new("/u/me/.claude");
+        assert_eq!(sandbox_gaps(&sandbox_block(home), home, "/u/me", claude), Vec::<String>::new());
+        let tilde = json!({
+            "sandbox": { "enabled": true, "failIfUnavailable": true, "allowUnsandboxedCommands": false, "filesystem": { "denyRead": ["~/.gruntas/"] } },
+            "permissions": { "deny": ["Bash(rm:*)", "Read(~/.gruntas/**)"] },
+        });
+        assert_eq!(sandbox_gaps(&tilde, home, "/u/me", claude), Vec::<String>::new());
+        assert_eq!(sandbox_gaps(&Value::Null, home, "/u/me", claude).len(), 5);
+        // Unsandboxed commands are allowed unless refused; a rule's `/path`
+        // is relative to its settings file; another directory is not the home.
+        let half = json!({
+            "sandbox": { "enabled": true, "failIfUnavailable": true, "filesystem": { "denyRead": ["/u/me/.gruntas-old"] } },
+            "permissions": { "deny": ["Read(/u/me/.gruntas/**)", "Read(//u/me/.gruntas)"] },
+        });
+        assert_eq!(sandbox_gaps(&half, home, "/u/me", claude), ["unsandboxed commands allowed", "the gruntas home not in filesystem.denyRead", "no Read deny rule for the gruntas home"]);
+        assert_eq!(sandbox_block(home)["permissions"]["deny"][0], "Read(//u/me/.gruntas/**)");
+        // allowRead wins over denyRead: the home, a directory above it or one
+        // in it opens it again; another does not.
+        for (opened, entry) in [(true, "~"), (true, "/u/me/.gruntas/accounts"), (true, "//u/"), (true, "//"), (true, "/**"), (true, ".."), (true, "../.gruntas/sessions"), (true, "~/.."), (true, "/u/me/.claude/.."), (false, "./projects"), (false, "/u/me/src"), (false, "~/.gruntas-old")] {
+            let mut s = sandbox_block(home);
+            s["sandbox"]["filesystem"]["allowRead"] = json!([entry]);
+            assert_eq!(sandbox_gaps(&s, home, "/u/me", claude) == ["filesystem.allowRead opens the gruntas home again"], opened, "{entry}");
+        }
+        // HOME=/ keeps `~` meaning the root.
+        let root = Path::new("/.gruntas");
+        let mut s = sandbox_block(root);
+        s["sandbox"]["filesystem"]["denyRead"] = json!(["~/.gruntas"]);
+        s["permissions"]["deny"] = json!(["Read(~/.gruntas/**)"]);
+        assert_eq!(sandbox_gaps(&s, root, "/", claude), Vec::<String>::new());
+    }
 }

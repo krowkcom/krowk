@@ -331,6 +331,29 @@
       ]
     },
     {
+      "description": "Something a session of a harness gruntas does not run itself (Claude\nCode, Codex) did, as its plugin's hook (`gruntas hook`) tells it:\nanswered by `activity`. Taken only on the unix socket. Protocol 3: a\ndaemon that does not know it skips the line and answers nothing.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "activity": {
+          "$ref": "#/$defs/Activity"
+        },
+        "type": {
+          "type": "string",
+          "const": "activity"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "activity"
+      ]
+    },
+    {
       "description": "Reads the instances again — config.json and the credentials file —\nfor every host, after a client connected or signed one out\n(`gruntas connect`): `changed` is that instance, whose backend processes are\nnot reused; `renamedFrom` and `renamedTo` a rename, whose are.\nAnswered by `done` once applied; a command sent after it runs on\nwhat it read, answered or not.",
       "type": "object",
       "properties": {
@@ -943,6 +966,225 @@
       },
       "required": [
         "id"
+      ]
+    },
+    "Activity": {
+      "description": "What a session gruntas does not run did, one `activity` frame each:\nregistering at its start, leaving at its end, a heavy command starting\nand ending, a turn's end, and its account's usage windows.",
+      "oneOf": [
+        {
+          "description": "A session started (or resumed): the daemon keeps it until it ends or\nits harness process is gone.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "register"
+            }
+          },
+          "$ref": "#/$defs/Registration",
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "A session ended.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "deregister"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId"
+          ]
+        },
+        {
+          "description": "A command on the heavy list started, as tool call `toolCallId`.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "toolCallId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "heavyStart"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "toolCallId"
+          ]
+        },
+        {
+          "description": "And ended.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "toolCallId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "heavyEnd"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "toolCallId"
+          ]
+        },
+        {
+          "description": "A turn of the session ended: the heavy commands it had not ended\ncount no more.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "turnEnd"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId"
+          ]
+        },
+        {
+          "description": "An account's usage windows, as its harness reads them.",
+          "type": "object",
+          "properties": {
+            "configHome": {
+              "description": "The account's config home (`CLAUDE_CONFIG_DIR`, `~/.claude`).",
+              "type": "string"
+            },
+            "windows": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/UsageWindow"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "usage"
+            }
+          },
+          "required": [
+            "type",
+            "configHome",
+            "windows"
+          ]
+        }
+      ]
+    },
+    "PluginHarness": {
+      "description": "A harness whose sessions gruntas's plugin reports from.",
+      "type": "string",
+      "enum": [
+        "claude",
+        "codex"
+      ]
+    },
+    "Registration": {
+      "description": "A session of a harness gruntas does not run, as the daemon knows it.\nEverything past the id and the harness is what its hook could tell.",
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "description": "The harness's own id for it.",
+          "type": "string"
+        },
+        "harness": {
+          "$ref": "#/$defs/PluginHarness"
+        },
+        "harnessPid": {
+          "description": "The harness's process: the entry goes when it is gone.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "configHome": {
+          "description": "The account it runs as, by its config home.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repository": {
+          "description": "The working directory's repository, as its origin remote's URL.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "transcriptPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "attendance": {
+          "description": "Absent: attended (`Attendance`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Attendance"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "sessionId",
+        "harness"
+      ]
+    },
+    "UsageWindow": {
+      "description": "One of an account's usage windows: the 5-hour or the 7-day.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "`fiveHour` or `sevenDay`.",
+          "type": "string"
+        },
+        "usedPercent": {
+          "description": "How much of it is used, 0 to 100.",
+          "type": "number",
+          "format": "double"
+        },
+        "resetsAtMs": {
+          "description": "When it resets, in ms since the epoch.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "kind",
+        "usedPercent"
       ]
     }
   }

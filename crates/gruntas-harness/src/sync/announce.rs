@@ -148,21 +148,28 @@ pub fn instances(registry: &Registry, reports: &[Report], raw: Option<&[u8]>) ->
 
 /// This machine's capacity now (R-ALLOC-1): its cores, 1-minute load and
 /// free memory from the OS, and the slots of `builds` and `agents` in use
-/// (`Pool::in_use`) and in all. Blocking but quick. A pool that cannot be
-/// read counts as full, and memory the OS does not give as none: no room,
-/// not plenty. Load it does not give reads as 0.
+/// (`Pool::in_use`) and in all. The build slots in use count the heavy
+/// commands Claude Code and Codex sessions report too (`builds::RUNNING`),
+/// never past the total. Blocking but quick. A pool that cannot be read
+/// counts as full, and memory the OS does not give as none: no room, not
+/// plenty. Load it does not give reads as 0.
 pub fn capacity(builds: &crate::slots::Pool, agents: &crate::slots::Pool) -> presence::Capacity {
-    let slots = |p: &crate::slots::Pool| {
-        let total = u32::try_from(p.size()).unwrap_or(u32::MAX);
-        presence::Slots { in_use: p.in_use().map_or(total, |n| u32::try_from(n).unwrap_or(u32::MAX).min(total)), total }
-    };
+    let running = crate::builds::RUNNING.lock().unwrap_or_else(|e| e.into_inner()).count(Instant::now());
     presence::Capacity {
         cores: u32::try_from(crate::builds::cores()).unwrap_or(u32::MAX).max(1),
         load_1m: load_1m(),
         free_memory: free_memory(),
-        build_slots: slots(builds),
-        agent_slots: slots(agents),
+        build_slots: slots(builds.size(), builds.in_use().ok(), running),
+        agent_slots: slots(agents.size(), agents.in_use().ok(), 0),
     }
+}
+
+/// A pool of `size` slots with `held` taken (none: it cannot be read) and
+/// `more` in use beside them, as announced: never more in use than in all.
+fn slots(size: usize, held: Option<usize>, more: usize) -> presence::Slots {
+    let total = u32::try_from(size).unwrap_or(u32::MAX);
+    let in_use = held.map_or(total, |n| u32::try_from(n.saturating_add(more)).unwrap_or(u32::MAX).min(total));
+    presence::Slots { in_use, total }
 }
 
 /// The 1-minute load average, 0 when the OS gives none.
@@ -697,6 +704,18 @@ mod tests {
         fill(&mut a, &on, capacity);
         assert!(a.accepting, "on by default");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// KT03 (R-KIT-5): the heavy commands Claude Code and Codex report are
+    /// added to the lock files' build slots, never past the total, and a
+    /// pool that cannot be read still reads as full.
+    #[test]
+    fn kt03_reported_heavy_commands_add_to_the_busy_build_slots_up_to_the_total() {
+        assert_eq!(slots(4, Some(1), 0), presence::Slots { in_use: 1, total: 4 });
+        assert_eq!(slots(4, Some(1), 2), presence::Slots { in_use: 3, total: 4 });
+        assert_eq!(slots(4, Some(3), 5), presence::Slots { in_use: 4, total: 4 }, "clamped to the total");
+        assert_eq!(slots(4, Some(usize::MAX), usize::MAX), presence::Slots { in_use: 4, total: 4 });
+        assert_eq!(slots(4, None, 0), presence::Slots { in_use: 4, total: 4 });
     }
 
     /// Slice 02 (R-ALLOC-1): this machine reads its own capacity, its slot

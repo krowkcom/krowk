@@ -36,8 +36,9 @@ use crate::engine::EngineError;
 use crate::host::{Host, HostConfig};
 use crate::log;
 use super::outbox::{self, Caps, Out, Outbox, Pushed};
+use super::registry::Registry;
 use super::replay::{self, Tail};
-use crate::protocol::{ClientFrame, Command, ErrorInfo, HostSession, HostStatus, LogBody, ServerFrame, StreamLine, PROTOCOL_VERSION};
+use crate::protocol::{Activity, ClientFrame, Command, ErrorInfo, HostSession, HostStatus, LogBody, ServerFrame, StreamLine, PROTOCOL_VERSION};
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
@@ -86,6 +87,9 @@ pub struct Options {
     /// ask it for the offer (`pairingOffer`) and send the person's answer
     /// (`pairingAnswer`). None has no offer to tell.
     pub introductions: Option<std::sync::Arc<crate::sync::introduce::Introductions>>,
+    /// The usage record rollover reads (`usage.json` in gruntas's home),
+    /// where a plugin's usage windows go (R-KIT-7); none drops them.
+    pub usage: Option<crate::usage::Usage>,
 }
 
 /// A session's own turn started (`running`) or ended (`Options::turns`).
@@ -97,7 +101,7 @@ pub struct TurnEvent {
 
 impl Default for Options {
     fn default() -> Options {
-        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), gruntas_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP, lateness: None, kick: None, turns: None, bridged: None, introductions: None }
+        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), gruntas_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP, lateness: None, kick: None, turns: None, bridged: None, introductions: None, usage: None }
     }
 }
 
@@ -182,6 +186,13 @@ pub(super) struct State {
     /// Each `execute.clientRef` seen in the last `REF_KEPT`: what its
     /// prompt has named, for a client cut before it learned (`attach.clientRef`).
     refs: HashMap<String, Ref>,
+    /// The sessions of Claude Code and Codex their plugin registered
+    /// (`activity`), kept beside the socket (`registry`).
+    pub(super) registry: Registry,
+    /// Each change to it numbered, so a write that lands after a later
+    /// one's never puts the older registry back.
+    registry_seq: u64,
+    registry_written: std::sync::Arc<std::sync::Mutex<u64>>,
 }
 
 /// How long a prompt's `clientRef` is kept.
@@ -291,6 +302,8 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         Some(addr) => Some(super::ws::bind(addr, opts.socket.parent().unwrap_or(Path::new("/"))).await?),
         None => None,
     };
+    // blocking: at start, before the runtime serves anyone.
+    let registry = Registry::load(socket.parent().unwrap_or(Path::new("/")));
     let state: Shared = Rc::new(RefCell::new(State {
         factory: std::sync::Arc::from(factory),
         websocket: websocket.as_ref().map(|(l, t)| (l.local_addr().expect("a bound listener has an address"), t.clone())),
@@ -310,6 +323,9 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         epoch: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_millis() as u64),
         unauthenticated: 0,
         refs: HashMap::new(),
+        registry,
+        registry_seq: 0,
+        registry_written: std::sync::Arc::default(),
         working: 0,
         started: Instant::now(),
         opts,
@@ -407,6 +423,23 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
     // Every way out takes no new turn from here, an idle exit's included:
     // a prompt that arrives while the engines are let go is refused.
     state.borrow_mut().stopping = true;
+    // The registry as it stands, when a write of it may still be queued:
+    // the runtime is dropped without waiting for one, and a deregistration
+    // lost here would come back with the next daemon.
+    // blocking: on the way out, with nobody left to serve.
+    // The lock is held across the write: one under way finishes first, and
+    // one still queued finds it written and does nothing. `stopping` takes
+    // no activity from here, so nothing changes it after.
+    {
+        let s = state.borrow();
+        let mut last = s.registry_written.lock().unwrap_or_else(|e| e.into_inner());
+        if s.registry_seq > *last {
+            match s.registry.save(socket.parent().unwrap_or(Path::new("/"))) {
+                Ok(()) => *last = s.registry_seq,
+                Err(e) => eprintln!("the registrations cannot be written: {e}"),
+            }
+        }
+    }
     // Only the socket this daemon bound: one a newer daemon put in its
     // place is that one's.
     // blocking: on the way out, with nobody left to serve.
@@ -746,6 +779,20 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
                 tokio::task::spawn_local(reload(state.clone()));
             }
         }
+        ClientFrame::Activity { id: cmd_id, activity } => {
+            let mut s = state.borrow_mut();
+            let error = match s.clients.get(&id).is_some_and(|c| c.local) {
+                // Its write would be dropped with the runtime: refused, and
+                // the hook notes it.
+                true if s.stopping => Some(error_info(&stopping_error())),
+                true => {
+                    s.activity(&activity);
+                    None
+                }
+                false => Some(error_info(&EngineError::new("local_only", "a session's activity is taken on the daemon's unix socket only"))),
+            };
+            s.send(id, "", control(&ServerFrame::Activity { id: cmd_id, error }));
+        }
         ClientFrame::Leave { session_id } => {
             let mut s = state.borrow_mut();
             if let Some(h) = s.hubs.get_mut(&session_id) {
@@ -1084,6 +1131,52 @@ impl State {
         let n = self.seqs.entry(session.to_string()).or_insert(0);
         *n += 1;
         *n
+    }
+
+    /// Takes one session's activity: its heavy commands counted
+    /// (`builds::RUNNING`), its account's usage windows written to the usage
+    /// record (R-KIT-7), and the registry, with the entries whose
+    /// harness has gone pruned, written off the thread when it changed
+    /// (R-LAG-9).
+    fn activity(&mut self, a: &Activity) {
+        {
+            let mut running = crate::builds::RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+            match a {
+                Activity::HeavyStart { session_id, tool_call_id } => running.start(session_id, tool_call_id, std::time::Instant::now()),
+                Activity::HeavyEnd { session_id, tool_call_id } => running.end(session_id, tool_call_id),
+                Activity::TurnEnd { session_id } | Activity::Deregister { session_id } => running.end_session(session_id),
+                Activity::Register(_) | Activity::Usage { .. } => {}
+            }
+        }
+        if let (Activity::Usage { config_home, windows }, Some(usage)) = (a, &self.opts.usage) {
+            // Seen now, as it arrived: writes on the blocking pool may run
+            // out of order, and the later report must still win.
+            let (usage, config_home, windows, now) = (usage.clone(), config_home.clone(), windows.clone(), gruntas_store::now_ms());
+            if !windows.is_empty() {
+                tokio::task::spawn_blocking(move || {
+                    if let Err(e) = usage.record_windows(&config_home, &windows, now) {
+                        eprintln!("usage windows for {config_home} not recorded: {e}");
+                    }
+                });
+            }
+        }
+        let changed = self.registry.apply(a) | self.registry.prune(super::registry::alive);
+        if !changed {
+            return;
+        }
+        self.registry_seq += 1;
+        let (seq, bytes, written) = (self.registry_seq, self.registry.to_json(), self.registry_written.clone());
+        let dir = self.opts.socket.parent().unwrap_or(Path::new("/")).to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let mut last = written.lock().unwrap_or_else(|e| e.into_inner());
+            if seq <= *last {
+                return;
+            }
+            match super::registry::save_json(&dir, &bytes) {
+                Ok(()) => *last = seq,
+                Err(e) => eprintln!("{} cannot be written: {e}", dir.join(super::registry::FILE).display()),
+            }
+        });
     }
 
     /// Lets `client` go: its outbox closes once what it has is handed on,

@@ -1522,7 +1522,7 @@ mod tests {
         // No order: every instance of the kind, by name; one whose saved list lacks the model is skipped.
         let r = Registry::resolve(&InstancesConfig { instances: cfg.instances.clone(), ..Default::default() }, &env);
         let mut data = crate::usage::Data::default();
-        data.instances.insert("claude:a".into(), crate::usage::InstanceRecord { login: "a".into(), models: vec!["opus".into()], seen_at_ms: 1 });
+        data.instances.insert("claude:a".into(), crate::usage::InstanceRecord { login: "a".into(), models: vec!["opus".into()], seen_at_ms: 1, config_home: None });
         assert_eq!(names(&r, &from, &[], &data), ["claude:b"]);
     }
 }

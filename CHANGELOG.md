@@ -21,6 +21,90 @@ breaking changes may affect it without notice.
 
 ### Added
 
+- **`gruntas hook <harness> <event>`, the entry point for the Claude
+  Code and Codex plugin's hooks.** It reads the harness's hook payload on
+  stdin and tells the host daemon about the session over its socket, in a
+  new `activity` frame (`activity` answers it). The daemon keeps the
+  registered sessions in `registrations.json` beside its socket, so a
+  restarted daemon still knows them, and drops a session once the harness
+  process its hook named has exited. `SessionStart` starts the daemon
+  when none runs (without the harness session's own variables, such as
+  `CLAUDE_CONFIG_DIR` or `CODEX_HOME`), and registers the session with its harness process,
+  the working directory's `origin` remote, and whether a person is at it
+  (the harness has a terminal). `SessionEnd` hands the deregistration to
+  a detached copy of itself and returns at once. A hook that only reports
+  always exits 0 with nothing on stdout. It gives
+  up after 1.5 s when the daemon is missing or not answering, and notes why
+  in `hook.log` beside the socket.
+
+- **`gruntas hook` runs the paste guards and places Claude Code's
+  worktrees**, for the gruntas plugin below. `gruntas hook <harness> PreToolUse` refuses a bash call
+  that posts a bare gruntas card link in a `gh pr|issue create|edit|comment`
+  body, or uploads a file to a paste site, with the guard's message, in
+  Claude Code and Codex; any other call gets no answer, so its permission
+  prompt is the person's as before. A worktree made by hand is not refused
+  there. `gruntas hook claude WorktreeCreate` makes the session's worktree
+  with `gruntas worktrees add` and prints its path, so `gruntas worktrees`
+  lists it; `WorktreeRemove` removes it with `gruntas worktrees remove`,
+  which keeps one that has work in it. A worktree gruntas did not make is
+  left where it is, and the hook notes it in `hook.log`.
+
+- **Claude Code and Codex builds will count toward this machine's busy build
+  slots.** When a plugin session's `PreToolUse` and `PostToolUse` (or
+  `PostToolUseFailure`) hooks see a shell command on the heavy list start and
+  end, the daemon adds it to the
+  build slots in use that it announces for allocation, never past the total.
+  The list is `builds.heavy` in config.json (default `cargo
+  build|test|check|clippy`, `npm`/`pnpm`/`bun` test or build scripts, `go
+  test|build`, `make`). It is only a statistic: counting never decides on,
+  delays or rewrites a tool call. A command whose end never comes stops
+  counting at the turn's end (`Stop`, a new `turnEnd` activity), at the
+  session's end, or after 20 minutes. These hooks never start the daemon: with
+  none running they count nothing.
+
+- **The gruntas plugin for Claude Code and Codex.** `/plugin marketplace add
+  gruntas/gruntas` and `/plugin install gruntas@gruntas` in Claude Code, or
+  `codex plugin marketplace add gruntas/gruntas` and `codex plugin add
+  gruntas@gruntas`, install one plugin from this repository. Its hooks run
+  `gruntas hook` for each session's start and end, its bash calls, the end
+  of each turn and (Claude Code) its worktrees, so every session registers
+  with the gruntas daemon; it also brings the gruntas MCP server and skill.
+  The hooks run the `gruntas` on your PATH. Without one they do nothing and
+  the session's start says how to install it, except that Claude Code's
+  worktrees, which the plugin hands to gruntas, fail with that line. Codex asks you to approve the
+  hooks once, in `/hooks`. The release's full build, and so `npx -y
+  @gruntas/mcp`, now ships the full `gruntas-mcp`, with session info and
+  delegation; the lean archive keeps the publishing-only one.
+
+- **`gruntas doctor` checks Claude Code's sandbox settings.** For
+  `~/.claude` and each Claude Code account gruntas knows, it reads
+  `settings.json` and warns when the sandbox block that keeps agents out of
+  the gruntas home is missing or incomplete: the sandbox enabled,
+  `failIfUnavailable`, `allowUnsandboxedCommands: false`, the home in
+  `filesystem.denyRead` with no `allowRead` opening it again, and a
+  `Read(//<home>/**)` deny rule. It prints the
+  block to add and never edits the file.
+
+- **The Claude Code plugin reports the account's usage windows.** A small
+  mod in the plugin (`hooks/usage.ts`) reads the 5-hour and 7-day windows
+  Claude Code already has, at session start (a resumed one's; a new
+  session's come with its first response), whenever one moves and every
+  5 minutes, and runs `gruntas hook claude usage` with them and the
+  account's config home. The host daemon writes them into `usage.json`, the
+  record rollover ranks accounts by: under the login gruntas last saw
+  signed in there, else under the config home itself. Within one window a
+  reading never lowers the one kept. Without
+  `gruntas` on the PATH the mod does nothing.
+
+- **`gruntas_session_info` in `gruntas-mcp`.** A Claude Code or Codex
+  session that runs `gruntas-mcp` can ask what gruntas knows about it: the
+  registration its plugin's `SessionStart` hook made (session id, harness,
+  account, working directory, repository, transcript, attendance), found by
+  the harness process that started the server. A session nobody registered
+  is told so. With it, the full build's `gruntas-mcp` offers the publishing
+  tools, `gruntas_session_info`, `gruntas_delegate`, `gruntas_collect` and
+  `gruntas_machines`, and nothing else.
+
 - **Sessions record whether anyone is at them, and steering commands say
   where they came from.** A new session's start record notes whether a
   person is attending it: `gruntas -p` without a terminal on its input, a

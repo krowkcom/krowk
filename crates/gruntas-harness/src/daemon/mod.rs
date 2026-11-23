@@ -15,6 +15,8 @@
 //!   a client up, bounded by a snapshot (R-LAG-10).
 //! - `ws` — the WebSocket listener: the same frames in batches, compressed,
 //!   windowed, with heartbeats of their own (R-PROTO-1, R-LAG-3/5/9).
+//! - `registry` — the sessions of Claude Code and Codex their plugin's
+//!   hooks registered (`activity` frames), kept in the runtime directory.
 //! - `service` — `gruntas machines always-on on`: the systemd user unit and the launchd
 //!   agent that keep it running on an always-on machine (R-HOST-2).
 //!
@@ -30,6 +32,7 @@
 
 pub mod client;
 pub mod outbox;
+pub mod registry;
 pub mod remote;
 pub mod replay;
 pub mod server;
@@ -236,14 +239,23 @@ pub fn older(daemon: &str, mine: &str) -> bool {
 /// reader waits for an end that never comes.
 pub fn spawn_detached(program: &Path, args: &[&str], log: &Path) -> Result<std::process::Child, String> {
     // SAFETY: the closure does nothing.
-    unsafe { detached(program, args, Path::new("/"), log, || Ok(())) }
+    unsafe { detached(program, args, Path::new("/"), log, &[], || Ok(())) }
+}
+
+/// `spawn_detached`, without the variables `names`: a daemon a harness's
+/// hook starts, which must not take that one session's account or nesting
+/// markers (`CLAUDE_CONFIG_DIR`, `CLAUDECODE`, `CODEX_HOME`) for every
+/// session it then runs.
+pub fn spawn_detached_without(program: &Path, args: &[&str], log: &Path, names: &[&str]) -> Result<std::process::Child, String> {
+    // SAFETY: the closure does nothing.
+    unsafe { detached(program, args, Path::new("/"), log, names, || Ok(())) }
 }
 
 /// `spawn_detached`, run in `cwd` rather than `/`: a `gruntas sync take` a
 /// `take` command asks for, in the clone it takes the session into.
 pub fn spawn_detached_in(program: &Path, args: &[&str], cwd: &Path, log: &Path) -> Result<std::process::Child, String> {
     // SAFETY: the closure does nothing.
-    unsafe { detached(program, args, cwd, log, || Ok(())) }
+    unsafe { detached(program, args, cwd, log, &[], || Ok(())) }
 }
 
 /// `spawn_detached`, with `first` run in the child before the descriptors
@@ -254,7 +266,7 @@ pub fn spawn_detached_in(program: &Path, args: &[&str], cwd: &Path, log: &Path) 
 ///
 /// `first` runs in the child between fork and exec: it may make only
 /// async-signal-safe calls, and must not allocate or take a lock.
-unsafe fn detached(program: &Path, args: &[&str], cwd: &Path, log: &Path, first: impl FnMut() -> std::io::Result<()> + Send + Sync + 'static) -> Result<std::process::Child, String> {
+unsafe fn detached(program: &Path, args: &[&str], cwd: &Path, log: &Path, unset: &[&str], first: impl FnMut() -> std::io::Result<()> + Send + Sync + 'static) -> Result<std::process::Child, String> {
     use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::process::CommandExt;
     let out = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(log).map_err(|e| format!("{} cannot be opened: {e}", log.display()))?;
@@ -262,6 +274,9 @@ unsafe fn detached(program: &Path, args: &[&str], cwd: &Path, log: &Path, first:
     let mut cmd = std::process::Command::new(program);
     // The daemon in `/`, so it pins no directory or mount for its life.
     cmd.args(args).current_dir(cwd).stdin(std::process::Stdio::null()).stdout(out).stderr(err);
+    for k in unset {
+        cmd.env_remove(k);
+    }
     // Read before the fork: sysconf is not async-signal-safe.
     // SAFETY: sysconf only reads a limit.
     let limit = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
@@ -295,7 +310,7 @@ unsafe fn detached(program: &Path, args: &[&str], cwd: &Path, log: &Path, first:
 ///
 /// Only between fork and exec: it touches every descriptor the process
 /// has, whoever owns it.
-unsafe fn close_on_exec_from_3(limit: libc::c_int) {
+pub(crate) unsafe fn close_on_exec_from_3(limit: libc::c_int) {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     // SAFETY: close_range takes plain integers and changes only flags.
     if unsafe { libc::syscall(libc::SYS_close_range, 3 as libc::c_long, libc::c_uint::MAX as libc::c_long, libc::CLOSE_RANGE_CLOEXEC as libc::c_long) } == 0 {
@@ -510,7 +525,7 @@ mod tests {
         // SAFETY: fcntl is async-signal-safe, on a descriptor the child has.
         let leave_open = move || if unsafe { libc::fcntl(fd, libc::F_SETFD, 0) } < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) };
         // SAFETY: `leave_open` makes one fcntl call.
-        let mut daemon = unsafe { detached(Path::new("/bin/sh"), &["-c", "sleep 30"], Path::new("/"), &log, leave_open) }.unwrap();
+        let mut daemon = unsafe { detached(Path::new("/bin/sh"), &["-c", "sleep 30"], Path::new("/"), &log, &[], leave_open) }.unwrap();
         drop(write);
         let mut p = libc::pollfd { fd: read.as_raw_fd(), events: libc::POLLIN, revents: 0 };
         // SAFETY: one pollfd, for the length of the call.
@@ -520,6 +535,19 @@ mod tests {
         let _ = std::fs::remove_file(&log);
         assert_eq!(ready, 1, "the pipe never ended: the daemon holds its write end");
         assert_eq!(read.read(&mut [0u8; 1]).unwrap(), 0, "its end, not data");
+    }
+
+    /// KT02: a daemon a hook starts takes none of the variables it names.
+    #[test]
+    fn kt02_a_daemon_spawned_without_variables_has_none_of_them() {
+        let log = std::env::temp_dir().join(format!("gruntas-without-{}.log", std::process::id()));
+        let _ = std::fs::remove_file(&log);
+        assert!(!std::env::var("PATH").unwrap_or_default().is_empty() && !std::env::var("HOME").unwrap_or_default().is_empty());
+        let mut child = spawn_detached_without(Path::new("/bin/sh"), &["-c", "echo \"[${HOME-gone}] [${PATH:+kept}]\""], &log, &["HOME"]).unwrap();
+        child.wait().unwrap();
+        let said = std::fs::read_to_string(&log).unwrap();
+        let _ = std::fs::remove_file(&log);
+        assert_eq!(said.trim(), "[gone] [kept]");
     }
 
     /// R-LAG-9's tripwire for the daemon's own serving code: no blocking
