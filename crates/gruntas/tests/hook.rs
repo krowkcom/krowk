@@ -46,7 +46,10 @@ impl Scratch {
         gruntas_harness::daemon::socket(&self.env()).unwrap()
     }
 
-    /// Runs the hook with `payload` on stdin; its output and how long it took.
+    /// Runs the hook with `payload` on stdin; its output and how long it
+    /// took to exit. Timed to its exit, not to its pipes' end: on macOS a
+    /// pipe is made close-on-exec only after it is made, so a process
+    /// another test spawns in between can hold this one's open past it.
     fn hook(&self, harness: &str, event: &str, payload: &[u8]) -> (Output, Duration) {
         let at = Instant::now();
         let mut child = Command::new(env!("CARGO_BIN_EXE_gruntas"))
@@ -61,8 +64,17 @@ impl Scratch {
             .spawn()
             .unwrap();
         child.stdin.take().unwrap().write_all(payload).unwrap();
-        let out = child.wait_with_output().unwrap();
-        (out, at.elapsed())
+        let drain = |mut r: Box<dyn std::io::Read + Send>| {
+            std::thread::spawn(move || {
+                let mut v = Vec::new();
+                let _ = r.read_to_end(&mut v);
+                v
+            })
+        };
+        let (stdout, stderr) = (drain(Box::new(child.stdout.take().unwrap())), drain(Box::new(child.stderr.take().unwrap())));
+        let status = child.wait().unwrap();
+        let took = at.elapsed();
+        (Output { status, stdout: stdout.join().unwrap(), stderr: stderr.join().unwrap() }, took)
     }
 }
 
