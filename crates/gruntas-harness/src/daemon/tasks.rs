@@ -195,6 +195,21 @@ impl Tasks {
         changed
     }
 
+    /// What an agent's reports said (`registry::Registry::report`: its
+    /// summary, history, phase and PR), kept on its Task so they outlive
+    /// the session's registration and stay on the board once it ends.
+    /// Whether it changed.
+    pub fn take_reported(&mut self, reported: &Task) -> bool {
+        let Some(e) = self.tasks.get_mut(&reported.id) else { return false };
+        let before = e.clone();
+        let (t, g) = (&mut e.task, &reported.metadata.gruntas);
+        t.status.message.clone_from(&reported.status.message);
+        t.history.clone_from(&reported.history);
+        t.metadata.gruntas.phase.clone_from(&g.phase);
+        t.metadata.gruntas.pr.clone_from(&g.pr);
+        *e != before
+    }
+
     /// A session's git context, as the daemon read it: none outside a
     /// repository, which clears it. Whether it changed.
     pub fn set_git(&mut self, session_id: &str, git: Option<Git>) -> bool {
@@ -473,6 +488,30 @@ mod tests {
         t.apply(&reg("b"), T2);
         assert_eq!(state(&t, "b"), (TaskState::Working, Some(Provenance::Harness)));
         assert_eq!(health(&t, "b"), Health::Serving);
+    }
+
+    /// A report's summary, history, phase and PR stay on the Task once
+    /// its session ends: the registry forgets them with the session.
+    #[test]
+    fn sl04_an_agents_last_report_outlives_its_session() {
+        let mut r = crate::daemon::registry::Registry::default();
+        let mut t = Tasks::default();
+        r.apply(&reg("s"));
+        t.apply(&reg("s"), T0);
+        let report = gruntas_client::status::Report { state: Some(TaskState::Completed), pr: Some("https://github.com/o/r/pull/1".into()), ..Default::default() };
+        r.report("s", "done", &report, jiff::Timestamp::now());
+        t.agent_state("s", TaskState::Completed, T1);
+        assert!(t.take_reported(r.task("s").unwrap()));
+        assert!(!t.take_reported(r.task("s").unwrap()), "once");
+        let end = Activity::Deregister { session_id: "s".into() };
+        r.apply(&end);
+        t.apply(&end, T2);
+        assert!(r.task("s").is_none(), "the registry forgot it");
+        let k = t.get("s").unwrap();
+        assert_eq!(k.status.state, TaskState::Completed);
+        assert_eq!(k.status.message.as_ref().map(|m| m.summary()).as_deref(), Some("done"));
+        assert_eq!(k.history.len(), 1);
+        assert_eq!(k.metadata.gruntas.pr.as_ref().map(|f| f.value.as_str()), Some("https://github.com/o/r/pull/1"));
     }
 
     #[test]

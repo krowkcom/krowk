@@ -18,7 +18,7 @@
 use super::announce::Announcer;
 use crate::daemon::registry::Registry;
 use crate::daemon::tasks::Tasks;
-use gruntas_client::device_chain::Chain;
+use gruntas_client::device_chain::{Chain, Kind};
 use gruntas_client::e2e::DeviceId;
 use gruntas_client::status::{self, Board, Counts, Field, Task};
 use gruntas_client::user_key::UserKeys;
@@ -177,29 +177,49 @@ pub struct Read {
 }
 
 /// Every board the person's devices published, as `api` (one of the
-/// person's keys) reads them: the devices listed through the presence list,
+/// person's keys) reads them: the devices listed through the presence list
+/// and the verified device list `chain`, so a machine whose presence lapsed
+/// or was withdrawn (`host stop`) still shows, offline (D4's `UNKNOWN`);
 /// each one's board fetched and opened against `chain` with `keys`. A
 /// device that published none is left out; one whose board cannot be
-/// fetched or does not open is listed with why. A registry that keeps no presences yet lists none.
+/// fetched or does not open is listed with why.
 pub fn read(api: &gruntas_api::Client, keys: &UserKeys, chain: &Chain) -> Result<Vec<Read>, gruntas_api::Error> {
     let presences = match api.list_presences() {
         Ok(p) => p,
         Err(e) if e.status == 404 => Vec::new(),
         Err(e) => return Err(e),
     };
+    let devices = listed(presences.iter().map(|p| (p.device.as_str(), p.online)), chain.devices().iter().filter(|d| d.kind != Kind::Recovery).map(|d| d.id().to_string()));
     let mut out = Vec::new();
-    for p in presences {
+    for (device, online) in devices {
         // One device's board that cannot be fetched is listed with why.
-        let record = match api.status_board(&p.device) {
+        let record = match api.status_board(&device) {
             Ok(None) => continue,
             Ok(Some(r)) => Ok(r),
             Err(e) => Err(format!("its status board could not be fetched: {} ({})", super::announce::words(&e), e.code())),
         };
         let received_at = jiff::Timestamp::now();
-        let board = record.and_then(|r| DeviceId::parse(&p.device).ok_or_else(|| "not a device id".to_string()).and_then(|d| status::open_board(&r.sealed, &d, keys, chain)));
-        out.push(Read { device: p.device, online: p.online, received_at, board });
+        let board = record.and_then(|r| DeviceId::parse(&device).ok_or_else(|| "not a device id".to_string()).and_then(|d| status::open_board(&r.sealed, &d, keys, chain)));
+        out.push(Read { device, online, received_at, board });
     }
     Ok(out)
+}
+
+/// The devices to read, each once, with whether its presence is live: the
+/// presences, then each device on the verified list with none, offline.
+fn listed<'a>(presences: impl Iterator<Item = (&'a str, bool)>, verified: impl Iterator<Item = String>) -> Vec<(String, bool)> {
+    let mut out: Vec<(String, bool)> = Vec::new();
+    for (device, online) in presences {
+        if !out.iter().any(|(d, _)| d.eq_ignore_ascii_case(device)) {
+            out.push((device.to_string(), online));
+        }
+    }
+    for device in verified {
+        if !out.iter().any(|(d, _)| d.eq_ignore_ascii_case(&device)) {
+            out.push((device, false));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -271,6 +291,15 @@ mod tests {
         assert_eq!(b.tasks[0].history.len(), 1);
         assert_eq!(b.sessions, ["kept", "new"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// SL07 (D4): a verified device with no presence (lapsed, or withdrawn
+    /// by `host stop`) is still read, offline; each device once.
+    #[test]
+    fn sl07_a_device_without_a_presence_is_read_offline() {
+        let presences = [("AA", true), ("bb", false)];
+        let verified = ["aa", "cc"].map(String::from);
+        assert_eq!(listed(presences.into_iter(), verified.into_iter()), [("AA".to_string(), true), ("bb".to_string(), false), ("cc".to_string(), false)]);
     }
 
     #[test]

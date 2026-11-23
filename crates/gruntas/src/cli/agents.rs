@@ -273,7 +273,7 @@ pub(super) fn ping(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     };
     let presence = presences.iter().find(|p| p.device.eq_ignore_ascii_case(&device.to_string()));
     if !presence.is_some_and(|p| p.online) {
-        let seen = presence.map_or_else(|| "never announced".to_string(), |p| format!("last seen {}", super::synced::ago(&p.updated_at, jiff::Timestamp::now())));
+        let seen = presence.map_or_else(|| "not announced now".to_string(), |p| format!("last seen {}", super::synced::ago(&p.updated_at, jiff::Timestamp::now())));
         let mut e = fail("machine_unknown", format!("{name} is UNKNOWN: its presence lapsed ({seen}), so it was not pinged — start gruntas's host service there, or gruntas machines always-on on"));
         let mut details = json!({"machine": name, "device": device.to_string(), "health": Health::Unknown});
         if let Some(s) = &session {
