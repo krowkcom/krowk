@@ -1214,8 +1214,16 @@ stdout:
         },
         {
           "name": "list",
-          "usage": "gruntas providers list",
+          "usage": "gruntas providers list [--check]",
           "summary": "List every instance, and whether it is ready",
+          "flags": [
+            {
+              "name": "check",
+              "type": "bool",
+              "default": "false",
+              "usage": "Only the readiness check (what gruntas status shows today): exits 3 when no instance is ready"
+            }
+          ],
           "hidden": false
         },
         {
@@ -1445,6 +1453,32 @@ stdout:
       "name": "hosts",
       "usage": "gruntas hosts",
       "summary": "The same as gruntas machines",
+      "hidden": true
+    },
+    {
+      "name": "agents",
+      "usage": "gruntas agents [project]",
+      "summary": "Every agent on your machines, by project and machine",
+      "args": [
+        {
+          "name": "project",
+          "summary": "Only this project, e.g. github.com/acme/app",
+          "required": false
+        }
+      ],
+      "hidden": true
+    },
+    {
+      "name": "ping",
+      "usage": "gruntas ping <machine|session>",
+      "summary": "Ask a machine, or a session's machine, whether it is alive",
+      "args": [
+        {
+          "name": "target",
+          "summary": "A machine (by name, or 8+ characters of its id) or a session id",
+          "required": true
+        }
+      ],
       "hidden": true
     },
     {
@@ -3303,8 +3337,16 @@ tty:
         },
         {
           "name": "list",
-          "usage": "gruntas providers list",
+          "usage": "gruntas providers list [--check]",
           "summary": "List every instance, and whether it is ready",
+          "flags": [
+            {
+              "name": "check",
+              "type": "bool",
+              "default": "false",
+              "usage": "Only the readiness check (what gruntas status shows today): exits 3 when no instance is ready"
+            }
+          ],
           "hidden": false
         },
         {
@@ -3534,6 +3576,32 @@ tty:
       "name": "hosts",
       "usage": "gruntas hosts",
       "summary": "The same as gruntas machines",
+      "hidden": true
+    },
+    {
+      "name": "agents",
+      "usage": "gruntas agents [project]",
+      "summary": "Every agent on your machines, by project and machine",
+      "args": [
+        {
+          "name": "project",
+          "summary": "Only this project, e.g. github.com/acme/app",
+          "required": false
+        }
+      ],
+      "hidden": true
+    },
+    {
+      "name": "ping",
+      "usage": "gruntas ping <machine|session>",
+      "summary": "Ask a machine, or a session's machine, whether it is alive",
+      "args": [
+        {
+          "name": "target",
+          "summary": "A machine (by name, or 8+ characters of its id) or a session id",
+          "required": true
+        }
+      ],
       "hidden": true
     },
     {

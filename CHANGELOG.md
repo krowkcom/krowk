@@ -21,6 +21,78 @@ breaking changes may affect it without notice.
 
 ### Added
 
+- **`gruntas agents [project]`: every agent on every machine of yours, as
+  one tree.** Read from each machine's sealed status board, it lists them by
+  project, machine and parent session, each with its state (`working`,
+  `input-required`, `completed`…), its health (`SERVING` while its harness
+  runs, `NOT_SERVING` once it is gone), how long it has been quiet and its
+  one-line summary. A machine is `SERVING` while its presence is live and
+  `UNKNOWN` once it lapses. Name a project (`github.com/acme/app`, or any of
+  its remote URLs) to see only it; `--json` is the same tree.
+
+- **`gruntas ping <machine|session>`: is it alive?** The machine's daemon
+  answers an empty request, and gruntas says "answered in N s"; that includes
+  the machine's presence refresh (up to 10 seconds), so it is a liveness
+  check, not a latency. A session is found on the status boards and its
+  machine pinged, and the answer adds the session's health and last
+  activity. A machine whose presence lapsed is `UNKNOWN`, said at once with
+  nothing sent (exit 6). Machines on older gruntas answer that they do not
+  know the command.
+
+- **`gruntas providers list --check`**: the readiness check `gruntas status`
+  gives today, the same table and the same `{"ready", "instances"}` JSON,
+  exiting 3 (`none_ready`) when no instance is ready.
+
+- **The status layer's contract: every agent session's status as an A2A
+  v1.0 Task.** A session's state, one-line summary and when it was set are
+  A2A's `TaskState` and `TaskStatus`; what gruntas knows about it (project,
+  machine, harness, account, parent session, branch, HEAD, worktree, dirty
+  flag, phase, plan, PR, checks, cost, last activity and health) rides in the
+  Task's metadata under `https://gruntas.com/a2a/status/v1`, each field
+  marked as reported by the agent or observed by the harness. Its JSON
+  Schema is published beside the protocol's (`status-task`, `status-board`
+  and `status-counts` in `crates/gruntas-harness/schema/`). `gruntas agents`
+  and `gruntas ping` show it.
+
+- **Each machine publishes a sealed status board of its sessions, which
+  your other devices can read.** With sync set up, the host daemon seals a
+  board of its registered Claude Code and Codex sessions to your devices
+  and puts it on the registry when a session changes, at most once every
+  5 seconds, and again with every presence refresh. Over 256 KB it drops
+  finished sessions older than an hour, then reports beyond the last 3,
+  then shortens summaries. With each publish the registry gets only the
+  machine's health and how many sessions are in each state and health,
+  under a random statistics id kept in `~/.gruntas/status-statistics-id`
+  and never the device id. Any of your devices reads every machine's board,
+  and a session's "quiet for" is worked out from the board's own publish
+  time, so it never compares two machines' clocks.
+
+- **Agents report their status with `gruntas_report`.** The plugin's MCP
+  server has a new tool that takes a state (an A2A `TaskState` such as
+  `working` or `input-required`), a one-line summary, and optionally a
+  phase, what it is blocked on, its PR and what comes next. The machine's
+  daemon keeps it as the session's Task, marked as the agent's, with its
+  last 10 reports, and the tool answers the status as it now stands. When
+  a session made tool calls since its last report, its `Stop` hook adds a
+  one-line reminder to report, once per stretch of work. The plugin's
+  `PostToolUse` hooks now run for every tool, not only Bash, so the daemon
+  sees that work.
+
+- **The host daemon keeps every plugin session's status from what its
+  hooks see.** A permission prompt makes a Claude Code session
+  input-required until its next activity (a tool call finishing, a refused
+  permission), `SessionEnd` makes it completed, and a harness that exits
+  without one makes it canceled; its health is `SERVING` while the harness
+  runs and `NOT_SERVING` after. The daemon reads the session's branch, HEAD,
+  worktree and dirty flag with git itself, at the session's start and at
+  most every 5 seconds after activity, so the hooks stay fast. Kept in
+  `status.json` beside `registrations.json`, and that is what the status
+  board publishes. The Claude plugin adds
+  `PermissionRequest` and `PermissionDenied` hooks, which never answer the
+  prompt; the `activity` frame gains `permissionRequest` and `active`. Codex
+  has no permission hook, so its sessions are never shown input-required
+  unless their agents report it.
+
 - **`gruntas hook <harness> <event>`, the entry point for the Claude
   Code and Codex plugin's hooks.** It reads the harness's hook payload on
   stdin and tells the host daemon about the session over its socket, in a
@@ -123,6 +195,14 @@ breaking changes may affect it without notice.
   person's own words. Text in the steer cannot close that frame. The
   session log keeps the steer's raw text with the origin beside it; a steer
   with no origin (from an older gruntas) is delivered as before.
+
+### Deprecated
+
+- **`gruntas status` becomes the agent tree in the next release.** It will
+  show what `gruntas agents` shows today. Scripts that check whether an
+  account is ready should move to `gruntas providers list --check`, which
+  gives the same output and exit codes. Until then `gruntas status` works as
+  before and says so on stderr.
 
 ### Security
 

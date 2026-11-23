@@ -17,6 +17,8 @@
 //!   windowed, with heartbeats of their own (R-PROTO-1, R-LAG-3/5/9).
 //! - `registry` — the sessions of Claude Code and Codex their plugin's
 //!   hooks registered (`activity` frames), kept in the runtime directory.
+//! - `tasks` — each of those sessions' status, an A2A Task: the states its
+//!   hooks show, its harness's health and its git context (SL04).
 //! - `service` — `gruntas machines always-on on`: the systemd user unit and the launchd
 //!   agent that keep it running on an always-on machine (R-HOST-2).
 //!
@@ -37,6 +39,7 @@ pub mod remote;
 pub mod replay;
 pub mod server;
 pub mod service;
+pub mod tasks;
 pub mod ws;
 
 use crate::engine::EngineError;

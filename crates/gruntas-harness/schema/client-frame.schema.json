@@ -969,7 +969,7 @@
       ]
     },
     "Activity": {
-      "description": "What a session gruntas does not run did, one `activity` frame each:\nregistering at its start, leaving at its end, a heavy command starting\nand ending, a turn's end, and its account's usage windows.",
+      "description": "What a session gruntas does not run did, one `activity` frame each:\nregistering at its start, leaving at its end, a heavy command starting\nand ending, a turn's end, a permission prompt and other activity, and\nits account's usage windows.",
       "oneOf": [
         {
           "description": "A session started (or resumed): the daemon keeps it until it ends or\nits harness process is gone.",
@@ -1045,7 +1045,7 @@
           ]
         },
         {
-          "description": "A turn of the session ended: the heavy commands it had not ended\ncount no more.",
+          "description": "A turn of the session ended: the heavy commands it had not ended\ncount no more. Answered with `reportDue` when it did work it has\nnot reported.",
           "type": "object",
           "properties": {
             "sessionId": {
@@ -1054,6 +1054,83 @@
             "type": {
               "type": "string",
               "const": "turnEnd"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId"
+          ]
+        },
+        {
+          "description": "A tool call of the session ended (`PostToolUse`): work its agent\nhas not reported yet. Not sent for the report tool's own call.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "toolEnd"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId"
+          ]
+        },
+        {
+          "description": "The session's agent reported its status (`gruntas_report`, D2):\nanswered with the session's Task as it now stands, or\n`not_registered`. The daemon stamps it with its own clock.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "summary": {
+              "description": "The one-line summary.",
+              "type": "string"
+            },
+            "report": {
+              "$ref": "#/$defs/Report"
+            },
+            "type": {
+              "type": "string",
+              "const": "report"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "summary",
+            "report"
+          ]
+        },
+        {
+          "description": "A permission prompt waits on the person: the session is\ninput-required until its next activity (D3).",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "permissionRequest"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId"
+          ]
+        },
+        {
+          "description": "The session did something the daemon keeps nothing else of (a tool\ncall off the heavy list, a refused permission): its last activity,\nand the end of a permission prompt.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "active"
             }
           },
           "required": [
@@ -1157,6 +1234,68 @@
       "required": [
         "sessionId",
         "harness"
+      ]
+    },
+    "Report": {
+      "description": "One `gruntas_report` (D2), as its history entry records it; the summary\nis the message's text.",
+      "type": "object",
+      "properties": {
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "phase": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "blockedOn": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pr": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timestamp": {
+          "description": "When it was reported, RFC 3339, the publishing machine's clock.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "timestamp"
+      ]
+    },
+    "TaskState": {
+      "description": "A2A's `TaskState`, as ProtoJSON writes it. A state this build does not\nknow reads as `Unspecified`, rather than refusing the whole board.",
+      "type": "string",
+      "enum": [
+        "TASK_STATE_SUBMITTED",
+        "TASK_STATE_WORKING",
+        "TASK_STATE_COMPLETED",
+        "TASK_STATE_FAILED",
+        "TASK_STATE_CANCELED",
+        "TASK_STATE_INPUT_REQUIRED",
+        "TASK_STATE_REJECTED",
+        "TASK_STATE_AUTH_REQUIRED",
+        "TASK_STATE_UNSPECIFIED"
       ]
     },
     "UsageWindow": {

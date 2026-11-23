@@ -1,4 +1,6 @@
-//! `gruntas status`: whether each Claude Code or Codex account can run a turn
+//! `gruntas status`, and `gruntas providers list --check`, its lasting
+//! name (`status` becomes the agent tree in the next release, and says so
+//! on stderr): whether each Claude Code or Codex account can run a turn
 //! here — the implicit ones and the configured ones, one row each (an
 //! instance gruntas would run itself is not offered: D6): its name, its
 //! kind, its readiness, where its credential comes from, and what fixes it.
@@ -46,6 +48,10 @@ pub(super) fn neutral_probe(ctx: &Ctx) -> Result<readiness::Probe, Error> {
     let home = gruntas_api::home::dir(ctx.io.env)?;
     readiness::neutral_dir(&home).map(readiness::Probe::at).map_err(|e| fail("data_dir_unwritable", e))
 }
+
+/// What `gruntas status` says on stderr each time, a release ahead of the
+/// change (CHANGELOG: one release's notice before a command changes meaning).
+pub(super) const RENAMING: &str = "In the next release gruntas status becomes the agent tree (gruntas agents); gruntas providers list --check is this readiness check, under its lasting name";
 
 pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
     let (_, _, reports) = reports(ctx)?;

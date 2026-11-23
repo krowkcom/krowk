@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Counts",
+  "description": "What the registry receives about a machine (D9), under a random\nstatistics id (`statistics_id`) rather than the device id: the machine's\nhealth and how many of its agents are in each A2A state and each health\nstatus. Nothing per project, and no content.",
+  "type": "object",
+  "properties": {
+    "health": {
+      "description": "The machine's own health: `SERVING` from a machine publishing it.",
+      "$ref": "#/$defs/Health"
+    },
+    "states": {
+      "description": "Agents by A2A state; a state with none is absent.",
+      "type": "object",
+      "properties": {
+        "TASK_STATE_AUTH_REQUIRED": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "TASK_STATE_CANCELED": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "TASK_STATE_COMPLETED": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "TASK_STATE_FAILED": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "TASK_STATE_INPUT_REQUIRED": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "TASK_STATE_REJECTED": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "TASK_STATE_SUBMITTED": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "TASK_STATE_UNSPECIFIED": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "TASK_STATE_WORKING": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "default": {}
+    },
+    "health_counts": {
+      "description": "Agents by health; a status with none is absent. An agent whose\nhealth is not known counts as `UNKNOWN`.",
+      "type": "object",
+      "properties": {
+        "NOT_SERVING": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "SERVING": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "UNKNOWN": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "default": {}
+    }
+  },
+  "required": [
+    "health"
+  ],
+  "$defs": {
+    "Health": {
+      "description": "The gRPC Health Checking Protocol's serving status (D4): an agent is\n`SERVING` while its harness process lives, `NOT_SERVING` once it is\ngone; a machine is `SERVING` while its presence is live, `UNKNOWN` once\nit lapses. One this build does not know reads as `UNKNOWN`.",
+      "type": "string",
+      "enum": [
+        "SERVING",
+        "NOT_SERVING",
+        "UNKNOWN"
+      ]
+    }
+  }
+}

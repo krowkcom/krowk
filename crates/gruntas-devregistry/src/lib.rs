@@ -34,6 +34,7 @@ mod page;
 mod pairing_requests;
 mod pairings;
 mod runs;
+mod status;
 mod store;
 mod sync;
 pub use sync::{ticket_public_key, TICKET_KID, TICKET_SEED};
@@ -234,6 +235,8 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         // The device's sealed announcement to the person's others (R-HOST-3),
         // signed by it.
         ("PUT" | "PATCH" | "DELETE", ["v1", "key", "device", "presence"]) => devices::presence(a, req),
+        // The device's sealed status board (R-STA-5), signed by it.
+        ("PUT", ["v1", "key", "device", "status_board"]) => status::put_board(a, req),
         // The host's answer to a command it was delivered (R-HOST-4), signed
         // by it.
         ("PUT" | "PATCH", ["v1", "key", "device", "commands", id]) => sync::signed(a, req, |a, req, by| commands::answer(a, req, id, by)),
@@ -297,7 +300,7 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
             sync::signed(a, req, |a, req, by| sync::show_transport(a, req, slug, &site, by))
         }
         ("DELETE", ["v1", "transports", slug]) => sync::signed(a, req, |a, req, by| sync::spend_transport(a, req, slug, by)),
-        (_, ["_settings" | "_presences" | "_host_commands", ..]) => stand_in_route(a, req, &m, &segs),
+        (_, ["_settings" | "_presences" | "_host_commands" | "_status_layer", ..]) => stand_in_route(a, req, &m, &segs),
         (_, ["a", slug]) if get => page::artifact_page(a, req, slug),
         _ => no_such_endpoint(),
     }
@@ -313,6 +316,8 @@ fn stand_in_route(a: &App, req: &Req, m: &str, segs: &[&str]) -> Resp {
         (_, ["_presences"]) if get => devices::presences_seen(a),
         // The commands held, with no bytes (R-HOST-4).
         (_, ["_host_commands"]) if get => commands::commands_seen(a),
+        // The status boards and counts as stored (R-STA-6).
+        (_, ["_status_layer"]) if get => status::seen(a),
         _ => no_such_endpoint(),
     }
 }
@@ -337,6 +342,11 @@ fn users_route(a: &App, req: &mut Req, m: &str, user: &str, rest: &[&str]) -> Re
         ("POST", ["devices", target, "commands"]) => sync::signed(a, req, |a, req, by| commands::send(a, req, target, by)),
         (_, ["devices", target, "commands", id]) if get => sync::signed(a, req, |a, req, by| commands::show(a, req, target, id, by)),
         (_, ["presences"]) if get => devices::presences(a, req),
+        // A device's sealed status board, and a machine's counts under its
+        // random statistics id (R-STA-5, R-STA-6).
+        (_, ["devices", id, "status_board"]) if get => status::show_board(a, req, id),
+        ("PUT", ["statistics", id]) => status::put_statistics(a, req, id),
+        (_, ["statistics", id]) if get => status::show_statistics(a, req, id),
         // A new machine's ask of the person's hosts to open a pairing, and its poll.
         ("POST", ["pairing_request"]) => pairing_requests::create(a, req),
         (_, ["pairing_request"]) if get => pairing_requests::show(a, req),

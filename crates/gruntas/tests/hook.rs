@@ -277,10 +277,15 @@ fn kt03_heavy_commands_move_the_announced_busy_slots_and_decide_nothing() {
     hook("claude", "Stop", &serde_json::from_slice(&fixture("claude", "Stop")).unwrap());
     assert_eq!(busy().in_use, 0);
 
-    // Every event, heavy or not, decides nothing.
+    // Every event, heavy or not, decides nothing about a tool call: a turn's
+    // end after work may only remind the agent to report it (SL03).
     for harness in ["claude", "codex"] {
         for event in EVENTS {
-            hook(harness, event, &serde_json::from_slice(&fixture(harness, event)).unwrap());
+            let (out, took) = s.hook(harness, event, &fixture(harness, event));
+            assert!(out.status.success() && took < LIMIT, "{harness} {event}: {out:?} in {took:?}");
+            if !(event == "Stop" && out.stdout == format!("{}\n", gruntas_harness::hook::reminder()).into_bytes()) {
+                assert!(out.stdout.is_empty(), "{harness} {event}: {}", String::from_utf8_lossy(&out.stdout));
+            }
         }
     }
 }
@@ -344,7 +349,7 @@ fn kt04_session_info_answers_the_calling_sessions_registration() {
     let answers = mcp(false);
     let mut names: Vec<&str> = answers[1]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
     names.sort_unstable();
-    assert_eq!(names, ["gruntas_claim_artifact", "gruntas_collect", "gruntas_delegate", "gruntas_get_artifact", "gruntas_get_run", "gruntas_list_artifacts", "gruntas_machines", "gruntas_push", "gruntas_session_info", "gruntas_verify_key"]);
+    assert_eq!(names, ["gruntas_claim_artifact", "gruntas_collect", "gruntas_delegate", "gruntas_get_artifact", "gruntas_get_run", "gruntas_list_artifacts", "gruntas_machines", "gruntas_push", "gruntas_report", "gruntas_session_info", "gruntas_verify_key"]);
     let info = &answers[2]["result"];
     assert_eq!(info["isError"], false, "{info}");
     assert_eq!(info["structuredContent"]["registered"], true, "{info}");
@@ -566,7 +571,7 @@ fn kt07_doctor_reports_the_sandbox_block() {
 fn kt07_the_plugins_hooks_run_gruntas_hook_for_their_own_event() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     for (file, harness, events) in [
-        ("hooks/hooks.json", "claude", &["SessionStart", "SessionEnd", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "WorktreeCreate", "WorktreeRemove"][..]),
+        ("hooks/hooks.json", "claude", &["SessionStart", "SessionEnd", "PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "PermissionDenied", "Stop", "WorktreeCreate", "WorktreeRemove"][..]),
         ("hooks/codex.json", "codex", &["SessionStart", "SessionEnd", "PreToolUse", "PostToolUse", "Stop"][..]),
     ] {
         let hooks: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join(file)).unwrap()).unwrap();

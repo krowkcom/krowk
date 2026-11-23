@@ -1,0 +1,584 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Board",
+  "description": "A machine's status board (D8): its registered sessions' Tasks, sealed\nto the person's devices and published as its own registry record. Status\nonly, never a transcript.",
+  "type": "object",
+  "properties": {
+    "device": {
+      "description": "The publishing device's id, in hex.",
+      "type": "string"
+    },
+    "publishedAt": {
+      "description": "When it was published, RFC 3339, the publishing machine's clock: a\nreader computes \"quiet for\" from it and when it received the board,\nnever against its own clock (D6).",
+      "type": "string"
+    },
+    "sessions": {
+      "description": "Every session registered with the daemon, so a reader finds a\nsession's machine (D5) even when its Task was dropped for the budget.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Task"
+      },
+      "default": []
+    }
+  },
+  "required": [
+    "device",
+    "publishedAt"
+  ],
+  "$defs": {
+    "Task": {
+      "description": "One session's status: an A2A v1.0 Task, id the session id.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The session id.",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/TaskStatus"
+        },
+        "history": {
+          "description": "The agent's reports, oldest first, the last `MAX_HISTORY` kept.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Message"
+          }
+        },
+        "metadata": {
+          "$ref": "#/$defs/TaskMetadata"
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "metadata"
+      ]
+    },
+    "TaskStatus": {
+      "description": "A2A's `TaskStatus`.",
+      "type": "object",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/TaskState"
+        },
+        "message": {
+          "description": "The one-line summary, as an agent message with one text part.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Message"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timestamp": {
+          "description": "When the state was set, RFC 3339, the publishing machine's clock.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "timestamp"
+      ]
+    },
+    "TaskState": {
+      "description": "A2A's `TaskState`, as ProtoJSON writes it. A state this build does not\nknow reads as `Unspecified`, rather than refusing the whole board.",
+      "type": "string",
+      "enum": [
+        "TASK_STATE_SUBMITTED",
+        "TASK_STATE_WORKING",
+        "TASK_STATE_COMPLETED",
+        "TASK_STATE_FAILED",
+        "TASK_STATE_CANCELED",
+        "TASK_STATE_INPUT_REQUIRED",
+        "TASK_STATE_REJECTED",
+        "TASK_STATE_AUTH_REQUIRED",
+        "TASK_STATE_UNSPECIFIED"
+      ]
+    },
+    "Message": {
+      "description": "A2A's `Message`, as far as status uses it: text parts, and the\nextension's report in a history entry's metadata.",
+      "type": "object",
+      "properties": {
+        "messageId": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/Role"
+        },
+        "parts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Part"
+          }
+        },
+        "metadata": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MessageMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "messageId",
+        "role",
+        "parts"
+      ]
+    },
+    "Role": {
+      "description": "A2A's `Role`.",
+      "type": "string",
+      "enum": [
+        "ROLE_USER",
+        "ROLE_AGENT",
+        "ROLE_UNSPECIFIED"
+      ]
+    },
+    "Part": {
+      "description": "A2A's `Part`, text only: a part of another kind reads as empty text.",
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "default": ""
+        }
+      }
+    },
+    "MessageMetadata": {
+      "description": "A history message's `metadata`: the report it records, under the\nextension's URI.",
+      "type": "object",
+      "properties": {
+        "https://gruntas.com/a2a/status/v1": {
+          "$ref": "#/$defs/Report"
+        }
+      },
+      "required": [
+        "https://gruntas.com/a2a/status/v1"
+      ]
+    },
+    "Report": {
+      "description": "One `gruntas_report` (D2), as its history entry records it; the summary\nis the message's text.",
+      "type": "object",
+      "properties": {
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "phase": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "blockedOn": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pr": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "next": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timestamp": {
+          "description": "When it was reported, RFC 3339, the publishing machine's clock.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "timestamp"
+      ]
+    },
+    "TaskMetadata": {
+      "description": "A Task's `metadata`: the gruntas extension, under its URI.",
+      "type": "object",
+      "properties": {
+        "https://gruntas.com/a2a/status/v1": {
+          "$ref": "#/$defs/Extension"
+        }
+      },
+      "required": [
+        "https://gruntas.com/a2a/status/v1"
+      ]
+    },
+    "Extension": {
+      "description": "The gruntas fields of a Task (D1), each with its provenance. All are\noptional: a field nobody has said yet is absent.",
+      "type": "object",
+      "properties": {
+        "stateSource": {
+          "description": "Who set `status.state`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Provenance"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "health": {
+          "description": "The agent's health (D4).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Field"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "project": {
+          "description": "The repository's origin, `presence::normalise_origin`'s form.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Field2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "machine": {
+          "description": "The machine's device id, in hex.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Field2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "harness": {
+          "description": "`claude` or `codex`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Field2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "account": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Field2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parentSessionId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Field2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "branch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Field2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "head": {
+          "description": "The HEAD commit.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Field2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "worktree": {
+          "description": "The worktree's path.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Field2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dirty": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Field3"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "phase": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Field2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plan": {
+          "description": "ACP's plan, entry by entry.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Field4"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pr": {
+          "description": "The pull request's URL.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Field2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "checks": {
+          "description": "Forge checks: empty until a later build fills them.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Field5"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cost": {
+          "description": "What the session has cost, in US dollars.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Field6"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastActivity": {
+          "description": "The last activity any hook or report saw, RFC 3339, the publishing\nmachine's clock (D6).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Field2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "Provenance": {
+      "description": "Who said a field (D1): the agent reported it, or the harness observed it.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "agent",
+            "harness"
+          ]
+        },
+        {
+          "description": "A source this build does not know.",
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
+    },
+    "Field": {
+      "description": "A gruntas field and who said it.",
+      "type": "object",
+      "properties": {
+        "value": {
+          "$ref": "#/$defs/Health"
+        },
+        "source": {
+          "$ref": "#/$defs/Provenance"
+        }
+      },
+      "required": [
+        "value",
+        "source"
+      ]
+    },
+    "Health": {
+      "description": "The gRPC Health Checking Protocol's serving status (D4): an agent is\n`SERVING` while its harness process lives, `NOT_SERVING` once it is\ngone; a machine is `SERVING` while its presence is live, `UNKNOWN` once\nit lapses. One this build does not know reads as `UNKNOWN`.",
+      "type": "string",
+      "enum": [
+        "SERVING",
+        "NOT_SERVING",
+        "UNKNOWN"
+      ]
+    },
+    "Field2": {
+      "description": "A gruntas field and who said it.",
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/Provenance"
+        }
+      },
+      "required": [
+        "value",
+        "source"
+      ]
+    },
+    "Field3": {
+      "description": "A gruntas field and who said it.",
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "boolean"
+        },
+        "source": {
+          "$ref": "#/$defs/Provenance"
+        }
+      },
+      "required": [
+        "value",
+        "source"
+      ]
+    },
+    "Field4": {
+      "description": "A gruntas field and who said it.",
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlanEntry"
+          }
+        },
+        "source": {
+          "$ref": "#/$defs/Provenance"
+        }
+      },
+      "required": [
+        "value",
+        "source"
+      ]
+    },
+    "PlanEntry": {
+      "description": "One entry of an ACP plan (agentclientprotocol.com, `PlanEntry`).",
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "priority": {
+          "$ref": "#/$defs/PlanPriority"
+        },
+        "status": {
+          "$ref": "#/$defs/PlanStatus"
+        }
+      },
+      "required": [
+        "content",
+        "priority",
+        "status"
+      ]
+    },
+    "PlanPriority": {
+      "type": "string",
+      "enum": [
+        "high",
+        "medium",
+        "low",
+        "unknown"
+      ]
+    },
+    "PlanStatus": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "in_progress",
+        "completed",
+        "unknown"
+      ]
+    },
+    "Field5": {
+      "description": "A gruntas field and who said it.",
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "array",
+          "items": true
+        },
+        "source": {
+          "$ref": "#/$defs/Provenance"
+        }
+      },
+      "required": [
+        "value",
+        "source"
+      ]
+    },
+    "Field6": {
+      "description": "A gruntas field and who said it.",
+      "type": "object",
+      "properties": {
+        "value": {
+          "type": "number",
+          "format": "double"
+        },
+        "source": {
+          "$ref": "#/$defs/Provenance"
+        }
+      },
+      "required": [
+        "value",
+        "source"
+      ]
+    }
+  }
+}

@@ -635,6 +635,7 @@ fn append(s: &mut SyncStore, caller: &Caller, p: Post, signer: Option<String>, i
         }
     }
     s.presences.retain(|device, _| !revoke.contains(device));
+    s.status_boards.retain(|device, _| !revoke.contains(device));
     crate::commands::drop_device(s, |d| revoke.iter().any(|r| r == d));
     if init && person.epoch > 1 && s.people.get(&caller.person).is_some_and(|old| old.epoch < person.epoch) {
         for p in s.pairings.values_mut().filter(|p| p.person == caller.person) {

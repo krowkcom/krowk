@@ -597,6 +597,16 @@ pub fn catalog(version: &str) -> Catalog {
     c.commands.push(Command { subcommands: machines_subcommands(), ..cmd("machines", "", "Your machines, and what each can take") });
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(cmd("hosts", "gruntas hosts", "The same as gruntas machines"));
+    #[cfg(all(feature = "harness", unix))]
+    c.commands.push(Command {
+        args: vec![arg("project", "Only this project, e.g. github.com/acme/app", false)],
+        ..cmd("agents", "gruntas agents [project]", "Every agent on your machines, by project and machine")
+    });
+    #[cfg(all(feature = "harness", unix))]
+    c.commands.push(Command {
+        args: vec![arg("target", "A machine (by name, or 8+ characters of its id) or a session id", true)],
+        ..cmd("ping", "gruntas ping <machine|session>", "Ask a machine, or a session's machine, whether it is alive")
+    });
     #[cfg(feature = "harness")]
     c.commands.push(sync_command());
     #[cfg(feature = "harness")]
@@ -971,7 +981,10 @@ fn providers_command() -> Command {
                     "Add an instance, or sign one in",
                 )
             },
-            cmd("list", "gruntas providers list", "List every instance, and whether it is ready"),
+            Command {
+                flags: vec![flag("check", BOOL, "Only the readiness check (what gruntas status shows today): exits 3 when no instance is ready")],
+                ..cmd("list", "gruntas providers list [--check]", "List every instance, and whether it is ready")
+            },
             Command {
                 args: vec![arg("instance", "The instance to remove, e.g. openai:work", true)],
                 ..cmd("remove", "gruntas providers remove <instance>", "Remove an instance's definition, and forget its login")
@@ -1137,7 +1150,23 @@ pub fn about(name: &str) -> &'static str {
         #[cfg(all(feature = "harness", unix))]
         "machines" | "hosts" => MACHINES_ABOUT,
         #[cfg(feature = "harness")]
-        "status" => "Also where its key or login comes from, and what fixes it. Exits 3 if none is.",
+        "status" => "\
+Also where its key or login comes from, and what fixes it. Exits 3 if none is.
+In the next release this becomes the agent tree (`gruntas agents`); the same
+check stays as `gruntas providers list --check`.",
+        #[cfg(all(feature = "harness", unix))]
+        "agents" => "\
+Read from every machine's sealed status board: a tree by project, machine and
+parent session. A machine is SERVING while its presence is live, UNKNOWN once
+it lapsed. Quiet for is worked out from each board's own publish time, never
+by comparing two machines' clocks.",
+        #[cfg(all(feature = "harness", unix))]
+        "ping" => "\
+An empty request the machine's daemon answers at once: \"answered in N s\",
+which includes its presence refresh (up to 10 s), so a liveness check, not a
+latency. A session is found on the status boards; its answer adds its health
+and last activity. A machine whose presence lapsed is UNKNOWN, said without
+sending anything (exit 6).",
         #[cfg(feature = "harness")]
         "connect" => "A subscription signs in by the vendor's own login. Connecting again renews it.",
         #[cfg(feature = "harness")]
@@ -1157,7 +1186,9 @@ default permission mode, so there is no --permission-mode here.",
 Adds a Claude Code or Codex account: on a subscription (signed in with
 `claude auth login` or `codex login`), or on an API key or a gateway.",
         #[cfg(feature = "harness")]
-        "providers list" => "Where each runs, too. The same check as `gruntas status`.",
+        "providers list" => "\
+Where each runs, too. With --check, the readiness table and JSON that
+`gruntas status` gives today, and exit 3 when none is ready.",
         #[cfg(feature = "harness")]
         "mcp" => "\
 Servers live in gruntas's config.json (`mcpServers`, the shape Claude Code
@@ -1301,6 +1332,10 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             "hosts",
             #[cfg(all(feature = "harness", unix))]
             "relay",
+            #[cfg(all(feature = "harness", unix))]
+            "agents",
+            #[cfg(all(feature = "harness", unix))]
+            "ping",
             #[cfg(feature = "sessions")]
             "pricing",
             "help",
@@ -1334,6 +1369,10 @@ pub const ALL_ONLY: &[&str] = &[
     "hosts",
     #[cfg(all(feature = "harness", unix))]
     "relay",
+    #[cfg(all(feature = "harness", unix))]
+    "agents",
+    #[cfg(all(feature = "harness", unix))]
+    "ping",
     #[cfg(feature = "sessions")]
     "pricing",
     "help",

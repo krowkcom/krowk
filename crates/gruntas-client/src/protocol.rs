@@ -1555,6 +1555,14 @@ pub enum ServerFrame {
         id: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<ErrorInfo>,
+        /// For a `report`: the session's status as it now stands.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<Box<crate::status::Task>>,
+        /// For a `turnEnd`: the session did work (tool calls) since its last
+        /// report or the last reminder, so its Stop hook reminds it to
+        /// report (D2).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        report_due: bool,
     },
 }
 
@@ -1568,7 +1576,8 @@ pub enum PluginHarness {
 
 /// What a session gruntas does not run did, one `activity` frame each:
 /// registering at its start, leaving at its end, a heavy command starting
-/// and ending, a turn's end, and its account's usage windows.
+/// and ending, a turn's end, a permission prompt and other activity, and
+/// its account's usage windows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Activity {
@@ -1582,8 +1591,28 @@ pub enum Activity {
     /// And ended.
     HeavyEnd { session_id: String, tool_call_id: String },
     /// A turn of the session ended: the heavy commands it had not ended
-    /// count no more.
+    /// count no more. Answered with `reportDue` when it did work it has
+    /// not reported.
     TurnEnd { session_id: String },
+    /// A tool call of the session ended (`PostToolUse`): work its agent
+    /// has not reported yet. Not sent for the report tool's own call.
+    ToolEnd { session_id: String },
+    /// The session's agent reported its status (`gruntas_report`, D2):
+    /// answered with the session's Task as it now stands, or
+    /// `not_registered`. The daemon stamps it with its own clock.
+    Report {
+        session_id: String,
+        /// The one-line summary.
+        summary: String,
+        report: crate::status::Report,
+    },
+    /// A permission prompt waits on the person: the session is
+    /// input-required until its next activity (D3).
+    PermissionRequest { session_id: String },
+    /// The session did something the daemon keeps nothing else of (a tool
+    /// call off the heavy list, a refused permission): its last activity,
+    /// and the end of a permission prompt.
+    Active { session_id: String },
     /// An account's usage windows, as its harness reads them.
     Usage {
         /// The account's config home (`CLAUDE_CONFIG_DIR`, `~/.claude`).

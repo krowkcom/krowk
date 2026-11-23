@@ -84,6 +84,10 @@ pub const LABEL_HOST_ANSWER_V1: &[u8] = b"krowk/host-answer/v1";
 pub const LABEL_PRESENCE_V1_KEY: &[u8] = b"krowk/presence/v1-key";
 pub const LABEL_HOST_COMMAND_V1_KEY: &[u8] = b"krowk/host-command/v1-key";
 pub const LABEL_HOST_ANSWER_V1_KEY: &[u8] = b"krowk/host-answer/v1-key";
+/// A machine's status board (`status`, R-STA-5): new since the rename, so
+/// under gruntas's own name.
+pub const LABEL_STATUS_BOARD_V1: &[u8] = b"gruntas/status-board/v1";
+pub const LABEL_STATUS_BOARD_V1_KEY: &[u8] = b"gruntas/status-board/v1-key";
 pub const LABEL_TRANSPORT_V1: &[u8] = b"krowk/transport/v1";
 pub const LABEL_IMAGE_NAME_V1: &[u8] = b"krowk/image-name/v1";
 pub const LABEL_IMAGE_V1: &[u8] = b"krowk/image/v1";
@@ -529,6 +533,8 @@ pub enum Label {
     HostCommand,
     /// The host's answer to it.
     HostAnswer,
+    /// A machine's status board of its sessions' Tasks (`status`).
+    StatusBoard,
 }
 
 impl Label {
@@ -537,6 +543,7 @@ impl Label {
             Label::Presence => LABEL_PRESENCE_V1,
             Label::HostCommand => LABEL_HOST_COMMAND_V1,
             Label::HostAnswer => LABEL_HOST_ANSWER_V1,
+            Label::StatusBoard => LABEL_STATUS_BOARD_V1,
         }
     }
 
@@ -545,6 +552,7 @@ impl Label {
             Label::Presence => LABEL_PRESENCE_V1_KEY,
             Label::HostCommand => LABEL_HOST_COMMAND_V1_KEY,
             Label::HostAnswer => LABEL_HOST_ANSWER_V1_KEY,
+            Label::StatusBoard => LABEL_STATUS_BOARD_V1_KEY,
         }
     }
 }

@@ -19,7 +19,18 @@
 //! runs. `SessionEnd` hands its deregistration to a detached copy of
 //! itself and returns at once (`background`).
 //!
-//! Two answers do reach the harness (KT05). A `PreToolUse` whose bash call
+//! Every tool call's end (`PostToolUse`) tells the daemon the session did
+//! work; the turn's end (`Stop`) asks it whether that work went unreported
+//! and, when it did, answers with a one-line reminder to call
+//! `gruntas_report` (SL03, D2): a `block` the agent reads, never two in a
+//! row (`stop_hook_active`).
+//!
+//! `PermissionRequest` makes the session input-required, and any later
+//! event clears that (SL04, `daemon::tasks`); a tool call's start off the
+//! heavy list and `PermissionDenied` are told as plain activity. The hook
+//! never runs git for it: the daemon does, so hooks stay fast.
+//!
+//! Two other answers reach the harness (KT05). A `PreToolUse` whose bash call
 //! the paste guards refuse prints their deny (`guarded`), and only then.
 //! `WorktreeCreate` and `WorktreeRemove` place Claude Code's worktrees
 //! through `gruntas worktrees` (`worktree`): the session waits on those, so
@@ -32,6 +43,9 @@ use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// The most `send` waits on the daemon, to write or to read.
+const SEND_MOST: Duration = Duration::from_secs(5);
 
 /// The word that makes `gruntas` the hook rather than the CLI.
 pub const ARG: &str = "hook";
@@ -93,8 +107,15 @@ pub enum HookEvent {
     ToolStart { session: Session, tool_call_id: String, tool_name: String, input: Value },
     /// And done: `PostToolUse`, or `PostToolUseFailure`.
     ToolEnd { session: Session, tool_call_id: String, tool_name: String, input: Value },
-    /// The turn's end.
-    Stop { session: Session },
+    /// The turn's end. `active`: the harness is already carrying on from
+    /// a Stop hook's answer (`stop_hook_active`).
+    Stop { session: Session, active: bool },
+    /// A permission prompt about to be shown: Claude Code's
+    /// `PermissionRequest`.
+    PermissionRequest { session: Session },
+    /// A permission refused without a prompt: Claude Code's
+    /// `PermissionDenied`.
+    PermissionDenied { session: Session },
     /// The account's usage windows, from the Claude plugin's mod.
     Usage { config_home: String, windows: Vec<UsageWindow> },
 }
@@ -169,7 +190,9 @@ pub fn normalise(_harness: PluginHarness, event: &str, payload: &Value) -> Resul
             let t = tool()?;
             HookEvent::ToolEnd { session: session()?, tool_call_id: t.tool_use_id, tool_name: t.tool_name, input: t.tool_input }
         }
-        "Stop" => HookEvent::Stop { session: session()? },
+        "Stop" => HookEvent::Stop { session: session()?, active: payload.get("stop_hook_active").and_then(Value::as_bool).unwrap_or(false) },
+        "PermissionRequest" => HookEvent::PermissionRequest { session: session()? },
+        "PermissionDenied" => HookEvent::PermissionDenied { session: session()? },
         "usage" => {
             let u = UsagePayload::deserialize(payload).map_err(|e| format!("a usage payload that is not one: {e}"))?;
             HookEvent::Usage { config_home: u.config_home, windows: u.windows }
@@ -178,10 +201,13 @@ pub fn normalise(_harness: PluginHarness, event: &str, payload: &Value) -> Resul
     }))
 }
 
-/// What the daemon is told of `event`, if anything. A tool call is told
-/// only when it runs a command on the heavy list (`ctx.heavy`), its start
-/// and its end; the turn's end always, so a heavy command whose end never
-/// came counts no more (D5).
+/// What the daemon is told of `event`, if anything. A tool call's start is
+/// told as a heavy command's when it runs one on the heavy list
+/// (`ctx.heavy`), else as plain activity (SL04); its end always, as the
+/// heavy command's end or as work the agent has not reported (SL03), save
+/// the report tool's own call, which is the report; the turn's end always,
+/// so a heavy command whose end never came counts no more (D5); a
+/// permission prompt as one, and a refused permission as plain activity.
 pub fn to_activity(harness: PluginHarness, event: &HookEvent, ctx: &Context) -> Option<Activity> {
     match event {
         HookEvent::SessionStart { session, .. } => Some(Activity::Register(Registration {
@@ -195,11 +221,45 @@ pub fn to_activity(harness: PluginHarness, event: &HookEvent, ctx: &Context) -> 
             attendance: ctx.attendance,
         })),
         HookEvent::SessionEnd { session } => Some(Activity::Deregister { session_id: session.id.clone() }),
-        HookEvent::ToolStart { session, tool_call_id, input, .. } => heavy(input, ctx).then(|| Activity::HeavyStart { session_id: session.id.clone(), tool_call_id: tool_call_id.clone() }),
-        HookEvent::ToolEnd { session, tool_call_id, input, .. } => heavy(input, ctx).then(|| Activity::HeavyEnd { session_id: session.id.clone(), tool_call_id: tool_call_id.clone() }),
-        HookEvent::Stop { session } => Some(Activity::TurnEnd { session_id: session.id.clone() }),
+        HookEvent::ToolStart { session, tool_call_id, input, .. } => Some(match heavy(input, ctx) {
+            true => Activity::HeavyStart { session_id: session.id.clone(), tool_call_id: tool_call_id.clone() },
+            false => Activity::Active { session_id: session.id.clone() },
+        }),
+        HookEvent::ToolEnd { session, tool_call_id, input, .. } if heavy(input, ctx) => Some(Activity::HeavyEnd { session_id: session.id.clone(), tool_call_id: tool_call_id.clone() }),
+        HookEvent::ToolEnd { tool_name, .. } if reports(tool_name) => None,
+        HookEvent::ToolEnd { session, .. } => Some(Activity::ToolEnd { session_id: session.id.clone() }),
+        HookEvent::Stop { session, .. } => Some(Activity::TurnEnd { session_id: session.id.clone() }),
+        HookEvent::PermissionRequest { session } => Some(Activity::PermissionRequest { session_id: session.id.clone() }),
+        HookEvent::PermissionDenied { session } => Some(Activity::Active { session_id: session.id.clone() }),
         HookEvent::Usage { config_home, windows } => Some(Activity::Usage { config_home: config_home.clone(), windows: windows.clone() }),
     }
+}
+
+/// Whether a tool is gruntas's report tool, by whatever name the harness
+/// gives an MCP server's tool (`mcp__plugin_gruntas_gruntas__gruntas_report`).
+/// Any separator before it counts (`__`, `.`, `/`), but not a longer name
+/// that ends the same way.
+fn reports(tool_name: &str) -> bool {
+    tool_name.strip_suffix("gruntas_report").is_some_and(|before| before.is_empty() || ["__", ".", "/"].iter().any(|sep| before.ends_with(sep)))
+}
+
+/// The one line a turn's end answers when the session did work it has not
+/// reported (D2).
+pub const REMINDER: &str = "gruntas: you did work since your last status report. If you reached a milestone, call gruntas_report (state and a one-line summary) now; otherwise stop.";
+
+/// The Stop answer that hands `REMINDER` to the agent: Claude Code's and
+/// Codex's `block`, whose reason the agent reads before it stops.
+pub fn reminder() -> String {
+    serde_json::json!({ "decision": "block", "reason": REMINDER }).to_string()
+}
+
+/// What the daemon answered an activity with, past taking it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Answer {
+    /// For a report: the session's status as it now stands.
+    pub task: Option<gruntas_client::status::Task>,
+    /// For a turn's end: the session did work it has not reported.
+    pub report_due: bool,
 }
 
 /// Whether a tool call's input is a shell command on the heavy list: any
@@ -299,8 +359,12 @@ pub fn attendance() -> Attendance {
 /// the hello and the frame in one write, then the writing half closed, so
 /// a daemon too old to know the frame closes the connection at once rather
 /// than leaving the hook to wait. Blocks: the caller bounds it (`GIVE_UP`).
-pub fn send(socket: &Path, cwd: &str, version: &str, activity: Activity) -> Result<(), String> {
+pub fn send(socket: &Path, cwd: &str, version: &str, activity: Activity) -> Result<Answer, String> {
     let stream = std::os::unix::net::UnixStream::connect(socket).map_err(|e| format!("no daemon on {}: {e}", socket.display()))?;
+    // A caller with no `GIVE_UP` of its own (the MCP server's report) is
+    // never held by a stalled daemon.
+    let _ = stream.set_read_timeout(Some(SEND_MOST));
+    let _ = stream.set_write_timeout(Some(SEND_MOST));
     talk(stream, cwd, version, activity)
 }
 
@@ -341,7 +405,7 @@ fn connect_or_start(env: &dyn Fn(&str) -> String, socket: &Path) -> Result<std::
 }
 
 /// The hello and `activity` on `stream`, and the daemon's answer.
-fn talk(mut stream: std::os::unix::net::UnixStream, cwd: &str, version: &str, activity: Activity) -> Result<(), String> {
+fn talk(mut stream: std::os::unix::net::UnixStream, cwd: &str, version: &str, activity: Activity) -> Result<Answer, String> {
     let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: cwd.to_string(), gruntas_version: version.to_string(), answers_approvals: false, token: None, background: true };
     let mut out = serde_json::to_vec(&hello).expect("a frame serializes");
     out.push(b'\n');
@@ -352,8 +416,8 @@ fn talk(mut stream: std::os::unix::net::UnixStream, cwd: &str, version: &str, ac
     for line in BufReader::new(stream).lines() {
         let line = line.map_err(|e| format!("the daemon's answer could not be read: {e}"))?;
         match serde_json::from_str::<ServerFrame>(&line) {
-            Ok(ServerFrame::Activity { id: 1, error: None }) => return Ok(()),
-            Ok(ServerFrame::Activity { id: 1, error: Some(e) }) => return Err(format!("the daemon refused it: {} ({})", e.message, e.code)),
+            Ok(ServerFrame::Activity { id: 1, error: None, task, report_due }) => return Ok(Answer { task: task.map(|t| *t), report_due }),
+            Ok(ServerFrame::Activity { id: 1, error: Some(e), .. }) => return Err(format!("the daemon refused it: {} ({})", e.message, e.code)),
             Ok(ServerFrame::Refused { message, .. }) => return Err(format!("the daemon refused the hello: {message}")),
             _ => {}
         }
@@ -392,7 +456,13 @@ pub fn run(args: &[String], stdin: impl Read, env: &dyn Fn(&str) -> String, vers
     };
     let Some(activity) = to_activity(h, &ev, &ctx) else { return (None, None) };
     let cwd = match &ev {
-        HookEvent::SessionStart { session, .. } | HookEvent::SessionEnd { session } | HookEvent::ToolStart { session, .. } | HookEvent::ToolEnd { session, .. } | HookEvent::Stop { session } => session.cwd.clone(),
+        HookEvent::SessionStart { session, .. }
+        | HookEvent::SessionEnd { session }
+        | HookEvent::ToolStart { session, .. }
+        | HookEvent::ToolEnd { session, .. }
+        | HookEvent::Stop { session, .. }
+        | HookEvent::PermissionRequest { session }
+        | HookEvent::PermissionDenied { session } => session.cwd.clone(),
         HookEvent::Usage { .. } => None,
     };
     let cwd = cwd.or_else(|| std::env::current_dir().ok().map(|d| d.display().to_string())).unwrap_or_else(|| "/".into());
@@ -401,15 +471,17 @@ pub fn run(args: &[String], stdin: impl Read, env: &dyn Fn(&str) -> String, vers
         Err(e) => return (None, Some(format!("{event}: {e}"))),
     };
     // A session that ends with no daemon has nothing to deregister from,
-    // and a heavy command or turn's end nothing to clear; a heavy command's
-    // start is not held up for a daemon to start (its session's start
-    // started one). Only the rest start one.
+    // and a heavy command, turn's end or other activity nothing to clear; a
+    // tool call or permission prompt is not held up for a daemon to start
+    // (its session's start started one). Only the rest start one.
     let stream = match &activity {
         Activity::Register(_) | Activity::Usage { .. } => connect_or_start(env, &socket),
-        Activity::Deregister { .. } | Activity::HeavyStart { .. } | Activity::HeavyEnd { .. } | Activity::TurnEnd { .. } => std::os::unix::net::UnixStream::connect(&socket).map_err(|e| format!("no daemon on {}: {e}", socket.display())),
+        Activity::Deregister { .. } | Activity::HeavyStart { .. } | Activity::HeavyEnd { .. } | Activity::TurnEnd { .. } | Activity::ToolEnd { .. } | Activity::Report { .. } | Activity::PermissionRequest { .. } | Activity::Active { .. } => std::os::unix::net::UnixStream::connect(&socket).map_err(|e| format!("no daemon on {}: {e}", socket.display())),
     };
+    let active = matches!(ev, HookEvent::Stop { active: true, .. });
     match stream.and_then(|s| talk(s, &cwd, version, activity)) {
-        Ok(()) => (None, None),
+        Ok(a) if a.report_due && !active => (Some(reminder()), None),
+        Ok(_) => (None, None),
         Err(e) => (None, Some(format!("{event}: {e}"))),
     }
 }
