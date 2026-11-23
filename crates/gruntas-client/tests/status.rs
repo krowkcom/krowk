@@ -393,3 +393,11 @@ fn sl05_quiet_for_never_compares_clocks_across_machines() {
     t.metadata.gruntas.last_activity = Some(Field::harness("2026-11-23T12:01:00Z".into()));
     assert_eq!(status::quiet_for(&b, &t, received, received), Some(jiff::SignedDuration::ZERO), "never negative");
 }
+
+/// SL04: a machine is SERVING while its presence is live on the registry
+/// and UNKNOWN once it lapses (D4).
+#[test]
+fn r_sta_4_a_machine_is_serving_while_its_presence_is_live() {
+    assert_eq!(Health::of_machine(true), Health::Serving);
+    assert_eq!(Health::of_machine(false), Health::Unknown);
+}
