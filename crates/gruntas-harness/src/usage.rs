@@ -320,7 +320,13 @@ impl Usage {
                 let resets_at_ms = w.resets_at_ms.and_then(|r| i64::try_from(r).ok());
                 // A reading of a window already gone (one reset since, or
                 // older than the one kept) is an idle session's, not news.
-                if resets_at_ms.is_some_and(|r| r <= now_ms || was.and_then(|k| k.resets_at_ms).is_some_and(|k| r < k)) {
+                // One with no reset says nothing against a window still running.
+                let kept_reset = was.and_then(|k| k.resets_at_ms);
+                let gone = match resets_at_ms {
+                    Some(r) => r <= now_ms || kept_reset.is_some_and(|k| r < k),
+                    None => kept_reset.is_some_and(|k| k > now_ms),
+                };
+                if gone {
                     continue;
                 }
                 let same = was.filter(|k| resets_at_ms.is_some() && k.resets_at_ms == resets_at_ms);
@@ -529,6 +535,8 @@ mod tests {
         u.record_limit("a@x.com (Acme)", &LimitStatus { status: LimitState::Limited, window: Some("five_hour".into()), used_percent: None, resets_at_ms: Some(27_000_000) }, 3_000).unwrap();
         u.record_windows("/h/.claude", &[five(99.0, 27_000_000)], 3_100).unwrap();
         assert_eq!(u.read().logins["a@x.com (Acme)"]["five_hour"].status, LimitState::Limited);
+        u.record_windows("/h/.claude", &[UsageWindow { kind: "fiveHour".into(), used_percent: 0.0, resets_at_ms: None }], 3_200).unwrap();
+        assert_eq!(u.read().logins["a@x.com (Acme)"]["five_hour"].seen_at_ms, 3_100, "no reset, against a running window");
         let _ = std::fs::remove_dir_all(dir);
     }
 
