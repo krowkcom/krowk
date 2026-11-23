@@ -64,6 +64,15 @@ breaking changes may affect it without notice.
   none running they count nothing. Like `gruntas hook` itself, nothing
   sends these yet: the plugin that does is still to come.
 
+- **The Claude Code plugin reports the account's usage windows.** A small
+  mod in the plugin (`hooks/usage.ts`) reads the 5-hour and 7-day windows
+  Claude Code already has, at session start, whenever one moves and every
+  5 minutes, and runs `gruntas hook claude usage` with them and the
+  account's config home. The host daemon writes them into `usage.json`, the
+  record rollover ranks accounts by: under the login of the instance that
+  last ran in that config home, else under the config home itself. Without
+  `gruntas` on the PATH the mod does nothing.
+
 - **`gruntas_session_info` in `gruntas-mcp`.** A Claude Code or Codex
   session that runs `gruntas-mcp` can ask what gruntas knows about it: the
   registration its plugin's `SessionStart` hook made (session id, harness,
