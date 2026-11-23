@@ -154,6 +154,10 @@ pub enum Item {
         text: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<ImageRef>,
+        /// Where a steer came from, beside its raw text; absent for what
+        /// the person typed and for a steer that carried no origin.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<Box<Origin>>,
     },
     /// What the model answered, as text.
     AssistantText { text: String },
@@ -217,7 +221,7 @@ pub struct ImageRef {
 impl Item {
     /// The person's text, with no images.
     pub fn user(text: impl Into<String>) -> Item {
-        Item::UserText { text: text.into(), images: Vec::new() }
+        Item::UserText { text: text.into(), images: Vec::new(), origin: None }
     }
 }
 
