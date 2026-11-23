@@ -151,6 +151,10 @@ pub struct TaskSpec {
     /// none for a parent that is not synced (gruntas-mcp's), when the
     /// `Placer` registers one of its own.
     pub store: Option<JobStore>,
+    /// The session that delegates the task, when its caller knows one: sent
+    /// as the `run`'s sending session, which the child records as the
+    /// session that started it (its steering parent, D4).
+    pub sending_session: Option<String>,
 }
 
 /// One machine as placement sees it.
@@ -848,10 +852,7 @@ impl Placer {
             let to = &all[i].announcement;
             let name = to.name.clone();
             let not_after_ms = now_ms() + t.answer_wait.as_millis() as i64;
-            let run = RunTask { origin: origin.clone(), model: model.clone(), job: job.clone(), budget: spec.budget, requested_by: f.device(), // Not named yet: a session with a parent is read as a subagent
-            // (never synced, no model switch), so naming one is the steer
-            // enforcement ticket's to do together with that.
-            sending_session: None, permission_mode: spec.permission_mode, not_after_ms };
+            let run = RunTask { origin: origin.clone(), model: model.clone(), job: job.clone(), budget: spec.budget, requested_by: f.device(), sending_session: spec.sending_session.clone(), permission_mode: spec.permission_mode, not_after_ms };
             match f.send_run(to, &run, t.answer_wait + t.answer_grace) {
                 Ok(Some(HostAnswer::Started { session_id })) if crate::log::valid_id(&session_id) && !in_time_within(not_after_ms, now_ms(), t.answer_grace) => {
                     // Placement has moved on by now (D11): this child
@@ -1421,7 +1422,7 @@ mod tests {
     }
 
     fn spec() -> TaskSpec {
-        TaskSpec { description: "fix it".into(), prompt: "fix the test".into(), cwd: "/work/app".into(), host: None, model: ModelChoice::default(), budget: BudgetLimits::default(), permission_mode: None, store: None }
+        TaskSpec { description: "fix it".into(), prompt: "fix the test".into(), cwd: "/work/app".into(), host: None, model: ModelChoice::default(), budget: BudgetLimits::default(), permission_mode: None, store: None, sending_session: None }
     }
 
     /// A fleet of `here` busy (all build slots in use) and the machines
@@ -1466,7 +1467,8 @@ mod tests {
         let f = fleet(true, &["b"], &[("b", vec![started()])]);
         *f.events.lock().unwrap() = completed_child();
         let p = placer(&f);
-        let h = p.start(spec(), Here::Caller);
+        let delegating = "01a0ec7b-0000-7000-8000-0000000000d1";
+        let h = p.start(TaskSpec { sending_session: Some(delegating.into()), ..spec() }, Here::Caller);
         let running = p.placed(&h, Duration::from_secs(5)).unwrap();
         assert_eq!(stream_line(&running).unwrap(), "Running on b: this machine is busy (4 of 4 build slots in use).");
         let Ok(Progress::Done(out)) = p.wait(&h, Duration::from_secs(5)) else { panic!("not done") };
@@ -1478,6 +1480,7 @@ mod tests {
         let run = &sent[0].1;
         assert_eq!((run.origin.as_str(), run.requested_by.as_str(), run.job.session.as_str()), (ORIGIN, "here-id", "job-session"));
         assert!(run.not_after_ms > 0);
+        assert_eq!(run.sending_session.as_deref(), Some(delegating), "the child records who delegated it (D4)");
         assert_eq!((f.spent.load(Ordering::SeqCst), f.closed.load(Ordering::SeqCst)), (2, 1), "the job spent once a child started and the result once read, its own session let go");
     }
 

@@ -349,7 +349,7 @@ fn r_sec_3_a_host_command_may_name_its_sending_session_and_origin() {
     let start = format!(r#"{{"type":"start","cwd":"/w","model":{{"instance":"anthropic","model":"m"}},"prompt":"hi","sendingSession":"{s}"}}"#);
     assert!(matches!(opened(&start), HostCommand::Start { sending_session: Some(ref x), .. } if x == s));
     let take = format!(r#"{{"type":"take","sessionId":"{s}","cwd":"/w","origin":{{"kind":"agent","sessionId":"{s}","device":"laptop"}}}}"#);
-    let want = Origin { kind: OriginKind::Agent, session_id: Some(s.into()), device: Some("laptop".into()) };
+    let want = Origin { kind: OriginKind::Agent, session_id: Some(s.into()), device: Some("laptop".into()), attendance: None };
     assert!(matches!(opened(&take), HostCommand::Take { origin: Some(ref o), .. } if *o == want));
     let HostCommand::Run(mut task) = run(&w.phone.id()) else { unreachable!() };
     task.sending_session = Some(s.into());

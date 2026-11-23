@@ -568,6 +568,12 @@ pub struct Origin {
     /// the sending session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
+    /// Whether the steering session is attended, when `kind` is `agent` and
+    /// the sender knows it (its own session's start record says): the host
+    /// holds a steering session it has no log of to this word, since the
+    /// session may run on another machine. Absent: attended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attendance: Option<Attendance>,
 }
 
 /// What a client asks of the engine. `prompt`, `interrupt`, `steer`,
@@ -843,6 +849,14 @@ pub enum LogBody {
         /// it. Absent in an older session's record: attended.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         attendance: Option<Attendance>,
+        /// The session that started this one — a host command's sending
+        /// session, an agent's prompt — which is its steering parent (D4):
+        /// the `steer` setting lets it steer this session. Not a subagent
+        /// relation: a session that has only this is synced, switchable and
+        /// budgeted on its own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(regex(pattern = UUID7_PATTERN))]
+        started_by_session_id: Option<String>,
     },
     /// A prompt arrived; the turn runs on `model`. The exact system prompt
     /// and tools it ran with are in the session's `context.jsonl` under

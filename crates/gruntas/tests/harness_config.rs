@@ -10,6 +10,10 @@
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
+use std::time::Duration;
+
+#[path = "common/pty.rs"]
+mod pty;
 
 struct Sandbox {
     root: PathBuf,
@@ -26,6 +30,12 @@ impl Sandbox {
     }
 
     fn gruntas(&self, args: &[&str]) -> Output {
+        let mut c = self.command(args);
+        c.stdin(Stdio::null());
+        c.output().unwrap()
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
         c.args(args)
             .env_clear()
@@ -34,13 +44,12 @@ impl Sandbox {
             .env("HOME", self.root.join("home"))
             .env("GRUNTAS_NO_UPDATE_CHECK", "1")
             .env("FAKE_CLAUDE_LOG", self.root.join("fake.log"))
-            .current_dir(self.root.join("repo"))
-            .stdin(Stdio::null());
+            .current_dir(self.root.join("repo"));
         let scenario = self.root.join("scenario.jsonl");
         if scenario.exists() {
             c.env("FAKE_CLAUDE_SCENARIO", scenario);
         }
-        c.output().unwrap()
+        c
     }
 
     fn ok(&self, args: &[&str]) -> Value {
@@ -157,4 +166,73 @@ fn r_cut_6_a_session_started_after_config_set_uses_the_default_mode() {
     let fake = std::fs::read_to_string(b.root.join("fake.log")).unwrap();
     let answer = fake.lines().find(|l| l.starts_with("answer ") && l.contains("fake_3")).unwrap_or_else(|| panic!("the ask was answered: {fake}"));
     assert!(answer.contains(r#""behavior":"allow""#), "{answer}");
+}
+
+fn said(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr).into_owned() + &String::from_utf8_lossy(&out.stdout)
+}
+
+/// R-SEC-5: `config get steer` prints the value and where it came from —
+/// attended by default, global once set — and a value the file holds that
+/// is no setting is an error, never read as one.
+#[test]
+fn r_sec_5_config_get_steer_prints_the_value_and_its_source() {
+    let b = Sandbox::new("steer-get");
+    assert_eq!(b.get("steer"), ("attended".into(), "default".into()));
+    std::fs::create_dir_all(b.global().parent().unwrap()).unwrap();
+    std::fs::write(b.global(), json!({"steer": "children"}).to_string()).unwrap();
+    assert_eq!(b.get("steer"), ("children".into(), "global".into()));
+    std::fs::write(b.global(), json!({"steer": "everyone"}).to_string()).unwrap();
+    let out = b.gruntas(&["config", "get", "steer"]);
+    assert!(!out.status.success() && said(&out).contains("everyone"), "{}", said(&out));
+}
+
+/// R-SEC-5, D6: without a terminal `config set steer` is refused and writes
+/// nothing, whatever it is given; so is removing it. An agent's shell is
+/// such a process.
+#[test]
+fn r_sec_5_config_set_steer_without_a_terminal_is_refused() {
+    let b = Sandbox::new("steer-pipe");
+    for value in ["any", "children", "attended"] {
+        let out = b.gruntas(&["config", "set", "steer", value]);
+        assert!(!out.status.success() && said(&out).contains("terminal"), "{value}: {}", said(&out));
+    }
+    // A stand-in answer in the environment never stands in for the person.
+    let mut c = b.command(&["config", "set", "steer", "any"]);
+    c.env("GRUNTAS_TEST_ANSWERS", "y").stdin(Stdio::piped());
+    let out = c.output().unwrap();
+    assert!(!out.status.success(), "{}", said(&out));
+    let out = b.gruntas(&["config", "unset", "steer"]);
+    assert!(!out.status.success(), "it is set, never removed");
+    assert!(!b.global().exists(), "nothing was written");
+    assert_eq!(b.get("steer"), ("attended".into(), "default".into()));
+}
+
+/// R-SEC-5: on a terminal `config set steer` says what the value allows and
+/// asks; a yes writes the global config, keeping its other keys, and
+/// anything else changes nothing. A value that is no setting is refused
+/// before it asks.
+#[test]
+fn r_sec_5_config_set_steer_on_a_terminal_asks_and_a_yes_writes() {
+    let b = Sandbox::new("steer-pty");
+    std::fs::create_dir_all(b.global().parent().unwrap()).unwrap();
+    std::fs::write(b.global(), json!({"rollover": "off"}).to_string()).unwrap();
+
+    let mut t = pty::Pty::spawn(b.command(&["config", "set", "steer", "any"]), 120, 40);
+    assert!(t.wait_for("Set steer to any? [y/N]", Duration::from_secs(20)).is_some(), "{:?}", t.text());
+    assert!(t.text().contains("every agent steer every session"), "it says what the value allows: {:?}", t.text());
+    t.write(b"n\r");
+    assert!(t.wait(Duration::from_secs(20)).is_some_and(|s| !s.success()), "{:?}", t.text());
+    assert_eq!(b.read_global(), json!({"rollover": "off"}), "a no changes nothing");
+
+    let mut t = pty::Pty::spawn(b.command(&["config", "set", "steer", "children"]), 120, 40);
+    assert!(t.wait_for("Set steer to children? [y/N]", Duration::from_secs(20)).is_some(), "{:?}", t.text());
+    t.write(b"y\r");
+    assert!(t.wait(Duration::from_secs(20)).is_some_and(|s| s.success()), "{:?}", t.text());
+    assert_eq!(b.read_global(), json!({"rollover": "off", "steer": "children"}));
+    assert_eq!(b.get("steer"), ("children".into(), "global".into()));
+
+    let mut t = pty::Pty::spawn(b.command(&["config", "set", "steer", "everyone"]), 120, 40);
+    assert!(t.wait(Duration::from_secs(20)).is_some_and(|s| !s.success()), "{:?}", t.text());
+    assert!(t.text().contains("children, attended, any") && !t.text().contains("[y/N]"), "{:?}", t.text());
 }

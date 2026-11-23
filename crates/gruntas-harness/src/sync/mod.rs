@@ -23,6 +23,8 @@ pub mod tailscale;
 pub mod viewer;
 
 use futures_util::{SinkExt, StreamExt};
+use crate::protocol::Origin;
+use crate::steer;
 use gruntas_client::e2e::{DeviceId, SigningKey};
 use gruntas_client::protocol::frame::{KIND_RELAY, HEADER};
 use gruntas_client::sync::join as handshake;
@@ -299,6 +301,7 @@ fn with_images(session: &str, paths: &[std::path::PathBuf]) -> Result<(crate::pr
 /// and nothing waits on a person who is no longer typing.
 pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<(), String> {
     let session = o.session.clone();
+    let (o_chain, o_device) = (o.chain.clone(), o.device);
     runtime()?.block_on(async move {
         let mut v = viewer::attach(o).await?;
         let (lines_tx, mut lines) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -309,7 +312,9 @@ pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<()
                 }
             }
         });
-        let mut owed = Owed::default();
+        // Marked as a person's only when stdin is a terminal (D6).
+        let device = o_chain.devices().iter().find(|d| d.id() == o_device).map(|d| d.name.clone());
+        let mut owed = Owed { origin: Some(steer::attach_origin(std::io::IsTerminal::is_terminal(&std::io::stdin()), device)), ..Owed::default() };
         let mut offered = Offered::default();
         loop {
             tokio::select! {
@@ -382,6 +387,9 @@ struct Owed {
     /// The images of the prompt being sent, and how many have gone
     /// (`Sending image 2 of 3…`).
     images: (usize, usize),
+    /// Where what it sends comes from, set on each steering command as it is
+    /// handed (`steer::attach_origin`).
+    origin: Option<Origin>,
 }
 
 impl Owed {
@@ -390,7 +398,10 @@ impl Owed {
     /// switch before it could start on the model it switches from.
     /// A chain does the same, each command once the one before is taken:
     /// a prompt's images, then the prompt, and one refused ends it.
-    fn hand(&mut self, commands: &tokio::sync::mpsc::UnboundedSender<crate::protocol::Command>, c: crate::protocol::Command, then: impl IntoIterator<Item = crate::protocol::Command>) {
+    fn hand(&mut self, commands: &tokio::sync::mpsc::UnboundedSender<crate::protocol::Command>, mut c: crate::protocol::Command, then: impl IntoIterator<Item = crate::protocol::Command>) {
+        if let Some(o) = &self.origin {
+            steer::stamp(&mut c, o);
+        }
         if matches!(c, crate::protocol::Command::PutImage { .. }) {
             self.images.1 += 1;
             eprintln!("gruntas: Sending image {} of {}…", self.images.1, self.images.0);

@@ -805,7 +805,7 @@ mod delegation {
         let cwd = std::env::current_dir().map_err(|e| fail("no_working_directory", format!("the working directory is not readable: {e}")))?;
         let model = gruntas_client::host_command::ModelChoice { instance: None, model: Some(a.model.trim().to_string()).filter(|m| !m.is_empty()) };
         let description: String = a.task.trim().lines().next().unwrap_or_default().chars().take(80).collect();
-        let spec = gruntas_harness::sync::placement::TaskSpec { description, prompt: a.task, cwd, host, model, budget: Default::default(), permission_mode: None, store: None };
+        let spec = gruntas_harness::sync::placement::TaskSpec { description, prompt: a.task, cwd, host, model, budget: Default::default(), permission_mode: None, store: None, sending_session: std::env::var("GRUNTAS_SESSION").ok().filter(|s| gruntas_harness::log::valid_id(s)) };
         let h = placer.start(spec, gruntas_harness::sync::placement::Here::Worktree);
         Ok((format!("Started task {}. It is being placed on a machine with room; call gruntas_collect with this task_id to wait for it. Its changes land in this working tree when it finishes.", h.id), json!({ "task_id": h.id })))
     }
