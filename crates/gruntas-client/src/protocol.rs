@@ -1576,7 +1576,8 @@ pub enum PluginHarness {
 
 /// What a session gruntas does not run did, one `activity` frame each:
 /// registering at its start, leaving at its end, a heavy command starting
-/// and ending, a turn's end, and its account's usage windows.
+/// and ending, a turn's end, a permission prompt and other activity, and
+/// its account's usage windows.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Activity {
@@ -1605,6 +1606,13 @@ pub enum Activity {
         summary: String,
         report: crate::status::Report,
     },
+    /// A permission prompt waits on the person: the session is
+    /// input-required until its next activity (D3).
+    PermissionRequest { session_id: String },
+    /// The session did something the daemon keeps nothing else of (a tool
+    /// call off the heavy list, a refused permission): its last activity,
+    /// and the end of a permission prompt.
+    Active { session_id: String },
     /// An account's usage windows, as its harness reads them.
     Usage {
         /// The account's config home (`CLAUDE_CONFIG_DIR`, `~/.claude`).
