@@ -150,6 +150,8 @@ More
   host disable        Stop the service and remove it
   hosts               The same as gruntas machines
   relay serve         Carry sealed sessions between their host and viewers
+  agents              Every agent on your machines, by project and machine
+  ping                Ask a machine, or a session's machine, whether it is alive
   pricing refresh     Refresh the models.dev price cache
   help                This, a command's help, or a topic
 

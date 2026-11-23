@@ -61,6 +61,12 @@ fn client(code: &str) -> Option<i32> {
         // `--resume` of a session whose gruntas worktree is gone (WT6).
         #[cfg(feature = "harness")]
         "worktree_missing" => NOT_FOUND,
+        // `gruntas ping`: a machine whose presence lapsed is UNKNOWN, and is
+        // not pinged; nothing by that name.
+        #[cfg(feature = "harness")]
+        "machine_unknown" => UNREACHABLE,
+        #[cfg(feature = "harness")]
+        "no_agent" => NOT_FOUND,
         "authorization_expired" => GONE,
         _ => return None,
     })

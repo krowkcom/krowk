@@ -171,6 +171,37 @@ fn status_with_no_config_lists_the_two_implicit_accounts_in_their_states() {
     assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 2, "the table, before the failure");
 }
 
+/// SL06 (the owner's decision on D10): `providers list --check` is the
+/// check `status` is today, the same JSON and exit codes; `status` works as
+/// before and says on stderr that it becomes the agent tree next release,
+/// except beside a failure's JSON there.
+#[test]
+fn providers_list_check_is_todays_status_and_status_says_it_is_moving() {
+    let b = Sandbox::new("check");
+    b.install_fakes();
+    std::fs::create_dir_all(b.home().join(".claude")).unwrap();
+    std::fs::write(b.home().join(".claude/fake-login"), "").unwrap();
+    let notice = "In the next release gruntas status becomes the agent tree (gruntas agents); gruntas providers list --check is this readiness check";
+    let status = b.gruntas(&["status", "--json"], &[]);
+    let check = b.gruntas(&["providers", "list", "--check", "--json"], &[]);
+    assert_eq!((status.status.code(), check.status.code()), (Some(0), Some(0)));
+    assert_eq!(stdout_json(&status), stdout_json(&check));
+    assert!(String::from_utf8_lossy(&status.stderr).contains(notice), "{}", String::from_utf8_lossy(&status.stderr));
+    assert!(!String::from_utf8_lossy(&check.stderr).contains(notice));
+    let human = b.gruntas(&["status", "--format", "human"], &[]);
+    assert!(String::from_utf8_lossy(&human.stderr).contains(notice));
+    assert_eq!(human.stdout, b.gruntas(&["providers", "list", "--check", "--format", "human"], &[]).stdout);
+
+    std::fs::remove_file(b.home().join(".claude/fake-login")).unwrap();
+    std::fs::remove_file(b.root.join("bin/codex")).unwrap();
+    for args in [&["status", "--json"][..], &["providers", "list", "--check", "--json"]] {
+        let out = b.gruntas(args, &[]);
+        assert_eq!(out.status.code(), Some(3), "{args:?}");
+        let err: Value = serde_json::from_str(String::from_utf8_lossy(&out.stderr).trim()).unwrap();
+        assert_eq!(err["error"]["error"], "none_ready", "{err}");
+    }
+}
+
 #[test]
 fn vendor_checks_run_in_parallel_so_two_slow_vendors_take_as_long_as_one() {
     let b = Sandbox::new("parallel");
