@@ -454,8 +454,8 @@ fn r_back_3_steering_reaches_the_running_codex_turn_and_none_is_lost() {
 #[test]
 fn r_sec_6_codex_reads_a_steer_framed_with_its_origin_and_the_log_keeps_the_raw_text() {
     use gruntas_harness::protocol::{Origin, OriginKind};
-    let agent = Origin { kind: OriginKind::Agent, session_id: Some("sess-9".into()), device: Some("laptop".into()) };
-    let person = Origin { kind: OriginKind::Person, session_id: None, device: Some("desk".into()) };
+    let agent = Origin { kind: OriginKind::Agent, session_id: Some("sess-9".into()), device: Some("laptop".into()), attendance: None };
+    let person = Origin { kind: OriginKind::Person, session_id: None, device: Some("desk".into()), attendance: None };
     for (name, origin, frame) in [("agent", agent, "<steer from sess-9 on laptop, by an agent>"), ("person", person, "<steer from a person on desk>")] {
         let h = Home::new(&format!("steer-origin-{name}"));
         let home = h.signed_in("codex-team", "chatgpt team@example.com");

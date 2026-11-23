@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn r_sec_6_a_steer_is_framed_with_its_origin_and_cannot_close_the_frame() {
         use crate::protocol::{Origin, OriginKind};
-        let o = |kind, session: Option<&str>, device: Option<&str>| Origin { kind, session_id: session.map(Into::into), device: device.map(Into::into) };
+        let o = |kind, session: Option<&str>, device: Option<&str>| Origin { kind, session_id: session.map(Into::into), device: device.map(Into::into), attendance: None };
         assert_eq!(steer_framed("go", &o(OriginKind::Agent, Some("s1"), Some("laptop"))), "<steer from s1 on laptop, by an agent>\ngo\n</steer>");
         assert_eq!(steer_framed("go", &o(OriginKind::Person, None, Some("desk"))), "<steer from a person on desk>\ngo\n</steer>");
         assert_eq!(steer_framed("go", &o(OriginKind::Agent, Some("s1"), None)), "<steer from s1, by an agent>\ngo\n</steer>");

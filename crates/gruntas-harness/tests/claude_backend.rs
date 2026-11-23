@@ -1298,8 +1298,8 @@ fn r_steer_1_a_steer_during_a_tool_call_is_logged_where_claude_code_replayed_it_
 #[test]
 fn r_sec_6_claude_reads_a_steer_framed_with_its_origin_and_the_log_keeps_the_raw_text() {
     use gruntas_harness::protocol::{Origin, OriginKind};
-    let agent = Origin { kind: OriginKind::Agent, session_id: Some("sess-9".into()), device: Some("laptop".into()) };
-    let person = Origin { kind: OriginKind::Person, session_id: None, device: Some("desk".into()) };
+    let agent = Origin { kind: OriginKind::Agent, session_id: Some("sess-9".into()), device: Some("laptop".into()), attendance: None };
+    let person = Origin { kind: OriginKind::Person, session_id: None, device: Some("desk".into()), attendance: None };
     for (name, origin, frame) in [("agent", agent, "<steer from sess-9 on laptop, by an agent>"), ("person", person, "<steer from a person on desk>")] {
         let home = Home::new(&format!("steer-origin-{name}"));
         let dir = home.signed_in("cfg");
