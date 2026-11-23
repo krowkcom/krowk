@@ -19,7 +19,7 @@ breaking changes may affect it without notice.
 
 ## [Unreleased]
 
-## [2026.11.0] - 2026-11-22
+## [2026.11.0] - 2026-11-23
 
 **krowk is now gruntas.** This is the first gruntas release, and versions are
 now calendar versions (`YYYY.M.N`). A krowk install can't upgrade itself
