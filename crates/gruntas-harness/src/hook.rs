@@ -4,11 +4,12 @@
 //! (`normalise`), and sends what the daemon keeps of it as an `activity`
 //! frame over the daemon's socket (`to_activity`, `send`).
 //!
-//! A hook never blocks or fails its session: whatever goes wrong — no
-//! daemon, a stalled one, a payload it cannot read — it gives up silently,
-//! notes why in `hook.log` beside the daemon's socket, and exits 0 with
-//! nothing on stdout, so the harness carries on as if there were no hook.
-//! Everything runs on a worker thread the main thread waits on for at most
+//! A hook that only reports never blocks or fails its session: whatever
+//! goes wrong — no daemon, a stalled one, a payload it cannot read — it
+//! gives up silently, notes why in `hook.log` beside the daemon's socket,
+//! and exits 0 with nothing on stdout, so the harness carries on as if
+//! there were no hook (the two that answer are below). Its work runs on a
+//! worker thread the main thread waits on for at most
 //! `GIVE_UP`: past that the process exits whatever the worker is doing, so
 //! the hook is done well inside the 2 seconds it is allowed.
 //!

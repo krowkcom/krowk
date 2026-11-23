@@ -32,13 +32,14 @@ breaking changes may affect it without notice.
   `CLAUDE_CONFIG_DIR` or `CODEX_HOME`), and registers the session with its harness process,
   the working directory's `origin` remote, and whether a person is at it
   (the harness has a terminal). `SessionEnd` hands the deregistration to
-  a detached copy of itself and returns at once. A hook that only reports always exits 0 with nothing on stdout. It gives
+  a detached copy of itself and returns at once. A hook that only reports
+  always exits 0 with nothing on stdout. It gives
   up after 1.5 s when the daemon is missing or not answering, and notes why
   in `hook.log` beside the socket. Nothing calls it yet: the plugin that
   does is still to come.
 
-- **The plugin's hooks run the paste guards and place Claude Code's
-  worktrees.** `gruntas hook <harness> PreToolUse` refuses a bash call
+- **`gruntas hook` runs the paste guards and places Claude Code's
+  worktrees**, for the plugin still to come. `gruntas hook <harness> PreToolUse` refuses a bash call
   that posts a bare gruntas card link in a `gh pr|issue create|edit|comment`
   body, or uploads a file to a paste site, with the guard's message, in
   Claude Code and Codex; any other call gets no answer, so its permission
@@ -46,7 +47,8 @@ breaking changes may affect it without notice.
   there. `gruntas hook claude WorktreeCreate` makes the session's worktree
   with `gruntas worktrees add` and prints its path, so `gruntas worktrees`
   lists it; `WorktreeRemove` removes it with `gruntas worktrees remove`,
-  which keeps one that has work in it.
+  which keeps one that has work in it. A worktree gruntas did not make is
+  left where it is, and the hook notes it in `hook.log`.
 
 - **`gruntas_session_info` in `gruntas-mcp`.** A Claude Code or Codex
   session that runs `gruntas-mcp` can ask what gruntas knows about it: the
