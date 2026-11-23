@@ -339,26 +339,14 @@ fn sandbox_gaps(settings: &Value, home: &std::path::Path, user_home: &str, dir: 
         } else {
             return None;
         };
-        Some(std::path::PathBuf::from(abs))
+        Some(gruntas_api::home::lexical(std::path::Path::new(&abs)))
     };
     // A sandbox path with no prefix is relative to the settings file's
-    // directory, `..` taken as written.
+    // directory. `..` is taken as written, in every form.
     let within = |entry: &str| {
         path_of(entry, false).or_else(|| {
             let e = entry.trim();
-            (!e.is_empty() && !e.starts_with('~')).then(|| {
-                let mut p = dir.to_path_buf();
-                for c in std::path::Path::new(e.trim_end_matches("/**")).components() {
-                    match c {
-                        std::path::Component::ParentDir => {
-                            p.pop();
-                        }
-                        std::path::Component::Normal(n) => p.push(n),
-                        _ => {}
-                    }
-                }
-                p
-            })
+            (!e.is_empty() && !e.starts_with('~')).then(|| gruntas_api::home::lexical(&dir.join(e.trim_end_matches("/**"))))
         })
     };
     let names_home = |entry: &str, rule: bool| path_of(entry, rule).is_some_and(|p| p == home);
@@ -481,7 +469,7 @@ mod tests {
         assert_eq!(sandbox_block(home)["permissions"]["deny"][0], "Read(//u/me/.gruntas/**)");
         // allowRead wins over denyRead: the home, a directory above it or one
         // in it opens it again; another does not.
-        for (opened, entry) in [(true, "~"), (true, "/u/me/.gruntas/accounts"), (true, "//u/"), (true, "//"), (true, "/**"), (true, ".."), (true, "../.gruntas/sessions"), (false, "./projects"), (false, "/u/me/src"), (false, "~/.gruntas-old")] {
+        for (opened, entry) in [(true, "~"), (true, "/u/me/.gruntas/accounts"), (true, "//u/"), (true, "//"), (true, "/**"), (true, ".."), (true, "../.gruntas/sessions"), (true, "~/.."), (true, "/u/me/.claude/.."), (false, "./projects"), (false, "/u/me/src"), (false, "~/.gruntas-old")] {
             let mut s = sandbox_block(home);
             s["sandbox"]["filesystem"]["allowRead"] = json!([entry]);
             assert_eq!(sandbox_gaps(&s, home, "/u/me", claude) == ["filesystem.allowRead opens the gruntas home again"], opened, "{entry}");
