@@ -226,7 +226,7 @@ mod tests {
             "ask-for-the-thing-you-want-in-plain-words sk-short",
             "AKIA is a prefix; AKIAshort; xoxo; eyJ not a jwt; AIza",
             "ghp_short and github_pat_",
-            "krowk_sk_ and krowk.com and gruntas_sk_",
+            "krowk_sk_ and gruntas.com and gruntas_sk_",
             "été — naïve ＜text＞ 日本語",
             "ASIAIOSFODNN7EXAMPLE1 has one char too many",
         ] {
