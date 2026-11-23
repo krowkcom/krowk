@@ -46,11 +46,22 @@ pub struct BuildsConfig {
     /// machine; a quarter of the cores (at least one) when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slots: Option<usize>,
+    /// The commands the Claude Code and Codex plugin's hooks count toward
+    /// the machine's busy build slots, each a program and the words that
+    /// follow it (`cargo test`, `make`); `LISTED` when absent. A statistic
+    /// for placing work, never a gate: nothing waits on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heavy: Option<Vec<String>>,
 }
 
 impl BuildsConfig {
     pub fn is_empty(&self) -> bool {
-        self.slots.is_none()
+        self.slots.is_none() && self.heavy.is_none()
+    }
+
+    /// The heavy list the plugin's hooks go by.
+    pub fn heavy_list(&self) -> Vec<String> {
+        self.heavy.clone().unwrap_or_else(|| LISTED.iter().map(|s| s.to_string()).collect())
     }
 }
 
@@ -294,23 +305,25 @@ const WRAPPERS: &[(&str, &[&str], usize)] = &[
     ("stdbuf", &["-i", "-o", "-e"], 0),
 ];
 
-/// Whether one command — the words between two breaks — runs a heavy
-/// program.
-fn heavy_words(words: &[String]) -> bool {
+/// One command — the words between two breaks — from its program on:
+/// past assignments, the shell's own words and the wrappers. None when it
+/// runs nothing.
+fn command_words(words: &[String]) -> Option<&[String]> {
     let mut i = 0;
     while let Some(w) = words.get(i) {
-        i += 1;
         if assignment(w) || KEYWORDS.contains(&w.as_str()) {
+            i += 1;
             continue;
         }
         let p = program(w);
         if let Some((_, valued, operands)) = WRAPPERS.iter().find(|(name, _, _)| *name == p) {
+            i += 1;
             while let Some(o) = words.get(i).filter(|o| o.starts_with('-')) {
                 i += 1;
                 match o.as_str() {
                     "--" => break,
                     // `command -v cargo` asks where cargo is; it runs nothing.
-                    "-v" | "-V" if p == "command" => return false,
+                    "-v" | "-V" if p == "command" => return None,
                     o if valued.contains(&o) => i += 1,
                     _ => {}
                 }
@@ -318,7 +331,26 @@ fn heavy_words(words: &[String]) -> bool {
             i += operands;
             continue;
         }
-        return HEAVY.contains(&p);
+        return Some(&words[i..]);
+    }
+    None
+}
+
+/// Whether one command runs a heavy program.
+fn heavy_words(words: &[String]) -> bool {
+    command_words(words).is_some_and(|w| HEAVY.contains(&program(&w[0])))
+}
+
+/// Whether some command of `command` is `true` by `each`, given its words
+/// from its program on.
+fn any_command(command: &str, each: impl Fn(&[String]) -> bool) -> bool {
+    let mut words = Vec::new();
+    for t in tokens(command).into_iter().chain([Token::Break]) {
+        match t {
+            Token::Word(w) => words.push(w),
+            Token::Break if command_words(&words).is_some_and(&each) => return true,
+            Token::Break => words.clear(),
+        }
     }
     false
 }
@@ -326,16 +358,85 @@ fn heavy_words(words: &[String]) -> bool {
 /// Whether `command` runs a build or test program in command position, and
 /// so waits for a build slot.
 pub fn heavy(command: &str) -> bool {
-    let mut words = Vec::new();
-    for t in tokens(command).into_iter().chain([Token::Break]) {
-        match t {
-            Token::Word(w) => words.push(w),
-            Token::Break if heavy_words(&words) => return true,
-            Token::Break => words.clear(),
-        }
-    }
-    false
+    any_command(command, heavy_words)
 }
+
+/// The commands the plugin's hooks count toward the busy build slots when
+/// config.json's `builds.heavy` names none: a program and the words after
+/// it, options (`-p x`, `+nightly`) skipped between them.
+pub const LISTED: &[&str] = &[
+    "cargo build", "cargo test", "cargo check", "cargo clippy",
+    "npm test", "npm run test", "npm run build", "pnpm test", "pnpm build", "pnpm run test", "pnpm run build", "bun test", "bun run test", "bun run build",
+    "go test", "go build",
+    "make",
+];
+
+/// Whether `command` runs a command `list` names: some command of it whose
+/// program is an entry's first word, and whose other words, its options
+/// skipped, start with the entry's others. `make` names every `make`;
+/// `cargo test` names `cargo +nightly test -p x` but not `cargo fmt`.
+pub fn listed(command: &str, list: &[String]) -> bool {
+    any_command(command, |words| {
+        let p = program(&words[0]);
+        let args: Vec<&str> = words[1..].iter().map(String::as_str).filter(|w| !w.starts_with(['-', '+'])).collect();
+        list.iter().any(|entry| {
+            let mut e = entry.split_whitespace();
+            e.next() == Some(p) && e.enumerate().all(|(i, w)| args.get(i) == Some(&w))
+        })
+    })
+}
+
+/// How long a heavy command a hook reported counts without its end: past
+/// the longest a Claude Code or Codex shell command runs in the foreground.
+pub const RUNNING_FOR: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+
+/// More heavy commands than any machine runs at once: a hook that starts
+/// without end cannot grow the count past this, the oldest making room.
+const RUNNING_MOST: usize = 256;
+
+/// The heavy commands the sessions of Claude Code and Codex are running,
+/// as their plugin's hooks report them (`heavyStart`, `heavyEnd`): the
+/// daemon's, counted with the lock files' slots in the busy build slots it
+/// announces (`sync::announce::capacity`). Nothing waits on it. An entry
+/// goes at its end, at its turn's or session's end, or `RUNNING_FOR` after
+/// it started.
+#[derive(Debug, Default)]
+pub struct Running {
+    /// By session, then tool call: when it started.
+    started: std::collections::BTreeMap<(String, String), std::time::Instant>,
+}
+
+impl Running {
+    pub fn start(&mut self, session: &str, call: &str, now: std::time::Instant) {
+        let key = (session.to_string(), call.to_string());
+        if self.started.len() >= RUNNING_MOST && !self.started.contains_key(&key) {
+            let oldest = self.started.iter().min_by_key(|(_, at)| **at).map(|(k, _)| k.clone());
+            if let Some(k) = oldest {
+                self.started.remove(&k);
+            }
+        }
+        self.started.insert(key, now);
+    }
+
+    pub fn end(&mut self, session: &str, call: &str) {
+        self.started.remove(&(session.to_string(), call.to_string()));
+    }
+
+    /// The turn, or the session, is over: whatever it still had running
+    /// has ended with it.
+    pub fn end_session(&mut self, session: &str) {
+        self.started.retain(|(s, _), _| s != session);
+    }
+
+    /// How many are running at `now`, the ones past `RUNNING_FOR` dropped.
+    pub fn count(&mut self, now: std::time::Instant) -> usize {
+        self.started.retain(|_, at| now.saturating_duration_since(*at) < RUNNING_FOR);
+        self.started.len()
+    }
+}
+
+/// This process's `Running`: the daemon's, which its announcer reads.
+pub static RUNNING: std::sync::Mutex<Running> = std::sync::Mutex::new(Running { started: std::collections::BTreeMap::new() });
 
 /// What the live output shows while a heavy command waits.
 pub fn waiting_line(in_use: usize) -> String {
@@ -416,6 +517,44 @@ mod tests {
         }
     }
 
+    /// KT03: the plugin's heavy list, a program and the words after it.
+    #[test]
+    fn kt03_the_heavy_list_names_a_program_and_its_first_words() {
+        let list = BuildsConfig::default().heavy_list();
+        for c in ["cargo test", "cargo +nightly clippy --all", "cd x && cargo -q build", "RUST_LOG=1 timeout 60 cargo check", "make", "make -j8 check", "npm test", "npm run build", "pnpm build", "bun test", "go test ./...", "ls; go build", "/usr/bin/make all"] {
+            assert!(listed(c, &list), "{c:?} is on the list");
+        }
+        for c in ["cargo fmt", "cargo", "npm install", "npm run lint", "go vet", "echo cargo test", "git commit -m 'cargo test'", "bun run dev", "", "command -v make"] {
+            assert!(!listed(c, &list), "{c:?} is not on the list");
+        }
+        let own = vec!["just ci".to_string()];
+        assert!(listed("just ci --fast", &own) && !listed("just lint", &own) && !listed("cargo test", &own));
+    }
+
+    /// KT03: heavy commands the hooks report counted, and dropped at their
+    /// end, their turn's end or after `RUNNING_FOR`.
+    #[test]
+    fn kt03_running_heavy_commands_end_with_their_call_their_turn_or_time() {
+        let t0 = std::time::Instant::now();
+        let mut r = Running::default();
+        r.start("a", "1", t0);
+        r.start("a", "2", t0);
+        r.start("b", "1", t0);
+        r.start("b", "1", t0);
+        assert_eq!(r.count(t0), 3, "the same call twice counts once");
+        r.end("a", "1");
+        r.end("a", "unknown");
+        assert_eq!(r.count(t0), 2);
+        r.end_session("a");
+        assert_eq!(r.count(t0), 1, "the turn's end ends a's");
+        r.start("c", "1", t0 + RUNNING_FOR / 2);
+        assert_eq!(r.count(t0 + RUNNING_FOR), 1, "b's, never ended, is dropped after the limit; c's stays");
+        for n in 0..RUNNING_MOST + 10 {
+            r.start("flood", &n.to_string(), t0 + RUNNING_FOR);
+        }
+        assert_eq!(r.count(t0 + RUNNING_FOR), RUNNING_MOST);
+    }
+
     #[test]
     fn slots_default_to_a_quarter_of_the_cores_and_split_them_for_cargo() {
         let none = |_: &str| String::new();
@@ -424,7 +563,7 @@ mod tests {
         let slots = (cores / 4).max(1);
         assert_eq!(b.pool.as_ref().unwrap().size(), slots);
         assert_eq!(b.jobs, Some((cores / slots).max(1).to_string()));
-        let b = Builds::resolve(&BuildsConfig { slots: Some(cores * 2) }, &none);
+        let b = Builds::resolve(&BuildsConfig { slots: Some(cores * 2), ..Default::default() }, &none);
         assert_eq!((b.pool.unwrap().size(), b.jobs.as_deref()), (cores * 2, Some("1")), "never fewer than one job");
         let set = |k: &str| if k == "CARGO_BUILD_JOBS" { "3".to_string() } else { String::new() };
         assert_eq!(Builds::resolve(&BuildsConfig::default(), &set).jobs.as_deref(), Some("3"), "the person's own setting, passed on as it is");
