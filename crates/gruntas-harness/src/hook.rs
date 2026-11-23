@@ -43,9 +43,22 @@ const LOG_MOST: u64 = 256 << 10;
 /// does it rather than handing it on again.
 const BACKGROUND: &str = "GRUNTAS_HOOK_BACKGROUND";
 
-/// The variables a harness sets for its own session, kept from a daemon a
-/// hook starts.
-const HARNESS_ENV: &[&str] = &["CLAUDE", "CODEX_"];
+/// The variables a harness sets for its own session (its account, its
+/// nesting markers, its hooks' own), kept from a daemon a hook starts. The
+/// person's own settings (`CLAUDE_CODE_USE_BEDROCK`, an `apiKeyEnv`) stay.
+const HARNESS_ENV: &[&str] = &[
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_SSE_PORT",
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_ENV_FILE",
+    "CLAUDE_PLUGIN_ROOT",
+    "CLAUDE_PROJECT_DIR",
+    "CODEX_HOME",
+    "CODEX_SANDBOX",
+    "CODEX_SANDBOX_NETWORK_DISABLED",
+    "CODEX_THREAD_ID",
+];
 
 /// How long a hook that started the daemon waits for its socket: inside
 /// `GIVE_UP`, which bounds it anyway.

@@ -242,13 +242,13 @@ pub fn spawn_detached(program: &Path, args: &[&str], log: &Path) -> Result<std::
     unsafe { detached(program, args, Path::new("/"), log, &[], || Ok(())) }
 }
 
-/// `spawn_detached`, without the variables named by one of `prefixes`: a
-/// daemon a harness's hook starts, which must not take that one session's
-/// account or nesting markers (`CLAUDE_CONFIG_DIR`, `CLAUDECODE`,
-/// `CODEX_HOME`) for every session it then runs.
-pub fn spawn_detached_without(program: &Path, args: &[&str], log: &Path, prefixes: &[&str]) -> Result<std::process::Child, String> {
+/// `spawn_detached`, without the variables `names`: a daemon a harness's
+/// hook starts, which must not take that one session's account or nesting
+/// markers (`CLAUDE_CONFIG_DIR`, `CLAUDECODE`, `CODEX_HOME`) for every
+/// session it then runs.
+pub fn spawn_detached_without(program: &Path, args: &[&str], log: &Path, names: &[&str]) -> Result<std::process::Child, String> {
     // SAFETY: the closure does nothing.
-    unsafe { detached(program, args, Path::new("/"), log, prefixes, || Ok(())) }
+    unsafe { detached(program, args, Path::new("/"), log, names, || Ok(())) }
 }
 
 /// `spawn_detached`, run in `cwd` rather than `/`: a `gruntas sync take` a
@@ -274,10 +274,8 @@ unsafe fn detached(program: &Path, args: &[&str], cwd: &Path, log: &Path, unset:
     let mut cmd = std::process::Command::new(program);
     // The daemon in `/`, so it pins no directory or mount for its life.
     cmd.args(args).current_dir(cwd).stdin(std::process::Stdio::null()).stdout(out).stderr(err);
-    for (k, _) in std::env::vars_os() {
-        if k.to_str().is_some_and(|k| unset.iter().any(|p| k.starts_with(p))) {
-            cmd.env_remove(k);
-        }
+    for k in unset {
+        cmd.env_remove(k);
     }
     // Read before the fork: sysconf is not async-signal-safe.
     // SAFETY: sysconf only reads a limit.
@@ -539,6 +537,19 @@ mod tests {
         assert_eq!(read.read(&mut [0u8; 1]).unwrap(), 0, "its end, not data");
     }
 
+    /// KT02: a daemon a hook starts takes none of the variables it names.
+    #[test]
+    fn kt02_a_daemon_spawned_without_variables_has_none_of_them() {
+        let log = std::env::temp_dir().join(format!("gruntas-without-{}.log", std::process::id()));
+        let _ = std::fs::remove_file(&log);
+        assert!(!std::env::var("PATH").unwrap_or_default().is_empty() && !std::env::var("HOME").unwrap_or_default().is_empty());
+        let mut child = spawn_detached_without(Path::new("/bin/sh"), &["-c", "echo \"[${HOME-gone}] [${PATH:+kept}]\""], &log, &["HOME"]).unwrap();
+        child.wait().unwrap();
+        let said = std::fs::read_to_string(&log).unwrap();
+        let _ = std::fs::remove_file(&log);
+        assert_eq!(said.trim(), "[gone] [kept]");
+    }
+
     /// R-LAG-9's tripwire for the daemon's own serving code: no blocking
     /// call there unless marked `// blocking:` with why, above the
     /// statement or function it covers — at start, on the way out, or
@@ -547,19 +558,6 @@ mod tests {
     /// which fails when anything (here, in the host, in a tool) holds the
     /// daemon's thread past 30 ms while a tool blocks, and the slow disk,
     /// whose stalls say when one was waited out on the daemon's thread.
-    /// KT02: a daemon a hook starts takes none of the variables it names.
-    #[test]
-    fn kt02_a_daemon_spawned_without_a_prefix_has_none_of_its_variables() {
-        let log = std::env::temp_dir().join(format!("gruntas-without-{}.log", std::process::id()));
-        let _ = std::fs::remove_file(&log);
-        assert!(!std::env::var("PATH").unwrap_or_default().is_empty() && !std::env::var("HOME").unwrap_or_default().is_empty());
-        let mut child = spawn_detached_without(Path::new("/bin/sh"), &["-c", "echo \"[${HOME-gone}] [${PATH:+kept}]\""], &log, &["HOM"]).unwrap();
-        child.wait().unwrap();
-        let said = std::fs::read_to_string(&log).unwrap();
-        let _ = std::fs::remove_file(&log);
-        assert_eq!(said.trim(), "[gone] [kept]");
-    }
-
     #[test]
     fn r_lag_9_no_blocking_io_on_the_daemons_thread() {
         const BLOCKING: [&str; 11] = ["std::fs::", "std::thread::sleep", "std::os::unix::net::", "std::io::stdin", "std::net::TcpStream", "File::open", "File::create", "OpenOptions::new", "read_events(", ".block_on(", "sync_data("];
