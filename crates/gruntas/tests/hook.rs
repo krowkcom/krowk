@@ -2,8 +2,9 @@
 //! payload on stdin, exit 0, done inside 2 s whatever the daemon is doing,
 //! and nothing on stdout that could change a tool call (D3, R-KIT-3).
 //!
-//! KT01 lands the contract; the `#[ignore]`d tests below are the later
-//! tickets' acceptance, each un-ignored by the ticket it names.
+//! KT01 landed the contract and each later ticket its acceptance test,
+//! named for it; none is pending. KT08 checked the same against a live
+//! Claude Code (its results are on the ticket).
 
 #![cfg(all(feature = "harness", unix))]
 
@@ -141,7 +142,7 @@ fn kt01_a_hook_never_fails_its_session_whatever_it_is_given() {
     drop(open);
 }
 
-// ---- Pending: the later tickets' acceptance, un-ignored by each. ----
+// ---- The later tickets' acceptance, KT02 to KT07. ----
 
 /// KT02: `SessionStart` starts the daemon when none runs and registers the
 /// session with D4's fields (the harness process, the repository's origin,
