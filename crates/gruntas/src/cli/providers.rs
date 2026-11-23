@@ -315,7 +315,7 @@ pub(super) fn disconnect(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
 }
 
 /// Every instance, where it runs, and whether it is ready — the readiness
-/// check `gruntas status` prints, with the place each one runs beside it.
+/// check `gruntas providers list --check` prints, with the place each one runs beside it.
 pub(super) fn list(ctx: &mut Ctx) -> Result<(), Error> {
     let (cfg, reg, reports) = super::status::reports(ctx)?;
     let rows: Vec<Value> = reports

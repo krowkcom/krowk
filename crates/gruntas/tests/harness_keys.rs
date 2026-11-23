@@ -118,7 +118,7 @@ impl Sandbox {
     }
 
     fn row(&self, instance: &str, env: &[(&str, &str)]) -> Value {
-        let out = self.gruntas(&["status", "--json"], env);
+        let out = self.gruntas(&["providers", "list", "--check", "--json"], env);
         let v: Value = serde_json::from_slice(&out.stdout).or_else(|_| serde_json::from_slice(&out.stderr)).unwrap();
         let rows = v.pointer("/data/instances").or_else(|| v.pointer("/error/details/instances")).unwrap_or_else(|| panic!("{v}"));
         rows.as_array().unwrap().iter().find(|r| r["instance"] == instance).cloned().unwrap_or_else(|| panic!("{instance} not listed"))
@@ -196,7 +196,7 @@ fn r_cred_1_a_pasted_key_is_stored_0600_used_first_and_never_shown_anywhere() {
     assert_eq!(b.logged(&format!("env ANTHROPIC_AUTH_TOKEN={SENTINEL}")), 1, "the stored key, not the environment's, handed to Claude Code");
 
     let mut outs = vec![out, turn];
-    for args in [&["status", "--json"][..], &["status"], &["providers", "list", "--json"], &["providers", "list"], &["doctor", "--json"], &["doctor"]] {
+    for args in [&["providers", "list", "--check", "--json"][..], &["providers", "list", "--check"], &["providers", "list", "--json"], &["providers", "list"], &["doctor", "--json"], &["doctor"]] {
         outs.push(b.gruntas(args, &env));
     }
     for o in &outs {
@@ -364,7 +364,7 @@ fn r_cred_1_a_credentials_file_gruntas_cannot_read_is_named_without_quoting_it()
         assert!(row["reason"].as_str().unwrap().contains("credentials.json is not valid (line 1, column"), "{row}");
         let mut outs = vec![b.gruntas(&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "stream-json"], &[("ANTHROPIC_API_KEY", DECOY)])];
         // The registry's commands read the same one file.
-        for args in [&["status", "--json"][..], &["status"], &["providers", "list", "--json"], &["doctor", "--json"], &["whoami"], &["workspaces", "--json"], &["auth", "token"], &["logout"]] {
+        for args in [&["providers", "list", "--check", "--json"][..], &["providers", "list", "--check"], &["providers", "list", "--json"], &["doctor", "--json"], &["whoami"], &["workspaces", "--json"], &["auth", "token"], &["logout"]] {
             outs.push(b.gruntas(args, &[]));
         }
         for o in &outs {
@@ -389,7 +389,7 @@ fn r_cred_1_with_no_home_gruntas_reads_no_repositorys_dot_gruntas_as_its_own() {
         c.env_remove("HOME");
         c.output().unwrap()
     };
-    for args in [&["status"][..], &["-p", "hi", "--model", "anthropic/claude-sonnet-4-6"], &["connect", "anthropic", "--method", "api-key", "--key-ref", "$X"]] {
+    for args in [&["providers", "list", "--check"][..], &["-p", "hi", "--model", "anthropic/claude-sonnet-4-6"], &["connect", "anthropic", "--method", "api-key", "--key-ref", "$X"]] {
         let out = run(args);
         assert!(!out.status.success() && printed(&out).contains("no home directory"), "{args:?}: {}", printed(&out));
     }
@@ -428,13 +428,13 @@ fn r_cred_1_a_command_runs_once_per_process_with_no_terminal_and_bounded_output(
     assert_eq!((failing["state"].as_str(), b.pass_runs()), (Some("unknown"), 5), "{failing}");
     std::fs::remove_file(b.root.join("pass.fail")).unwrap();
 
-    // `gruntas status` at a terminal too: the command still has none, so it
+    // `gruntas providers list --check` at a terminal too: the command still has none, so it
     // fails at once rather than stop on a read it can never make.
-    let mut c = b.command(&["status"], &[]);
+    let mut c = b.command(&["providers", "list", "--check"], &[]);
     c.env("TERM", "xterm-256color");
     let mut t = pty::Pty::spawn(c, 200, 30);
     let started = std::time::Instant::now();
-    t.wait(Duration::from_secs(25)).expect("gruntas status finished");
+    t.wait(Duration::from_secs(25)).expect("gruntas providers list --check finished");
     assert!(started.elapsed() < Duration::from_secs(15), "the tty prompt hung: {:?}", started.elapsed());
     assert!(t.text().contains("with no terminal"), "{}", t.text());
 

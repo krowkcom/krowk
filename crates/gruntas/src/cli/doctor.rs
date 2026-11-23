@@ -197,7 +197,7 @@ fn pricing_check(_: &Ctx) -> Value {
 }
 
 /// Whether any provider instance can run a turn here, by the readiness
-/// check `gruntas status` prints — each instance's state, and the command
+/// check `gruntas providers list --check` prints — each instance's state, and the command
 /// with the sources and fixes. A warning, not a failure, when none is: a
 /// machine that only pushes evidence needs no provider.
 #[cfg(feature = "harness")]
@@ -213,7 +213,7 @@ fn providers_check(ctx: &Ctx) -> Value {
     };
     let states: Map<String, Value> = reports.iter().map(|r| (r.instance.clone(), json!(r.readiness.state()))).collect();
     let mut v = json!({ "name": "providers", "status": if ready.is_empty() { "warn" } else { "pass" }, "message": message, "instances": states });
-    v["hint"] = json!("run `gruntas connect` to add one, or `gruntas status` for where each key or login comes from");
+    v["hint"] = json!("run `gruntas connect` to add one, or `gruntas providers list --check` for where each key or login comes from");
     v
 }
 

@@ -390,22 +390,9 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         ["mcp", "remove", ..] => mcp::remove(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["mcp"] | ["mcp", "list", ..] => mcp::list(ctx),
-        #[cfg(feature = "harness")]
-        ["status", ..] => {
-            // On stderr, where a failure's JSON goes too: there only
-            // beside a success, so a script parsing the failure still can.
-            let human = ctx.format == crate::output::Format::Human;
-            if human {
-                ctx.warn(status::RENAMING);
-            }
-            let done = status::status(ctx);
-            if !human && done.is_ok() {
-                ctx.warn(status::RENAMING);
-            }
-            done
-        }
+        // The agent tree; `agents` is the name it had for a release.
         #[cfg(all(feature = "harness", unix))]
-        ["agents", ..] => agents::agents(ctx, rest(1)),
+        ["status", ..] | ["agents", ..] => agents::agents(ctx, rest(1)),
         #[cfg(all(feature = "harness", unix))]
         ["ping", ..] => agents::ping(ctx, rest(1)),
         #[cfg(feature = "harness")]

@@ -84,7 +84,7 @@ pub struct Options {
     /// `true`, the device list brought up to date from the registry first.
     /// Blocking. Errors are `(code, message)`.
     pub keys: Keys,
-    /// This host's instances and each one's readiness, as `gruntas status`
+    /// This host's instances and each one's readiness, as `gruntas providers list --check`
     /// checks them. Blocking: a vendor's login may be asked.
     pub instances: Box<dyn Fn() -> (Registry, Vec<Report>) + Send + Sync>,
     /// The models.dev cache the catalog reads, if there is one.

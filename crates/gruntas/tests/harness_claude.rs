@@ -114,7 +114,7 @@ fn r_inst_2_two_claude_accounts_sign_in_through_claudes_own_flow_and_each_runs_a
     assert_eq!(b.fake_log().lines().filter(|l| *l == "argv auth login").count(), 2);
 
     // Status comes from `claude auth status`, per instance, through the
-    // readiness check `gruntas status` prints.
+    // readiness check `gruntas providers list --check` prints.
     let listed = b.json(&["providers", "list", "--json"], &[]);
     let rows = listed["data"]["instances"].as_array().unwrap();
     let row = |n: &str| rows.iter().find(|r| r["instance"] == n).unwrap_or_else(|| panic!("{n} in {rows:?}")).clone();

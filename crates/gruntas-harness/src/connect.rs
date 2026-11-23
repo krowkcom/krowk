@@ -779,7 +779,7 @@ impl ProviderAuth<'_> {
         gruntas_api::home::dir(self.env).map_err(|e| EngineError::new(&e.code(), e.fix()))
     }
 
-    /// Where a vendor is asked: gruntas's own directory, as `gruntas status`
+    /// Where a vendor is asked: gruntas's own directory, as `gruntas providers list --check`
     /// asks, never the one gruntas runs in.
     fn probe(&self) -> Result<Probe, EngineError> {
         readiness::neutral_dir(&self.home()?).map(Probe::at).map_err(|e| EngineError::new("data_dir_unwritable", e))
@@ -881,7 +881,7 @@ impl ProviderAuth<'_> {
         let Some((way, instance)) = found else {
             return Err(EngineError::new(
                 "bad_argument",
-                format!("{t:?} is not a provider or an instance — connect one of {}, or an instance `gruntas status` lists", Vendor::ALL.map(Vendor::id).join(", ")),
+                format!("{t:?} is not a provider or an instance — connect one of {}, or an instance `gruntas providers list --check` lists", Vendor::ALL.map(Vendor::id).join(", ")),
             ));
         };
         if options.name.is_some() {
@@ -1537,7 +1537,7 @@ impl ProviderAuth<'_> {
         let probe = self.probe()?;
         let made = made_dir(backend.config_dir.as_deref())?;
         // A home that was there is linked like any other — Codex is asked
-        // with the person's own config, as a turn and `gruntas status` ask it —
+        // with the person's own config, as a turn and `gruntas providers list --check` ask it —
         // and a failed sign-in takes away the links it added, and only those.
         let before = backend.config_dir.as_deref().filter(|_| made.is_none()).map(entries);
         let undo = |e: EngineError| {
@@ -1583,7 +1583,7 @@ impl ProviderAuth<'_> {
     pub fn disconnect(&self, instance: &str, remove: bool, own_login: bool, ui: &mut dyn AuthInteraction) -> Result<Disconnected, EngineError> {
         let defs = self.definitions()?;
         let reg = Registry::resolve(&defs, self.env);
-        let r = reg.instances.get(instance).ok_or_else(|| EngineError::new("no_instance", format!("no instance named {instance} — `gruntas status` lists them")))?;
+        let r = reg.instances.get(instance).ok_or_else(|| EngineError::new("no_instance", format!("no instance named {instance} — `gruntas providers list --check` lists them")))?;
         let signed_out = match (&r.auth, &r.backend) {
             (Auth::OAuth { .. }, _) => SignedOut::Tokens { had: Store::new(self.credentials.clone()).remove(instance).map_err(|e| EngineError::new("credentials_unwritable", e.message))? },
             // A stored key is deleted — a key's Claude Code or Codex

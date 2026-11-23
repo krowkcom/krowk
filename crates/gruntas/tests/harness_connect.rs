@@ -92,7 +92,7 @@ impl Sandbox {
     }
 
     fn status(&self) -> Vec<Value> {
-        let out = self.gruntas(&["status", "--json"], &[]);
+        let out = self.gruntas(&["providers", "list", "--check", "--json"], &[]);
         let v: Value = serde_json::from_slice(&out.stdout).or_else(|_| serde_json::from_slice(&out.stderr)).unwrap();
         let rows = v.pointer("/data/instances").or_else(|| v.pointer("/error/details/instances")).unwrap_or_else(|| panic!("{v}"));
         rows.as_array().unwrap().clone()
@@ -645,7 +645,7 @@ fn d3_a_keys_codex_account_on_the_chat_wire_api_moves_to_responses_with_one_noti
     }
     std::fs::write(b.config_path(), cfg.to_string()).unwrap();
 
-    let first = b.gruntas(&["status", "--json"], &[]);
+    let first = b.gruntas(&["providers", "list", "--check", "--json"], &[]);
     let err = stderr(&first);
     let said: Vec<&str> = err.lines().filter(|l| l.contains("Responses API")).collect();
     assert_eq!(
@@ -666,7 +666,7 @@ fn d3_a_keys_codex_account_on_the_chat_wire_api_moves_to_responses_with_one_noti
     assert_eq!(b.credentials()["keys"]["xai"], json!({"env": "VENDOR_KEY"}), "the key stays where it was");
 
     // Once: the next run says nothing.
-    let again = b.gruntas(&["status", "--json"], &[]);
+    let again = b.gruntas(&["providers", "list", "--check", "--json"], &[]);
     assert!(!stderr(&again).contains("Responses API"), "{}", stderr(&again));
 }
 
@@ -723,7 +723,7 @@ fn r_nat_2_an_existing_native_key_account_is_converted_on_first_use_with_one_not
     .unwrap();
     std::fs::write(b.data().join("credentials.json"), json!({"keys": {"openrouter": {"literal": KEY}}}).to_string()).unwrap();
 
-    let first = b.gruntas(&["status", "--json"], &[]);
+    let first = b.gruntas(&["providers", "list", "--check", "--json"], &[]);
     let said: Vec<String> = stderr(&first).lines().filter(|l| l.contains("now runs in")).map(String::from).collect();
     assert_eq!(
         said,
@@ -750,7 +750,7 @@ fn r_nat_2_an_existing_native_key_account_is_converted_on_first_use_with_one_not
     assert_eq!((row["kind"].as_str(), row["source"].as_str()), (Some("codex-app-server"), Some("stored, handed to Codex")), "{row}");
 
     // Once: the next run says nothing.
-    let again = b.gruntas(&["status", "--json"], &[]);
+    let again = b.gruntas(&["providers", "list", "--check", "--json"], &[]);
     assert!(!stderr(&again).contains("now runs in"), "{}", stderr(&again));
     // And the stored key reaches Codex.
     let turn = b.gruntas(&["-p", "hi", "--trust", "--model", "openrouter/openai/gpt-5.4"], &[]);
@@ -766,7 +766,7 @@ fn r_nat_2_a_native_key_account_that_cannot_be_converted_is_said_and_left_as_it_
     std::fs::create_dir_all(b.data()).unwrap();
     let native = json!({"kind": "anthropic-api", "apiKeyEnv": "X_KEY"});
     std::fs::write(b.config_path(), json!({"instances": {"anthropic:x": native, "claude:y": {"kind": "claude-code", "configDir": taken}}}).to_string()).unwrap();
-    let out = b.gruntas(&["status", "--json"], &[]);
+    let out = b.gruntas(&["providers", "list", "--check", "--json"], &[]);
     assert!(stderr(&out).contains("gruntas: anthropic:x could not become a Claude Code account") && stderr(&out).contains("gruntas refuses it until it is connected again"), "{}", stderr(&out));
     assert!(stderr(&out).contains(r#""instance": "claude:y""#), "status still ran and listed them: {}", stderr(&out));
     assert_eq!(b.config()["instances"]["anthropic:x"], native);

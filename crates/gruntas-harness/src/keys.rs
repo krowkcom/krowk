@@ -59,13 +59,13 @@
 //!
 //! **Readiness runs the command** (`readiness::check`, never `local`, which
 //! only reads a kept key and never waits), once per process,
-//! bounded like a vendor check: `gruntas status` saying `ready`
+//! bounded like a vendor check: `gruntas providers list --check` saying `ready`
 //! for a key it has not seen, and the turn then failing, is what readiness
 //! exists to prevent, and the command is one the person gave gruntas to run.
 //! It runs in parallel with the vendor checks, and a turn in the same
 //! process reuses the key. A command that fails is `unknown`, with why.
 //!
-//! No key reaches a log, an error, `{:?}` or `gruntas status`: status shows
+//! No key reaches a log, an error, `{:?}` or `gruntas providers list --check`: status shows
 //! where it comes from — `stored`, `stored ($VAR)`, `stored (!pass …)`, the
 //! command cut to its program — and never the value.
 
@@ -135,7 +135,7 @@ impl KeyRef {
         }
     }
 
-    /// Where the key comes from, as `gruntas status` says it: never the key,
+    /// Where the key comes from, as `gruntas providers list --check` says it: never the key,
     /// and of a command only its program.
     pub fn source(&self) -> String {
         match self {

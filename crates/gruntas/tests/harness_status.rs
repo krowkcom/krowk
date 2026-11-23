@@ -1,4 +1,4 @@
-//! `gruntas status`, `gruntas providers list` and `gruntas doctor` — the one
+//! `gruntas providers list --check`, `gruntas providers list` and `gruntas doctor` — the one
 //! readiness check — the built binary against fake `claude` and `codex`
 //! binaries on PATH (no real login anywhere) and a stand-in environment:
 //! the two implicit Claude Code and Codex accounts with no config, each in the state its
@@ -127,7 +127,7 @@ fn status_with_no_config_lists_the_two_implicit_accounts_in_their_states() {
     std::fs::write(b.home().join(".claude/fake-login"), "").unwrap();
     b.write_logins(json!({"supergrok": login(TOKEN_SENTINEL, None, 1_000)}));
 
-    let out = b.gruntas(&["status", "--json"], &[("ANTHROPIC_API_KEY", KEY_SENTINEL)]);
+    let out = b.gruntas(&["providers", "list", "--check", "--json"], &[("ANTHROPIC_API_KEY", KEY_SENTINEL)]);
     assert_eq!(out.status.code(), Some(0), "one instance is ready: {}", String::from_utf8_lossy(&out.stderr));
     let v = stdout_json(&out);
     let rows = instances(&v["data"]);
@@ -149,7 +149,7 @@ fn status_with_no_config_lists_the_two_implicit_accounts_in_their_states() {
     assert!(!printed.contains(KEY_SENTINEL) && !printed.contains(TOKEN_SENTINEL), "no secret is printed: {printed}");
 
     // The table says the same, and why each one is not ready.
-    let out = b.gruntas(&["status", "--format", "human"], &[("ANTHROPIC_API_KEY", KEY_SENTINEL)]);
+    let out = b.gruntas(&["providers", "list", "--check", "--format", "human"], &[("ANTHROPIC_API_KEY", KEY_SENTINEL)]);
     assert_eq!(out.status.code(), Some(0));
     let table = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(!table.contains("supergrok") && !table.contains("anthropic "), "{table}");
@@ -160,44 +160,39 @@ fn status_with_no_config_lists_the_two_implicit_accounts_in_their_states() {
     // the failure's details.
     std::fs::remove_file(b.home().join(".claude/fake-login")).unwrap();
     std::fs::remove_file(b.root.join("bin/codex")).unwrap();
-    let out = b.gruntas(&["status", "--json"], &[]);
+    let out = b.gruntas(&["providers", "list", "--check", "--json"], &[]);
     assert_eq!(out.status.code(), Some(3));
     let err: Value = serde_json::from_str(String::from_utf8_lossy(&out.stderr).trim()).unwrap();
     assert_eq!(err["error"]["error"], "none_ready", "{err}");
     let details = instances(&err["error"]["details"]);
     assert_eq!((details.len(), row(&details, "codex")["state"].as_str(), row(&details, "claude")["state"].as_str()), (2, Some("not_installed"), Some("not_signed_in")));
-    let out = b.gruntas(&["status", "--format", "human"], &[]);
+    let out = b.gruntas(&["providers", "list", "--check", "--format", "human"], &[]);
     assert_eq!(out.status.code(), Some(3));
     assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 2, "the table, before the failure");
 }
 
-/// SL06 (the owner's decision on D10): `providers list --check` is the
-/// check `status` is today, the same JSON and exit codes; `status` works as
-/// before and says on stderr that it becomes the agent tree next release,
-/// except beside a failure's JSON there.
+/// SL06, SL08 (the owner's decision on D10): `providers list --check` is
+/// the readiness check, its JSON and exit codes; `status` is no longer it,
+/// but the agent tree (`status_layer.rs` tests the tree).
 #[test]
-fn providers_list_check_is_todays_status_and_status_says_it_is_moving() {
+fn providers_list_check_is_the_readiness_check_and_status_is_not() {
     let b = Sandbox::new("check");
     b.install_fakes();
     std::fs::create_dir_all(b.home().join(".claude")).unwrap();
     std::fs::write(b.home().join(".claude/fake-login"), "").unwrap();
-    let notice = "In the next release gruntas status becomes the agent tree (gruntas agents); gruntas providers list --check is this readiness check";
-    let status = b.gruntas(&["status", "--json"], &[]);
     let check = b.gruntas(&["providers", "list", "--check", "--json"], &[]);
-    assert_eq!((status.status.code(), check.status.code()), (Some(0), Some(0)));
-    assert_eq!(stdout_json(&status), stdout_json(&check));
-    assert!(String::from_utf8_lossy(&status.stderr).contains(notice), "{}", String::from_utf8_lossy(&status.stderr));
-    assert!(!String::from_utf8_lossy(&check.stderr).contains(notice));
-    let human = b.gruntas(&["status", "--format", "human"], &[]);
-    assert!(String::from_utf8_lossy(&human.stderr).contains(notice));
-    assert_eq!(human.stdout, b.gruntas(&["providers", "list", "--check", "--format", "human"], &[]).stdout);
+    assert_eq!(check.status.code(), Some(0), "{}", String::from_utf8_lossy(&check.stderr));
+    assert_eq!(stdout_json(&check)["data"]["ready"], 1, "{}", String::from_utf8_lossy(&check.stdout));
+    let status = b.gruntas(&["status", "--json"], &[]);
+    let said = format!("{}{}", String::from_utf8_lossy(&status.stdout), String::from_utf8_lossy(&status.stderr));
+    assert!(!said.contains("\"instances\"") && !said.contains("In the next release"), "status is the agent tree now: {said}");
     assert_eq!(stdout_json(&b.gruntas(&["providers", "--check", "--json"], &[])), stdout_json(&check), "bare providers lists as providers list");
     let elsewhere = b.gruntas(&["mcp", "list", "--check", "--json"], &[]);
     assert!(elsewhere.status.code() != Some(0) && String::from_utf8_lossy(&elsewhere.stderr).contains("only a flag of `gruntas providers list`"), "{}", String::from_utf8_lossy(&elsewhere.stderr));
 
     std::fs::remove_file(b.home().join(".claude/fake-login")).unwrap();
     std::fs::remove_file(b.root.join("bin/codex")).unwrap();
-    for args in [&["status", "--json"][..], &["providers", "list", "--check", "--json"]] {
+    for args in [&["providers", "list", "--check", "--json"][..], &["providers", "--check", "--json"]] {
         let out = b.gruntas(args, &[]);
         assert_eq!(out.status.code(), Some(3), "{args:?}");
         let err: Value = serde_json::from_str(String::from_utf8_lossy(&out.stderr).trim()).unwrap();
@@ -215,7 +210,7 @@ fn vendor_checks_run_in_parallel_so_two_slow_vendors_take_as_long_as_one() {
         "#!/bin/bash\n[ \"$1\" = app-server ] || exit 2\nsleep 5\nwhile read -r l; do case \"$l\" in *'\"method\":\"account/read\"'*) printf '{\"id\":2,\"result\":{\"account\":{\"type\":\"chatgpt\"},\"requiresOpenaiAuth\":true}}\\n' ;; esac; done\n",
     );
     let started = Instant::now();
-    let out = b.gruntas(&["status", "--json"], &[]);
+    let out = b.gruntas(&["providers", "list", "--check", "--json"], &[]);
     let took = started.elapsed();
     let rows = instances(&stdout_json(&out)["data"]);
     assert_eq!((row(&rows, "claude")["state"].as_str(), row(&rows, "codex")["state"].as_str()), (Some("ready"), Some("ready")), "{rows:?}");
@@ -297,7 +292,7 @@ fn no_secret_reaches_status_list_or_doctor() {
     b.write_logins(json!({"supergrok:team": login(TOKEN_SENTINEL, Some(REFRESH_SENTINEL), 1_000)}));
     let env = [("ANTHROPIC_API_KEY", KEY_SENTINEL), ("WORK_KEY", KEY_SENTINEL), ("OR_KEY", ROUTER_SENTINEL)];
 
-    let status = b.gruntas(&["status", "--json"], &env);
+    let status = b.gruntas(&["providers", "list", "--check", "--json"], &env);
     let rows = instances(&stdout_json(&status)["data"]);
     assert_eq!(rows.len(), 5, "the two implicit accounts and the three configured; SuperGrok runs nothing (D4)");
     assert!(!rows.iter().any(|r| r["instance"] == "supergrok:team"));
@@ -320,7 +315,7 @@ fn no_secret_reaches_status_list_or_doctor() {
     assert_eq!(d["providers"]["status"], "pass", "{d}");
     assert_eq!(d["providers"]["instances"]["codex"], "not_signed_in");
 
-    for out in [&status, &list, &doctor, &b.gruntas(&["status", "--format", "human"], &env), &b.gruntas(&["providers", "list", "--format", "human"], &env), &b.gruntas(&["doctor", "--format", "human"], &env)] {
+    for out in [&status, &list, &doctor, &b.gruntas(&["providers", "list", "--check", "--format", "human"], &env), &b.gruntas(&["providers", "list", "--format", "human"], &env), &b.gruntas(&["doctor", "--format", "human"], &env)] {
         let printed = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
         for secret in [KEY_SENTINEL, ROUTER_SENTINEL, TOKEN_SENTINEL, REFRESH_SENTINEL] {
             assert!(!printed.contains(secret), "{secret} printed: {printed}");
@@ -333,7 +328,7 @@ fn codex_status_falls_back_to_login_status_when_app_server_cannot_be_asked() {
     let b = Sandbox::new("codex-fallback");
     // An older Codex: no app-server to ask, only `codex login status`'s words.
     b.install("codex", "#!/bin/bash\ncase \"$1 $2\" in\n'login status') echo 'Logged in using ChatGPT' >&2; exit 0 ;;\n*) echo \"unknown command $1\" >&2; exit 2 ;;\nesac\n");
-    let out = b.gruntas(&["status", "--json"], &[]);
+    let out = b.gruntas(&["providers", "list", "--check", "--json"], &[]);
     let rows = instances(&stdout_json(&out)["data"]);
     assert_eq!((row(&rows, "codex")["state"].as_str(), row(&rows, "codex")["source"].as_str()), (Some("ready"), Some(format!("Codex's own login in {} (signed in with ChatGPT)", b.home().join(".codex").display()).as_str())));
 }
@@ -350,7 +345,7 @@ fn status_asks_vendors_in_gruntas_own_directory_so_planted_settings_change_nothi
         std::fs::create_dir_all(d.join(".claude")).unwrap();
         std::fs::write(d.join(".claude/settings.json"), r#"{"apiKeyHelper":"echo planted"}"#).unwrap();
     }
-    let out = b.gruntas(&["status", "--json"], &[("TMPDIR", tmp.to_str().unwrap())]);
+    let out = b.gruntas(&["providers", "list", "--check", "--json"], &[("TMPDIR", tmp.to_str().unwrap())]);
     assert_eq!(out.status.code(), Some(3), "nothing is ready: {}", String::from_utf8_lossy(&out.stderr));
     let err: Value = serde_json::from_str(String::from_utf8_lossy(&out.stderr).trim()).unwrap();
     let rows = instances(&err["error"]["details"]);
