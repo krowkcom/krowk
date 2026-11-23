@@ -43,22 +43,203 @@ fn two_machines() -> Vec<Board> {
 
 // ---- SL03: report status from agents ----
 
+/// A test's own home and runtime directory, under /tmp so the socket path
+/// fits `sun_path`, with a daemon in this process (as KT03's), and
+/// `gruntas hook` and `gruntas-mcp` run as a harness runs them: this test
+/// process is the harness.
+struct Machine(std::path::PathBuf);
+
+impl Machine {
+    fn up(name: &str) -> Machine {
+        use gruntas_harness::daemon::server;
+        let root = std::path::PathBuf::from("/tmp").join(format!("gruntas-sl-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for d in ["home", "run"] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let m = Machine(root);
+        let socket = m.socket();
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let daemon = std::thread::spawn(move || {
+            let factory: server::Factory = Box::new(|_, _| Err(gruntas_harness::engine::EngineError::new("no_sessions", "this test runs none")));
+            server::run(server::Options { socket, idle: None, gruntas_version: "test".into(), ..Default::default() }, factory)
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::os::unix::net::UnixStream::connect(m.socket()).is_err() {
+            assert!(!daemon.is_finished(), "the daemon did not start: {:?}", daemon.join());
+            assert!(std::time::Instant::now() < deadline, "the daemon never listened");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        m
+    }
+
+    fn env(&self) -> impl Fn(&str) -> String + '_ {
+        move |k| match k {
+            "HOME" => self.0.join("home").display().to_string(),
+            "XDG_RUNTIME_DIR" => self.0.join("run").display().to_string(),
+            _ => String::new(),
+        }
+    }
+
+    fn socket(&self) -> std::path::PathBuf {
+        gruntas_harness::daemon::socket(&self.env()).unwrap()
+    }
+
+    fn command(&self, exe: &str) -> std::process::Command {
+        let mut cmd = std::process::Command::new(exe);
+        cmd.env_clear()
+            .env("HOME", self.0.join("home"))
+            .env("XDG_RUNTIME_DIR", self.0.join("run"))
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .current_dir(&self.0)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        cmd
+    }
+
+    /// `gruntas hook claude <event>` with `payload`: what it printed.
+    fn hook(&self, event: &str, payload: &serde_json::Value) -> String {
+        use std::io::Write;
+        let mut child = self.command(env!("CARGO_BIN_EXE_gruntas")).args(["hook", "claude", event]).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "{event}: {out:?}");
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    /// `gruntas-mcp` called with each of `calls` (a tool and its arguments)
+    /// after its initialize: each call's result.
+    fn mcp(&self, calls: &[(&str, serde_json::Value)]) -> Vec<serde_json::Value> {
+        use std::io::Write;
+        let mut lines = vec![r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#.to_string()];
+        for (n, (name, args)) in calls.iter().enumerate() {
+            lines.push(serde_json::json!({ "jsonrpc": "2.0", "id": n + 1, "method": "tools/call", "params": { "name": name, "arguments": args } }).to_string());
+        }
+        let mut child = self.command(env!("CARGO_BIN_EXE_gruntas-mcp")).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(format!("{}\n", lines.join("\n")).as_bytes()).unwrap();
+        let out = child.wait_with_output().unwrap();
+        let answers: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(answers.len(), calls.len() + 1, "{answers:?} {}", String::from_utf8_lossy(&out.stderr));
+        answers[1..].iter().map(|a| a["result"].clone()).collect()
+    }
+
+    /// Waits until the daemon has written `id`'s registration, which the
+    /// MCP server reads.
+    fn registered(&self, id: &str) {
+        let dir = gruntas_harness::daemon::dir(&self.env()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while gruntas_harness::daemon::registry::Registry::load(&dir).get(id).is_none() {
+            assert!(std::time::Instant::now() < deadline, "{id} never registered");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
+impl Drop for Machine {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn fixture(event: &str) -> serde_json::Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../gruntas-harness/tests/fixtures/hooks/claude").join(format!("{event}.json"));
+    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+}
+
 /// SL03: `gruntas_report` (state, summary, phase, blocked on, PR, next)
 /// updates the calling session's Task with agent provenance, appends to its
 /// history and answers the current status; the 11th report drops the
 /// oldest (`status::MAX_HISTORY`).
 #[test]
-#[ignore = "SL03: report status from agents"]
 fn sl03_a_report_updates_the_task_and_its_history_keeps_ten() {
-    todo!("SL03: start gruntas-mcp under a registered harness_pid (as KT04's test does), call gruntas_report 11 times, read the Task: state and summary from the last, stateSource agent, history of 10 starting at the 2nd")
+    use gruntas_harness::protocol::{Activity, PluginHarness, Registration};
+    let m = Machine::up("sl03-report");
+    let reg = Registration { session_id: "mine".into(), harness: PluginHarness::Claude, harness_pid: Some(std::process::id()), config_home: None, cwd: Some("/r".into()), repository: None, transcript_path: None, attendance: None };
+    gruntas_harness::hook::send(&m.socket(), "/r", "test", Activity::Register(reg)).unwrap();
+    m.registered("mine");
+    let mut calls = vec![("gruntas_report", serde_json::json!({ "state": "working", "summary": "report 1", "phase": "build", "blocked_on": "nothing", "pr": "https://github.com/o/r/pull/1", "next": "tests" }))];
+    for n in 2..=10 {
+        calls.push(("gruntas_report", serde_json::json!({ "summary": format!("report {n}") })));
+    }
+    calls.push(("gruntas_report", serde_json::json!({ "state": "input-required", "summary": "report 11", "blocked_on": "your review" })));
+    calls.push(("gruntas_report", serde_json::json!({ "state": "stalled", "summary": "x" })));
+    calls.push(("gruntas_report", serde_json::json!({ "state": "working" })));
+    calls.push(("gruntas_report", serde_json::json!({ "summary": "x", "pr": "javascript:alert(1)" })));
+    let results = m.mcp(&calls);
+    for r in &results[..11] {
+        assert_eq!(r["isError"], false, "{r}");
+    }
+    let first: Task = serde_json::from_value(results[0]["structuredContent"]["task"].clone()).unwrap();
+    assert_eq!((first.id.as_str(), first.status.state, first.history.len()), ("mine", TaskState::Working, 1));
+    assert_eq!(first.metadata.gruntas.phase, Some(Field::agent("build".to_string())));
+    let report = &first.history[0].metadata.as_ref().unwrap().report;
+    assert_eq!((report.blocked_on.as_deref(), report.pr.as_deref(), report.next.as_deref()), (Some("nothing"), Some("https://github.com/o/r/pull/1"), Some("tests")));
+
+    let last = &results[10];
+    let task: Task = serde_json::from_value(last["structuredContent"]["task"].clone()).unwrap();
+    assert_eq!(task.status.state, TaskState::InputRequired, "the last report's state");
+    assert_eq!(task.status.message.as_ref().unwrap().summary(), "report 11");
+    assert_eq!(task.metadata.gruntas.state_source, Some(gruntas_client::status::Provenance::Agent));
+    assert_eq!(task.metadata.gruntas.phase, Some(Field::agent("build".to_string())), "a field a report leaves out stays");
+    assert_eq!(task.history.len(), gruntas_client::status::MAX_HISTORY);
+    let summaries: Vec<String> = task.history.iter().map(Message::summary).collect();
+    assert_eq!(summaries.first().map(String::as_str), Some("report 2"), "the 11th dropped the oldest: {summaries:?}");
+    assert_eq!(summaries.last().map(String::as_str), Some("report 11"));
+    let text = last["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("input-required — report 11"), "{text}");
+    // Neither a state A2A does not have, a missing summary nor a link that
+    // is not a web one is taken.
+    for r in &results[11..] {
+        assert_eq!(r["isError"], true, "{r}");
+    }
+
+    // More sessions in this one process: which is reporting cannot be
+    // told, so none is guessed.
+    for id in ["x1", "x2"] {
+        let reg = Registration { session_id: id.into(), harness: PluginHarness::Codex, harness_pid: Some(std::process::id()), config_home: None, cwd: None, repository: None, transcript_path: None, attendance: None };
+        gruntas_harness::hook::send(&m.socket(), "/r", "test", Activity::Register(reg)).unwrap();
+    }
+    m.registered("x2");
+    let r = &m.mcp(&[("gruntas_report", serde_json::json!({ "summary": "which?" }))])[0];
+    assert_eq!((&r["isError"], &r["structuredContent"]["error"]), (&serde_json::json!(true), &serde_json::json!("ambiguous_session")), "{r}");
 }
 
 /// SL03: `Stop` after tool calls with no report since yields a one-line
 /// reminder to report; after a report, or with no tool calls, nothing.
 #[test]
-#[ignore = "SL03: report status from agents"]
 fn sl03_stop_reminds_only_after_unreported_work() {
-    todo!("SL03: pipe claude/PostToolUse.json then claude/Stop.json into `gruntas hook claude <event>` with a daemon up; expect the reminder; report via gruntas_report, Stop again, expect none")
+    let m = Machine::up("sl03-stop");
+    let session = fixture("Stop")["session_id"].as_str().unwrap().to_string();
+    assert_eq!(m.hook("SessionStart", &fixture("SessionStart")), "");
+    m.registered(&session);
+    assert_eq!(m.hook("Stop", &fixture("Stop")), "", "no tool calls yet");
+    assert_eq!(m.hook("PostToolUse", &fixture("PostToolUse")), "");
+    let reminder = m.hook("Stop", &fixture("Stop"));
+    let answer: serde_json::Value = serde_json::from_str(reminder.trim()).unwrap_or_else(|e| panic!("{e}: {reminder:?}"));
+    assert_eq!(answer["decision"], "block", "{answer}");
+    let reason = answer["reason"].as_str().unwrap();
+    assert!(reason.contains("gruntas_report") && !reason.contains('\n'), "one line: {reason}");
+    assert_eq!(m.hook("Stop", &fixture("Stop")), "", "reminded once, not every turn");
+
+    // Work, then a report: nothing to remind of, the report's own call
+    // included.
+    let mut failed = fixture("PostToolUse");
+    failed["hook_event_name"] = "PostToolUseFailure".into();
+    assert_eq!(m.hook("PostToolUseFailure", &failed), "");
+    let reported = m.mcp(&[("gruntas_report", serde_json::json!({ "state": "working", "summary": "halfway" }))]);
+    assert_eq!(reported[0]["isError"], false, "{}", reported[0]);
+    assert_eq!(reported[0]["structuredContent"]["task"]["id"], session.as_str());
+    let mut own = fixture("PostToolUse");
+    own["tool_name"] = "mcp__plugin_gruntas_gruntas__gruntas_report".into();
+    assert_eq!(m.hook("PostToolUse", &own), "");
+    assert_eq!(m.hook("Stop", &fixture("Stop")), "", "after a report, none");
+
+    // A harness already carrying on from a Stop answer is never held twice.
+    assert_eq!(m.hook("PostToolUse", &fixture("PostToolUse")), "");
+    let mut active = fixture("Stop");
+    active["stop_hook_active"] = true.into();
+    assert_eq!(m.hook("Stop", &active), "");
 }
 
 // ---- SL04: observe states and git context from the harness ----

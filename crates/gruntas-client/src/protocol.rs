@@ -1555,6 +1555,14 @@ pub enum ServerFrame {
         id: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<ErrorInfo>,
+        /// For a `report`: the session's status as it now stands.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<Box<crate::status::Task>>,
+        /// For a `turnEnd`: the session did work (tool calls) since its last
+        /// report or the last reminder, so its Stop hook reminds it to
+        /// report (D2).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        report_due: bool,
     },
 }
 
@@ -1582,8 +1590,21 @@ pub enum Activity {
     /// And ended.
     HeavyEnd { session_id: String, tool_call_id: String },
     /// A turn of the session ended: the heavy commands it had not ended
-    /// count no more.
+    /// count no more. Answered with `reportDue` when it did work it has
+    /// not reported.
     TurnEnd { session_id: String },
+    /// A tool call of the session ended (`PostToolUse`): work its agent
+    /// has not reported yet. Not sent for the report tool's own call.
+    ToolEnd { session_id: String },
+    /// The session's agent reported its status (`gruntas_report`, D2):
+    /// answered with the session's Task as it now stands, or
+    /// `not_registered`. The daemon stamps it with its own clock.
+    Report {
+        session_id: String,
+        /// The one-line summary.
+        summary: String,
+        report: crate::status::Report,
+    },
     /// An account's usage windows, as its harness reads them.
     Usage {
         /// The account's config home (`CLAUDE_CONFIG_DIR`, `~/.claude`).

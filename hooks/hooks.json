@@ -1,12 +1,12 @@
 {
   "modules": ["./usage.ts"],
-  "description": "Gruntas: the mod (usage.ts) sends the account's usage windows through `gruntas hook claude usage`; each event runs `gruntas hook claude <event>`, which tells the gruntas daemon about the session and never rewrites a tool call; it refuses only what the paste guards refuse. Without gruntas on the PATH the hooks do nothing, SessionStart says how to install it, and WorktreeCreate fails with that line, since Claude Code's worktrees then come from gruntas.",
+  "description": "Gruntas: the mod (usage.ts) sends the account's usage windows through `gruntas hook claude usage`; each event runs `gruntas hook claude <event>`, which tells the gruntas daemon about the session and never rewrites a tool call; it refuses only what the paste guards refuse, and Stop reminds the agent to report its status (gruntas_report) after work it has not reported. Without gruntas on the PATH the hooks do nothing, SessionStart says how to install it, and WorktreeCreate fails with that line, since Claude Code's worktrees then come from gruntas.",
   "hooks": {
     "SessionStart": [{ "hooks": [{ "type": "command", "command": "command -v gruntas >/dev/null 2>&1 || { echo '{\"systemMessage\":\"gruntas is not on the PATH, so this session is not registered with it. Install it: curl -fsSL https://gruntas.com/install | bash\"}'; exit 0; }; exec gruntas hook claude SessionStart", "timeout": 5 }] }],
     "SessionEnd": [{ "hooks": [{ "type": "command", "command": "command -v gruntas >/dev/null 2>&1 || exit 0; exec gruntas hook claude SessionEnd", "timeout": 5 }] }],
     "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "command -v gruntas >/dev/null 2>&1 || exit 0; exec gruntas hook claude PreToolUse", "timeout": 5 }] }],
-    "PostToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "command -v gruntas >/dev/null 2>&1 || exit 0; exec gruntas hook claude PostToolUse", "timeout": 5 }] }],
-    "PostToolUseFailure": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "command -v gruntas >/dev/null 2>&1 || exit 0; exec gruntas hook claude PostToolUseFailure", "timeout": 5 }] }],
+    "PostToolUse": [{ "hooks": [{ "type": "command", "command": "command -v gruntas >/dev/null 2>&1 || exit 0; exec gruntas hook claude PostToolUse", "timeout": 5 }] }],
+    "PostToolUseFailure": [{ "hooks": [{ "type": "command", "command": "command -v gruntas >/dev/null 2>&1 || exit 0; exec gruntas hook claude PostToolUseFailure", "timeout": 5 }] }],
     "Stop": [{ "hooks": [{ "type": "command", "command": "command -v gruntas >/dev/null 2>&1 || exit 0; exec gruntas hook claude Stop", "timeout": 5 }] }],
     "WorktreeCreate": [{ "hooks": [{ "type": "command", "command": "command -v gruntas >/dev/null 2>&1 || { echo 'WorktreeCreate: gruntas is not on the PATH. Install it: curl -fsSL https://gruntas.com/install | bash' >&2; exit 1; }; exec gruntas hook claude WorktreeCreate", "timeout": 900 }] }],
     "WorktreeRemove": [{ "hooks": [{ "type": "command", "command": "command -v gruntas >/dev/null 2>&1 || exit 0; exec gruntas hook claude WorktreeRemove", "timeout": 900 }] }]

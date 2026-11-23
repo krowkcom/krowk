@@ -67,6 +67,17 @@ breaking changes may affect it without notice.
   and a session's "quiet for" is worked out from the board's own publish
   time, so it never compares two machines' clocks.
 
+- **Agents report their status with `gruntas_report`.** The plugin's MCP
+  server has a new tool that takes a state (an A2A `TaskState` such as
+  `working` or `input-required`), a one-line summary, and optionally a
+  phase, what it is blocked on, its PR and what comes next. The machine's
+  daemon keeps it as the session's Task, marked as the agent's, with its
+  last 10 reports, and the tool answers the status as it now stands. When
+  a session made tool calls since its last report, its `Stop` hook adds a
+  one-line reminder to report, once per stretch of work. The plugin's
+  `PostToolUse` hooks now run for every tool, not only Bash, so the daemon
+  sees that work.
+
 - **`gruntas hook <harness> <event>`, the entry point for the Claude
   Code and Codex plugin's hooks.** It reads the harness's hook payload on
   stdin and tells the host daemon about the session over its socket, in a

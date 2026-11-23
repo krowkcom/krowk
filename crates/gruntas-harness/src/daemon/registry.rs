@@ -9,12 +9,17 @@
 //! renamed over, `0600`, in a directory only this user can open (`super::dir`).
 //! One that cannot be read is started over, never refused: the next
 //! `SessionStart` registers its session again.
+//!
+//! Beside each registration it keeps the session's status (SL03, D2): the
+//! A2A Task its agent's reports (`gruntas_report`) build, and whether the
+//! session did work (tool calls) since its last report, which its Stop
+//! hook reminds it of.
 
 use crate::protocol::{Activity, PluginHarness, Registration};
 use gruntas_client::presence::normalise_origin;
-use gruntas_client::status::{Field, Health, Provenance, Task, TaskMetadata, TaskState, TaskStatus};
+use gruntas_client::status::{self, Field, Health, Message, MessageMetadata, Provenance, Report, Task, TaskMetadata, TaskState, TaskStatus};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 pub const FILE: &str = "registrations.json";
@@ -22,6 +27,14 @@ pub const FILE: &str = "registrations.json";
 /// More than any machine runs at once: a hook that registers without end
 /// cannot grow the file past this, the first by id making room.
 const MOST: usize = 1024;
+
+/// The most characters a report's summary keeps, and its other words
+/// (phase, blocked on, next): capped as they come in, so ten reports a
+/// session stay well inside a board's budget (D8).
+pub const SUMMARY_MOST: usize = 200;
+pub const WORD_MOST: usize = 120;
+/// A pull request's URL.
+pub const PR_MOST: usize = 300;
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Registry {
@@ -32,6 +45,12 @@ pub struct Registry {
     /// clock: its status's time until anything newer is known.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     registered_at: BTreeMap<String, String>,
+    /// Each reported session's status, by session id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    tasks: BTreeMap<String, Task>,
+    /// The sessions that did work since their last report or reminder.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    unreported: BTreeSet<String>,
 }
 
 impl Registry {
@@ -110,14 +129,76 @@ impl Registry {
                 true
             }
             Activity::Deregister { session_id } => self.forget(session_id),
-            Activity::HeavyStart { .. } | Activity::HeavyEnd { .. } | Activity::TurnEnd { .. } | Activity::Usage { .. } => false,
+            Activity::ToolEnd { session_id } | Activity::HeavyEnd { session_id, .. } => self.sessions.contains_key(session_id) && self.unreported.insert(session_id.clone()),
+            Activity::TurnEnd { session_id } => self.unreported.remove(session_id),
+            Activity::Report { session_id, summary, report } => self.report(session_id, summary, report, jiff::Timestamp::now()),
+            Activity::HeavyStart { .. } | Activity::Usage { .. } => false,
         }
     }
 
-    /// Drops a session; whether it was there.
+    /// Drops a session and its status; whether it was there.
     fn forget(&mut self, session_id: &str) -> bool {
         self.registered_at.remove(session_id);
+        self.tasks.remove(session_id);
+        self.unreported.remove(session_id);
         self.sessions.remove(session_id).is_some()
+    }
+
+    /// Takes a registered session's report, made at `now` (this machine's
+    /// clock, whatever the report says): its Task's state (kept when the
+    /// report names none, working for a first), summary, phase and PR set
+    /// with agent provenance, the report appended to its history with the
+    /// oldest past `status::MAX_HISTORY` dropped, and its work reported.
+    /// Every word is capped as it comes in. Whether it changed anything:
+    /// nothing for a session not registered.
+    pub fn report(&mut self, session_id: &str, summary: &str, report: &Report, now: jiff::Timestamp) -> bool {
+        if !self.sessions.contains_key(session_id) {
+            return false;
+        }
+        let at = now.to_string();
+        let word = |s: &Option<String>, most: usize| s.as_deref().map(|s| cap(s, most)).filter(|s| !s.is_empty());
+        // A state this build does not know is no state; a PR is a web link
+        // or nothing, as a reader may open it.
+        let state = report.state.filter(|s| *s != TaskState::Unspecified);
+        // Never cut: a shortened link opens another page.
+        let pr = report.pr.as_deref().map(str::trim).filter(|p| p.chars().count() <= PR_MOST && is_web_link(p)).map(String::from);
+        let report = Report { state, phase: word(&report.phase, WORD_MOST), blocked_on: word(&report.blocked_on, WORD_MOST), pr, next: word(&report.next, WORD_MOST), timestamp: at.clone() };
+        let id = format!("report-{}", now.as_nanosecond());
+        let summary = cap(summary, SUMMARY_MOST);
+        let task = self.tasks.entry(session_id.to_string()).or_insert_with(|| Task {
+            id: session_id.to_string(),
+            status: TaskStatus { state: TaskState::Working, message: None, timestamp: at.clone() },
+            history: Vec::new(),
+            metadata: TaskMetadata::default(),
+        });
+        task.status = TaskStatus { state: report.state.unwrap_or(task.status.state), message: Some(Message::text(id.clone(), summary.clone())), timestamp: at.clone() };
+        let g = &mut task.metadata.gruntas;
+        g.state_source = Some(Provenance::Agent);
+        if let Some(p) = &report.phase {
+            g.phase = Some(Field::agent(p.clone()));
+        }
+        if let Some(p) = &report.pr {
+            g.pr = Some(Field::agent(p.clone()));
+        }
+        g.last_activity = Some(Field::harness(at));
+        let mut entry = Message::text(id, summary);
+        entry.metadata = Some(MessageMetadata { report });
+        task.history.push(entry);
+        let over = task.history.len().saturating_sub(status::MAX_HISTORY);
+        task.history.drain(..over);
+        self.unreported.remove(session_id);
+        true
+    }
+
+    /// A session's status, once its agent has reported.
+    pub fn task(&self, session_id: &str) -> Option<&Task> {
+        self.tasks.get(session_id)
+    }
+
+    /// Whether a session did work (tool calls) since its last report or
+    /// reminder.
+    pub fn report_due(&self, session_id: &str) -> bool {
+        self.unreported.contains(session_id)
     }
 
     /// The status board's Tasks (D1, D8): one per session whose harness
@@ -125,21 +206,25 @@ impl Registry {
     /// observed (the harness, the project, health `SERVING`, and the
     /// registration as its last activity), all with harness provenance.
     /// A session's state is `working` until a report or a hook says
-    /// otherwise. The machine is the publisher's to fill.
+    /// otherwise; a session whose agent reported starts from its reported
+    /// Task (SL03). The machine is the publisher's to fill.
     pub fn board_tasks(&self) -> Vec<Task> {
         self.sessions()
             .map(|r| {
                 let at = self.registered_at.get(&r.session_id).cloned().unwrap_or_else(|| jiff::Timestamp::UNIX_EPOCH.to_string());
-                let mut t = Task { id: r.session_id.clone(), status: TaskStatus { state: TaskState::Working, message: None, timestamp: at.clone() }, history: Vec::new(), metadata: TaskMetadata::default() };
+                let reported = self.tasks.get(&r.session_id).cloned();
+                let mut t = reported.clone().unwrap_or_else(|| Task { id: r.session_id.clone(), status: TaskStatus { state: TaskState::Working, message: None, timestamp: at.clone() }, history: Vec::new(), metadata: TaskMetadata::default() });
                 let g = &mut t.metadata.gruntas;
-                g.state_source = Some(Provenance::Harness);
+                if reported.is_none() {
+                    g.state_source = Some(Provenance::Harness);
+                    g.last_activity = Some(Field::harness(at));
+                }
                 g.health = Some(Field::harness(Health::Serving));
                 g.harness = Some(Field::harness(match r.harness {
                     PluginHarness::Claude => "claude".into(),
                     PluginHarness::Codex => "codex".into(),
                 }));
                 g.project = r.repository.as_deref().and_then(normalise_origin).map(Field::harness);
-                g.last_activity = Some(Field::harness(at));
                 t
             })
             .collect()
@@ -153,6 +238,8 @@ impl Registry {
         self.sessions.retain(|_, r| r.harness_pid.is_none_or(&alive));
         let sessions = &self.sessions;
         self.registered_at.retain(|id, _| sessions.contains_key(id));
+        self.tasks.retain(|id, _| sessions.contains_key(id));
+        self.unreported.retain(|id| sessions.contains_key(id));
         self.sessions.len() != before
     }
 
@@ -166,6 +253,22 @@ impl Registry {
     pub fn sessions(&self) -> impl Iterator<Item = &Registration> {
         self.sessions.values().filter(|r| r.harness_pid.is_none_or(alive))
     }
+}
+
+/// Whether `s` is an `http` or `https` link, with nothing in it a parser
+/// would quietly drop (white space, control characters).
+pub fn is_web_link(s: &str) -> bool {
+    !s.chars().any(|c| c.is_whitespace() || c.is_control()) && url::Url::parse(s).is_ok_and(|u| matches!(u.scheme(), "http" | "https") && u.host().is_some())
+}
+
+/// `s` cut to at most `most` characters, an ellipsis last when cut, and
+/// trimmed.
+fn cap(s: &str, most: usize) -> String {
+    let s = s.trim();
+    if s.chars().count() <= most {
+        return s.to_string();
+    }
+    s.chars().take(most - 1).collect::<String>() + "…"
 }
 
 /// Writes `bytes` as `dir`'s registry: to a temporary file, then renamed
@@ -194,7 +297,7 @@ pub fn alive(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{PluginHarness, UsageWindow};
+    use crate::protocol::UsageWindow;
 
     fn reg(id: &str, pid: Option<u32>) -> Registration {
         Registration { session_id: id.into(), harness: PluginHarness::Claude, harness_pid: pid, config_home: None, cwd: Some("/r".into()), repository: None, transcript_path: None, attendance: None }
@@ -296,6 +399,102 @@ mod tests {
         assert!(r.stamp() && !r.stamp(), "one kept untimed is timed once");
         r.apply(&Activity::Deregister { session_id: "a".into() });
         assert!(r.board_tasks().is_empty() && !r.registered_at.contains_key("a"));
+    }
+
+    fn report(state: Option<TaskState>) -> Report {
+        Report { state, timestamp: "1999-01-01T00:00:00Z".into(), ..Report::default() }
+    }
+
+    #[test]
+    fn sl03_a_report_sets_the_task_with_agent_provenance_and_keeps_ten() {
+        let mut r = Registry::default();
+        let at = |n: i64| jiff::Timestamp::from_second(1_800_000_000 + n).unwrap();
+        assert!(!r.report("a", "x", &report(None), at(0)), "not registered");
+        assert_eq!(r.task("a"), None);
+        r.apply(&Activity::Register(reg("a", None)));
+        assert!(r.report("a", "first", &report(None), at(0)));
+        assert_eq!(r.task("a").unwrap().status.state, TaskState::Working, "working when the first names no state");
+        let full = Report { state: Some(TaskState::InputRequired), phase: Some(" review ".into()), blocked_on: Some("a decision".into()), pr: Some("https://github.com/o/r/pull/1".into()), next: Some("merge".into()), timestamp: "ignored".into() };
+        r.report("a", "waiting on you", &full, at(1));
+        r.report("a", "still", &report(None), at(2));
+        let t = r.task("a").unwrap();
+        assert_eq!((t.status.state, t.status.message.as_ref().unwrap().summary().as_str()), (TaskState::InputRequired, "still"), "the state stays when a report names none");
+        assert_eq!(t.status.timestamp, at(2).to_string(), "this machine's clock");
+        let g = &t.metadata.gruntas;
+        assert_eq!(g.state_source, Some(Provenance::Agent));
+        assert_eq!(g.phase, Some(Field::agent("review".to_string())));
+        assert_eq!(g.pr, Some(Field::agent("https://github.com/o/r/pull/1".to_string())));
+        let second = t.history[1].metadata.as_ref().unwrap();
+        assert_eq!((second.report.blocked_on.as_deref(), second.report.next.as_deref(), second.report.timestamp.as_str()), (Some("a decision"), Some("merge"), at(1).to_string().as_str()));
+        for n in 3..12 {
+            r.report("a", &format!("r{n}"), &report(None), at(n));
+        }
+        let t = r.task("a").unwrap();
+        assert_eq!(t.history.len(), status::MAX_HISTORY);
+        assert_eq!(t.history[0].summary(), "still", "twelve reports: the oldest two went");
+        assert_eq!(t.history[9].summary(), "r11");
+    }
+
+    #[test]
+    fn sl03_report_words_are_capped_as_they_come_in() {
+        let mut r = Registry::default();
+        r.apply(&Activity::Register(reg("a", None)));
+        let long = "x".repeat(10_000);
+        r.report("a", &long, &Report { phase: Some(long.clone()), timestamp: String::new(), ..Report::default() }, jiff::Timestamp::now());
+        let t = r.task("a").unwrap();
+        assert_eq!(t.status.message.as_ref().unwrap().summary().chars().count(), SUMMARY_MOST);
+        assert_eq!(t.metadata.gruntas.phase.as_ref().unwrap().value.chars().count(), WORD_MOST);
+    }
+
+    #[test]
+    fn sl03_work_is_due_until_reported_or_reminded_and_goes_with_its_session() {
+        let mut r = Registry::default();
+        assert!(!r.apply(&Activity::ToolEnd { session_id: "a".into() }), "not registered");
+        r.apply(&Activity::Register(reg("a", None)));
+        assert!(!r.report_due("a"));
+        assert!(r.apply(&Activity::ToolEnd { session_id: "a".into() }));
+        assert!(!r.apply(&Activity::ToolEnd { session_id: "a".into() }), "already due");
+        assert!(r.report_due("a"));
+        r.report("a", "done", &report(None), jiff::Timestamp::now());
+        assert!(!r.report_due("a"), "reported");
+        r.apply(&Activity::ToolEnd { session_id: "a".into() });
+        assert!(r.apply(&Activity::TurnEnd { session_id: "a".into() }));
+        assert!(!r.report_due("a"), "reminded once");
+        r.apply(&Activity::ToolEnd { session_id: "a".into() });
+        r.apply(&Activity::Deregister { session_id: "a".into() });
+        assert!(!r.report_due("a") && r.task("a").is_none(), "gone with its session");
+        // And with a harness that went.
+        r.apply(&Activity::Register(reg("b", Some(1))));
+        r.report("b", "x", &report(None), jiff::Timestamp::now());
+        r.prune(|_| false);
+        assert_eq!(r.task("b"), None);
+    }
+
+    #[test]
+    fn sl03_a_heavy_commands_end_is_work_and_a_bad_state_or_link_is_dropped() {
+        let mut r = Registry::default();
+        r.apply(&Activity::Register(reg("a", None)));
+        assert!(r.apply(&Activity::HeavyEnd { session_id: "a".into(), tool_call_id: "t".into() }));
+        assert!(r.report_due("a"));
+        let odd = Report { state: Some(TaskState::Unspecified), pr: Some("javascript:alert(1)".into()), timestamp: String::new(), ..Report::default() };
+        r.report("a", "x", &odd, jiff::Timestamp::now());
+        let t = r.task("a").unwrap();
+        assert_eq!((t.status.state, &t.metadata.gruntas.pr), (TaskState::Working, &None));
+        assert!(is_web_link("https://github.com/o/r/pull/1") && !is_web_link("file:///etc/passwd") && !is_web_link("github.com/o/r") && !is_web_link("https://git\nhub.com/o/r"));
+        let long = Report { pr: Some(format!("https://x.example/{}", "y".repeat(PR_MOST))), timestamp: String::new(), ..Report::default() };
+        r.report("a", "x", &long, jiff::Timestamp::now());
+        assert_eq!(r.task("a").unwrap().metadata.gruntas.pr, None, "too long is dropped, never cut");
+    }
+
+    #[test]
+    fn sl03_a_reported_session_is_on_the_board_as_its_agent_reported_it() {
+        let mut r = Registry::default();
+        r.apply(&Activity::Register(reg("a", None)));
+        r.report("a", "halfway", &report(Some(TaskState::InputRequired)), jiff::Timestamp::now());
+        let t = &r.board_tasks()[0];
+        assert_eq!((t.status.state, t.metadata.gruntas.state_source, t.history.len()), (TaskState::InputRequired, Some(Provenance::Agent), 1));
+        assert_eq!(t.metadata.gruntas.health, Some(Field::harness(Health::Serving)), "with what the harness observed");
+        assert_eq!(&t.metadata.gruntas.last_activity, &r.task("a").unwrap().metadata.gruntas.last_activity);
     }
 
     #[test]
