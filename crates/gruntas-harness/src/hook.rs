@@ -43,6 +43,10 @@ const LOG_MOST: u64 = 256 << 10;
 /// does it rather than handing it on again.
 const BACKGROUND: &str = "GRUNTAS_HOOK_BACKGROUND";
 
+/// The variables a harness sets for its own session, kept from a daemon a
+/// hook starts.
+const HARNESS_ENV: &[&str] = &["CLAUDE", "CODEX_"];
+
 /// How long a hook that started the daemon waits for its socket: inside
 /// `GIVE_UP`, which bounds it anyway.
 const START_WAIT: Duration = Duration::from_millis(1300);
@@ -270,7 +274,7 @@ fn connect_or_start(env: &dyn Fn(&str) -> String, socket: &Path) -> Result<std::
     let _ = std::fs::remove_file(socket);
     let exe = std::env::current_exe().map_err(|e| format!("no daemon, and gruntas cannot find its own binary to start one: {e}"))?;
     let log = gruntas_api::home::dir(env).map_err(|e| format!("no daemon, and none started: {}", e.fix()))?.join("host.log");
-    let mut child = crate::daemon::spawn_detached(&exe, &["host", "serve"], &log).map_err(|e| format!("no daemon, and none started: {e}"))?;
+    let mut child = crate::daemon::spawn_detached_without(&exe, &["host", "serve"], &log, HARNESS_ENV).map_err(|e| format!("no daemon, and none started: {e}"))?;
     let deadline = std::time::Instant::now() + START_WAIT;
     loop {
         match UnixStream::connect(socket) {

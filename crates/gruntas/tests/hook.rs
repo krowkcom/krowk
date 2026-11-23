@@ -81,13 +81,13 @@ fn fixture(harness: &str, event: &str) -> Vec<u8> {
 
 const EVENTS: [&str; 5] = ["SessionStart", "SessionEnd", "PreToolUse", "PostToolUse", "Stop"];
 
-/// Polls `hook.log` until it says `what`: a backgrounded `SessionEnd`
-/// writes it after its hook has returned.
-fn log_says(s: &Scratch, what: &str) -> String {
+/// Polls `hook.log` until it says `what` `times` times: a backgrounded
+/// `SessionEnd` writes it after its hook has returned.
+fn log_says(s: &Scratch, what: &str, times: usize) -> String {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let log = std::fs::read_to_string(s.daemon_dir().join("hook.log")).unwrap_or_default();
-        if log.contains(what) || Instant::now() >= deadline {
+        if log.matches(what).count() >= times || Instant::now() >= deadline {
             return log;
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -106,8 +106,9 @@ fn kt01_with_no_daemon_every_hook_exits_0_at_once_and_notes_why() {
             assert!(took < LIMIT, "{harness} {event} took {took:?}");
         }
     }
-    let log = log_says(&s, "SessionEnd: no daemon on");
-    assert!(log.contains("SessionEnd: no daemon on"), "{log}");
+    // Both harnesses' backgrounded copies, so neither outlives the scratch.
+    let log = log_says(&s, "SessionEnd: no daemon on", 2);
+    assert_eq!(log.matches("SessionEnd: no daemon on").count(), 2, "{log}");
     assert!(!s.socket().exists(), "a SessionEnd started a daemon");
 }
 
