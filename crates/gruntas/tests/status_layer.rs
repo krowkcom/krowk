@@ -384,24 +384,131 @@ fn sl05_an_over_budget_board_is_trimmed_in_order_and_read_elsewhere() {
 
 // ---- SL06: show status and ping machines and sessions ----
 
-/// SL06: `gruntas status` is the tree by project, machine and parent
-/// session, each with state, health, quiet for and summary; `gruntas status
-/// github.com/acme/site` only that project; `--json` the same tree.
+/// Machine `i`'s presence put for `ttl` seconds and `board`, about it,
+/// published as its daemon would (`boards::publish`).
+fn put_board(p: &Person, i: usize, mut board: Board, ttl: u64) {
+    board.device = p.device(i);
+    let device = gruntas_client::e2e::DeviceId::parse(&board.device).unwrap();
+    let keys = gruntas_client::user_key::UserKeys::new(p.people.user().clone(), []).unwrap();
+    let announcer = gruntas_harness::sync::announce::Announcer { api: std::sync::Arc::new(p.client(i)), keys, chain: p.people.chain().clone(), device };
+    p.client(i).put_presence(b"presence", ttl).unwrap();
+    gruntas_harness::sync::boards::publish(&board, &announcer, &gruntas_client::status::statistics_id()).unwrap();
+}
+
+/// `gruntas <args>` on machine `i`: its exit code, stdout and stderr.
+fn run(p: &Person, i: usize, args: &[&str]) -> (i32, String, String) {
+    let o = p.homes[i].command(args).stdin(std::process::Stdio::null()).output().unwrap();
+    (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned())
+}
+
+/// SL06: `gruntas agents` (D10's tree, named `agents` by the owner's
+/// decision while `status` keeps its meaning for a release) is the tree by
+/// project, machine and parent session, each with state, health, quiet for
+/// and summary; `gruntas agents github.com/acme/site` only that project;
+/// `--json` the same tree.
 #[test]
-#[ignore = "SL06: show status and ping machines and sessions"]
-fn sl06_status_shows_the_tree_across_machines() {
-    let boards = two_machines();
-    todo!(
-        "SL06: serve these {} boards (sealed, on the dev registry) and run `gruntas status`: github.com/acme/app > laptop > p1 working > c1 input-required, server > s1 canceled NOT_SERVING; quiet for from each board's publishedAt; `gruntas status github.com/acme/site` shows o1 only; `--json` the same",
-        boards.len()
-    )
+fn sl06_agents_shows_the_tree_across_machines() {
+    let mut p = Person::new("tree");
+    let (laptop, server, desk) = (p.machine("laptop"), p.machine("server"), p.machine("desk"));
+    let mut boards = two_machines().into_iter();
+    put_board(&p, laptop, boards.next().unwrap(), 60);
+    put_board(&p, server, boards.next().unwrap(), 60);
+
+    let (code, out, err) = run(&p, desk, &["agents", "--format", "human"]);
+    assert_eq!(code, 0, "{out}{err}");
+    let want = "\
+github.com/acme/app
+  laptop  SERVING
+    p1  working  SERVING  quiet 1m  splitting the train
+      c1  input-required  SERVING  quiet 10m  waiting on a permission
+  server  SERVING
+    s1  canceled  NOT_SERVING  quiet 29m  fixing CI
+github.com/acme/site
+  laptop  SERVING
+    o1  completed  SERVING  quiet 1h  shipped
+";
+    assert_eq!(out, want, "{err}");
+
+    let (code, out, _) = run(&p, desk, &["agents", "github.com/acme/site", "--format", "human"]);
+    assert_eq!((code, out.as_str()), (0, "github.com/acme/site\n  laptop  SERVING\n    o1  completed  SERVING  quiet 1h  shipped\n"));
+    let (_, out, _) = run(&p, desk, &["agents", "https://github.com/acme/site.git", "--format", "human"]);
+    assert!(out.starts_with("github.com/acme/site\n"), "a project named as a remote is normalised: {out}");
+
+    let (code, out, err) = run(&p, desk, &["agents", "--json"]);
+    assert_eq!(code, 0, "{err}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let projects = &v["data"]["projects"];
+    assert_eq!(projects.as_array().unwrap().len(), 2, "{v}");
+    let app = &projects[0];
+    assert_eq!(app["project"], "github.com/acme/app");
+    let (on_laptop, on_server) = (&app["machines"][0], &app["machines"][1]);
+    assert_eq!((on_laptop["name"].as_str(), on_laptop["device"].as_str(), on_laptop["health"].as_str()), (Some("laptop"), Some(p.device(laptop).as_str()), Some("SERVING")));
+    assert_eq!(on_laptop["publishedAt"], "2026-11-23T12:00:00Z");
+    let p1 = &on_laptop["sessions"][0];
+    assert_eq!((p1["id"].as_str(), p1["state"].as_str(), p1["health"].as_str(), p1["summary"].as_str()), (Some("p1"), Some("TASK_STATE_WORKING"), Some("SERVING"), Some("splitting the train")));
+    assert!((60..65).contains(&p1["quietForSeconds"].as_i64().unwrap()), "from the board's publish time and its receipt: {p1}");
+    assert_eq!(p1["lastActivity"], "2026-11-23T11:59:00Z");
+    let c1 = &p1["children"][0];
+    assert_eq!((c1["id"].as_str(), c1["state"].as_str(), c1["children"].as_array().map(Vec::len)), (Some("c1"), Some("TASK_STATE_INPUT_REQUIRED"), Some(0)));
+    let s1 = &on_server["sessions"][0];
+    assert_eq!((on_server["name"].as_str(), s1["id"].as_str(), s1["state"].as_str(), s1["health"].as_str()), (Some("server"), Some("s1"), Some("TASK_STATE_CANCELED"), Some("NOT_SERVING")));
+    assert_eq!(projects[1]["machines"][0]["sessions"][0]["id"], "o1");
+    assert_eq!(v["data"]["unopened"], serde_json::json!([]));
 }
 
 /// SL06: `gruntas ping <machine>` answers "answered in N s"; `gruntas ping
 /// <session>` finds its machine from the boards and adds health and last
 /// activity; an UNKNOWN machine says so without waiting.
 #[test]
-#[ignore = "SL06: show status and ping machines and sessions"]
 fn sl06_ping_answers_for_a_machine_and_a_session_and_not_for_an_unknown_one() {
-    todo!("SL06: ping host command against a live daemon on the dev registry; then let the presence lapse and expect UNKNOWN at once")
+    let mut p = Person::new("ping");
+    let (a, b, c) = (p.machine("a"), p.machine("b"), p.machine("gone"));
+    // Machine `gone` announced itself for 10 s, the least, with one session
+    // on its board, and nothing keeps it up: its presence lapses meanwhile.
+    let lapses = std::time::Instant::now() + std::time::Duration::from_secs(11);
+    let mut board = two_machines().pop().unwrap();
+    board.published_at = jiff::Timestamp::now().to_string();
+    put_board(&p, c, board, 10);
+
+    p.homes[a].serve();
+    p.board_of(b, a, |_| true);
+    p.homes[a].register("a-session-0");
+    p.board_of(b, a, |x| x.sessions == ["a-session-0"]);
+
+    let (code, out, err) = run(&p, b, &["ping", "a", "--format", "human"]);
+    assert_eq!(code, 0, "{out}{err}");
+    let secs: f64 = out.strip_prefix("a: answered in ").and_then(|r| r.strip_suffix(" s\n")).unwrap_or_else(|| panic!("{out}")).parse().unwrap();
+    assert!(secs < 15.0, "within a presence refresh: {out}");
+
+    let (code, out, err) = run(&p, b, &["ping", "a-session-0", "--json"]);
+    assert_eq!(code, 0, "{out}{err}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let d = &v["data"];
+    assert_eq!((d["machine"].as_str(), d["device"].as_str(), d["health"].as_str()), (Some("a"), Some(p.device(a).as_str()), Some("SERVING")), "{v}");
+    assert!(d["answeredInSeconds"].as_f64().is_some_and(|s| s < 15.0), "{v}");
+    let s = &d["session"];
+    assert_eq!((s["id"].as_str(), s["health"].as_str()), (Some("a-session-0"), Some("SERVING")), "{v}");
+    assert!(s["lastActivity"].as_str().is_some_and(|t| t.parse::<jiff::Timestamp>().is_ok()) && s["quietForSeconds"].as_i64().is_some_and(|q| (0..120).contains(&q)), "{v}");
+    let (code, out, _) = run(&p, b, &["ping", "a-session-0", "--format", "human"]);
+    assert!(code == 0 && out.starts_with("a-session-0 on a: answered in ") && out.contains("  SERVING  last activity "), "{out}");
+
+    // An UNKNOWN machine, by name or by a session on its board: said at
+    // once, nothing sent.
+    while std::time::Instant::now() < lapses {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    for target in ["gone", "s1"] {
+        let at = std::time::Instant::now();
+        let (code, out, err) = run(&p, b, &["ping", target, "--format", "human"]);
+        assert!(at.elapsed() < std::time::Duration::from_secs(5), "without waiting");
+        assert_eq!(code, 6, "{out}{err}");
+        assert!(err.contains("Gone is UNKNOWN: its presence lapsed (last seen ") && err.contains("so it was not pinged"), "{err}");
+    }
+    let (_, out, _) = run(&p, b, &["agents", "--format", "human"]);
+    assert!(out.contains("  gone  UNKNOWN\n    s1  canceled  NOT_SERVING"), "the tree says so too: {out}");
+    let held: serde_json::Value = serde_json::from_str(&ureq::get(format!("{}/_host_commands", p.api.trim_end_matches("/v1"))).call().unwrap().body_mut().read_to_string().unwrap()).unwrap();
+    assert!(!held.to_string().contains(&p.device(c)), "nothing was sent to the lapsed machine: {held}");
+
+    let (code, _, err) = run(&p, b, &["ping", "nothing-by-this-name"]);
+    assert_eq!(code, 2, "{err}");
 }

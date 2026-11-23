@@ -86,6 +86,9 @@ pub struct Flags {
     /// `host stop`: even with clients connected.
     #[cfg(feature = "harness")]
     pub force: bool,
+    /// `providers list --check`: the readiness check, exit 3 when none is ready.
+    #[cfg(feature = "harness")]
+    pub check: bool,
     /// `sync init`, `sync recovery new`: the file the recovery kit is
     /// written to (0600) instead of the screen.
     #[cfg(feature = "harness")]
@@ -395,6 +398,8 @@ impl Flags {
                     "revoke" => &mut self.revoke,
                     #[cfg(feature = "harness")]
                     "force" => &mut self.force,
+                    #[cfg(feature = "harness")]
+                    "check" => &mut self.check,
                     #[cfg(feature = "harness")]
                     "start-over" => &mut self.start_over,
                     #[cfg(feature = "harness")]

@@ -73,7 +73,8 @@ use crate::protocol::{ApprovalDecision, Attendance, Command, LiveEvent, LogBody,
 use serde::{Deserialize, Serialize};
 use gruntas_api::sync::DeliveredCommand;
 use gruntas_client::e2e::DeviceId;
-use gruntas_client::host_command::{self, HostAnswer, HostCommand, RunRefusal, RunTask};
+use gruntas_client::host_command::{self, HostAnswer, HostCommand, RunRefusal, RunTask, SessionPing};
+use gruntas_client::status::Health;
 use gruntas_client::presence::{AnnouncedInstance, AnnouncedRepository};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
@@ -208,6 +209,18 @@ impl Commands {
                     }
                     s.not_opened(&id);
                 }
+                Ok((from, Ok(HostCommand::Ping { session }))) => {
+                    // Answered here and now: nothing to run (D5).
+                    let answer = HostAnswer::Pong { session: session.map(|s| ping_session(&c.socket, &s)) };
+                    let sealed = {
+                        let mut s = me.lock();
+                        s.keep(&id, Kept::Answer { from, answer });
+                        s.sealed(&id, a)
+                    };
+                    if let Some(sealed) = sealed {
+                        send(me, &id, sealed, a.api.clone());
+                    }
+                }
                 Ok((from, Err(answer))) => {
                     let sealed = {
                         let mut s = me.lock();
@@ -244,6 +257,20 @@ impl Commands {
     }
 }
 
+/// What this host's daemon, whose socket is `socket`, knows of `session`
+/// (D5): its board Task's health and last activity, or `UNKNOWN` when it
+/// is not registered here; with the time now, by this machine's clock.
+fn ping_session(socket: &Path, session: &str) -> SessionPing {
+    let dir = socket.parent().unwrap_or(Path::new("/"));
+    let task = crate::daemon::registry::Registry::load(dir).board_tasks().into_iter().find(|t| t.id == session);
+    let g = task.as_ref().map(|t| &t.metadata.gruntas);
+    SessionPing {
+        health: g.and_then(|g| g.health.as_ref()).map_or(Health::Unknown, |h| h.value),
+        last_activity: g.and_then(|g| g.last_activity.as_ref()).map(|l| l.value.clone()),
+        at: jiff::Timestamp::now().to_string(),
+    }
+}
+
 /// A worker's answer kept, then sealed and sent with keys of its own; one
 /// that cannot be is sent from the next refresh.
 fn finish(me: &Arc<Commands>, c: &Config, id: &str, from: DeviceId, answer: HostAnswer) {
@@ -251,6 +278,7 @@ fn finish(me: &Arc<Commands>, c: &Config, id: &str, from: DeviceId, answer: Host
         HostAnswer::Started { session_id } => eprintln!("gruntas: device {from} started session {session_id} on this machine"),
         HostAnswer::Taken { session_id } => eprintln!("gruntas: device {from} moved session {session_id} to this machine"),
         HostAnswer::Refused { code, message } => eprintln!("gruntas: device {from} asked something of this machine, refused: {} ({})", message.escape_debug(), code.escape_debug()),
+        HostAnswer::Pong { .. } => {}
     }
     let a = c.announce.as_ref().and_then(|o| (o.keys)(false).ok());
     let sealed = {
@@ -313,6 +341,7 @@ fn run(me: &Arc<Commands>, c: &Config, host: &str, command: HostCommand, tell: &
     let Some(o) = c.announce.as_ref() else { return tell(HostAnswer::refused("host_failed", "this host takes no commands")) };
     let cwd = match command {
         HostCommand::Run(task) => return run_task(c, o, host, task, tell),
+        HostCommand::Ping { session } => return tell(HostAnswer::Pong { session: session.map(|s| ping_session(&c.socket, &s)) }),
         HostCommand::Start { ref cwd, .. } | HostCommand::Take { ref cwd, .. } => cwd.clone(),
     };
     let policy = match (c.policy)() {
@@ -336,7 +365,7 @@ fn run(me: &Arc<Commands>, c: &Config, host: &str, command: HostCommand, tell: &
             return take(me, c, o, host, &session_id, &cwd, tell);
         }
         HostCommand::Take { session_id, .. } => return tell(HostAnswer::refused("bad_command", format!("{:?} is not a session id", session_id.escape_debug().to_string()))),
-        HostCommand::Run(_) => unreachable!("run is answered above"),
+        HostCommand::Run(_) | HostCommand::Ping { .. } => unreachable!("run and ping are answered above"),
     };
     // The host's own default for the directory, never what the command
     // carried, and never a mode that asks nobody.

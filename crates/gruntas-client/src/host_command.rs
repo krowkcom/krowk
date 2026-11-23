@@ -1,10 +1,11 @@
 //! A command one of the person's devices sends a host, and the host's
 //! answer (R-HOST-4): `start`, a session in a directory the host announced,
-//! on a model it has ready; and `take`, a session another host holds moved
-//! to this one, into a clone of its repository in a directory it announced
-//! (R-HAND-1), so a device that never hosts can move one; and `run`, a task
-//! a supervisor hands this machine to run in a fresh worktree of its clone
-//! of a repository (R-ALLOC-3). The registry carries them as bytes
+//! on a model it has ready; `take`, a session another host holds moved to
+//! this one, into a clone of its repository in a directory it announced
+//! (R-HAND-1), so a device that never hosts can move one; `run`, a task a
+//! supervisor hands this machine to run in a fresh worktree of its clone of
+//! a repository (R-ALLOC-3); and `ping`, answered at once (R-STA-7). The
+//! registry carries them as bytes
 //! (`gruntas_api` `send_host_command`, `answer_host_command`), so each is
 //! sealed to the person's devices (`e2e::seal_to_person`) and bound to the
 //! command's id and the two devices: one moved to another id, or to another
@@ -70,6 +71,41 @@ pub enum HostCommand {
     /// sealed job. Answered `started` with the child session's id, or
     /// `refused` with a `RunRefusal`'s code.
     Run(RunTask),
+    /// An empty request the host answers at once with `pong` (D5, MCP's
+    /// `ping`): a liveness check. With `session`, a session registered with
+    /// the host's daemon, the answer adds its health and last activity.
+    Ping {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+    },
+}
+
+/// The longest session id a `ping` names: one longer is refused as it
+/// opens.
+pub const MAX_SESSION_ID: usize = 128;
+
+/// What a host knows of a session a `ping` named (D5): its health, and its
+/// last activity and the time it answered, both by the host's clock, so a
+/// reader computes how long it has been quiet without comparing clocks
+/// (D6). A session not registered there is `UNKNOWN` with no activity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionPing {
+    pub health: crate::status::Health,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity: Option<String>,
+    /// When the host answered, RFC 3339, its own clock.
+    pub at: String,
+}
+
+impl SessionPing {
+    /// How long the session has been quiet, by the host's clock alone; None
+    /// when either time does not read. Never negative.
+    pub fn quiet_for(&self) -> Option<jiff::SignedDuration> {
+        let at: jiff::Timestamp = self.at.parse().ok()?;
+        let last: jiff::Timestamp = self.last_activity.as_deref()?.parse().ok()?;
+        Some(at.duration_since(last).max(jiff::SignedDuration::ZERO))
+    }
 }
 
 /// What a `run` carries. The prompt rides in the job, not here, so a task
@@ -191,7 +227,7 @@ impl RunRefusal {
 }
 
 /// The command types a host runs.
-const KNOWN: [&str; 3] = ["start", "take", "run"];
+const KNOWN: [&str; 4] = ["start", "take", "run", "ping"];
 
 /// The host's answer to a command.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -203,6 +239,12 @@ pub enum HostAnswer {
     Taken { session_id: String },
     /// Nothing started, or nothing moved. `message` is the fix line.
     Refused { code: String, message: String },
+    /// The answer to a `ping`: empty for a machine, a session's status for
+    /// a session.
+    Pong {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionPing>,
+    },
 }
 
 impl HostAnswer {
@@ -272,6 +314,12 @@ pub fn open_command(sealed: &[u8], id: &str, from: &DeviceId, me: &DeviceId, key
         && !(session_id_shaped(&job.session) && slug_shaped(&job.transport) && key_shaped(&job.key))
     {
         return Ok(Err(RunRefusal::BadJob.answer("the task's job is not named as a stored job is — send it again from an up-to-date gruntas")));
+    }
+    // Only ever looked up, but bounded and printable.
+    if let HostCommand::Ping { session: Some(s) } = &c
+        && (s.is_empty() || s.len() > MAX_SESSION_ID || s.chars().any(char::is_control))
+    {
+        return Ok(Err(HostAnswer::refused("bad_command", "the ping names no session id this host takes")));
     }
     // Passed on as an argument: only ever a session id.
     if let HostCommand::Take { session_id, .. } = &c

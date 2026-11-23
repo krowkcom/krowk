@@ -112,6 +112,30 @@ fn r_host_4_a_command_and_its_answer_open_on_the_other_side() {
     }
 }
 
+/// SL06 (D5): a ping, for a machine or a session, and its pong open on the
+/// other side; a session id no host would hold is refused as it opens.
+#[test]
+fn sl06_a_ping_and_its_pong_open_on_the_other_side() {
+    use gruntas_client::host_command::SessionPing;
+    use gruntas_client::status::Health;
+    let w = world();
+    let c = chain(&w);
+    for ping in [HostCommand::Ping { session: None }, HostCommand::Ping { session: Some("0190f3c2-0000-7000-8000-000000000001".into()) }] {
+        let sealed = host_command::seal_command(&ping, ID, &w.phone.id(), &w.host.id(), &keys(1), 1).unwrap();
+        assert_eq!(host_command::open_command(&sealed, ID, &w.phone.id(), &w.host.id(), &keys(1), &c).unwrap(), Ok(ping));
+    }
+    for bad in ["", "a\nb", &"x".repeat(host_command::MAX_SESSION_ID + 1)] {
+        let sealed = host_command::seal_command(&HostCommand::Ping { session: Some(bad.into()) }, ID, &w.phone.id(), &w.host.id(), &keys(1), 1).unwrap();
+        assert!(matches!(host_command::open_command(&sealed, ID, &w.phone.id(), &w.host.id(), &keys(1), &c).unwrap(), Err(HostAnswer::Refused { code, .. }) if code == "bad_command"), "{bad:?}");
+    }
+    let session = SessionPing { health: Health::Serving, last_activity: Some("2026-11-23T11:59:00Z".into()), at: "2026-11-23T12:00:30Z".into() };
+    assert_eq!(session.quiet_for(), Some(jiff::SignedDuration::from_secs(90)), "by the host's clock alone");
+    for pong in [HostAnswer::Pong { session: None }, HostAnswer::Pong { session: Some(session) }] {
+        let sealed = host_command::seal_answer(&pong, ID, &w.host.id(), &w.phone.id(), &keys(1), 1).unwrap();
+        assert_eq!(host_command::open_answer(&sealed, ID, &w.host.id(), &w.phone.id(), &keys(1), &c).unwrap(), pong);
+    }
+}
+
 #[test]
 fn r_e2e_1_a_sealed_command_names_no_directory_model_or_prompt() {
     let w = world();

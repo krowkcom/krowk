@@ -21,6 +21,28 @@ breaking changes may affect it without notice.
 
 ### Added
 
+- **`gruntas agents [project]`: every agent on every machine of yours, as
+  one tree.** Read from each machine's sealed status board, it lists them by
+  project, machine and parent session, each with its state (`working`,
+  `input-required`, `completed`…), its health (`SERVING` while its harness
+  runs, `NOT_SERVING` once it is gone), how long it has been quiet and its
+  one-line summary. A machine is `SERVING` while its presence is live and
+  `UNKNOWN` once it lapses. Name a project (`github.com/acme/app`, or any of
+  its remote URLs) to see only it; `--json` is the same tree.
+
+- **`gruntas ping <machine|session>`: is it alive?** The machine's daemon
+  answers an empty request, and gruntas says "answered in N s"; that includes
+  the machine's presence refresh (up to 10 seconds), so it is a liveness
+  check, not a latency. A session is found on the status boards and its
+  machine pinged, and the answer adds the session's health and last
+  activity. A machine whose presence lapsed is `UNKNOWN`, said at once with
+  nothing sent (exit 6). Machines on older gruntas answer that they do not
+  know the command.
+
+- **`gruntas providers list --check`**: the readiness check `gruntas status`
+  gives today, the same table and the same `{"ready", "instances"}` JSON,
+  exiting 3 (`none_ready`) when no instance is ready.
+
 - **The status layer's contract: every agent session's status as an A2A
   v1.0 Task.** A session's state, one-line summary and when it was set are
   A2A's `TaskState` and `TaskStatus`; what gruntas knows about it (project,
@@ -29,9 +51,8 @@ breaking changes may affect it without notice.
   Task's metadata under `https://gruntas.com/a2a/status/v1`, each field
   marked as reported by the agent or observed by the harness. Its JSON
   Schema is published beside the protocol's (`status-task`, `status-board`
-  and `status-counts` in `crates/gruntas-harness/schema/`). Nothing shows it
-  yet: `gruntas status` and `gruntas ping` arrive with the rest of the
-  status layer.
+  and `status-counts` in `crates/gruntas-harness/schema/`). `gruntas agents`
+  and `gruntas ping` show it.
 
 - **Each machine publishes a sealed status board of its sessions, which
   your other devices can read.** With sync set up, the host daemon seals a
@@ -148,6 +169,14 @@ breaking changes may affect it without notice.
   person's own words. Text in the steer cannot close that frame. The
   session log keeps the steer's raw text with the origin beside it; a steer
   with no origin (from an older gruntas) is delivered as before.
+
+### Deprecated
+
+- **`gruntas status` becomes the agent tree in the next release.** It will
+  show what `gruntas agents` shows today. Scripts that check whether an
+  account is ready should move to `gruntas providers list --check`, which
+  gives the same output and exit codes. Until then `gruntas status` works as
+  before and says so on stderr.
 
 ### Security
 

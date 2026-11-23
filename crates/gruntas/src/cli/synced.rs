@@ -39,15 +39,15 @@ use gruntas_harness::sync::{host, viewer};
 use serde_json::json;
 use std::sync::Arc;
 
-struct Keys {
-    device: DeviceId,
+pub(super) struct Keys {
+    pub(super) device: DeviceId,
     signing: SigningKey,
-    user: UserKeys,
+    pub(super) user: UserKeys,
     /// The device list as this machine last verified it.
-    chain: Chain,
+    pub(super) chain: Chain,
 }
 
-fn keys(ctx: &Ctx) -> Result<Keys, Error> {
+pub(super) fn keys(ctx: &Ctx) -> Result<Keys, Error> {
     let ks = keystore(ctx)?;
     let device = ks.device().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(|| fail("not_set_up", "this machine has no sync keys — run `gruntas sync init`, `recover` or `join` first"))?.id();
     // Every session key is sealed under the person's user key, so a
@@ -79,7 +79,7 @@ fn current(ctx: &Ctx) -> Result<(), Error> {
 /// The registry client for this machine's sync calls, signed by its own
 /// key: leases, chunks, the index, relay tickets and every session read act
 /// as this device.
-fn signed(ctx: &Ctx, k: &Keys, what: &str) -> Result<Client, Error> {
+pub(super) fn signed(ctx: &Ctx, k: &Keys, what: &str) -> Result<Client, Error> {
     let key = SigningKey::from_secret(&*k.signing.secret_bytes()).map_err(|e| fail("keys_unreadable", e.to_string()))?;
     Ok(keyed_client(ctx, what)?.signed_by(gruntas_client::e2e::DeviceSigner::new(k.device, key).shared()))
 }
@@ -186,7 +186,7 @@ fn fetched_ticket_keys(ctx: &Ctx, api: &Client) -> Result<gruntas_harness::relay
 /// registry could not be reached or was briefly unable to answer (nothing
 /// answered, 429, a 5xx), never when it answered what it meant — a 404
 /// from a registry that publishes none, or `relay_tickets_unconfigured`.
-fn unreachable(e: &Error) -> bool {
+pub(super) fn unreachable(e: &Error) -> bool {
     (e.status == 0 || e.status == 429 || e.status >= 500) && e.code() != "relay_tickets_unconfigured"
 }
 
@@ -387,7 +387,7 @@ fn home_as_tilde(path: &str) -> String {
 
 /// How long ago `at` (RFC 3339) was: `12m ago`; "a while ago" when it
 /// does not read.
-fn ago(at: &str, now: jiff::Timestamp) -> String {
+pub(super) fn ago(at: &str, now: jiff::Timestamp) -> String {
     let Ok(at) = at.parse::<jiff::Timestamp>() else { return "a while ago".into() };
     let s = now.as_second().saturating_sub(at.as_second()).max(0);
     match s {
@@ -871,6 +871,7 @@ pub(super) fn new_session(ctx: &mut Ctx, args: &[String], form: &str) -> Result<
         HostAnswer::Started { session_id } if gruntas_harness::log::valid_id(&session_id) => session_id,
         HostAnswer::Started { session_id } => return Err(fail("bad_answer", format!("{name} started a session under {session_id:?}, which is not a session id"))),
         HostAnswer::Taken { .. } => return Err(fail("bad_answer", format!("{name} answered the start as a move"))),
+        HostAnswer::Pong { .. } => return Err(fail("bad_answer", format!("{name} answered the start as a ping"))),
         // The host's words, sealed under a key every device of the person's
         // holds: said as text, under a code only of its own shape.
         HostAnswer::Refused { code, message } => return Err(fail(refusal_code(&code), super::sync::printable(&message))),
@@ -903,15 +904,20 @@ fn refusal_code(code: &str) -> &str {
 /// or by 8 or more hex characters its device id starts with. The recovery
 /// kit is no machine.
 fn find_host<'a>(chain: &'a Chain, asked: &str) -> Result<&'a gruntas_client::device_chain::Device, Error> {
+    find_device(chain, asked)?.ok_or_else(|| fail("no_host", format!("no machine named '{}' — gruntas machines lists yours", super::sync::printable(asked))))
+}
+
+/// The machine `asked` names, as `find_host`; None when none does.
+pub(super) fn find_device<'a>(chain: &'a Chain, asked: &str) -> Result<Option<&'a gruntas_client::device_chain::Device>, Error> {
     let lower = asked.to_lowercase();
     let by_id = lower.len() >= 8 && lower.chars().all(|c| c.is_ascii_hexdigit());
     let found: Vec<_> = chain.devices().iter().filter(|d| d.kind == gruntas_client::device_chain::Kind::Device).filter(|d| d.name.to_lowercase() == lower || (by_id && d.id().to_string().starts_with(&lower))).collect();
     match found[..] {
-        [one] => Ok(one),
-        [] => Err(fail("no_host", format!("no machine named '{}' — gruntas machines lists yours", super::sync::printable(asked)))),
+        [one] => Ok(Some(one)),
+        [] => Ok(None),
         _ => {
             let named: Vec<String> = found.iter().map(|d| format!("{} ({})", super::sync::printable(&d.name), &d.id().to_string()[..12])).collect();
-            Err(fail("ambiguous_host", format!("'{}' names more than one machine: {} — pass --host with 8 or more characters of its id", super::sync::printable(asked), named.join(", "))))
+            Err(fail("ambiguous_host", format!("'{}' names more than one machine: {} — name it by 8 or more characters of its id", super::sync::printable(asked), named.join(", "))))
         }
     }
 }
@@ -980,7 +986,7 @@ fn absolute(dir: &str, home: &str, here: &std::path::Path) -> Result<String, Err
 }
 
 /// A fresh command id: a random UUID, version 4.
-fn command_id() -> String {
+pub(super) fn command_id() -> String {
     let mut b = gruntas_client::e2e::random::<16>();
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;

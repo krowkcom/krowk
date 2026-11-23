@@ -2,6 +2,8 @@
 //! and environment as arguments so tests never touch the process.
 
 mod agent;
+#[cfg(all(feature = "harness", unix))]
+mod agents;
 mod auth;
 mod billing;
 pub mod catalog;
@@ -373,6 +375,8 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         #[cfg(feature = "harness")]
         ["providers", "add", ..] => providers::add(ctx, rest(2)),
         #[cfg(feature = "harness")]
+        ["providers"] | ["providers", "list", ..] if ctx.f.check => status::status(ctx),
+        #[cfg(feature = "harness")]
         ["providers"] | ["providers", "list", ..] => providers::list(ctx),
         #[cfg(feature = "harness")]
         ["providers", "remove", ..] => providers::remove(ctx, rest(2)),
@@ -387,7 +391,23 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         #[cfg(feature = "harness")]
         ["mcp"] | ["mcp", "list", ..] => mcp::list(ctx),
         #[cfg(feature = "harness")]
-        ["status", ..] => status::status(ctx),
+        ["status", ..] => {
+            // On stderr, where a failure's JSON goes too: there only
+            // beside a success, so a script parsing the failure still can.
+            let human = ctx.format == crate::output::Format::Human;
+            if human {
+                ctx.warn(status::RENAMING);
+            }
+            let done = status::status(ctx);
+            if !human && done.is_ok() {
+                ctx.warn(status::RENAMING);
+            }
+            done
+        }
+        #[cfg(all(feature = "harness", unix))]
+        ["agents", ..] => agents::agents(ctx, rest(1)),
+        #[cfg(all(feature = "harness", unix))]
+        ["ping", ..] => agents::ping(ctx, rest(1)),
         #[cfg(feature = "harness")]
         ["mcp", "login", ..] => mcp::login(ctx, rest(2)),
         #[cfg(feature = "harness")]
@@ -769,7 +789,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `gruntas trust`")));
             }
         }
-        let owners = [("device", "`gruntas providers add` (`gruntas connect` takes --method device)", add), ("method", "`gruntas connect`", connect), ("default", "`gruntas connect`", connect), ("key-stdin", "`gruntas connect`", connect), ("key-ref", "`gruntas connect`", connect), ("remove", "`gruntas disconnect`", words.first() == Some(&"disconnect")), ("sign-out-vendor", "`gruntas disconnect`", words.first() == Some(&"disconnect"))];
+        let owners = [("device", "`gruntas providers add` (`gruntas connect` takes --method device)", add), ("method", "`gruntas connect`", connect), ("default", "`gruntas connect`", connect), ("key-stdin", "`gruntas connect`", connect), ("key-ref", "`gruntas connect`", connect), ("remove", "`gruntas disconnect`", words.first() == Some(&"disconnect")), ("sign-out-vendor", "`gruntas disconnect`", words.first() == Some(&"disconnect")), ("check", "`gruntas providers list`", matches!(words.as_slice(), ["providers"] | ["providers", "list", ..]))];
         for (name, owner, allowed) in owners {
             if f.given.contains(name) && !allowed {
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of {owner}")));
