@@ -19,7 +19,9 @@
 # harness`: the agent, the session store) is the one above, what a person
 # wants. The lean build (no features: the agent-container
 # build, R-PKG-2) is dist/gruntas-lean_<version>_<goos>_<goarch>.tar.gz beside
-# it, and dist/<triple>-lean/ loose. gruntas-mcp is the same lean binary in both.
+# it, and dist/<triple>-lean/ loose. gruntas-mcp follows its archive: the full
+# one's serves allocation's tools and session info too (the plugin's server,
+# which npm carries), the lean one's only publishes.
 # install.sh picks between them; an upgrade stays on the build it is.
 #
 # GRUNTAS_FAST_BUILD=1 builds without LTO and with parallel codegen: the same
@@ -96,20 +98,19 @@ build() {
   if [[ "${GRUNTAS_FAST_BUILD:-}" == 1 ]]; then
     export CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
   fi
-  # The lean build first, both binaries: gruntas-mcp never touches the session
-  # store, so it is the lean build in both archives. Its gruntas is copied out
-  # before the full build overwrites target/…/gruntas.
+  # The lean build first, both binaries, copied out before the full build
+  # overwrites them in target/….
   GRUNTAS_VERSION="$version" cargo "$tool" --release --locked --target "$triple" -p gruntas --bin gruntas --bin gruntas-mcp
   local lean="dist/$triple-lean"
   rm -rf "$lean" && mkdir -p "$lean"
   for bin in gruntas gruntas-mcp; do
     cp "target/$triple/release/$bin$ext" "$lean/"
   done
-  GRUNTAS_VERSION="$version" cargo "$tool" --release --locked --target "$triple" -p gruntas --bin gruntas --features harness
+  GRUNTAS_VERSION="$version" cargo "$tool" --release --locked --target "$triple" -p gruntas --bin gruntas --bin gruntas-mcp --features harness
 
   out="dist/$triple"
   rm -rf "$out" && mkdir -p "$out"
-  cp "target/$triple/release/gruntas$ext" "$lean/gruntas-mcp$ext" "$out/"
+  cp "target/$triple/release/gruntas$ext" "target/$triple/release/gruntas-mcp$ext" "$out/"
   archive "$out" "$goos" "$goarch" "$version" full
   archive "$lean" "$goos" "$goarch" "$version" lean
 }

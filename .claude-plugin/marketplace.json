@@ -5,13 +5,13 @@
     "url": "https://gruntas.com"
   },
   "metadata": {
-    "description": "Gruntas, the coding agent harness, for Claude Code."
+    "description": "Gruntas, the coding agent harness, for Claude Code and Codex."
   },
   "plugins": [
     {
       "name": "gruntas",
       "displayName": "Gruntas",
-      "description": "Publishing from Gruntas, the coding agent harness, for Claude Code: the gruntas skill and MCP server turn a session's screenshots, recordings, diffs and logs into links that unfurl in Slack and Basecamp; in GitHub and Linear, images show inline.",
+      "description": "Gruntas, the coding agent harness, for Claude Code: every session registers with the gruntas daemon, counts toward its machine's capacity, and gets the gruntas MCP server (publishing, session info, delegation) and skill. Hooks run the gruntas on your PATH; without one they do nothing.",
       "author": { "name": "Gruntas" },
       "category": "development",
       "source": "./",
