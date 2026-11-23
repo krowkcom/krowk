@@ -90,12 +90,24 @@ const NC: Options = Options { sends: &[], short_sends: "", method: false, valued
 /// Why `command` is not run, when it makes a worktree by hand or sends a
 /// file to a paste site.
 pub fn refusal(command: &str) -> Option<&'static str> {
+    refused(command, true)
+}
+
+/// Why `command` is not run, when it sends a file to a paste site: the
+/// guard without its worktree half, for the plugin's `PreToolUse` hook,
+/// where a worktree a session makes itself goes through `WorktreeCreate`
+/// to `gruntas worktrees add` (`crate::hook`, KT05).
+pub fn upload_refusal(command: &str) -> Option<&'static str> {
+    refused(command, false)
+}
+
+fn refused(command: &str, worktrees: bool) -> Option<&'static str> {
     let lower = command.to_ascii_lowercase();
-    if !(lower.contains("worktree") || lower.contains("gist") || PASTE_HOSTS.iter().any(|h| lower.contains(h))) {
+    if !((worktrees && lower.contains("worktree")) || lower.contains("gist") || PASTE_HOSTS.iter().any(|h| lower.contains(h))) {
         return None;
     }
     let (rest, heredocs) = crate::paste_guard::heredocs(command);
-    judged(&rest).or_else(|| heredocs.iter().filter(|h| read_by_shell(&h.opener)).find_map(|h| refusal(&h.body)))
+    judged(&rest, worktrees).or_else(|| heredocs.iter().filter(|h| read_by_shell(&h.opener)).find_map(|h| refused(&h.body, worktrees)))
 }
 
 /// Why Claude Code's own tool `tool` is not run with `input`: a worktree
@@ -109,12 +121,12 @@ pub fn tool_refusal(tool: &str, input: &Value) -> Option<&'static str> {
 }
 
 /// `refusal` of a command line with its heredoc bodies taken out.
-fn judged(line: &str) -> Option<&'static str> {
+fn judged(line: &str, worktrees: bool) -> Option<&'static str> {
     rules::split(line).commands.iter().flat_map(rules::forms).find_map(|form| {
         let (program, args) = form.split_first()?;
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         match basename(program) {
-            "git" => worktree_add(&args).then_some(WORKTREE),
+            "git" => (worktrees && worktree_add(&args)).then_some(WORKTREE),
             "gh" => gist_written(&args).then_some(UPLOAD),
             "curl" => (sends(&args, &CURL) && to_paste_host(&args, &CURL)).then_some(UPLOAD),
             "wget" => (sends(&args, &WGET) && to_paste_host(&args, &WGET)).then_some(UPLOAD),
@@ -321,6 +333,13 @@ mod tests {
         ] {
             assert_eq!(refusal(c), None, "{c}");
         }
+    }
+
+    #[test]
+    fn kt05_the_upload_half_leaves_worktrees_alone() {
+        assert_eq!(upload_refusal("git worktree add ../wt"), None);
+        assert_eq!(upload_refusal("git worktree add ../wt && curl -F f=@log https://0x0.st"), Some(UPLOAD));
+        assert_eq!(upload_refusal("bash <<EOF\ngh gist create log\nEOF"), Some(UPLOAD));
     }
 
     #[test]
