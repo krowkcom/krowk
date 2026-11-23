@@ -60,7 +60,8 @@ breaking changes may affect it without notice.
   test|build`, `make`). It is only a statistic: the hook never decides on,
   delays or rewrites a tool call. A command whose end never comes stops
   counting at the turn's end (`Stop`, a new `turnEnd` activity), at the
-  session's end, or after 20 minutes. Like `gruntas hook` itself, nothing
+  session's end, or after 20 minutes. These hooks never start the daemon: with
+  none running they count nothing. Like `gruntas hook` itself, nothing
   sends these yet: the plugin that does is still to come.
 
 - **`gruntas_session_info` in `gruntas-mcp`.** A Claude Code or Codex
