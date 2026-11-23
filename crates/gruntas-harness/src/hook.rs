@@ -492,7 +492,7 @@ fn background(args: &[String]) -> Result<(), String> {
 
 /// `gruntas hook <harness> <event>` (`args` after `hook`): runs `run` on a
 /// worker and waits at most `GIVE_UP`; prints what it has, notes why it gave
-/// up, and is always exit 0.
+/// up, and is exit 0. `WORKTREE_EVENTS` are `worktree_main`'s instead.
 pub fn main(args: &[String], version: &str) -> i32 {
     let env = |k: &str| std::env::var(k).unwrap_or_default();
     if let [h, event] = args

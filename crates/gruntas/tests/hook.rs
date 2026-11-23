@@ -355,7 +355,8 @@ fn kt05_worktree_create_and_remove_go_through_gruntas_worktrees() {
     payload["cwd"] = s.0.join("home").display().to_string().into();
     let (out, _) = s.hook("claude", "WorktreeCreate", payload.to_string().as_bytes());
     assert_eq!(out.status.code(), Some(1), "{out:?}");
-    assert!(out.stdout.is_empty() && String::from_utf8_lossy(&out.stderr).contains("WorktreeCreate"), "{out:?}");
+    let why = String::from_utf8_lossy(&out.stderr);
+    assert!(out.stdout.is_empty() && why.starts_with("WorktreeCreate") && why.contains("run it from inside a repository") && !why.contains("\"ok\""), "{out:?}");
 }
 
 /// KT06: a usage event writes the account's windows into the usage record
