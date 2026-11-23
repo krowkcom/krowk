@@ -7,6 +7,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 the versions are the `v*` tags a release is cut from. Entries land under
 `[Unreleased]` as the work merges, and move under a version when it is tagged.
 
+Versions are calendar versions, `YYYY.M.N`: the release's year, its month,
+and `N` counting that month's releases from 0 (`2026.11.0`, `2026.11.1`,
+`2026.12.0`); a prerelease adds `-rcK`. Releases up to `0.18.0` used semver.
+The number promises nothing about compatibility. A breaking change — removing
+or changing the meaning of a command, flag, environment variable, config key,
+or MCP tool or its arguments — is announced here at least one release ahead,
+with the date it takes effect, and the release that makes it lists it under
+**Breaking change**. Each release is supported for one year, after which
+breaking changes may affect it without notice.
+
 ## [Unreleased]
 
 ### Breaking change
@@ -100,6 +110,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
   production and syncs through `relay.krowk.com`, and krowk.com links
   redirect to gruntas.com, so the bare-link guard for agents treats a bare
   `gruntas.com/a/…` or `krowk.com/a/…` link alike.
+
+- **Versions are calendar versions now.** The release after `0.18.0` is
+  `YYYY.M.0` for the month it ships (see the top of this file), so the
+  number no longer says how big a change is; this file does, and a
+  breaking change is announced a release ahead with its date. The update
+  notice follows: a release in a newer month (or the jump from `0.x`) is
+  mentioned once, a second release in the same month is not, and a
+  security fix still is, daily. `uses: gruntas/gruntas@v0` follows every
+  stable release, whatever its number.
 
 - **The help text, the greeting and every message say gruntas.** Hints
   print `gruntas <command>`, `gruntas help` and `gruntas-mcp` describe
