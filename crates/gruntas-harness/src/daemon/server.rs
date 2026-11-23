@@ -1290,6 +1290,13 @@ impl State {
         if self.tasks.apply(a, &now) {
             self.tasks_changed = true;
         }
+        // The registry forgets a report with its session; the Task keeps it.
+        if let Activity::Report { session_id, .. } = a
+            && let Some(reported) = self.registry.task(session_id)
+            && self.tasks.take_reported(reported)
+        {
+            self.tasks_changed = true;
+        }
         if let Some(id) = activity_session(a) {
             match self.registry.get(id) {
                 Some(_) => self.git.entry(id.to_string()).or_default().due = true,
