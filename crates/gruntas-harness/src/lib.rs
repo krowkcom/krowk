@@ -17,6 +17,8 @@
 //!   `sse` the event-stream parser.
 //! - `neutral` — text gruntas frames around words it did not write, made
 //!   unable to close the frame (a handoff, another model's reasoning).
+//! - `redact` — transcript text for a reading agent: known secret shapes
+//!   redacted, then paged and framed as foreign text.
 //! - `catalog` — what the models.dev cache says of a model; `effort` — the
 //!   one reasoning-effort ladder, mapped per model; `toolset` — the preset a
 //!   turn's context record names.
@@ -94,6 +96,7 @@ pub mod log;
 pub mod mcp;
 pub mod mcp_oauth;
 pub mod neutral;
+pub mod redact;
 pub mod oauth;
 pub mod paste_guard;
 pub mod permissions;
