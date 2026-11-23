@@ -115,7 +115,10 @@ fn r_sta_5_a_board_round_trips_through_the_dev_registry() {
     assert_eq!(status::open_board(&got.sealed, &p.host.device.id(), &keys, &p.chain).unwrap().tasks.len(), 1);
     let stored = held(p.addr);
     assert_eq!(stored["status_boards"].as_array().unwrap().len(), 1);
-    assert!(!stored.to_string().contains("secret"), "{stored}");
+    assert_eq!(stored["status_boards"][0]["sealed"], json!(hex(&got.sealed)), "the bytes as sent, nothing else");
+    let mut fields: Vec<&String> = stored["status_boards"][0].as_object().unwrap().keys().collect();
+    fields.sort();
+    assert_eq!(fields, ["device", "sealed", "updated_at"]);
 }
 
 /// R-STA-5: only the device the key speaks for publishes its board, signed,

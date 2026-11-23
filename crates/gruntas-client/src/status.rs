@@ -102,6 +102,9 @@ pub enum Health {
 pub enum Provenance {
     Agent,
     Harness,
+    /// A source this build does not know.
+    #[serde(other)]
+    Unknown,
 }
 
 /// A gruntas field and who said it.
@@ -291,6 +294,8 @@ pub enum PlanPriority {
     High,
     Medium,
     Low,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -299,6 +304,8 @@ pub enum PlanStatus {
     Pending,
     InProgress,
     Completed,
+    #[serde(other)]
+    Unknown,
 }
 
 /// A machine's status board (D8): its registered sessions' Tasks, sealed
@@ -337,8 +344,31 @@ impl Board {
         if let Some(t) = self.tasks.iter().find(|t| t.history.len() > MAX_HISTORY) {
             return Err(format!("the board keeps more than {MAX_HISTORY} reports for session {}", t.id));
         }
+        if self.tasks.iter().any(|t| t.metadata.gruntas.cost.as_ref().is_some_and(|c| !c.value.is_finite())) {
+            return Err("the board has a cost that is not a number".into());
+        }
         timestamp(&self.published_at).ok_or("the board's publish time is not an RFC 3339 time")?;
         Ok(())
+    }
+
+    /// What `check` refuses in a string, made harmless rather than refused,
+    /// so one session's summary with a newline in it does not stop its
+    /// machine's board from publishing: every refused character becomes a
+    /// space, and a cost that is not a finite number is dropped.
+    pub fn sanitise(&mut self) {
+        for t in &mut self.tasks {
+            if t.metadata.gruntas.cost.as_ref().is_some_and(|c| !c.value.is_finite()) {
+                t.metadata.gruntas.cost = None;
+            }
+        }
+        let Ok(mut v) = serde_json::to_value(&*self) else { return };
+        if !refused_string(&v) {
+            return;
+        }
+        clean(&mut v);
+        if let Ok(b) = serde_json::from_value(v) {
+            *self = b;
+        }
     }
 
     /// Its size sealed, padded as `seal_board` pads it.
@@ -392,6 +422,23 @@ fn shorten(m: &mut Message) {
     m.parts = vec![Part { text: short + "…" }];
 }
 
+fn clean(v: &mut serde_json::Value) {
+    use serde_json::Value;
+    let clean_str = |s: &str| s.chars().map(|c| if refused_in_name(c) { ' ' } else { c }).collect::<String>();
+    match v {
+        Value::String(s) => *s = clean_str(s),
+        Value::Array(a) => a.iter_mut().for_each(clean),
+        Value::Object(m) => {
+            let old = std::mem::take(m);
+            for (k, mut x) in old {
+                clean(&mut x);
+                m.insert(clean_str(&k), x);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn timestamp(s: &str) -> Option<jiff::Timestamp> {
     s.parse().ok()
 }
@@ -406,11 +453,15 @@ fn refused_string(v: &serde_json::Value) -> bool {
     }
 }
 
-/// `b` sealed to the person's devices, bound to `me`, this device: brought
-/// within budget first (`Board::fit`), within its bounds and about `me`,
-/// and padded with spaces to a multiple of `PAD` bytes.
+/// `b` sealed to the person's devices, bound to `me`, this device:
+/// sanitised (`Board::sanitise`) and brought within budget
+/// (`Board::fit`) first, within its bounds and about `me`, and padded with
+/// spaces to a multiple of `PAD` bytes. A board over budget even after
+/// D8's steps is refused whole, so whatever fills a Task (the report tool,
+/// the hooks) caps its fields as it takes them.
 pub fn seal_board(b: &Board, keys: &UserKeys, current_generation: u32, me: &DeviceId) -> Result<Vec<u8>, String> {
     let mut b = b.clone();
+    b.sanitise();
     b.fit()?;
     b.check()?;
     if b.device != me.to_string() {

@@ -417,10 +417,19 @@
     },
     "Provenance": {
       "description": "Who said a field (D1): the agent reported it, or the harness observed it.",
-      "type": "string",
-      "enum": [
-        "agent",
-        "harness"
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "agent",
+            "harness"
+          ]
+        },
+        {
+          "description": "A source this build does not know.",
+          "type": "string",
+          "const": "unknown"
+        }
       ]
     },
     "Field": {
@@ -524,7 +533,8 @@
       "enum": [
         "high",
         "medium",
-        "low"
+        "low",
+        "unknown"
       ]
     },
     "PlanStatus": {
@@ -532,7 +542,8 @@
       "enum": [
         "pending",
         "in_progress",
-        "completed"
+        "completed",
+        "unknown"
       ]
     },
     "Field5": {

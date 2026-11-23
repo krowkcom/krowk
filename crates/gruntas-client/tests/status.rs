@@ -120,7 +120,7 @@ fn r_sta_1_the_published_schema_is_the_task_and_board_contract() {
     assert_eq!(states, ["TASK_STATE_AUTH_REQUIRED", "TASK_STATE_CANCELED", "TASK_STATE_COMPLETED", "TASK_STATE_FAILED", "TASK_STATE_INPUT_REQUIRED", "TASK_STATE_REJECTED", "TASK_STATE_SUBMITTED", "TASK_STATE_UNSPECIFIED", "TASK_STATE_WORKING"]);
     assert_eq!(task["$defs"]["TaskMetadata"]["required"], json!([status::EXTENSION_URI]));
     let provenance = &task["$defs"]["Provenance"];
-    assert_eq!(provenance["enum"], json!(["agent", "harness"]), "{provenance}");
+    assert_eq!((&provenance["oneOf"][0]["enum"], &provenance["oneOf"][1]["const"]), (&json!(["agent", "harness"]), &json!("unknown")), "{provenance}");
     let ext = &task["$defs"]["Extension"]["properties"];
     for field in ["project", "machine", "harness", "account", "parentSessionId", "branch", "head", "worktree", "dirty", "phase", "plan", "pr", "checks", "cost", "lastActivity", "health"] {
         assert!(ext.get(field).is_some(), "the schema's extension has no {field}");
@@ -207,12 +207,58 @@ fn r_sta_5_a_board_that_is_not_the_devices_own_does_not_open() {
     let stranger = K::device(9, "stranger");
     assert!(status::open_board(&sealed, &stranger.id(), &keys(), &chain).unwrap_err().contains("not on your device list"));
     assert!(status::seal_board(&board(&phone.id(), vec![]), &keys(), 1, &laptop.id()).unwrap_err().contains("not this one"));
+    // A crafted board with a control character in it, sealed past
+    // `seal_board`'s sanitising, does not open: the views print it.
     let mut t = full_task();
     t.status.message = Some(Message::text("m", "done\u{1b}[2J"));
-    assert!(status::seal_board(&board(&laptop.id(), vec![t]), &keys(), 1, &laptop.id()).unwrap_err().contains("control character"));
+    let mut json = serde_json::to_vec(&board(&laptop.id(), vec![t])).unwrap();
+    json.resize(json.len().div_ceil(status::PAD) * status::PAD, b' ');
+    let crafted = gruntas_client::e2e::seal_to_person(&keys(), 1, gruntas_client::e2e::Label::StatusBoard, &laptop.id().0, &json).unwrap();
+    assert!(status::open_board(&crafted, &laptop.id(), &keys(), &chain).unwrap_err().contains("control character"));
     let mut many = full_task();
     many.history = vec![Message::text("r", "x"); status::MAX_HISTORY + 1];
     assert!(status::seal_board(&board(&laptop.id(), vec![many]), &keys(), 1, &laptop.id()).is_err());
+}
+
+/// R-STA-5: what a reader would refuse is made harmless on seal rather
+/// than refusing the machine's whole board: a newline or escape in a
+/// summary becomes a space, and a cost that is not a number is dropped.
+#[test]
+fn r_sta_5_a_newline_or_a_nan_cost_does_not_stop_the_board() {
+    let (laptop, _phone, _kit, chain) = world();
+    let mut t = full_task();
+    t.status.message = Some(Message::text("m", "tests green\nopening the PR\u{1b}[2J 👨\u{200d}💻"));
+    t.metadata.gruntas.cost = Some(Field::harness(f64::NAN));
+    let sealed = status::seal_board(&board(&laptop.id(), vec![t]), &keys(), 1, &laptop.id()).unwrap();
+    let opened = status::open_board(&sealed, &laptop.id(), &keys(), &chain).unwrap();
+    assert_eq!(opened.tasks[0].status.message.as_ref().unwrap().summary(), "tests green opening the PR [2J 👨 💻");
+    assert_eq!(opened.tasks[0].metadata.gruntas.cost, None);
+    assert_eq!(opened.tasks[0].metadata.gruntas.project, full_task().metadata.gruntas.project);
+}
+
+/// The board's seal label, byte for byte: boards already sealed open only
+/// under it.
+#[test]
+fn r_sta_5_the_board_label_is_pinned() {
+    assert_eq!(gruntas_client::e2e::LABEL_STATUS_BOARD_V1, b"gruntas/status-board/v1");
+    assert_eq!(gruntas_client::e2e::LABEL_STATUS_BOARD_V1_KEY, b"gruntas/status-board/v1-key");
+}
+
+/// R-STA-1: a plan or provenance value from a newer writer reads as
+/// unknown rather than refusing the board.
+#[test]
+fn r_sta_1_unknown_plan_and_provenance_values_read_as_unknown() {
+    let t: Task = serde_json::from_value(json!({
+        "id": "s",
+        "status": { "state": "TASK_STATE_WORKING", "timestamp": PUBLISHED },
+        "metadata": { status::EXTENSION_URI: {
+            "phase": { "value": "x", "source": "registry" },
+            "plan": { "value": [{ "content": "c", "priority": "urgent", "status": "cancelled" }], "source": "agent" }
+        } }
+    })).unwrap();
+    assert_eq!(t.metadata.gruntas.phase.unwrap().source, Provenance::Unknown);
+    let plan = t.metadata.gruntas.plan.unwrap().value;
+    assert_eq!((plan[0].priority, plan[0].status), (PlanPriority::Unknown, PlanStatus::Unknown));
 }
 
 /// A Task of about `bytes` bytes: its summary, and `reports` reports of
