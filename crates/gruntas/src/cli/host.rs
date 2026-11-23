@@ -75,6 +75,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     let mode_for: gruntas_harness::sync::announce::ModeFor = Box::new(move |cwd: &std::path::Path| prompt::resolve_mode(None, &mode_permissions, cwd).map(|(m, _)| m).map_err(|e| (e.code(), e.fix())));
     let publisher = prompt::publisher(ctx);
     let sessions_dir = log::sessions_dir(ctx.io.env)?;
+    let sessions_dir_home = sessions_dir.clone();
     let credentials = super::providers::credentials_path()?;
     let env = gruntas_api::home::process_env;
     let factory: server::Factory = Box::new(move |cwd: &std::path::Path, answers: bool| {
@@ -115,7 +116,9 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     let introduce_flags = ctx.f.clone();
     let introductions = gruntas_harness::sync::introduce::Introductions::new(Box::new(move || own_ctx(&introduce_flags, |ctx| super::pairing::introducer(ctx)).map_err(|e| (e.code(), gruntas_harness::sync::announce::words(&e)))));
     let auto = gruntas_harness::sync::auto::Supervisor::spawn(auto_sync(ctx, &socket, log::sessions_dir(ctx.io.env)?, bridged.clone(), announced_store, mode_for, introductions.clone()), turns_rx);
-    let served = server::run(server::Options { socket, idle, gruntas_version: super::VERSION.into(), websocket, turns: Some(turns_tx), bridged: Some(bridged), introductions: Some(introductions), ..Default::default() }, factory).map_err(|e| fail("host_failed", e));
+    // Where a plugin's usage windows go: the record rollover reads (R-KIT-7).
+    let usage = gruntas_harness::usage::Usage::in_home(sessions_dir_home.parent().unwrap_or(&sessions_dir_home));
+    let served = server::run(server::Options { socket, idle, gruntas_version: super::VERSION.into(), websocket, turns: Some(turns_tx), bridged: Some(bridged), introductions: Some(introductions), usage: Some(usage), ..Default::default() }, factory).map_err(|e| fail("host_failed", e));
     // However the daemon ended — idle, `gruntas host stop`, a signal — each
     // bridge ends its stream and gives its lease back before the process
     // exits, rather than leaving it to lapse. The daemon's runtime is gone,

@@ -87,6 +87,9 @@ pub struct Options {
     /// ask it for the offer (`pairingOffer`) and send the person's answer
     /// (`pairingAnswer`). None has no offer to tell.
     pub introductions: Option<std::sync::Arc<crate::sync::introduce::Introductions>>,
+    /// The usage record rollover reads (`usage.json` in gruntas's home),
+    /// where a plugin's usage windows go (R-KIT-7); none drops them.
+    pub usage: Option<crate::usage::Usage>,
 }
 
 /// A session's own turn started (`running`) or ended (`Options::turns`).
@@ -98,7 +101,7 @@ pub struct TurnEvent {
 
 impl Default for Options {
     fn default() -> Options {
-        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), gruntas_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP, lateness: None, kick: None, turns: None, bridged: None, introductions: None }
+        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), gruntas_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP, lateness: None, kick: None, turns: None, bridged: None, introductions: None, usage: None }
     }
 }
 
@@ -1131,7 +1134,8 @@ impl State {
     }
 
     /// Takes one session's activity: its heavy commands counted
-    /// (`builds::RUNNING`), and the registry, with the entries whose
+    /// (`builds::RUNNING`), its account's usage windows written to the usage
+    /// record (R-KIT-7), and the registry, with the entries whose
     /// harness has gone pruned, written off the thread when it changed
     /// (R-LAG-9).
     fn activity(&mut self, a: &Activity) {
@@ -1142,6 +1146,18 @@ impl State {
                 Activity::HeavyEnd { session_id, tool_call_id } => running.end(session_id, tool_call_id),
                 Activity::TurnEnd { session_id } | Activity::Deregister { session_id } => running.end_session(session_id),
                 Activity::Register(_) | Activity::Usage { .. } => {}
+            }
+        }
+        if let (Activity::Usage { config_home, windows }, Some(usage)) = (a, &self.opts.usage) {
+            // Seen now, as it arrived: writes on the blocking pool may run
+            // out of order, and the later report must still win.
+            let (usage, config_home, windows, now) = (usage.clone(), config_home.clone(), windows.clone(), gruntas_store::now_ms());
+            if !windows.is_empty() {
+                tokio::task::spawn_blocking(move || {
+                    if let Err(e) = usage.record_windows(&config_home, &windows, now) {
+                        eprintln!("usage windows for {config_home} not recorded: {e}");
+                    }
+                });
             }
         }
         let changed = self.registry.apply(a) | self.registry.prune(super::registry::alive);

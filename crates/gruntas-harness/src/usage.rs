@@ -14,7 +14,7 @@
 //! share a record. A Claude Code instance's login is the account it reports
 //! (`login_of`); any other instance is its own login.
 
-use crate::protocol::{LimitState, LimitStatus, ModelRef};
+use crate::protocol::{LimitState, LimitStatus, ModelRef, UsageWindow};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -59,6 +59,10 @@ pub struct InstanceRecord {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<String>,
     pub seen_at_ms: i64,
+    /// The vendor config directory it runs in (`CLAUDE_CONFIG_DIR`), as
+    /// `home_key` spells it: how a plugin's usage report finds its login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_home: Option<String>,
 }
 
 /// The file.
@@ -213,6 +217,14 @@ impl Data {
         self.instances.get(instance)
     }
 
+    /// The login of the instance that runs in `config_home`, when one
+    /// recorded that home: the key a plugin's usage report for that home
+    /// goes under. Of several, the one seen last.
+    pub fn login_for_home(&self, config_home: &str) -> Option<&str> {
+        let home = home_key(config_home);
+        self.instances.values().filter(|r| r.config_home.as_deref() == Some(home.as_str())).max_by_key(|r| r.seen_at_ms).map(|r| r.login.as_str())
+    }
+
     /// The login `instance` is signed in as: the one it reported, else its
     /// own name.
     pub fn login_of<'a>(&'a self, instance: &'a str) -> &'a str {
@@ -265,11 +277,50 @@ impl Usage {
     /// Saves `instance`'s login and the models it listed. Told every turn,
     /// it writes only when something changed.
     pub fn record_instance(&self, instance: &str, login: &str, models: &[String], now_ms: i64) -> Result<(), String> {
+        self.record_account(instance, login, models, None, now_ms)
+    }
+
+    /// `record_instance`, with the config directory the instance runs in;
+    /// none keeps the one it had.
+    pub fn record_account(&self, instance: &str, login: &str, models: &[String], config_home: Option<&str>, now_ms: i64) -> Result<(), String> {
         self.change(|d| {
-            if d.instances.get(instance).is_none_or(|r| r.login != login || r.models != models) {
-                d.instances.insert(instance.into(), InstanceRecord { login: login.into(), models: models.to_vec(), seen_at_ms: now_ms });
+            let kept = d.instances.get(instance);
+            let config_home = config_home.map(home_key).or_else(|| kept.and_then(|r| r.config_home.clone()));
+            if kept.is_none_or(|r| r.login != login || r.models != models || r.config_home != config_home) {
+                d.instances.insert(instance.into(), InstanceRecord { login: login.into(), models: models.to_vec(), seen_at_ms: now_ms, config_home });
             }
         })
+    }
+
+    /// An account's windows as its harness's plugin read them (R-KIT-7),
+    /// seen at `now_ms`: under the login of the instance that runs in
+    /// `config_home` when one recorded it, else under the config home.
+    /// Claude Code's `fiveHour` and `sevenDay` are kept as rollover names
+    /// them. Answers the key they went under.
+    pub fn record_windows(&self, config_home: &str, windows: &[UsageWindow], now_ms: i64) -> Result<String, String> {
+        let mut key = String::new();
+        self.change(|d| {
+            key = d.login_for_home(config_home).map_or_else(|| home_key(config_home), str::to_string);
+            let kept = d.logins.entry(key.clone()).or_default();
+            for w in windows {
+                let name = match w.kind.as_str() {
+                    "fiveHour" => "five_hour",
+                    "sevenDay" => "seven_day",
+                    other => other,
+                };
+                if !w.used_percent.is_finite() || kept.get(name).is_some_and(|k| k.seen_at_ms > now_ms) {
+                    continue;
+                }
+                let resets_at_ms = w.resets_at_ms.and_then(|r| i64::try_from(r).ok());
+                let first_span_ms = kept.get(name).and_then(|k| k.first_span_ms).or_else(|| resets_at_ms.map(|r| r - now_ms).filter(|n| *n > 0));
+                let status = if w.used_percent >= 100.0 { LimitState::Limited } else { LimitState::Allowed };
+                kept.insert(name.into(), Window { status, used_percent: Some(w.used_percent.max(0.0)), resets_at_ms, seen_at_ms: now_ms, first_span_ms });
+            }
+            if kept.is_empty() {
+                d.logins.remove(&key);
+            }
+        })?;
+        Ok(key)
     }
 
     /// `from` renamed `to` (R-ROLL-3): its login and models go with it. An
@@ -356,6 +407,15 @@ fn replace(path: &Path, raw: &[u8]) -> std::io::Result<()> {
     }
 }
 
+/// A config directory as one key: `/h/.claude/` and `/h/.claude` are one
+/// account, as the plugin's hook spells it.
+pub fn home_key(home: &str) -> String {
+    match home.trim_end_matches('/') {
+        "" if home.starts_with('/') => "/".into(),
+        h => h.into(),
+    }
+}
+
 /// The login a Claude Code account is: its email, and its organisation when
 /// it has one (D18), so a personal and a team login on one address differ.
 pub fn claude_login(email: &str, organization: &str) -> Option<String> {
@@ -408,6 +468,29 @@ mod tests {
         assert_eq!(d.login_of("claude:a"), "a@x.com");
         assert_eq!(d.instance("claude:a").unwrap().models, ["sonnet"]);
         assert_eq!(d.login_of("codex"), "codex");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_plugins_windows_go_under_the_login_of_their_config_home_else_the_home() {
+        let (u, dir) = store("windows");
+        let five = |used, at| UsageWindow { kind: "fiveHour".into(), used_percent: used, resets_at_ms: Some(at) };
+        let seven = UsageWindow { kind: "sevenDay".into(), used_percent: 100.0, resets_at_ms: None };
+        // No instance runs there yet: under the home, as the hook spells it.
+        assert_eq!(u.record_windows("/h/.claude/", &[five(37.5, 9_000_000), seven.clone()], 1_000).unwrap(), "/h/.claude");
+        let d = u.read();
+        assert_eq!(d.readings("/h/.claude", 2_000).iter().map(|r| (r.window.as_str(), r.status, r.used_percent)).collect::<Vec<_>>(), [("five_hour", LimitState::Allowed, Some(37.5)), ("seven_day", LimitState::Limited, Some(100.0))]);
+        // An instance that ran there with a login: under the login, and
+        // rollover's standing reads it.
+        u.record_account("claude:work", "a@x.com (Acme)", &[], Some("/h/.claude/"), 1_500).unwrap();
+        u.record_instance("claude:work", "a@x.com (Acme)", &["opus".into()], 1_600).unwrap();
+        assert_eq!(u.read().instance("claude:work").unwrap().config_home.as_deref(), Some("/h/.claude"), "a later record without a home keeps it");
+        assert_eq!(u.record_windows("/h/.claude", &[five(60.0, 9_000_000)], 2_000).unwrap(), "a@x.com (Acme)");
+        let d = u.read();
+        assert_eq!(d.standing("a@x.com (Acme)", 3_000).map(|s| s.headroom), Some(40.0));
+        // Another home, and a figure that is no figure, change nothing there.
+        assert_eq!(u.record_windows("/h/other", &[five(f64::NAN, 1)], 2_000).unwrap(), "/h/other");
+        assert!(!u.read().logins.contains_key("/h/other"));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -485,7 +568,7 @@ mod tests {
         let mut d = Data::default();
         for (login, window, used, resets) in rows {
             d.logins.entry(login.to_string()).or_default().insert(window.to_string(), Window { status: LimitState::Allowed, used_percent: Some(*used), resets_at_ms: *resets, seen_at_ms: seen, first_span_ms: None });
-            d.instances.insert(format!("i:{login}"), InstanceRecord { login: login.to_string(), models: Vec::new(), seen_at_ms: seen });
+            d.instances.insert(format!("i:{login}"), InstanceRecord { login: login.to_string(), models: Vec::new(), seen_at_ms: seen, config_home: None });
         }
         d
     }
@@ -515,7 +598,7 @@ mod tests {
         let mut d = seen(&[("cur", "five_hour", 10.0, None), ("low", "five_hour", 91.0, None), ("ok", "five_hour", 90.0, None), ("lim", "five_hour", 10.0, None)], 1_000);
         d.logins.get_mut("lim").unwrap().get_mut("five_hour").unwrap().status = LimitState::Limited;
         // A second instance on the current login is no candidate (D18).
-        d.instances.insert("i:twin".into(), InstanceRecord { login: "cur".into(), models: Vec::new(), seen_at_ms: 1 });
+        d.instances.insert("i:twin".into(), InstanceRecord { login: "cur".into(), models: Vec::new(), seen_at_ms: 1, config_home: None });
         let got: Vec<String> = d.rank("cur", &[cands(&["low", "ok", "lim", "cur"]), vec![ModelRef { instance: "i:twin".into(), model: "m".into() }]].concat(), 2_000).into_iter().map(|r| r.model.instance).collect();
         assert_eq!(got, ["i:ok"]);
     }
