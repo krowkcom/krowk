@@ -867,6 +867,7 @@ dependencies = [
  "gruntas-store",
  "if-addrs",
  "image",
+ "jiff",
  "jsonschema",
  "libc",
  "mdns-sd",

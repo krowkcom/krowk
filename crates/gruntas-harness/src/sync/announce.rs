@@ -17,12 +17,18 @@
 //! bridge it is a background client of the daemon, so never keeps it up,
 //! and a daemon that has gone is not announced.
 //!
+//! The same thread publishes the machine's status board (`boards`, R-STA-5):
+//! checked every `boards::POLL` between refreshes, put on change and with
+//! every refresh, at most once every `boards::COALESCE`, and only while
+//! the announcement is up.
+//!
 //! A refusal is said once per error code in host.log and tried again the
 //! next tick: `sync_requires_paid_plan` pauses it as the supervisor pauses
 //! (`Config::paid_pause`, no call meanwhile), and this device's removal
 //! (`REVOKED`) ends it until the daemon starts again.
 
 use super::auto::Config;
+use super::boards;
 use super::commands::{offered, Commands};
 use crate::catalog;
 use crate::daemon::client::Client as Daemon;
@@ -390,6 +396,8 @@ enum Next {
 struct Ticks {
     /// Announced since the last take-down: one is owed on stop or off.
     published: bool,
+    /// How many refreshes went out: the board is owed one with each.
+    refreshes: u64,
     /// The error codes said since the last success.
     said: HashSet<String>,
     /// When the list and the instances were last read fresh.
@@ -418,14 +426,29 @@ fn publish(c: &Arc<Config>, stop: &Receiver<End>, stopping: Arc<std::sync::atomi
         eprintln!("gruntas: this machine cannot announce itself to your other devices: no async runtime for it");
         return false;
     };
-    let mut t = Ticks { published: false, said: HashSet::new(), fresh_at: None, instances: Vec::new(), pools: None, paused: None, daemon: None, stop: stopping };
+    let mut t = Ticks { published: false, refreshes: 0, said: HashSet::new(), fresh_at: None, instances: Vec::new(), pools: None, paused: None, daemon: None, stop: stopping };
     let mut last: Option<Announcer> = None;
+    // The status board (R-STA-5) is checked every `boards::POLL` between
+    // refreshes, and owed with each.
+    let mut board = Boards { due: boards::Coalescer::default(), said: HashSet::new(), statistics_id: boards::statistics_id(c.gruntas_home.as_deref()).unwrap_or_else(gruntas_client::status::statistics_id) };
+    let mut refresh_at = Instant::now();
     loop {
-        let next = tick(c, o, &rt, &mut t, &mut last, commands);
-        let wait = match next {
-            Next::After(d) => d,
-            Next::Over(revoked) => return revoked,
-        };
+        if Instant::now() >= refresh_at {
+            let refreshes = t.refreshes;
+            match tick(c, o, &rt, &mut t, &mut last, commands) {
+                Next::After(d) => refresh_at = Instant::now() + d,
+                Next::Over(revoked) => return revoked,
+            }
+            if t.refreshes != refreshes {
+                board.due.refreshed();
+            }
+        }
+        if t.published && t.paused.is_none() && !t.stopping()
+            && let Some(a) = &last
+        {
+            board.tick(&c.socket, a);
+        }
+        let wait = refresh_at.saturating_duration_since(Instant::now()).min(boards::POLL);
         // Told to stop during the tick: the word is on its way.
         let told = if t.stopping() { stop.recv().map_err(|_| RecvTimeoutError::Disconnected) } else { stop.recv_timeout(wait) };
         match told {
@@ -515,6 +538,7 @@ fn tick(c: &Arc<Config>, o: &Options, rt: &tokio::runtime::Runtime, t: &mut Tick
     match sent {
         Ok(_) => {
             t.published = true;
+            t.refreshes += 1;
             t.said.clear();
             Next::After(o.every)
         }
@@ -546,6 +570,31 @@ fn daemon_sessions(c: &Config, rt: &tokio::runtime::Runtime, daemon: &mut Option
         }
         Some(status?.sessions.into_iter().map(|s| s.session_id).collect())
     })
+}
+
+/// The status board's publishing, beside the announcement's.
+struct Boards {
+    due: boards::Coalescer,
+    /// The error codes said since the last publish.
+    said: HashSet<String>,
+    statistics_id: String,
+}
+
+impl Boards {
+    /// One check of the board, beside the socket's registrations; a
+    /// refusal said once per code in host.log.
+    fn tick(&mut self, socket: &Path, a: &Announcer) {
+        match boards::tick(&mut self.due, socket.parent().unwrap_or(Path::new("/")), a, &self.statistics_id) {
+            Ok(()) => {}
+            Err((code, message)) => {
+                if self.said.insert(code.clone()) {
+                    eprintln!("gruntas: this machine could not publish its status board to your other devices: {message} ({code}); it tries again shortly");
+                }
+                return;
+            }
+        }
+        self.said.clear();
+    }
 }
 
 /// The announcement taken down, if one is up.
