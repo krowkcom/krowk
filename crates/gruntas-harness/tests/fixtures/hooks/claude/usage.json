@@ -1,0 +1,7 @@
+{
+  "configHome": "/home/user/.claude",
+  "windows": [
+    { "kind": "fiveHour", "usedPercent": 37.5, "resetsAtMs": 1795430000000 },
+    { "kind": "sevenDay", "usedPercent": 12.0, "resetsAtMs": 1795900000000 }
+  ]
+}

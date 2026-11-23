@@ -21,6 +21,17 @@ breaking changes may affect it without notice.
 
 ### Added
 
+- **`gruntas hook <harness> <event>`, the entry point for the coming Claude
+  Code and Codex plugin's hooks.** It reads the harness's hook payload on
+  stdin and tells the host daemon about the session over its socket, in a
+  new `activity` frame (`activity` answers it). The daemon keeps the
+  registered sessions in `registrations.json` beside its socket, so a
+  restarted daemon still knows them, and drops a session once its harness
+  process has exited. A hook always exits 0 with nothing on stdout. It gives
+  up after 1.5 s when the daemon is missing or not answering, and notes why
+  in `hook.log` beside the socket. Nothing calls it yet: the plugin that
+  does is still to come.
+
 - **Sessions record whether anyone is at them, and steering commands say
   where they came from.** A new session's start record notes whether a
   person is attending it: `gruntas -p` without a terminal on its input, a

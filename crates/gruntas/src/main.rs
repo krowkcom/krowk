@@ -11,6 +11,15 @@ fn main() {
         println!("{}", gruntas_harness::paste_guard::hook_main(&input));
         return;
     }
+    // A hook of gruntas's plugin (`gruntas hook <harness> <event>`): never
+    // the CLI around it, never a failure, done inside 2 s. A build without
+    // the daemon does nothing, as a hook with no gruntas would.
+    if args.first().map(String::as_str) == Some("hook") {
+        #[cfg(all(feature = "harness", unix))]
+        std::process::exit(gruntas_harness::hook::main(&args[1..], gruntas::cli::VERSION));
+        #[cfg(not(all(feature = "harness", unix)))]
+        std::process::exit(0);
+    }
     let env = |k: &str| std::env::var(k).unwrap_or_default();
     // stderr is not held locked: the spinner draws on it from its own thread,
     // and a lock held here for the whole run would leave that thread blocked on
