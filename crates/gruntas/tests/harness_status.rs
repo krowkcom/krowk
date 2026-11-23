@@ -215,7 +215,7 @@ fn doctor_checks_everything_names_the_fix_and_exits_non_zero_exactly_when_a_chec
     // No account, and not chosen to go without: it fails, and says how to sign in.
     let out = b.gruntas(&["doctor", "--json"], &[]);
     let d = stdout_json(&out);
-    assert_eq!(names(&d), ["account", "machine", "always_on", "providers", "trust", "recovery_kit", "plan", "store", "pricing", "rollover"], "{d}");
+    assert_eq!(names(&d), ["account", "machine", "always_on", "providers", "trust", "recovery_kit", "plan", "store", "pricing", "rollover", "sandbox"], "{d}");
     assert_eq!((check(&d, "account")["status"].as_str(), check(&d, "account")["fix"].as_str()), (Some("fail"), Some("gruntas login")), "{d}");
     assert!(!out.status.success(), "a failed check is a non-zero exit");
     let human = b.gruntas(&["doctor", "--format", "human"], &[]);
