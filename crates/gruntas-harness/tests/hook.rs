@@ -8,7 +8,7 @@
 mod scratch;
 
 use gruntas_harness::hook::{self, Context, HookEvent, Session};
-use gruntas_harness::protocol::{Activity, PluginHarness, Registration, UsageWindow};
+use gruntas_harness::protocol::{Activity, Attendance, PluginHarness, Registration, UsageWindow};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -69,11 +69,11 @@ fn kt01_a_payload_missing_its_session_or_tool_call_is_an_error_not_a_guess() {
 
 #[test]
 fn kt01_session_start_registers_and_session_end_deregisters() {
-    let ctx = Context { harness_pid: Some(7), config_home: Some("/home/user/.claude".into()) };
+    let ctx = Context { harness_pid: Some(7), config_home: Some("/home/user/.claude".into()), repository: Some("git@github.com:o/r.git".into()), attendance: Some(Attendance::Attended) };
     let c = PluginHarness::Claude;
     assert_eq!(
         hook::to_activity(c, &normalised(c, "SessionStart"), &ctx),
-        Some(Activity::Register(Registration { session_id: CLAUDE.into(), harness: c, harness_pid: Some(7), config_home: Some("/home/user/.claude".into()), cwd: Some("/home/user/repo".into()), repository: None, transcript_path: claude_session().transcript_path, attendance: None }))
+        Some(Activity::Register(Registration { session_id: CLAUDE.into(), harness: c, harness_pid: Some(7), config_home: Some("/home/user/.claude".into()), cwd: Some("/home/user/repo".into()), repository: Some("git@github.com:o/r.git".into()), transcript_path: claude_session().transcript_path, attendance: Some(Attendance::Attended) }))
     );
     assert_eq!(hook::to_activity(PluginHarness::Codex, &normalised(PluginHarness::Codex, "SessionEnd"), &ctx), Some(Activity::Deregister { session_id: CODEX.into() }));
     // Tool calls and the turn's end tell the daemon nothing until the heavy

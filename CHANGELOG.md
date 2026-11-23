@@ -27,7 +27,12 @@ breaking changes may affect it without notice.
   new `activity` frame (`activity` answers it). The daemon keeps the
   registered sessions in `registrations.json` beside its socket, so a
   restarted daemon still knows them, and drops a session once the harness
-  process its hook named has exited. A hook always exits 0 with nothing on stdout. It gives
+  process its hook named has exited. `SessionStart` starts the daemon
+  when none runs (without the harness session's own variables, such as
+  `CLAUDE_CONFIG_DIR` or `CODEX_HOME`), and registers the session with its harness process,
+  the working directory's `origin` remote, and whether a person is at it
+  (the harness has a terminal). `SessionEnd` hands the deregistration to
+  a detached copy of itself and returns at once. A hook always exits 0 with nothing on stdout. It gives
   up after 1.5 s when the daemon is missing or not answering, and notes why
   in `hook.log` beside the socket. Nothing calls it yet: the plugin that
   does is still to come.
