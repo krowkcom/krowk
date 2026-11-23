@@ -2,7 +2,7 @@
   "name": "gruntas",
   "displayName": "Gruntas",
   "description": "Publishing from Gruntas, the coding agent harness, for Claude Code: the gruntas skill and MCP server turn a session's screenshots, recordings, diffs and logs into links that unfurl in Slack and Basecamp; in GitHub and Linear, images show inline.",
-  "version": "0.18.0",
+  "version": "2026.11.0",
   "author": {
     "name": "Gruntas",
     "url": "https://gruntas.com"
