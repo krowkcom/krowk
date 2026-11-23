@@ -244,6 +244,9 @@ fn rollover_check(ctx: &Ctx) -> Value {
 /// warning, not a failure: the plugin runs without it.
 fn sandbox_check(ctx: &Ctx) -> Value {
     let skip = |why: &str| json!({ "name": "sandbox", "status": "skip", "message": why });
+    if cfg!(not(unix)) {
+        return skip("Claude Code's sandbox does not run on this platform");
+    }
     let Ok(home) = gruntas_api::home::resolve(ctx.io.env) else { return skip("there is no gruntas home to keep agents out of") };
     let homes = claude_homes(ctx);
     if homes.is_empty() {
@@ -314,32 +317,27 @@ fn sandbox_block(home: &std::path::Path) -> Value {
 /// carries all of it. A path may name the home absolutely, with Claude's
 /// `//`, or under `~/`.
 fn sandbox_gaps(settings: &Value, home: &std::path::Path, user_home: &str) -> Vec<String> {
-    let names_home = |entry: &str, rule: bool| {
+    // The directory an entry names; a rule's must end in `/**`, and its
+    // `/path` is relative to the settings file, so it names none here.
+    let path_of = |entry: &str, rule: bool| -> Option<std::path::PathBuf> {
         let e = entry.trim();
-        let e = if rule {
-            match e.strip_suffix("/**") {
-                Some(e) => e,
-                None => return false,
-            }
-        } else {
-            e.trim_end_matches("/**")
-        };
-        let e = e.trim_end_matches('/');
-        let abs = if let Some(rest) = e.strip_prefix("~/") {
-            if user_home.trim().is_empty() {
-                return false;
-            }
-            format!("{}/{rest}", user_home.trim_end_matches('/'))
+        let e = if rule { e.strip_suffix("/**")? } else { e.trim_end_matches("/**") };
+        let e = if e.len() > 1 { e.trim_end_matches('/') } else { e };
+        let user_home = user_home.trim().trim_end_matches('/');
+        let abs = if e == "~" && !user_home.is_empty() {
+            user_home.to_string()
+        } else if let Some(rest) = e.strip_prefix("~/").filter(|_| !user_home.is_empty()) {
+            format!("{user_home}/{rest}")
         } else if let Some(rest) = e.strip_prefix("//") {
             format!("/{rest}")
-        } else if rule {
-            // A rule's `/path` is relative to the settings file.
-            return false;
-        } else {
+        } else if !rule && e.starts_with('/') {
             e.to_string()
+        } else {
+            return None;
         };
-        std::path::Path::new(&abs) == home
+        Some(std::path::PathBuf::from(abs))
     };
+    let names_home = |entry: &str, rule: bool| path_of(entry, rule).is_some_and(|p| p == home);
     let sandbox = &settings["sandbox"];
     let mut gaps = Vec::new();
     if sandbox["enabled"] != true {
@@ -353,6 +351,10 @@ fn sandbox_gaps(settings: &Value, home: &std::path::Path, user_home: &str) -> Ve
     }
     if !sandbox["filesystem"]["denyRead"].as_array().into_iter().flatten().filter_map(Value::as_str).any(|p| names_home(p, false)) {
         gaps.push("the gruntas home not in filesystem.denyRead".into());
+    }
+    // allowRead wins over denyRead where they meet.
+    if sandbox["filesystem"]["allowRead"].as_array().into_iter().flatten().filter_map(Value::as_str).filter_map(|p| path_of(p, false)).any(|p| home.starts_with(&p) || p.starts_with(home)) {
+        gaps.push("filesystem.allowRead opens the gruntas home again".into());
     }
     let denied = settings["permissions"]["deny"].as_array().into_iter().flatten().filter_map(Value::as_str).filter_map(|r| r.trim().strip_prefix("Read(")?.strip_suffix(')')).any(|p| names_home(p, true));
     if !denied {
@@ -452,5 +454,12 @@ mod tests {
         });
         assert_eq!(sandbox_gaps(&half, home, "/u/me"), ["unsandboxed commands allowed", "the gruntas home not in filesystem.denyRead", "no Read deny rule for the gruntas home"]);
         assert_eq!(sandbox_block(home)["permissions"]["deny"][0], "Read(//u/me/.gruntas/**)");
+        // allowRead wins over denyRead: the home, a directory above it or one
+        // in it opens it again; another does not.
+        for (opened, entry) in [(true, "~"), (true, "/u/me/.gruntas/accounts"), (true, "//u/"), (false, "/u/me/src"), (false, "~/.gruntas-old")] {
+            let mut s = sandbox_block(home);
+            s["sandbox"]["filesystem"]["allowRead"] = json!([entry]);
+            assert_eq!(sandbox_gaps(&s, home, "/u/me") == ["filesystem.allowRead opens the gruntas home again"], opened, "{entry}");
+        }
     }
 }

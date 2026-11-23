@@ -235,7 +235,7 @@ jobs:
       - name: The same bytes
         run: |
           set -euo pipefail
-          for bin in "$TARGET/gruntas" "$TARGET/gruntas-mcp" "$TARGET-lean/gruntas"; do
+          for bin in "$TARGET/gruntas" "$TARGET/gruntas-mcp" "$TARGET-lean/gruntas" "$TARGET-lean/gruntas-mcp"; do
             want=$(sha256sum "released/$bin" | cut -d' ' -f1)
             got=$(sha256sum "rebuild/dist/$bin" | cut -d' ' -f1)
             echo "$bin  released $want  rebuilt $got"

@@ -509,6 +509,7 @@ fn kt07_doctor_reports_the_sandbox_block() {
         report["checks"].as_array().unwrap().iter().find(|c| c["name"] == "sandbox").cloned().unwrap_or_else(|| panic!("{report}"))
     };
 
+    let before = std::fs::read(home.join(".claude/settings.json")).unwrap();
     let check = sandbox();
     assert_eq!(check["status"], "warn", "{check}");
     let settings = check["settings"].as_array().unwrap();
@@ -518,9 +519,10 @@ fn kt07_doctor_reports_the_sandbox_block() {
     assert_eq!(check["block"], block(&gruntas_home), "{check}");
     let human = String::from_utf8(doctor(&["--format", "human"]).stdout).unwrap();
     assert!(human.contains("Sandbox") && human.contains("\"failIfUnavailable\": true") && human.contains(&format!("\"Read(/{}/**)\"", gruntas_home.display())), "{human}");
+    // Read, never written, the one without the block included.
+    assert_eq!(std::fs::read(home.join(".claude/settings.json")).unwrap(), before);
 
-    // With the block in the default home too, it passes and prints none,
-    // and the settings are as they were: doctor only reads them.
+    // With the block in the default home too, it passes and prints none.
     std::fs::write(home.join(".claude/settings.json"), block(&gruntas_home).to_string()).unwrap();
     let check = sandbox();
     assert_eq!(check["status"], "pass", "{check}");
@@ -536,7 +538,7 @@ fn kt07_doctor_reports_the_sandbox_block() {
 fn kt07_the_plugins_hooks_run_gruntas_hook_for_their_own_event() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     for (file, harness, events) in [
-        ("hooks/hooks.json", "claude", &["SessionStart", "SessionEnd", "PreToolUse", "PostToolUse", "Stop", "WorktreeCreate", "WorktreeRemove"][..]),
+        ("hooks/hooks.json", "claude", &["SessionStart", "SessionEnd", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "WorktreeCreate", "WorktreeRemove"][..]),
         ("hooks/codex.json", "codex", &["SessionStart", "SessionEnd", "PreToolUse", "PostToolUse", "Stop"][..]),
     ] {
         let hooks: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join(file)).unwrap()).unwrap();
@@ -545,7 +547,8 @@ fn kt07_the_plugins_hooks_run_gruntas_hook_for_their_own_event() {
         for event in events {
             let command = hooks["hooks"][event][0]["hooks"][0]["command"].as_str().unwrap_or_else(|| panic!("{file}: no {event}"));
             assert!(command.starts_with("command -v gruntas >/dev/null 2>&1 ||") && command.ends_with(&format!("; exec gruntas hook {harness} {event}")), "{file} {event}: {command}");
-            assert!(!fixture(harness, event).is_empty());
+            // A failed call's payload is a finished one's (KT03).
+            assert!(!fixture(harness, if *event == "PostToolUseFailure" { "PostToolUse" } else { event }).is_empty());
         }
     }
 }

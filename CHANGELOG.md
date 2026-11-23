@@ -70,7 +70,8 @@ breaking changes may affect it without notice.
   of each turn and (Claude Code) its worktrees, so every session registers
   with the gruntas daemon; it also brings the gruntas MCP server and skill.
   The hooks run the `gruntas` on your PATH. Without one they do nothing and
-  the session's start says how to install it. Codex asks you to approve the
+  the session's start says how to install it, except that Claude Code's
+  worktrees, which the plugin hands to gruntas, fail with that line. Codex asks you to approve the
   hooks once, in `/hooks`. The release's full build, and so `npx -y
   @gruntas/mcp`, now ships the full `gruntas-mcp`, with session info and
   delegation; the lean archive keeps the publishing-only one.
@@ -80,7 +81,8 @@ breaking changes may affect it without notice.
   `settings.json` and warns when the sandbox block that keeps agents out of
   the gruntas home is missing or incomplete: the sandbox enabled,
   `failIfUnavailable`, `allowUnsandboxedCommands: false`, the home in
-  `filesystem.denyRead`, and a `Read(//<home>/**)` deny rule. It prints the
+  `filesystem.denyRead` with no `allowRead` opening it again, and a
+  `Read(//<home>/**)` deny rule. It prints the
   block to add and never edits the file.
 
 - **The Claude Code plugin reports the account's usage windows.** A small
