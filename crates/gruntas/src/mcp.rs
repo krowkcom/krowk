@@ -274,6 +274,8 @@ impl Server<'_> {
             "gruntas_collect" => collect(&args),
             #[cfg(all(feature = "harness", unix))]
             "gruntas_machines" => machines(),
+            #[cfg(all(feature = "harness", unix))]
+            "gruntas_session_info" => session_info(self.env),
             other => return Err(rpc_error(-32602, &format!("unknown tool {other}"))),
         };
         Ok(match outcome {
@@ -840,6 +842,90 @@ mod delegation {
 #[cfg(all(feature = "harness", unix))]
 use delegation::{collect, delegate, machines};
 
+/// gruntas_session_info (D2): the registration of the Claude Code or Codex
+/// session this server runs in, as its plugin's SessionStart hook gave it to
+/// the daemon. The harness starts its MCP servers itself, so the session is
+/// the one whose harness process is this process's parent, or further up:
+/// the plugin launches it through `npx`, which puts a node or two between.
+#[cfg(all(feature = "harness", unix))]
+mod session {
+    use super::*;
+    use gruntas_harness::daemon::registry::Registry;
+
+    /// Further up than any launcher chain goes: a loop in a racing process
+    /// table ends here.
+    const DEPTH: usize = 16;
+
+    pub fn session_info(env: &dyn Fn(&str) -> String) -> Outcome {
+        let dir = gruntas_harness::daemon::dir(env).map_err(|why| fail("no_daemon_dir", why))?;
+        let registry = Registry::load(&dir);
+        let line = ancestors(std::process::id());
+        let found = line.iter().find_map(|pid| registry.sessions().find(|r| r.harness_pid == Some(*pid)));
+        let Some(r) = found else {
+            let pids = line.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
+            return Ok((
+                format!("This session is not registered with gruntas: no registration names a process that started this MCP server (its parents: {pids}). The gruntas plugin's SessionStart hook registers a Claude Code or Codex session as it starts; a session started before the plugin was installed, or while `gruntas` was not on the PATH, is not registered."),
+                json!({ "registered": false }),
+            ));
+        };
+        let word = |v: Value| v.as_str().unwrap_or_default().to_string();
+        let harness = word(json!(r.harness));
+        let attendance = r.attendance.map_or_else(|| "attended".into(), |a| word(json!(a)));
+        let mut lines = vec![format!("session: {}", r.session_id), format!("harness: {harness}")];
+        for (k, v) in [("harness process", r.harness_pid.map(|p| p.to_string())), ("account (config home)", r.config_home.clone()), ("working directory", r.cwd.clone()), ("repository", r.repository.clone()), ("transcript", r.transcript_path.clone())] {
+            if let Some(v) = v {
+                lines.push(format!("{k}: {v}"));
+            }
+        }
+        lines.push(format!("attendance: {attendance}"));
+        Ok((lines.join("\n"), json!({ "registered": true, "registration": r })))
+    }
+
+    /// This process's parent, its parent, and so on, nearest first; never
+    /// pid 1, which is everyone's.
+    fn ancestors(pid: u32) -> Vec<u32> {
+        let mut line = Vec::new();
+        let mut at = pid;
+        while line.len() < DEPTH {
+            match parent(at) {
+                Some(p) if p > 1 && p != at && !line.contains(&p) => {
+                    line.push(p);
+                    at = p;
+                }
+                _ => break,
+            }
+        }
+        line
+    }
+
+    #[cfg(target_os = "linux")]
+    fn parent(pid: u32) -> Option<u32> {
+        // `pid (comm) state ppid …`; comm may hold spaces and parentheses,
+        // so the fields are counted from the last `)`.
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn parent(pid: u32) -> Option<u32> {
+        let out = std::process::Command::new("ps").args(["-o", "ppid=", "-p", &pid.to_string()]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
+        String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn kt04_the_ancestor_line_starts_at_the_parent_and_stops_before_init() {
+            let line = super::ancestors(std::process::id());
+            assert_eq!(line.first().copied(), Some(std::os::unix::process::parent_id()));
+            assert!(!line.contains(&1) && !line.contains(&std::process::id()), "{line:?}");
+        }
+    }
+}
+
+#[cfg(all(feature = "harness", unix))]
+use session::session_info;
+
 fn tool_schemas() -> Value {
     let slug = "Artifact slug, e.g. art_9f3c2e1a7b04d6c8e5f1a2b3 — or any link carrying it, like https://gruntas.com/a/art_9f3c2e1a7b04d6c8e5f1a2b3.";
     #[cfg_attr(not(all(feature = "harness", unix)), allow(unused_mut))]
@@ -914,7 +1000,15 @@ fn tool_schemas() -> Value {
         }
     ]);
     #[cfg(all(feature = "harness", unix))]
-    tools.as_array_mut().expect("a list").extend(delegation_schemas());
+    {
+        let list = tools.as_array_mut().expect("a list");
+        list.push(json!({
+            "name": "gruntas_session_info",
+            "description": "What gruntas knows about this Claude Code or Codex session, as the gruntas plugin registered it when the session started: its session id, harness, harness process, account (config home), working directory, repository, transcript path and whether a person is attending it. Says so when the session is not registered.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }));
+        list.extend(delegation_schemas());
+    }
     tools
 }
 

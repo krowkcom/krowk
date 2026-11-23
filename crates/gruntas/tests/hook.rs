@@ -167,9 +167,63 @@ fn kt03_heavy_commands_move_the_announced_busy_slots_and_decide_nothing() {
 /// process that started the MCP server, and says it is unregistered
 /// otherwise; the server lists exactly D2's tools.
 #[test]
-#[ignore = "KT04: serve the lean gruntas MCP server"]
 fn kt04_session_info_answers_the_calling_sessions_registration() {
-    todo!("KT04: start gruntas-mcp under a registered harness_pid and call gruntas_session_info")
+    use gruntas_harness::daemon::registry::Registry;
+    use gruntas_harness::protocol::{Activity, PluginHarness, Registration};
+    let s = Scratch::new("kt04");
+    let reg = |id: &str, pid: u32| Registration { session_id: id.into(), harness: PluginHarness::Claude, harness_pid: Some(pid), config_home: Some("/h/.claude".into()), cwd: Some("/r".into()), repository: None, transcript_path: None, attendance: None };
+    // Alive, and nobody's parent: a session in another harness.
+    let mut other = Command::new("sleep").arg("30").spawn().unwrap();
+    let save = |regs: &[Registration]| {
+        let mut r = Registry::default();
+        for x in regs {
+            r.apply(&Activity::Register(x.clone()));
+        }
+        r.save(&s.daemon_dir()).unwrap();
+    };
+    // This test is the harness: it starts gruntas-mcp, as Claude Code does.
+    let mcp = || {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_gruntas-mcp"))
+            .env_clear()
+            .env("HOME", s.0.join("home"))
+            .env("XDG_RUNTIME_DIR", s.0.join("run"))
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .current_dir(&s.0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let lines = [
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"gruntas_session_info","arguments":{}}}"#,
+        ];
+        child.stdin.take().unwrap().write_all(format!("{}\n", lines.join("\n")).as_bytes()).unwrap();
+        let out = child.wait_with_output().unwrap();
+        let answers: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(answers.len(), 3, "{answers:?}");
+        answers
+    };
+
+    save(&[reg("other", other.id()), reg("mine", std::process::id())]);
+    let answers = mcp();
+    let mut names: Vec<&str> = answers[1]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["gruntas_claim_artifact", "gruntas_collect", "gruntas_delegate", "gruntas_get_artifact", "gruntas_get_run", "gruntas_list_artifacts", "gruntas_machines", "gruntas_push", "gruntas_session_info", "gruntas_verify_key"]);
+    let info = &answers[2]["result"];
+    assert_eq!(info["isError"], false, "{info}");
+    assert_eq!(info["structuredContent"]["registered"], true, "{info}");
+    assert_eq!(info["structuredContent"]["registration"]["sessionId"], "mine", "{info}");
+    assert!(info["content"][0]["text"].as_str().unwrap().contains("session: mine"), "{info}");
+
+    save(&[reg("other", other.id())]);
+    let info = &mcp()[2]["result"];
+    assert_eq!(info["isError"], false, "{info}");
+    assert_eq!(info["structuredContent"], serde_json::json!({ "registered": false }), "{info}");
+    assert!(info["content"][0]["text"].as_str().unwrap().contains("not registered"), "{info}");
+    let _ = other.kill();
+    let _ = other.wait();
 }
 
 /// KT05: `PreToolUse` refuses a `gh pr create` body with a bare card link,
