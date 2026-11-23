@@ -424,13 +424,17 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
     // the runtime is dropped without waiting for one, and a deregistration
     // lost here would come back with the next daemon.
     // blocking: on the way out, with nobody left to serve.
+    // The lock is held across the write: one under way finishes first, and
+    // one still queued finds it written and does nothing. `stopping` takes
+    // no activity from here, so nothing changes it after.
     {
         let s = state.borrow();
-        let written = *s.registry_written.lock().unwrap_or_else(|e| e.into_inner());
-        if s.registry_seq > written
-            && let Err(e) = s.registry.save(socket.parent().unwrap_or(Path::new("/")))
-        {
-            eprintln!("the registrations cannot be written: {e}");
+        let mut last = s.registry_written.lock().unwrap_or_else(|e| e.into_inner());
+        if s.registry_seq > *last {
+            match s.registry.save(socket.parent().unwrap_or(Path::new("/"))) {
+                Ok(()) => *last = s.registry_seq,
+                Err(e) => eprintln!("the registrations cannot be written: {e}"),
+            }
         }
     }
     // Only the socket this daemon bound: one a newer daemon put in its
@@ -775,6 +779,9 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
         ClientFrame::Activity { id: cmd_id, activity } => {
             let mut s = state.borrow_mut();
             let error = match s.clients.get(&id).is_some_and(|c| c.local) {
+                // Its write would be dropped with the runtime: refused, and
+                // the hook notes it.
+                true if s.stopping => Some(error_info(&stopping_error())),
                 true => {
                     s.activity(&activity);
                     None
