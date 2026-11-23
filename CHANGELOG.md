@@ -78,6 +78,20 @@ breaking changes may affect it without notice.
   `PostToolUse` hooks now run for every tool, not only Bash, so the daemon
   sees that work.
 
+- **The host daemon keeps every plugin session's status from what its
+  hooks see.** A permission prompt makes a Claude Code session
+  input-required until its next activity (a tool call finishing, a refused
+  permission), `SessionEnd` makes it completed, and a harness that exits
+  without one makes it canceled; its health is `SERVING` while the harness
+  runs and `NOT_SERVING` after. The daemon reads the session's branch, HEAD,
+  worktree and dirty flag with git itself, at the session's start and at
+  most every 5 seconds after activity, so the hooks stay fast. Kept in
+  `status.json` beside `registrations.json`. The Claude plugin adds
+  `PermissionRequest` and `PermissionDenied` hooks, which never answer the
+  prompt; the `activity` frame gains `permissionRequest` and `active`. Codex
+  has no permission hook, so its sessions are never shown input-required
+  unless their agents report it.
+
 - **`gruntas hook <harness> <event>`, the entry point for the Claude
   Code and Codex plugin's hooks.** It reads the harness's hook payload on
   stdin and tells the host daemon about the session over its socket, in a
