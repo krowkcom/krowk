@@ -110,12 +110,25 @@ fn write_new(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// directory is `dir`, as `a.device` publishes it now: each Task's machine
 /// filled in.
 pub fn board(dir: &Path, device: &DeviceId) -> Board {
-    // The daemon's Tasks (`daemon::tasks`: observed states, health, git
-    // context), and for a session registered since it last wrote them, what
-    // its registration says.
-    let kept = Tasks::read(dir);
-    let mut tasks: Vec<Task> = kept.tasks().cloned().collect();
-    tasks.extend(Registry::read(dir).board_tasks().into_iter().filter(|t| kept.get(&t.id).is_none()));
+    // The daemon's Tasks (`daemon::tasks`: states, observed or reported,
+    // health, git context), with what its agent's reports said (SL03: the
+    // summary, history, phase and PR); and for a session registered since
+    // they were last written, what its registration says.
+    let (kept, registry) = (Tasks::read(dir), Registry::read(dir));
+    let mut tasks: Vec<Task> = kept
+        .tasks()
+        .map(|t| {
+            let mut t = t.clone();
+            if let Some(r) = registry.task(&t.id) {
+                t.status.message.clone_from(&r.status.message);
+                t.history.clone_from(&r.history);
+                t.metadata.gruntas.phase.clone_from(&r.metadata.gruntas.phase);
+                t.metadata.gruntas.pr.clone_from(&r.metadata.gruntas.pr);
+            }
+            t
+        })
+        .collect();
+    tasks.extend(registry.board_tasks().into_iter().filter(|t| kept.get(&t.id).is_none()));
     tasks.sort_by(|a, b| a.id.cmp(&b.id));
     let tasks: Vec<Task> = tasks
         .into_iter()
@@ -249,9 +262,13 @@ mod tests {
         r.apply(&reg("kept"));
         r.apply(&reg("new"));
         r.save(&dir).unwrap();
+        r.report("kept", "the summary", &gruntas_client::status::Report::default(), jiff::Timestamp::now());
+        r.save(&dir).unwrap();
         let b = board(&dir, &DeviceId([7; 16]));
         let states: Vec<(&str, TaskState)> = b.tasks.iter().map(|t| (t.id.as_str(), t.status.state)).collect();
         assert_eq!(states, [("kept", TaskState::InputRequired), ("new", TaskState::Working)]);
+        assert_eq!(b.tasks[0].status.message.as_ref().map(|m| m.summary()).as_deref(), Some("the summary"), "the report's summary rides on the observed state");
+        assert_eq!(b.tasks[0].history.len(), 1);
         assert_eq!(b.sessions, ["kept", "new"]);
         let _ = std::fs::remove_dir_all(&dir);
     }

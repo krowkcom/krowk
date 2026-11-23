@@ -329,10 +329,8 @@ fn state_of(t: &Task) -> (TaskState, Option<Provenance>) {
 /// SL04: `PermissionRequest` makes the session input-required (harness
 /// provenance); `PostToolUse`, `PermissionDenied` or the next activity
 /// clears it to the agent's last state; `SessionEnd` with no terminal
-/// report makes it completed. With no report (`gruntas_report` is SL03's),
-/// the agent's last state is working as the harness sees it; a reported
-/// one coming back, with agent provenance, is the daemon's unit tests'
-/// (`daemon::tasks`).
+/// report makes it completed. Before any report the agent's last state is
+/// working as the harness sees it; after one, what it reported.
 #[test]
 fn sl04_hook_events_set_and_clear_observed_states() {
     let s = Scratch::new("sl04-states");
@@ -343,6 +341,17 @@ fn sl04_hook_events_set_and_clear_observed_states() {
     assert_eq!(state_of(&t), (TaskState::Working, Some(Provenance::Harness)));
     assert_eq!(t.metadata.gruntas.health, Some(Field::harness(Health::Serving)));
     assert_eq!(t.metadata.gruntas.harness, Some(Field::harness("claude".into())));
+    // Cleared with nothing reported: working, as the harness sees it.
+    s.hook("PermissionRequest", &hook_payload("PermissionRequest", id, &cwd));
+    s.task_once(id, "input-required", |t| t.status.state == TaskState::InputRequired);
+    s.hook("PostToolUse", &hook_payload("PostToolUse", id, &cwd));
+    let t = s.task_once(id, "cleared", |t| t.status.state != TaskState::InputRequired);
+    assert_eq!(state_of(&t), (TaskState::Working, Some(Provenance::Harness)));
+    // The agent reports working, as gruntas_report sends it (SL03).
+    let socket = gruntas_harness::daemon::socket(&s.env()).unwrap();
+    let report = gruntas_harness::protocol::Activity::Report { session_id: id.into(), summary: "on it".into(), report: gruntas_client::status::Report { state: Some(TaskState::Working), ..Default::default() } };
+    gruntas_harness::hook::send(&socket, &cwd.display().to_string(), "test", report).unwrap();
+    s.task_once(id, "reported", |t| t.metadata.gruntas.state_source == Some(Provenance::Agent));
     for clearing in ["PostToolUse", "PermissionDenied", "PreToolUse"] {
         s.hook("PermissionRequest", &hook_payload("PermissionRequest", id, &cwd));
         let t = s.task_once(id, "input-required", |t| t.status.state == TaskState::InputRequired);
@@ -350,7 +359,7 @@ fn sl04_hook_events_set_and_clear_observed_states() {
         assert!(t.metadata.gruntas.last_activity.as_ref().is_some_and(|a| a.source == Provenance::Harness));
         s.hook(clearing, &hook_payload(clearing, id, &cwd));
         let t = s.task_once(id, &format!("cleared by {clearing}"), |t| t.status.state != TaskState::InputRequired);
-        assert_eq!(state_of(&t), (TaskState::Working, Some(Provenance::Harness)), "{clearing}");
+        assert_eq!(state_of(&t), (TaskState::Working, Some(Provenance::Agent)), "back to the agent's last state after {clearing}");
     }
     s.hook("SessionEnd", &hook_payload("SessionEnd", id, &cwd));
     let t = s.task_once(id, "completed", |t| t.status.state == TaskState::Completed);

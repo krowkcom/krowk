@@ -969,7 +969,7 @@
       ]
     },
     "Activity": {
-      "description": "What a session gruntas does not run did, one `activity` frame each:\nregistering at its start, leaving at its end, a heavy command starting\nand ending, a turn's end, and its account's usage windows.",
+      "description": "What a session gruntas does not run did, one `activity` frame each:\nregistering at its start, leaving at its end, a heavy command starting\nand ending, a turn's end, a permission prompt and other activity, and\nits account's usage windows.",
       "oneOf": [
         {
           "description": "A session started (or resumed): the daemon keeps it until it ends or\nits harness process is gone.",
@@ -1102,6 +1102,40 @@
             "sessionId",
             "summary",
             "report"
+          ]
+        },
+        {
+          "description": "A permission prompt waits on the person: the session is\ninput-required until its next activity (D3).",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "permissionRequest"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId"
+          ]
+        },
+        {
+          "description": "The session did something the daemon keeps nothing else of (a tool\ncall off the heavy list, a refused permission): its last activity,\nand the end of a permission prompt.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "active"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId"
           ]
         },
         {
