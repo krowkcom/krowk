@@ -19,6 +19,15 @@ breaking changes may affect it without notice.
 
 ## [Unreleased]
 
+## [2026.11.1] - 2026-11-23
+
+**Every agent on every machine of yours, in one place.** Agent sessions in
+Claude Code and Codex now report a standard status that your devices can
+read and the registry can't. `gruntas agents` shows it as a tree across your
+machines, and `gruntas ping` checks a machine or a session is alive. Next
+release, `gruntas status` becomes that tree; move readiness scripts to
+`gruntas providers list --check` now (see Deprecated).
+
 ### Added
 
 - **`gruntas agents [project]`: every agent on every machine of yours, as
@@ -4019,7 +4028,8 @@ was released on GitHub but never published to npm.
   credentials travel, and a refusal is written to stderr and into the JSON
   envelope.
 
-[Unreleased]: https://github.com/gruntas/gruntas/compare/v2026.11.0...HEAD
+[Unreleased]: https://github.com/gruntas/gruntas/compare/v2026.11.1...HEAD
+[2026.11.1]: https://github.com/gruntas/gruntas/compare/v2026.11.0...v2026.11.1
 [2026.11.0]: https://github.com/gruntas/gruntas/compare/v0.18.0...v2026.11.0
 [0.18.0]: https://github.com/krowkcom/krowk/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/krowkcom/krowk/compare/v0.16.2...v0.17.0

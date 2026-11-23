@@ -1,6 +1,6 @@
 {
   "name": "gruntas",
-  "version": "2026.11.0",
+  "version": "2026.11.1",
   "description": "Publishing from Gruntas, the coding agent harness, for Gemini CLI: the gruntas MCP server turns a session's screenshots, recordings, diffs and logs into links that unfurl in Slack and Basecamp; in GitHub and Linear, images show inline.",
   "contextFileName": "GEMINI.md",
   "mcpServers": {
