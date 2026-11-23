@@ -294,6 +294,25 @@ struct HostCommandAnswer {
     command: HostCommandState,
 }
 
+/// A machine's sealed status board as the registry holds it (R-STA-5):
+/// the device, the bytes, and when it was published by the registry's
+/// clock.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct StatusBoardRecord {
+    #[serde(default, deserialize_with = "nullable")]
+    pub device: String,
+    #[serde(default, deserialize_with = "hex_bytes")]
+    pub sealed: Vec<u8>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct StatusBoardAnswer {
+    #[serde(default, deserialize_with = "nullable")]
+    status_board: StatusBoardRecord,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 struct PresencesAnswer {
     #[serde(default, deserialize_with = "nullable")]
@@ -891,6 +910,50 @@ impl Client {
     pub fn list_presences(&self) -> Result<Vec<Presence>, Error> {
         let answer: PresencesAnswer = self.get(&format!("{}/presences", self.user_path()?))?;
         Ok(answer.presences)
+    }
+
+    /// Publishes this device's sealed status board (R-STA-5, D8), in place
+    /// of the last: `gruntas_client::status::seal_board`'s bytes, at most
+    /// 256 KB (`status_board_too_large` over it). Signed by this device,
+    /// which must be the key's own; the registry keeps the latest only and
+    /// never opens it. Retried: the same board twice leaves the same state.
+    pub fn put_status_board(&self, sealed: &[u8]) -> Result<StatusBoardRecord, Error> {
+        let body = json!({ "status_board": { "sealed": crate::client::hex(sealed) } });
+        let (answer, _): (StatusBoardAnswer, u16) = self.call_as_device("PUT", "/key/device/status_board", Some(body), ATTEMPTS, None)?;
+        Ok(answer.status_board)
+    }
+
+    /// The latest status board `device` published, or None when it has
+    /// published none (`no_status_board`). A reader finds the devices
+    /// through `list_presences`. Any key of the person reads it, unsigned.
+    pub fn status_board(&self, device: &str) -> Result<Option<StatusBoardRecord>, Error> {
+        let path = format!("{}/devices/{}/status_board", self.user_path()?, slug_path(device));
+        match self.get::<StatusBoardAnswer>(&path) {
+            Ok(a) => Ok(Some(a.status_board)),
+            Err(e) if e.code() == "no_status_board" => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Sends a machine's counts (R-STA-6, D9) under `statistics_id`, a
+    /// random id that is not the device id
+    /// (`gruntas_client::status::statistics_id`): `counts` is
+    /// `gruntas_client::status::Counts`, and nothing else is sent. The
+    /// registry keeps the latest only. The API key's alone, unsigned, so
+    /// the request names no device. Retried.
+    pub fn put_statistics<T: Serialize>(&self, statistics_id: &str, counts: &T) -> Result<(), Error> {
+        let body = json!({ "statistics": counts });
+        let path = format!("{}/statistics/{}", self.user_path()?, slug_path(statistics_id));
+        self.call::<Value>("PUT", &path, Some(body), ATTEMPTS, None).map(|_| ())
+    }
+
+    /// The counts last sent under `statistics_id`, as the registry holds
+    /// them: the counts' fields, and `updated_at` by the registry's clock.
+    /// `no_statistics` when none were sent.
+    pub fn statistics(&self, statistics_id: &str) -> Result<Value, Error> {
+        let path = format!("{}/statistics/{}", self.user_path()?, slug_path(statistics_id));
+        let mut answer: Value = self.get(&path)?;
+        Ok(answer.get_mut("statistics").map(Value::take).unwrap_or(Value::Null))
     }
 
     /// The user key's generations, and those wrapped to this device.

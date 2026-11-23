@@ -226,6 +226,11 @@ pub struct SyncStore {
     /// and cleared by the device itself. Dropped when the device is revoked
     /// or removed from its list.
     pub presences: HashMap<String, Presence>,
+    /// Device id → its latest sealed status board (R-STA-5). Dropped with
+    /// its presence when the device is revoked.
+    pub status_boards: HashMap<String, crate::status::Board>,
+    /// (Person, statistics id) → a machine's latest counts (R-STA-6).
+    pub statistics: HashMap<(String, String), crate::status::Statistics>,
     /// Command id → the command one of a person's devices sent another
     /// (R-HOST-4). Dropped when either device is revoked or removed from
     /// its list (`commands::drop_device`).
@@ -975,6 +980,7 @@ pub fn revoke(app: &App, req: &Req, id: &str) -> Resp {
     s.sync.revoked_keys.extend(keys);
     // Its presence goes with it (R-HOST-3) and its commands (R-HOST-4).
     s.sync.presences.remove(&device);
+    s.sync.status_boards.remove(&device);
     crate::commands::drop_device(&mut s.sync, |d| d == device);
     Resp::json(200, &Json::map([("device", Json::str(device))]))
 }
