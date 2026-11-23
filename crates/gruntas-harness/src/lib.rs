@@ -84,6 +84,8 @@ pub mod evidence;
 pub mod group;
 pub mod handoff;
 pub mod headless;
+#[cfg(unix)]
+pub mod hook;
 pub mod host;
 pub mod http;
 pub mod images;

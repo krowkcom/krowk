@@ -286,7 +286,7 @@ impl Client {
                                 let _ = i.sinks.remove(n).q.send(Item::End(None));
                             }
                         }
-                        ServerFrame::Done { id, .. } | ServerFrame::Attached { id, .. } | ServerFrame::Status { id, .. } | ServerFrame::PairingOffer { id, .. } | ServerFrame::Mcp { id, .. } | ServerFrame::McpSignIn { id, .. } => {
+                        ServerFrame::Done { id, .. } | ServerFrame::Attached { id, .. } | ServerFrame::Status { id, .. } | ServerFrame::PairingOffer { id, .. } | ServerFrame::Mcp { id, .. } | ServerFrame::McpSignIn { id, .. } | ServerFrame::Activity { id, .. } => {
                             let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
                             let Some(w) = i.waiting.remove(&id) else { continue };
                             // A turn's `done` comes after its lines: handed

@@ -1175,3 +1175,48 @@ fn r_ease_5_a_client_reads_the_pairing_offer_and_an_answer_with_none_waiting_is_
     });
     daemon.join().unwrap().unwrap();
 }
+
+/// KT01: the daemon's side of `activity`: a registration lands in
+/// `registrations.json` beside the socket, an entry whose harness process is
+/// gone is pruned, and a daemon started again reads what the last one kept.
+#[test]
+fn kt01_activity_registers_persists_across_a_restart_and_prunes_the_dead() {
+    use gruntas_harness::daemon::registry::{self, Registry};
+    use gruntas_harness::protocol::{Activity, PluginHarness, Registration};
+    let home = Home::new("activity", None);
+    let dir = home.socket().parent().unwrap().to_path_buf();
+    let reg = |id: &str, pid: u32| Activity::Register(Registration { session_id: id.into(), harness: PluginHarness::Claude, harness_pid: Some(pid), config_home: None, cwd: Some("/r".into()), repository: None, transcript_path: None, attendance: None });
+    let ids = |want: &[&str]| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let got: Vec<String> = Registry::load(&dir).sessions().map(|r| r.session_id.clone()).collect();
+            if got == want {
+                return;
+            }
+            assert!(std::time::Instant::now() < deadline, "registrations {got:?}, not {want:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let send = |a: Activity| gruntas_harness::hook::send(&home.socket(), "/r", "test", a);
+    send(reg("live", std::process::id())).unwrap();
+    send(reg("doomed", child.id())).unwrap();
+    ids(&["doomed", "live"]);
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(std::fs::metadata(dir.join(registry::FILE)).unwrap().permissions().mode() & 0o777, 0o600);
+    // Heavy commands and usage windows are not registrations.
+    send(Activity::HeavyStart { session_id: "live".into(), tool_call_id: "t".into() }).unwrap();
+    daemon.join().unwrap().unwrap();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    // The next daemon starts from the file, and prunes the dead harness's
+    // entry with the first activity it takes.
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    send(Activity::HeavyEnd { session_id: "live".into(), tool_call_id: "t".into() }).unwrap();
+    send(Activity::Register(Registration { session_id: "other".into(), harness: PluginHarness::Codex, harness_pid: None, config_home: None, cwd: None, repository: None, transcript_path: None, attendance: None })).unwrap();
+    ids(&["live", "other"]);
+    send(Activity::Deregister { session_id: "live".into() }).unwrap();
+    ids(&["other"]);
+    daemon.join().unwrap().unwrap();
+}

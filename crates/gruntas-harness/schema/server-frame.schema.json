@@ -298,6 +298,35 @@
         "type",
         "session"
       ]
+    },
+    {
+      "description": "The answer to `activity`: taken, or why not.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "const": "activity"
+        }
+      },
+      "required": [
+        "type",
+        "id"
+      ]
     }
   ],
   "$defs": {
