@@ -218,7 +218,9 @@ const AGENT_TASKS: &[(&str, &str)] = &[
     #[cfg(feature = "harness")]
     ("gruntas -p \"<prompt>\" --output-format json", "Run one prompt headless; the result as JSON"),
     #[cfg(feature = "harness")]
-    ("gruntas status", "Which models are connected and ready"),
+    ("gruntas providers list --check", "Which models are connected and ready"),
+    #[cfg(all(feature = "harness", unix))]
+    ("gruntas status --json", "Every agent on your machines: state, health, quiet for"),
     #[cfg(feature = "sessions")]
     ("gruntas sessions", "Agent sessions on this machine, newest first"),
     ("gruntas doctor", "What is wrong with the setup"),

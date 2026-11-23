@@ -19,6 +19,17 @@ breaking changes may affect it without notice.
 
 ## [Unreleased]
 
+### Breaking change
+
+- **`gruntas status` is now the agent tree**, announced in 2026.11.1:
+  every agent on every machine of yours, by project, machine and parent
+  session, as `gruntas agents` showed it, which still works. `gruntas status
+  [project]` takes a project, and its `--json` is the tree's, not the
+  readiness table's; exit 3 no longer means no account is ready. On Linux
+  and macOS only, as the tree needs sync. Whether each Claude Code or Codex
+  account is ready is `gruntas providers list --check`: the same table,
+  JSON and exit 3.
+
 ## [2026.11.1] - 2026-11-23
 
 **Every agent on every machine of yours, in one place.** Agent sessions in

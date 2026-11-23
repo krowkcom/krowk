@@ -31,7 +31,7 @@ Publish
   push          Upload files, get a link for each
 
 Health
-  status        What's connected, and whether each is ready
+  status        Every agent on your machines, by project and machine
   doctor        Check this machine's setup
   upgrade       Upgrade gruntas
   config        Show or set configuration
@@ -99,7 +99,7 @@ Publish
   push                Upload files, get a link for each
 
 Health
-  status              What's connected, and whether each is ready
+  status              Every agent on your machines, by project and machine
   doctor              Check this machine's setup
   upgrade             Upgrade gruntas
   config show         The effective config, and which layer set each value
@@ -150,7 +150,6 @@ More
   host disable        Stop the service and remove it
   hosts               The same as gruntas machines
   relay serve         Carry sealed sessions between their host and viewers
-  agents              Every agent on your machines, by project and machine
   ping                Ask a machine, or a session's machine, whether it is alive
   pricing refresh     Refresh the models.dev price cache
   help                This, a command's help, or a topic

@@ -135,7 +135,7 @@ impl Sandbox {
     }
 
     fn row(&self, instance: &str) -> Value {
-        let out = self.gruntas(&["status", "--json"], &[]);
+        let out = self.gruntas(&["providers", "list", "--check", "--json"], &[]);
         let v: Value = serde_json::from_slice(&out.stdout).or_else(|_| serde_json::from_slice(&out.stderr)).unwrap();
         let rows = v.pointer("/data/instances").or_else(|| v.pointer("/error/details/instances")).unwrap_or_else(|| panic!("{v}"));
         rows.as_array().unwrap().iter().find(|r| r["instance"] == instance).cloned().unwrap_or_else(|| panic!("{instance} not listed in {v}"))
@@ -330,7 +330,7 @@ fn a_malformed_old_key_file_stops_the_move_naming_only_where_and_a_fixed_one_let
     b.old_layout();
     let providers = b.old_config().join("providers/credentials.json");
     b.write(&providers, &format!("{{\"version\": 1, \"keys\": {{\"anthropic\": \"{STORED_KEY}\"}}, oops}}"), 0o600);
-    for args in [&["doctor", "--json"][..], &["status", "--json"], &["config", "show"], &["whoami"]] {
+    for args in [&["doctor", "--json"][..], &["providers", "list", "--check", "--json"], &["config", "show"], &["whoami"]] {
         let out = b.gruntas(args, &[]);
         assert!(!out.status.success(), "{args:?}: {}", printed(&out));
         assert!(printed(&out).contains(&format!("{} is not valid (line 1, column", providers.display())), "{args:?}: {}", printed(&out));

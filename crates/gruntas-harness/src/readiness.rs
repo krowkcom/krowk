@@ -1,5 +1,5 @@
 //! Whether an instance can run a turn here, asked one way everywhere:
-//! `gruntas status`, `gruntas doctor`, `gruntas providers list`, and the host
+//! `gruntas providers list` (and its `--check`), `gruntas doctor`, and the host
 //! before it moves a session or starts a turn (`check_model`, `settle`,
 //! rollover candidates). Before this, `providers list` spawned each vendor
 //! CLI in turn, the host checked only keys and binaries, and a SuperGrok
@@ -25,7 +25,7 @@
 //! the directory: before a turn, the session's own working directory,
 //! once its repository is trusted — where the turn starts the vendor, and
 //! so the answer the turn will get (Claude Code reads the settings of that
-//! directory alone, not its parents') — and for `gruntas status`, `providers
+//! directory alone, not its parents') — and for `gruntas providers list --check`, `providers
 //! list`, `doctor` and a rollover offer, where no repository has been
 //! trusted, gruntas's own `0700` directory (`neutral_dir`), which holds
 //! nothing and which nobody else can write into — never the shared
@@ -117,7 +117,7 @@ impl Readiness {
         matches!(self, Readiness::Ready { .. })
     }
 
-    /// The `state` field of `gruntas status --json`: stable, snake_case.
+    /// The `state` field of `gruntas providers list --check --json`: stable, snake_case.
     pub fn state(&self) -> &'static str {
         match self {
             Readiness::Ready { .. } => "ready",
@@ -142,7 +142,7 @@ impl Readiness {
     }
 }
 
-/// One instance's row: what `gruntas status` prints, and what a refusal is
+/// One instance's row: what `gruntas providers list --check` prints, and what a refusal is
 /// made of.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
@@ -159,7 +159,7 @@ pub struct Report {
 }
 
 impl Report {
-    /// A row of `gruntas status --json` (and `providers list`, `doctor`).
+    /// A row of `gruntas providers list --check --json` (and `providers list`, `doctor`).
     /// Every key is always there, `null` when it has no value, so a script
     /// reads the same shape whatever the state.
     pub fn json(&self) -> Value {
@@ -433,7 +433,7 @@ pub fn route(
                 .iter()
                 .map(|i| {
                     let m = reg.model_on(i, bare, listed).unwrap_or_else(|_| "<model>".into());
-                    let unchecked = if unknown.iter().any(|u| u.name == i.name) { " (could not be checked — see `gruntas status`)" } else { "" };
+                    let unchecked = if unknown.iter().any(|u| u.name == i.name) { " (could not be checked — see `gruntas providers list --check`)" } else { "" };
                     format!("  {}, {}: --model {}/{m}{unchecked}", i.name, account_label(i), i.name)
                 })
                 .collect();
@@ -495,7 +495,7 @@ fn fix(inst: &Resolved, r: &Readiness) -> Option<String> {
         }
         Readiness::NotInstalled if codex => format!("install Codex (https://developers.openai.com/codex), or name the binary with `{} --binary <path>`", connect::connect_command(&inst.name, inst.kind)),
         Readiness::NotInstalled => format!("install Claude Code (https://claude.com/claude-code), or name the binary with `{} --binary <path>`", connect::connect_command(&inst.name, inst.kind)),
-        Readiness::Unknown { .. } => "see the reason, then run `gruntas status` again".into(),
+        Readiness::Unknown { .. } => "see the reason, then run `gruntas providers list --check` again".into(),
     })
 }
 

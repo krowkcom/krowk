@@ -33,7 +33,7 @@ fn client(code: &str) -> Option<i32> {
         // A backend is not started in a repository nobody trusted (R-BACK-6).
         #[cfg(feature = "harness")]
         "untrusted_directory" => REFUSED,
-        // `gruntas status` with no instance ready: nothing is signed in or
+        // `gruntas providers list --check` with no instance ready: nothing is signed in or
         // keyed, the same class as a missing login.
         #[cfg(feature = "harness")]
         "none_ready" => AUTH,

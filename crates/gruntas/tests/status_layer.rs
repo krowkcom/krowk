@@ -748,20 +748,20 @@ fn run(p: &Person, i: usize, args: &[&str]) -> (i32, String, String) {
     (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned())
 }
 
-/// SL06: `gruntas agents` (D10's tree, named `agents` by the owner's
-/// decision while `status` keeps its meaning for a release) is the tree by
-/// project, machine and parent session, each with state, health, quiet for
-/// and summary; `gruntas agents github.com/acme/site` only that project;
-/// `--json` the same tree.
+/// SL06, SL08: `gruntas status` (D10's tree; `gruntas agents`, its name
+/// for a release, still answers the same) is the tree by project, machine
+/// and parent session, each with state, health, quiet for and summary;
+/// `gruntas status github.com/acme/site` only that project; `--json` the
+/// same tree.
 #[test]
-fn sl06_agents_shows_the_tree_across_machines() {
+fn sl06_status_shows_the_tree_across_machines() {
     let mut p = Person::new("tree");
     let (laptop, server, desk) = (p.machine("laptop"), p.machine("server"), p.machine("desk"));
     let mut boards = two_machines().into_iter();
     put_board(&p, laptop, boards.next().unwrap(), 60);
     put_board(&p, server, boards.next().unwrap(), 60);
 
-    let (code, out, err) = run(&p, desk, &["agents", "--format", "human"]);
+    let (code, out, err) = run(&p, desk, &["status", "--format", "human"]);
     assert_eq!(code, 0, "{out}{err}");
     let want = "\
 github.com/acme/app
@@ -775,13 +775,15 @@ github.com/acme/site
     o1  completed  SERVING  quiet 1h  shipped
 ";
     assert_eq!(out, want, "{err}");
+    let (code, alias, _) = run(&p, desk, &["agents", "--format", "human"]);
+    assert_eq!((code, alias.as_str()), (0, want), "`agents`, the tree's name for a release, still answers");
 
-    let (code, out, _) = run(&p, desk, &["agents", "github.com/acme/site", "--format", "human"]);
+    let (code, out, _) = run(&p, desk, &["status", "github.com/acme/site", "--format", "human"]);
     assert_eq!((code, out.as_str()), (0, "github.com/acme/site\n  laptop  SERVING\n    o1  completed  SERVING  quiet 1h  shipped\n"));
-    let (_, out, _) = run(&p, desk, &["agents", "https://github.com/acme/site.git", "--format", "human"]);
+    let (_, out, _) = run(&p, desk, &["status", "https://github.com/acme/site.git", "--format", "human"]);
     assert!(out.starts_with("github.com/acme/site\n"), "a project named as a remote is normalised: {out}");
 
-    let (code, out, err) = run(&p, desk, &["agents", "--json"]);
+    let (code, out, err) = run(&p, desk, &["status", "--json"]);
     assert_eq!(code, 0, "{err}");
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     let projects = &v["data"]["projects"];
@@ -851,7 +853,7 @@ fn sl06_ping_answers_for_a_machine_and_a_session_and_not_for_an_unknown_one() {
         assert_eq!(code, 6, "{out}{err}");
         assert!(err.contains("Gone is UNKNOWN: its presence lapsed (last seen ") && err.contains("so it was not pinged"), "{err}");
     }
-    let (_, out, _) = run(&p, b, &["agents", "--format", "human"]);
+    let (_, out, _) = run(&p, b, &["status", "--format", "human"]);
     assert!(out.contains("  gone  UNKNOWN\n    s1  canceled  NOT_SERVING"), "the tree says so too: {out}");
     let held: serde_json::Value = serde_json::from_str(&ureq::get(format!("{}/_host_commands", p.api.trim_end_matches("/v1"))).call().unwrap().body_mut().read_to_string().unwrap()).unwrap();
     assert!(!held.to_string().contains(&p.device(c)), "nothing was sent to the lapsed machine: {held}");

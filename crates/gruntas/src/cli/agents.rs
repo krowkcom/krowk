@@ -1,4 +1,4 @@
-//! `gruntas agents [project]` and `gruntas ping <machine|session>` (R-STA-7,
+//! `gruntas status [project]` (once `gruntas agents`, still routed) and `gruntas ping <machine|session>` (R-STA-7,
 //! D5, D10): the status layer, read from this device.
 //!
 //! - `agents`: every machine's sealed status board (`sync::boards::read`),
@@ -98,15 +98,15 @@ fn project_of(t: &Task) -> String {
     t.metadata.gruntas.project.as_ref().map_or_else(|| NO_PROJECT.to_string(), |p| p.value.clone())
 }
 
-/// `gruntas agents [project]`.
+/// `gruntas status [project]`.
 pub(super) fn agents(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let only = match args {
         [] => None,
         [p] => Some(gruntas_client::presence::normalise_origin(p).unwrap_or_else(|| p.trim().to_string())),
-        _ => return Err(fail("bad_args", "`gruntas agents` takes at most one project, e.g. gruntas agents github.com/acme/app")),
+        _ => return Err(fail("bad_args", "`gruntas status` takes at most one project, e.g. gruntas status github.com/acme/app")),
     };
     let k = keys(ctx)?;
-    let (_, machines, unopened) = read(ctx, &k, "gruntas agents")?;
+    let (_, machines, unopened) = read(ctx, &k, "gruntas status")?;
     let now = jiff::Timestamp::now();
     // Project → machine (by its place in `machines`) → its Tasks.
     let mut projects: BTreeMap<String, BTreeMap<usize, Vec<&Task>>> = BTreeMap::new();
@@ -233,7 +233,7 @@ fn print_session(out: &mut dyn std::io::Write, s: &Value, depth: usize) {
 /// `gruntas ping <machine|session>`.
 pub(super) fn ping(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let [target] = args else {
-        return Err(fail("bad_args", "`gruntas ping` takes one machine or session, e.g. gruntas ping laptop — gruntas machines and gruntas agents list them"));
+        return Err(fail("bad_args", "`gruntas ping` takes one machine or session, e.g. gruntas ping laptop — gruntas machines and gruntas status list them"));
     };
     let k = keys(ctx)?;
     // A machine by its name or id, else a session on the boards.
@@ -256,7 +256,7 @@ pub(super) fn ping(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
             }
             let (m, s) = match found[..] {
                 [one] => one,
-                [] => return Err(fail("no_agent", format!("no machine or session '{}' — gruntas machines and gruntas agents list them", printable(target)))),
+                [] => return Err(fail("no_agent", format!("no machine or session '{}' — gruntas machines and gruntas status list them", printable(target)))),
                 _ => return Err(fail("ambiguous_session", format!("'{}' names more than one session — give more of its id", printable(target)))),
             };
             let Some(d) = gruntas_client::e2e::DeviceId::parse(&m.device) else { return Err(fail("bad_board", "a board names no device id")) };

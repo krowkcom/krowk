@@ -1,4 +1,4 @@
-$ gruntas status
+$ gruntas providers list --check
 stderr:
 {
   "ok": false,
@@ -37,7 +37,7 @@ stderr:
 }
 exit: 3
 
-$ gruntas status --json
+$ gruntas providers list --check --json
 stderr:
 {
   "ok": false,
@@ -76,7 +76,7 @@ stderr:
 }
 exit: 3
 
-$ gruntas status --json
+$ gruntas providers list --check --json
 stderr:
 {
   "ok": false,
@@ -115,12 +115,11 @@ stderr:
 }
 exit: 3
 
-$ gruntas status --format human
+$ gruntas providers list --check --format human
 stdout:
 claude  Claude subscription   not installed  Claude Code's own login in <scratch>/home/.claude  — install Claude Code (https://claude.com/claude-code), or name the binary with `gruntas connect anthropic --method subscription --binary <path>`
 codex   ChatGPT subscription  not installed  Codex's own login in <scratch>/home/.codex  — install Codex (https://developers.openai.com/codex), or name the binary with `gruntas connect openai --method subscription --binary <path>`
 stderr:
-! In the next release gruntas status becomes the agent tree (gruntas agents); gruntas providers list --check is this readiness check, under its lasting name
 ✗ None of the 2 instances can run a turn here.
   Each row's fix says what makes it ready.
   Code: none_ready

@@ -1,12 +1,12 @@
-# `gruntas status` with no config: the two implicit accounts, Claude Code and
+# `gruntas providers list --check` with no config: the two implicit accounts, Claude Code and
 # Codex, none ready (no login, no claude or codex on this PATH), exit 3 with
 # the rows as the failure's details; then a key in the environment, which is
 # no account by itself (D4: gruntas runs no model itself), so still exit 3.
 # The `--json` rows are the documented shape: every key on every row. The
 # key is a sentinel that must appear nowhere below.
-gruntas status
-gruntas status --json
+gruntas providers list --check
+gruntas providers list --check --json
 @env ANTHROPIC_API_KEY=sk-ant-golden-SENTINEL-do-not-print
-gruntas status --json
-gruntas status --format human
+gruntas providers list --check --json
+gruntas providers list --check --format human
 gruntas providers list --format human

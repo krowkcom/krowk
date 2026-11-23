@@ -145,7 +145,7 @@ fn readiness_a_trusted_repositorys_settings_count_and_an_untrusted_ones_are_neve
     assert_eq!(switch(&h.host(reg.clone(), gate), "claude:bedrock/sonnet").unwrap_err().code, "untrusted_directory");
     assert_eq!(h.log(), "", "nothing was spawned for an untrusted repository");
 
-    // Outside any repository — `gruntas status` — gruntas's own directory: the
+    // Outside any repository — `gruntas providers list --check` — gruntas's own directory: the
     // project's settings are not read, so the account is not signed in.
     let data = h.root.join("home/.gruntas");
     let neutral = readiness::neutral_dir(&data).unwrap();

@@ -1170,7 +1170,7 @@ impl Shared {
     /// each as `switchModel` does: the checks that need no process, trust,
     /// then the vendor in the repository. An offer never asks about trust —
     /// that is asked when the person takes it and the turn runs there — so
-    /// it asks the readiness check as `gruntas status` does: the checks that
+    /// it asks the readiness check as `gruntas providers list --check` does: the checks that
     /// need no process, then the vendor in gruntas's own directory, never the
     /// repository nobody has trusted yet. A signed-out account is never
     /// offered; one whose login only a project's settings provide

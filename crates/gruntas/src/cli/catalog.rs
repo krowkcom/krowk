@@ -587,8 +587,6 @@ pub fn catalog(version: &str) -> Catalog {
     c.commands.extend(connect_commands());
     #[cfg(feature = "harness")]
     c.commands.push(providers_command());
-    #[cfg(feature = "harness")]
-    c.commands.push(cmd("status", "gruntas status", "What's connected, and whether each is ready"));
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(host_command());
     #[cfg(all(feature = "harness", unix))]
@@ -600,7 +598,7 @@ pub fn catalog(version: &str) -> Catalog {
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(Command {
         args: vec![arg("project", "Only this project, e.g. github.com/acme/app", false)],
-        ..cmd("agents", "gruntas agents [project]", "Every agent on your machines, by project and machine")
+        ..cmd("status", "gruntas status [project]", "Every agent on your machines, by project and machine")
     });
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(Command {
@@ -982,7 +980,7 @@ fn providers_command() -> Command {
                 )
             },
             Command {
-                flags: vec![flag("check", BOOL, "Only the readiness check (what gruntas status shows today): exits 3 when no instance is ready")],
+                flags: vec![flag("check", BOOL, "Only the readiness check (what gruntas status showed before it became the agent tree): exits 3 when no instance is ready")],
                 ..cmd("list", "gruntas providers list [--check]", "List every instance, and whether it is ready")
             },
             Command {
@@ -1149,13 +1147,8 @@ pub fn about(name: &str) -> &'static str {
         "billing" => BILLING_ABOUT,
         #[cfg(all(feature = "harness", unix))]
         "machines" | "hosts" => MACHINES_ABOUT,
-        #[cfg(feature = "harness")]
-        "status" => "\
-Also where its key or login comes from, and what fixes it. Exits 3 if none is.
-In the next release this becomes the agent tree (`gruntas agents`); the same
-check stays as `gruntas providers list --check`.",
         #[cfg(all(feature = "harness", unix))]
-        "agents" => "\
+        "status" | "agents" => "\
 Read from every machine's sealed status board: a tree by project, machine and
 parent session. A machine is SERVING while its presence is live, UNKNOWN once
 it lapsed. Quiet for is worked out from each board's own publish time, never
@@ -1187,8 +1180,8 @@ Adds a Claude Code or Codex account: on a subscription (signed in with
 `claude auth login` or `codex login`), or on an API key or a gateway.",
         #[cfg(feature = "harness")]
         "providers list" => "\
-Where each runs, too. With --check, the readiness table and JSON that
-`gruntas status` gives today, and exit 3 when none is ready.",
+Where each runs, too. With --check, the readiness table and JSON alone:
+whether each account can run a turn here, and exit 3 when none is ready.",
         #[cfg(feature = "harness")]
         "mcp" => "\
 Servers live in gruntas's config.json (`mcpServers`, the shape Claude Code
@@ -1304,7 +1297,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
     (
         "Health",
         &[
-            #[cfg(feature = "harness")]
+            #[cfg(all(feature = "harness", unix))]
             "status",
             "doctor",
             "upgrade",
@@ -1332,8 +1325,6 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             "hosts",
             #[cfg(all(feature = "harness", unix))]
             "relay",
-            #[cfg(all(feature = "harness", unix))]
-            "agents",
             #[cfg(all(feature = "harness", unix))]
             "ping",
             #[cfg(feature = "sessions")]
@@ -1369,8 +1360,6 @@ pub const ALL_ONLY: &[&str] = &[
     "hosts",
     #[cfg(all(feature = "harness", unix))]
     "relay",
-    #[cfg(all(feature = "harness", unix))]
-    "agents",
     #[cfg(all(feature = "harness", unix))]
     "ping",
     #[cfg(feature = "sessions")]
@@ -1415,7 +1404,7 @@ mod tests {
         } else {
             &["login", "whoami", "billing", "sessions", "push", "doctor", "upgrade", "config"]
         };
-        let want: Vec<&str> = want.iter().copied().filter(|n| cfg!(unix) || *n != "machines").filter(|n| cfg!(feature = "sessions") || *n != "sessions").collect();
+        let want: Vec<&str> = want.iter().copied().filter(|n| cfg!(unix) || !["machines", "status"].contains(n)).filter(|n| cfg!(feature = "sessions") || *n != "sessions").collect();
         assert_eq!(shown, want);
         // The catalog says the same: every other command is hidden.
         // (A build without `sessions` still names `sessions` and `pricing`.)

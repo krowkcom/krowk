@@ -31,7 +31,7 @@ Publish
   push          Upload files, get a link for each
 
 Health
-  status        What's connected, and whether each is ready
+  status        Every agent on your machines, by project and machine
   doctor        Check this machine's setup
   upgrade       Upgrade gruntas
   config        Show or set configuration
@@ -1221,7 +1221,7 @@ stdout:
               "name": "check",
               "type": "bool",
               "default": "false",
-              "usage": "Only the readiness check (what gruntas status shows today): exits 3 when no instance is ready"
+              "usage": "Only the readiness check (what gruntas status showed before it became the agent tree): exits 3 when no instance is ready"
             }
           ],
           "hidden": false
@@ -1259,12 +1259,6 @@ stdout:
         }
       ],
       "hidden": true
-    },
-    {
-      "name": "status",
-      "usage": "gruntas status",
-      "summary": "What's connected, and whether each is ready",
-      "hidden": false
     },
     {
       "name": "host",
@@ -1456,8 +1450,8 @@ stdout:
       "hidden": true
     },
     {
-      "name": "agents",
-      "usage": "gruntas agents [project]",
+      "name": "status",
+      "usage": "gruntas status [project]",
       "summary": "Every agent on your machines, by project and machine",
       "args": [
         {
@@ -1466,7 +1460,7 @@ stdout:
           "required": false
         }
       ],
-      "hidden": true
+      "hidden": false
     },
     {
       "name": "ping",
@@ -2103,7 +2097,7 @@ Publish
   push          Upload files, get a link for each
 
 Health
-  status        What's connected, and whether each is ready
+  status        Every agent on your machines, by project and machine
   doctor        Check this machine's setup
   upgrade       Upgrade gruntas
   config        Show or set configuration
@@ -2154,7 +2148,7 @@ tty:
   push          Upload files, get a link for each
 
 \e[1mHealth\e[0m
-  status        What's connected, and whether each is ready
+  status        Every agent on your machines, by project and machine
   doctor        Check this machine's setup
   upgrade       Upgrade gruntas
   config        Show or set configuration
@@ -3344,7 +3338,7 @@ tty:
               "name": "check",
               "type": "bool",
               "default": "false",
-              "usage": "Only the readiness check (what gruntas status shows today): exits 3 when no instance is ready"
+              "usage": "Only the readiness check (what gruntas status showed before it became the agent tree): exits 3 when no instance is ready"
             }
           ],
           "hidden": false
@@ -3382,12 +3376,6 @@ tty:
         }
       ],
       "hidden": true
-    },
-    {
-      "name": "status",
-      "usage": "gruntas status",
-      "summary": "What's connected, and whether each is ready",
-      "hidden": false
     },
     {
       "name": "host",
@@ -3579,8 +3567,8 @@ tty:
       "hidden": true
     },
     {
-      "name": "agents",
-      "usage": "gruntas agents [project]",
+      "name": "status",
+      "usage": "gruntas status [project]",
       "summary": "Every agent on your machines, by project and machine",
       "args": [
         {
@@ -3589,7 +3577,7 @@ tty:
           "required": false
         }
       ],
-      "hidden": true
+      "hidden": false
     },
     {
       "name": "ping",
