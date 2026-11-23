@@ -1516,6 +1516,7 @@ impl Shared {
             handoff: None,
             kids,
             usage: crate::usage::Usage::in_home(self.cfg.sessions_dir.parent().unwrap_or(&self.cfg.sessions_dir)),
+            home: self.registry().get(&model.instance).ok().and_then(|i| i.backend.as_ref()).filter(|b| b.key.is_none()).and_then(|b| b.home.as_ref()).map(|h| h.display().to_string()),
             limits: Default::default(),
         };
         // What the login's usage read before the turn, for the early switch.
@@ -2064,6 +2065,9 @@ struct Writer<'a> {
     kids: Option<Kids>,
     /// Each login's last known usage, in gruntas's home (R-ROLL-2).
     usage: crate::usage::Usage,
+    /// The config directory the turn's backend runs in: recorded with its
+    /// login, so a plugin's usage report for it finds that login (R-KIT-7).
+    home: Option<String>,
     /// The turn's last limits report per window, for the early switch.
     limits: std::collections::BTreeMap<String, LimitStatus>,
 }
@@ -2467,12 +2471,15 @@ impl Writer<'_> {
     }
 
     /// Saves who `instance` is signed in as, and its models. Without a login
-    /// the instance keeps the one it had, or is its own.
+    /// the instance keeps the one it had, or is its own. Its config home goes
+    /// with a vendor login alone: a keyed instance (a router) sharing
+    /// `~/.claude` must not take the account's usage windows (R-KIT-7).
     async fn save_account(&self, instance: &str, login: Option<String>, models: Vec<String>) {
+        let home = self.home.clone().filter(|_| login.is_some());
         let (usage, instance) = (self.usage.clone(), instance.to_string());
         let _ = tokio::task::spawn_blocking(move || {
             let login = login.unwrap_or_else(|| usage.read().login_of(&instance).to_string());
-            usage.record_instance(&instance, &login, &models, gruntas_store::now_ms())
+            usage.record_account(&instance, &login, &models, home.as_deref(), gruntas_store::now_ms())
         })
         .await;
     }

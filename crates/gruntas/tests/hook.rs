@@ -429,9 +429,42 @@ fn kt05_worktree_create_and_remove_go_through_gruntas_worktrees() {
 /// rollover reads, under the login when the config home's is known, else
 /// under the config home.
 #[test]
-#[ignore = "KT06: report usage windows from a Claude mod"]
 fn kt06_a_usage_event_lands_in_the_usage_record() {
-    todo!("KT06: pipe fixtures claude/usage.json into `gruntas hook claude usage` with a daemon up and read the usage record")
+    use gruntas_harness::usage::Usage;
+    let s = Scratch::new("kt06");
+    let usage = Usage::in_home(&s.0.join("home/.gruntas"));
+    // Polls the record until `key` has both windows.
+    let landed = |key: &str| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let d = usage.read();
+            if d.logins.get(key).is_some_and(|w| w.len() == 2) {
+                return d;
+            }
+            assert!(Instant::now() < deadline, "nothing under {key}: {d:?} {}", std::fs::read_to_string(s.daemon_dir().join("hook.log")).unwrap_or_default());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    // The fixture, its resets moved far out: a window whose reset has
+    // passed is not recorded, and the fixture's are fixed dates.
+    let mut payload: serde_json::Value = serde_json::from_slice(&fixture("claude", "usage")).unwrap();
+    payload["windows"][0]["resetsAtMs"] = 4_000_000_000_000u64.into();
+    payload["windows"][1]["resetsAtMs"] = 4_100_000_000_000u64.into();
+    let payload = payload.to_string();
+    // Unknown: the fixture's home has no instance on it.
+    let (out, took) = s.hook("claude", "usage", payload.as_bytes());
+    assert!(out.status.success() && out.stdout.is_empty() && took < LIMIT, "{out:?} in {took:?}");
+    let d = landed("/home/user/.claude");
+    let five = &d.logins["/home/user/.claude"]["five_hour"];
+    assert_eq!((five.used_percent, five.resets_at_ms), (Some(37.5), Some(4_000_000_000_000)));
+    assert_eq!(d.logins["/home/user/.claude"]["seven_day"].used_percent, Some(12.0));
+    // Known: an instance ran in that home signed in as a login.
+    usage.record_account("claude", "ada@example.com", &[], Some("/home/user/.claude"), 1).unwrap();
+    let (out, _) = s.hook("claude", "usage", payload.as_bytes());
+    assert!(out.status.success() && out.stdout.is_empty(), "{out:?}");
+    let d = landed("ada@example.com");
+    // As rollover reads it.
+    assert_eq!(d.standing("ada@example.com", gruntas_store::now_ms()).map(|s| s.headroom), Some(62.5));
 }
 
 /// KT07: `gruntas doctor` reports whether each known Claude config home's
