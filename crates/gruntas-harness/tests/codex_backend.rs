@@ -409,8 +409,11 @@ fn a_fenced_session_runs_codex_in_the_gruntas_profile_and_is_held_to_it() {
         let resume = lines_of(&h.fake_log(), "in ").into_iter().find(|l| l.contains("thread/resume")).unwrap();
         assert!(resume.contains(r#""permissions":"gruntas""#) && !resume.contains(r#""sandbox""#), "{resume}");
         host.shutdown().await;
-        // acceptEdits writes the project in a process of its own.
-        let host = host_on(&[]);
+        // acceptEdits writes the project in a process of its own (a plain
+        // answer: the scenario's two turns are spent).
+        let mut cfg = h.config(vec![("codex:team", h.instance(&home, None, &[]))], trust::allow_all());
+        cfg.permissions.gruntas_dir = Some(gruntas.clone());
+        let host = Host::new(cfg);
         let (_, r) = run(&host, fenced(prompt(None, "hi", "codex:team/gpt-5.5", PermissionMode::AcceptEdits))).await;
         assert_eq!(r.unwrap().unwrap().status, TurnStatus::Completed);
         assert!(lines_of(&h.fake_log(), "argv app-server").pop().unwrap().contains(r#"":project_roots"="write""#));

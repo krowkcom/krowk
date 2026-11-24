@@ -287,7 +287,8 @@ fn codex_attended_execs_codex_with_the_account_and_profile() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let (args, env) = b.started("codex");
     let profile = format!(r#"permissions.gruntas.filesystem={{":root"="read",":project_roots"="write","{}"="none","#, b.home().display());
-    assert_eq!((&args[..3], &args[4..]), (&["-c", r#"default_permissions="gruntas""#, "-c"][..], &["--model", "gpt-5.5", "resume"][..]));
+    assert_eq!(args.len(), 7, "{args:?}");
+    assert_eq!((&args[..3], &args[4..]), (&["-c", r#"default_permissions="gruntas""#, "-c"].map(String::from)[..], &["--model", "gpt-5.5", "resume"].map(String::from)[..]));
     assert!(args[3].starts_with(&profile), "the home first, then the rest the fence hides: {}", args[3]);
     assert!(env.contains(&format!("CODEX_HOME={}", b.root.join("accounts/codex-team").display())), "{env:?}");
     let hint = "codex plugin add gruntas@gruntas";
