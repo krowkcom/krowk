@@ -591,7 +591,8 @@ fn roll(state: &Shared, s: &mut State, config_home: &str) {
             continue;
         }
         let place = s.registry.get(&w.session_id).map(|r| super::roll::Place { cwd: r.cwd.clone(), transcript: r.transcript_path.clone() }).unwrap_or_default();
-        s.moving.insert(w.id.clone(), (w.session_id.clone(), Instant::now(), false));
+        // A move done before keeps its settling, should this one not move it.
+        let settled = s.moving.insert(w.id.clone(), (w.session_id.clone(), Instant::now(), false)).filter(|(_, _, done)| *done);
         let (state, home, accounts, usage, cross) = (state.clone(), config_home.to_string(), accounts.clone(), usage.clone(), cross.clone());
         tokio::task::spawn_local(async move {
             let job = w.clone();
@@ -606,9 +607,13 @@ fn roll(state: &Shared, s: &mut State, config_home: &str) {
                 return;
             }
             let now = super::tasks::now();
+            let unmoved = |s: &mut State| match settled {
+                Some(e) => drop(s.moving.insert(w.id.clone(), e)),
+                None => drop(s.moving.remove(&w.id)),
+            };
             let changed = match out {
                 Ok(None) => {
-                    s.moving.remove(&w.id);
+                    unmoved(&mut s);
                     false
                 }
                 Ok(Some(super::roll::Outcome::Moved { account, launch, notice })) => {
@@ -623,7 +628,7 @@ fn roll(state: &Shared, s: &mut State, config_home: &str) {
                 }
                 Ok(Some(super::roll::Outcome::Held(why))) | Err(why) => {
                     eprintln!("background session {}: {why}", w.id);
-                    s.moving.remove(&w.id);
+                    unmoved(&mut s);
                     s.tasks.held(&w.session_id, &why, &now)
                 }
             };
