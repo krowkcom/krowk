@@ -343,16 +343,36 @@ pub fn repository(cwd: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|u| !u.is_empty())
 }
 
-/// Whether a person is at the session: the harness runs on a terminal,
-/// which its hook shares as its controlling one. A session started with no
-/// terminal (a script, a service, `claude -p` from cron) is unattended, as
-/// `gruntas -p` without one is.
-pub fn attendance() -> Attendance {
+/// Whether a person is at the session: the harness runs on a terminal. The
+/// hook shares it as its controlling one, or, where the harness runs its
+/// hooks in a session of their own as Claude Code does, the harness's
+/// process (`harness`) has it. A session started with no terminal (a
+/// script, a service, `claude -p` from cron) is unattended, as `gruntas -p`
+/// without one is.
+pub fn attendance(harness: Option<u32>) -> Attendance {
     use std::os::unix::fs::OpenOptionsExt;
-    match std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOCTTY).open("/dev/tty") {
-        Ok(_) => Attendance::Attended,
-        Err(_) => Attendance::Unattended,
-    }
+    let own = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOCTTY).open("/dev/tty").is_ok();
+    if own || harness.is_some_and(on_terminal) { Attendance::Attended } else { Attendance::Unattended }
+}
+
+/// Whether process `pid` has a controlling terminal: its stat line's
+/// `tty_nr` is not 0.
+#[cfg(target_os = "linux")]
+fn on_terminal(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).ok().and_then(|stat| stat_tty(&stat)).is_some_and(|tty| tty != 0)
+}
+
+/// A stat line's `tty_nr`, the fifth field after the name.
+#[cfg(target_os = "linux")]
+fn stat_tty(stat: &str) -> Option<i64> {
+    stat.get(stat.rfind(')')? + 1..)?.split_whitespace().nth(4)?.parse().ok()
+}
+
+/// Whether process `pid` has a controlling terminal: ps names one, not `??`.
+#[cfg(not(target_os = "linux"))]
+fn on_terminal(pid: u32) -> bool {
+    let out = std::process::Command::new("ps").args(["-o", "tty=", "-p", &pid.to_string()]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output();
+    out.is_ok_and(|o| o.status.success() && !matches!(String::from_utf8_lossy(&o.stdout).trim(), "" | "?" | "??"))
 }
 
 /// Sends `activity` to the daemon on `socket` and waits for its answer:
@@ -460,7 +480,10 @@ pub fn run(args: &[String], stdin: impl Read, env: &dyn Fn(&str) -> String, vers
         return (Some(deny), None);
     }
     let ctx = match &ev {
-        HookEvent::SessionStart { session, .. } => Context { harness_pid: harness_pid(), config_home: config_home(h, env), repository: session.cwd.as_deref().and_then(repository), attendance: Some(attendance()), heavy: Vec::new() },
+        HookEvent::SessionStart { session, .. } => {
+            let pid = harness_pid();
+            Context { harness_pid: pid, config_home: config_home(h, env), repository: session.cwd.as_deref().and_then(repository), attendance: Some(attendance(pid)), heavy: Vec::new() }
+        }
         HookEvent::ToolStart { .. } | HookEvent::ToolEnd { .. } => Context { config_home: config_home(h, env), heavy: heavy_list(env), ..Context::default() },
         _ => Context { config_home: config_home(h, env), ..Context::default() },
     };
@@ -721,6 +744,26 @@ mod tests {
         child.kill().unwrap();
         child.wait().unwrap();
         assert_eq!(process(child.id()), None);
+    }
+
+    /// GA07: Claude Code runs its hooks in a session of their own, with no
+    /// terminal; the harness's own terminal says a person is at it.
+    #[test]
+    fn ga07_attendance_is_read_from_the_harness_terminal_too() {
+        use std::os::unix::process::CommandExt;
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("5");
+        // SAFETY: setsid is async-signal-safe and touches no memory.
+        unsafe { cmd.pre_exec(|| if libc::setsid() < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }) };
+        let mut child = cmd.spawn().unwrap();
+        assert!(!on_terminal(child.id()));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(stat_tty("905968 (cl a) e) S 1 905968 905968 34832 905968 4194560"), Some(34832));
+            assert_eq!(stat_tty("913719 (sh) S 913639 913719 913719 0 -1 4194560"), Some(0));
+        }
     }
 
     #[test]
