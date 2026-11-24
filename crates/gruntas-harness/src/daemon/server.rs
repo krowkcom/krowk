@@ -233,8 +233,9 @@ pub(super) struct State {
     /// The launched sessions rollover is moving, by the id `claude --bg`
     /// printed: their session id, and when the move started or, once it
     /// is done, was done. Kept until
-    /// `MOVE_SETTLE` after, so the session is neither forgotten nor moved
-    /// again meanwhile, and the old one's late `SessionEnd` ends nothing.
+    /// `MOVE_SETTLE` after, so the session is not forgotten meanwhile and
+    /// the old one's late `SessionEnd` ends nothing; only a move under way
+    /// keeps it from being moved again.
     moving: HashMap<String, (String, Instant, bool)>,
 }
 
@@ -584,7 +585,9 @@ fn roll(state: &Shared, s: &mut State, config_home: &str) {
         // One on another account is not this one's to move; one on the
         // default account (no config home) is matched off the thread.
         let elsewhere = w.launch.config_home.as_deref().is_some_and(|h| crate::usage::home_key(h) != crate::usage::home_key(config_home));
-        if elsewhere || s.moving.contains_key(&w.id) {
+        // One moved already, out of usage on the account it moved to, moves
+        // on: only a move under way holds it.
+        if elsewhere || s.moving.get(&w.id).is_some_and(|(_, _, done)| !done) {
             continue;
         }
         let place = s.registry.get(&w.session_id).map(|r| super::roll::Place { cwd: r.cwd.clone(), transcript: r.transcript_path.clone() }).unwrap_or_default();

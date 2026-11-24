@@ -26,16 +26,17 @@ impl Rig {
     /// `claude:b`, on the fake `claude`, `rollover` as given; the worker
     /// launched on `a` and registered, its transcript `transcript`.
     fn new(name: &str, rollover: &str, transcript: &[&str]) -> Rig {
-        Rig::with(name, rollover, transcript, false)
+        Rig::with(name, rollover, transcript, &["claude:b"])
     }
 
-    /// `new`, its second account `codex:b`, a Codex one, with `codex`.
-    /// A continuation on the other harness is written down in `continued`.
-    fn with(name: &str, rollover: &str, transcript: &[&str], codex: bool) -> Rig {
+    /// `new`, its other accounts `others` (`claude:<dir>` or `codex:<dir>`,
+    /// each at home in `<dir>`). A continuation on the other harness is
+    /// written down in `continued`.
+    fn with(name: &str, rollover: &str, transcript: &[&str], others: &[&str]) -> Rig {
         // Under /tmp, so the socket's path fits `sun_path`.
         let root = PathBuf::from("/tmp").join(format!("gruntas-rl02-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        for d in ["a/projects/-work", "b", "work", "run"] {
+        for d in ["a/projects/-work", "work", "run"].into_iter().chain(others.iter().map(|o| o.split_once(':').unwrap().1)) {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
         let out = root.display();
@@ -53,16 +54,20 @@ impl Rig {
             "rollover": rollover,
         });
         let mut config = config;
-        config["instances"][if codex { "codex:b" } else { "claude:b" }] = match codex {
-            true => serde_json::json!({ "kind": "codex-app-server", "binary": claude, "codexHome": root.join("b") }),
-            false => serde_json::json!({ "kind": "claude-code", "binary": claude, "configDir": root.join("b") }),
-        };
+        for o in others {
+            config["instances"][o] = match o.split_once(':').unwrap() {
+                ("codex", d) => serde_json::json!({ "kind": "codex-app-server", "binary": claude, "codexHome": root.join(d) }),
+                (_, d) => serde_json::json!({ "kind": "claude-code", "binary": claude, "configDir": root.join(d) }),
+            };
+        }
         // The default account, `claude`, shares a's login: never a move;
-        // the default `codex` is out of usage too.
+        // the default `codex` is out of usage too. a's home is known, so
+        // the mod's report of it counts against that login.
         let login = serde_json::json!({ "login": "me", "seenAtMs": 1 });
+        let a = serde_json::json!({ "login": "me", "seenAtMs": 1, "configHome": gruntas_harness::usage::home_key(&root.join("a").display().to_string()) });
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
         let spent = serde_json::json!({ "five_hour": { "status": "limited", "usedPercent": 100.0, "resetsAtMs": now + 3_600_000, "seenAtMs": now } });
-        std::fs::write(root.join("usage.json"), serde_json::json!({ "instances": { "claude": login, "claude:a": login, "codex": { "login": "spent", "seenAtMs": 1 } }, "logins": { "spent": spent } }).to_string()).unwrap();
+        std::fs::write(root.join("usage.json"), serde_json::json!({ "instances": { "claude": login, "claude:a": a, "codex": { "login": "spent", "seenAtMs": 1 } }, "logins": { "spent": spent } }).to_string()).unwrap();
         let cfg = gruntas_harness::instances::from_config_json(&config).unwrap();
         let registry = gruntas_harness::instances::Registry::resolve(&cfg, &|_| String::new());
         let run = root.join("run").display().to_string();
@@ -206,10 +211,33 @@ fn rl02_without_auto_the_worker_waits_naming_the_next_account() {
 /// at the equivalent tier's model, as the launcher's `continue_on` does.
 #[test]
 fn rl02_on_the_other_harness_rung_the_worker_is_stopped_and_continued_there() {
-    let rig = Rig::with("cross", "auto", &[PROMPT, LIMIT], true);
+    let rig = Rig::with("cross", "auto", &[PROMPT, LIMIT], &["codex:b"]);
     rig.limited("a");
     rig.wait_for("the worker was never continued", || rig.root.join("continued").exists());
     assert_eq!(rig.read("continued"), format!("codex:b gpt-5.6-terra {SESSION} {}", rig.root.join("work").display()), "sonnet's tier on Codex, in its directory");
     assert_eq!(rig.read("stopped"), format!("{ID} {}\n", rig.home("a")), "stopped on its old account");
     assert!(!rig.root.join("resumed").exists(), "not resumed on Claude Code");
+}
+
+/// RL06 (R-RL-7), the ladder end to end for one unattended worker: out of
+/// usage on `claude:a`, it moves to `claude:b` (another subscription, the
+/// same session resumed there); out of usage on `b` too, with `a` still
+/// spent, it is stopped there and continued on `codex:c`, the other
+/// harness, at sonnet's tier, in its directory.
+#[test]
+fn rl06_a_worker_crosses_claude_code_accounts_then_to_codex() {
+    let rig = Rig::with("ladder", "auto", &[PROMPT, TOOL, LIMIT], &["claude:b", "codex:c"]);
+    rig.limited("a");
+    rig.wait_for("the worker never moved to b", || rig.root.join("resumed").exists());
+    assert_eq!(resumed(&rig)[0], format!("CLAUDE_CONFIG_DIR={}", rig.home("b")), "the same harness's rung first");
+    assert!(!rig.root.join("continued").exists(), "not on Codex while b has room");
+
+    // On b now (the move done): its SessionStart there, then b runs out
+    // as well.
+    rig.wait_for("the move never finished", || rig.tasks().launched().iter().any(|w| w.launch.config_home == Some(rig.home("b"))));
+    rig.register("b");
+    rig.limited("b");
+    rig.wait_for("the worker never continued on Codex", || rig.root.join("continued").exists());
+    assert_eq!(rig.read("continued"), format!("codex:c gpt-5.6-terra {SESSION} {}", rig.root.join("work").display()));
+    assert_eq!(rig.read("stopped"), format!("{ID} {}\n{ID} {}\n", rig.home("a"), rig.home("b")), "stopped on a, then on b");
 }
