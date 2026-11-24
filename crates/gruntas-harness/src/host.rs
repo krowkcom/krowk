@@ -786,8 +786,8 @@ struct TurnPlan {
     /// What the turn's commands get in their environment beyond gruntas's
     /// own: a worktree's `GRUNTAS_PORT_BASE`.
     env: Vec<(String, String)>,
-    /// The gruntas home a fenced session is kept out of.
-    fence: Option<PathBuf>,
+    /// What a fenced session is kept out of.
+    fence: Option<Vec<PathBuf>>,
     backend_session: Option<String>,
     budget: Budget,
     evidence: Option<Evidence>,
@@ -1365,7 +1365,11 @@ impl Shared {
         let fence = match past.fenced || (session_id.is_none() && begin.fenced) {
             false => None,
             true if wire != WireApi::CodexAppServer => return Err(staying(EngineError::new("fence_unsupported", format!("this session is kept out of the gruntas home, which gruntas holds on Codex only, and {} is not a Codex account", instance.name)))),
-            true => Some(self.cfg.permissions.gruntas_dir.clone().ok_or_else(|| EngineError::new("fence_unsupported", "this session is kept out of the gruntas home, and this host does not know where that is"))?),
+            true => {
+                let home = self.cfg.permissions.gruntas_dir.clone().ok_or_else(|| EngineError::new("fence_unsupported", "this session is kept out of the gruntas home, and this host does not know where that is"))?;
+                let user = self.cfg.permissions.home.as_ref().map(|h| h.display().to_string()).unwrap_or_default();
+                Some(crate::launch::hidden(&home, &|k| if k == "HOME" { user.clone() } else { gruntas_api::home::process_env(k) }))
+            }
         };
         // A backend runs the repository's own hooks and MCP servers, so it
         // is not started in one nobody trusted; and a binary that is not

@@ -394,7 +394,8 @@ fn a_fenced_session_runs_codex_in_the_gruntas_profile_and_is_held_to_it() {
         assert_eq!(r.status, TurnStatus::Completed, "{r:?}");
         let log = h.fake_log();
         let argv = lines_of(&log, "argv app-server").pop().unwrap();
-        let profile = format!(r#"-c default_permissions="gruntas" -c permissions.gruntas.filesystem={{":root"="read",":project_roots"="write","{}"="none"}}"#, gruntas.display());
+        // Default mode asks before an edit: the project is read, not written.
+        let profile = format!(r#"-c default_permissions="gruntas" -c permissions.gruntas.filesystem={{":root"="read",":project_roots"="read","{}"="none","#, gruntas.display());
         assert!(argv.contains(&profile), "the profile is defined and chosen: {argv}");
         let start = lines_of(&log, "in ").into_iter().find(|l| l.contains("thread/start")).unwrap();
         assert!(start.contains(r#""permissions":"gruntas""#) && !start.contains(r#""sandbox""#) && start.contains(r#""approvalsReviewer":"user""#), "{start}");
@@ -408,9 +409,15 @@ fn a_fenced_session_runs_codex_in_the_gruntas_profile_and_is_held_to_it() {
         let resume = lines_of(&h.fake_log(), "in ").into_iter().find(|l| l.contains("thread/resume")).unwrap();
         assert!(resume.contains(r#""permissions":"gruntas""#) && !resume.contains(r#""sandbox""#), "{resume}");
         host.shutdown().await;
-        // Another profile, or a sandbox this build does not know, ends the
-        // thread before a turn runs.
-        for (k, v) in [("FAKE_CODEX_PROFILE", ":workspace"), ("FAKE_CODEX_SANDBOX", "somethingNew"), ("FAKE_CODEX_SANDBOX", "dangerFullAccess")] {
+        // acceptEdits writes the project in a process of its own.
+        let host = host_on(&[]);
+        let (_, r) = run(&host, fenced(prompt(None, "hi", "codex:team/gpt-5.5", PermissionMode::AcceptEdits))).await;
+        assert_eq!(r.unwrap().unwrap().status, TurnStatus::Completed);
+        assert!(lines_of(&h.fake_log(), "argv app-server").pop().unwrap().contains(r#"":project_roots"="write""#));
+        host.shutdown().await;
+        // Another profile, a sandbox this build does not know, or one looser
+        // than the profile, ends the thread before a turn runs.
+        for (k, v) in [("FAKE_CODEX_PROFILE", ":workspace"), ("FAKE_CODEX_SANDBOX", "somethingNew"), ("FAKE_CODEX_SANDBOX", "dangerFullAccess"), ("FAKE_CODEX_SANDBOX", "workspaceWrite")] {
             let _ = std::fs::remove_file(h.log_file());
             let host = host_on(&[(k, v)]);
             let (_, r) = run(&host, fenced(prompt(None, "hi", "codex:team/gpt-5.5", PermissionMode::Default))).await;

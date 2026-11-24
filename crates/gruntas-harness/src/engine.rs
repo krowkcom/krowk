@@ -163,9 +163,10 @@ pub struct TurnContext {
     /// What the turn's commands get in their environment beyond gruntas's
     /// own, in the sandbox too: a gruntas worktree's `GRUNTAS_PORT_BASE`.
     pub env: Vec<(String, String)>,
-    /// For a session kept out of the gruntas home (Launcher D3): that home,
-    /// by its resolved path. Codex runs it in gruntas's permissions profile.
-    pub fence: Option<PathBuf>,
+    /// For a session kept out of the gruntas home (Launcher D3): every path
+    /// it is kept out of (`launch::hidden`). Codex runs it in gruntas's
+    /// permissions profile.
+    pub fence: Option<Vec<PathBuf>>,
     /// The session's own directory, beside its log: where the images its
     /// prompts carry are kept (`crate::images`).
     pub session_dir: PathBuf,

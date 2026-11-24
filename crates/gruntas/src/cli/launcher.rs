@@ -101,7 +101,7 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<(), Error> {
         Some(task) => Mode::Unattended { task },
         None => Mode::Attended,
     };
-    let req = launch::Request { harness, mode, instance, home, plugin_dir, gruntas, sandbox: !asked.no_sandbox, args: asked.rest };
+    let req = launch::Request { harness, mode, instance, hidden: launch::hidden(&home, ctx.io.env), plugin_dir, gruntas, sandbox: !asked.no_sandbox, args: asked.rest };
     let plan = launch::plan(&req, &|p| std::fs::read_to_string(p)).map_err(bad)?;
     match (plan.harness, &plan.mode) {
         (Harness::Claude, Mode::Attended) => claude_attended(ctx, plan),
@@ -274,8 +274,10 @@ fn codex_unattended(ctx: &mut Ctx, task: &str, plan: &Plan, instance: &Resolved,
     use gruntas_harness::protocol::{Attendance, Command, ModelRef, PermissionMode};
     let model = registry.model_on(instance, None, &|_| Vec::new()).map_err(|e| fail("no_model", e))?;
     let cwd = std::env::current_dir().map_err(|e| fail("no_directory", format!("the working directory cannot be read: {e}")))?;
-    // The engine defines and chooses the profile itself, from the fence.
-    let prompt = Command::Prompt { session_id: None, text: task.to_string(), images: Vec::new(), model: Some(ModelRef { instance: instance.name.clone(), model }), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: Some(Attendance::Unattended), fenced: plan.sandboxed, origin: None };
+    // The engine defines and chooses the profile itself, from the fence. A
+    // worker edits the project: in acceptEdits its profile writes it, and
+    // what would still be asked is refused, nobody being there to answer.
+    let prompt = Command::Prompt { session_id: None, text: task.to_string(), images: Vec::new(), model: Some(ModelRef { instance: instance.name.clone(), model }), permission_mode: PermissionMode::AcceptEdits, toolset: None, effort: None, rollover: None, budget: None, attendance: Some(Attendance::Unattended), fenced: plan.sandboxed, origin: None };
     let spawn = super::host::spawner(ctx)?;
     let id = gruntas_harness::headless::start_on_daemon(ctx.io.env, &cwd, super::VERSION, &spawn, prompt).map_err(|e| super::prompt::engine_error(&e.code, &e.message, e.status))?;
     let rendered = match ctx.format {

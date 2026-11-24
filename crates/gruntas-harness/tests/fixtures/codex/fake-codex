@@ -163,9 +163,13 @@ thread_result() {
   *) kind="$sandbox" ;;
   esac
   # As Codex 0.171 does: a named profile is reported as the active one,
-  # its legacy sandbox as workspaceWrite.
+  # its legacy sandbox as readOnly or, where it writes the project,
+  # workspaceWrite.
   if [ -n "$profile" ]; then
-    kind=workspaceWrite
+    case "$ARGV" in
+    *'":project_roots"="write"'*) kind=workspaceWrite ;;
+    *) kind=readOnly ;;
+    esac
     active="{\"id\":\"${FAKE_CODEX_PROFILE:-$profile}\",\"extends\":null}"
   fi
   kind="${FAKE_CODEX_SANDBOX:-$kind}"

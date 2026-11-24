@@ -286,8 +286,9 @@ fn codex_attended_execs_codex_with_the_account_and_profile() {
     let o = b.gruntas(&["run", "codex", "--account", "team", "--model", "gpt-5.5", "resume"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let (args, env) = b.started("codex");
-    let profile = format!(r#"permissions.gruntas.filesystem={{":root"="read",":project_roots"="write","{}"="none"}}"#, b.home().display());
-    assert_eq!(args, ["-c", r#"default_permissions="gruntas""#, "-c", &profile, "--model", "gpt-5.5", "resume"]);
+    let profile = format!(r#"permissions.gruntas.filesystem={{":root"="read",":project_roots"="write","{}"="none","#, b.home().display());
+    assert_eq!((&args[..3], &args[4..]), (&["-c", r#"default_permissions="gruntas""#, "-c"][..], &["--model", "gpt-5.5", "resume"][..]));
+    assert!(args[3].starts_with(&profile), "the home first, then the rest the fence hides: {}", args[3]);
     assert!(env.contains(&format!("CODEX_HOME={}", b.root.join("accounts/codex-team").display())), "{env:?}");
     let hint = "codex plugin add gruntas@gruntas";
     assert!(String::from_utf8_lossy(&o.stderr).contains(hint), "the plugin hint, the first time");

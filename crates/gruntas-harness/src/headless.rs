@@ -118,7 +118,7 @@ pub fn run_on_daemon(env: &dyn Fn(&str) -> String, cwd: &std::path::Path, versio
 
 /// `gruntas run codex --unattended` (Launcher D3): `prompt` started as a
 /// new session in the host daemon — started first when none is up — and its
-/// id returned once the daemon names it, the turn left to the daemon. A
+/// id returned once its turn has started, the turn left to the daemon. A
 /// daemon of another gruntas is refused: an older one would drop a fence it
 /// does not know.
 #[cfg(unix)]
@@ -131,13 +131,22 @@ pub fn start_on_daemon(env: &dyn Fn(&str) -> String, cwd: &std::path::Path, vers
         let (tx, mut rx) = mpsc::channel(1024);
         let exec = client.execute(prompt, tx);
         tokio::pin!(exec);
-        tokio::select! {
-            biased;
-            Some(line) = rx.recv() => Ok(line.session_id().to_string()),
-            r = &mut exec => match rx.try_recv() {
-                Ok(line) => Ok(line.session_id().to_string()),
-                Err(_) => Err(r.err().unwrap_or_else(|| EngineError::new("no_session", "the host daemon started no session"))),
-            },
+        let started = |line: &StreamLine| matches!(line, StreamLine::Log(e) if matches!(e.body, crate::protocol::LogBody::TurnStarted { .. }));
+        loop {
+            tokio::select! {
+                biased;
+                Some(line) = rx.recv() => if started(&line) {
+                    return Ok(line.session_id().to_string());
+                },
+                r = &mut exec => {
+                    while let Ok(line) = rx.try_recv() {
+                        if started(&line) {
+                            return Ok(line.session_id().to_string());
+                        }
+                    }
+                    return Err(r.err().unwrap_or_else(|| EngineError::new("no_session", "the host daemon started no turn")));
+                }
+            }
         }
     })
 }
