@@ -105,13 +105,74 @@ fn run_refuses_what_it_cannot_launch_and_names_the_fix() {
     assert!(help.status.success() && String::from_utf8_lossy(&help.stdout).contains("gruntas run <claude|codex>"));
 }
 
+/// Each account form and --no-sandbox: `started("claude")` has the
+/// account's CLAUDE_CONFIG_DIR, --plugin-dir once the plugin is there, one
+/// --settings and the person's arguments; where Claude Code's sandbox
+/// cannot run, only --no-sandbox starts it.
 #[test]
-#[ignore = "LN02: gruntas run claude attended execs claude per the plan"]
 fn claude_attended_execs_claude_with_the_account_plugin_and_settings() {
-    // Each account form (none, claude, work, claude:work) and --no-sandbox:
-    // `started("claude")` has CLAUDE_CONFIG_DIR, --plugin-dir, one
-    // --settings and the person's arguments.
-    let _b = Sandbox::new("ln02");
+    let b = Sandbox::new("ln02");
+    // Claude Code's sandbox runs here: bubblewrap and socat are on PATH.
+    for bin in ["bwrap", "socat"] {
+        b.fake(bin);
+    }
+    let home = b.home().display().to_string();
+    let settings = |args: &[String]| -> serde_json::Value {
+        assert_eq!(args.iter().filter(|a| *a == "--settings").count(), 1, "{args:?}");
+        let i = args.iter().position(|a| a == "--settings").unwrap();
+        serde_json::from_str(&args[i + 1]).unwrap()
+    };
+    let work = format!("CLAUDE_CONFIG_DIR={}", b.root.join("accounts/claude-work").display());
+    for account in [&[][..], &["--account", "claude"], &["--account", "work"], &["--account=claude:work"]] {
+        let _ = std::fs::remove_file(b.root.join("claude.args"));
+        let o = b.gruntas(&[&["run", "claude"][..], account, &["--model", "opus", "fix it"]].concat());
+        assert!(o.status.success(), "{account:?}: {}", String::from_utf8_lossy(&o.stderr));
+        assert!(String::from_utf8_lossy(&o.stderr).contains("no gruntas plugin at"), "{account:?}");
+        let (args, env) = b.started("claude");
+        assert!(!args.contains(&"--plugin-dir".to_string()), "a missing plugin is left out: {args:?}");
+        let s = settings(&args);
+        assert_eq!(s["sandbox"]["enabled"], true);
+        assert_eq!(s["sandbox"]["filesystem"]["denyRead"], serde_json::json!([home]));
+        assert!(s["hooks"]["WorktreeCreate"].is_array());
+        assert!(args.ends_with(&["--model".into(), "opus".into(), "fix it".into()]), "{args:?}");
+        let named = account.iter().any(|a| a.contains("work"));
+        assert_eq!(env.contains(&work), named, "{account:?}: {env:?}");
+        assert_eq!(env.iter().any(|e| e.starts_with("CLAUDE_CONFIG_DIR=")), named, "the default keeps Claude's own home");
+    }
+    // The plugin there: loaded. --no-sandbox: the hooks, no sandbox parts.
+    let plugin = b.root.join("data/gruntas/plugin");
+    std::fs::create_dir_all(&plugin).unwrap();
+    assert!(b.gruntas(&["run", "claude", "--account", "work", "--no-sandbox", "-c"]).status.success());
+    let (args, env) = b.started("claude");
+    assert_eq!(args[..2], ["--plugin-dir".to_string(), plugin.display().to_string()]);
+    let s = settings(&args);
+    assert!(s.get("sandbox").is_none() && s.get("permissions").is_none() && s["hooks"]["WorktreeRemove"].is_array(), "{s}");
+    assert_eq!(args.last().map(String::as_str), Some("-c"));
+    assert!(env.contains(&work));
+    // No bubblewrap or socat: refused, and --no-sandbox still starts it.
+    if cfg!(target_os = "linux") {
+        for bin in ["bwrap", "socat"] {
+            std::fs::remove_file(b.root.join("bin").join(bin)).unwrap();
+        }
+        let _ = std::fs::remove_file(b.root.join("claude.args"));
+        let bare = |extra: &[&str]| {
+            Command::new(env!("CARGO_BIN_EXE_gruntas"))
+                .args([&["run", "claude"][..], extra].concat())
+                .env_clear()
+                .env("PATH", b.root.join("bin"))
+                .env("HOME", b.root.join("home"))
+                .env("XDG_DATA_HOME", b.root.join("data"))
+                .env("GRUNTAS_NO_UPDATE_CHECK", "1")
+                .current_dir(&b.root)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap()
+        };
+        failed(&bare(&[]), 1, "--no-sandbox");
+        assert!(!b.root.join("claude.args").exists(), "nothing started");
+        bare(&["--no-sandbox"]);
+        assert!(settings(&b.started("claude").0).get("sandbox").is_none());
+    }
 }
 
 /// R-RUN-3, against a daemon in this process: `--unattended` starts a
