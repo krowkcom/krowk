@@ -521,6 +521,10 @@
                 }
               ]
             },
+            "fenced": {
+              "description": "For a prompt that starts a session: the session runs kept out of\nthe gruntas home (Launcher D3, `gruntas run codex --unattended`),\nrecorded in its start record and held for every turn. Codex only:\na fenced session's turn on another backend is refused. Ignored\nfor an existing session.",
+              "type": "boolean"
+            },
             "origin": {
               "description": "Where the prompt came from. For one that starts a session, an\nagent origin's `sessionId` is recorded as the new session's\nparent.",
               "anyOf": [
@@ -1136,6 +1140,36 @@
           "required": [
             "type",
             "sessionId"
+          ]
+        },
+        {
+          "description": "`gruntas run claude --unattended` started a background session\n(`claude --bg`): the daemon keeps it and stops it (`<program> stop\n<id>` under its config home) once its Task is terminal and its turn\nhas ended.",
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "The id `claude --bg` printed: the first part of its session id.",
+              "type": "string"
+            },
+            "program": {
+              "description": "The `claude` that started it.",
+              "type": "string"
+            },
+            "configHome": {
+              "description": "The account's config home (`CLAUDE_CONFIG_DIR`); none is\nClaude Code's own default.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "launched"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "program"
           ]
         },
         {

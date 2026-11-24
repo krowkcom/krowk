@@ -55,6 +55,8 @@ file: crates/gruntas-api/src/migrate.rs
 file: crates/gruntas/tests/home_migration.rs
 in crates/gruntas-api/src/home.rs :: krowk's (own )?home \(`~/\.krowk`\)|an older krowk|\bkrowk\b(?=[\],])|let krowk =|migrate::(copy_krowk|krowk_home)|"/h/\.krowk"
 in crates/gruntas-harness/src/permissions/mod.rs :: the old `~/\.krowk`|let krowk =|migrate::krowk_home|\bkrowk\.iter
+# The launcher fences the same old home (Launcher D4).
+in crates/gruntas-harness/src/launch.rs :: the old `~/\.krowk`|migrate::krowk_home
 in crates/gruntas/src/mcp.rs :: "\.krowk"|`~/\.krowk`
 in scripts/test_home.sh :: krowk's ~/\.krowk
 in tests/golden/cases/one-home/cmd :: \.(config|local/share|cache)/krowk\b

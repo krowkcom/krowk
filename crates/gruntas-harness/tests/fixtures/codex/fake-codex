@@ -21,6 +21,8 @@
 #   FAKE_CODEX_LOGIN     `fail`: `codex login` gives up, as a person closing the browser would
 #   FAKE_CODEX_SANDBOX   the sandbox thread/start reports, as a managed config could force it
 #   FAKE_CODEX_REVIEWER  the approvals reviewer it reports, the same way
+#   FAKE_CODEX_PROFILE   the permissions profile it reports a thread asked
+#                        in one (`permissions`) to run in, the same way
 #   FAKE_CODEX_RESUME    `fail`: thread/resume finds no such thread; it also
 #                        fails, as Codex does, when the thread's rollout (the
 #                        `path` it is given, else the one under CODEX_HOME,
@@ -149,21 +151,31 @@ account() {
 rollout_path() { printf '%s' "$HOME_DIR/sessions/2026/09/25/rollout-2026-09-25T12-00-00-$THREAD.jsonl"; }
 
 thread_result() {
-  local sandbox="$1" approval="$2" reviewer="$3"
+  local sandbox="$1" approval="$2" reviewer="$3" profile="$4"
   local path
   path="$(rollout_path)"
   mkdir -p "$(dirname "$path")" && : >>"$path"
-  local kind
+  local kind active=null
   case "$sandbox" in
   read-only) kind=readOnly ;;
   workspace-write) kind=workspaceWrite ;;
   danger-full-access) kind=dangerFullAccess ;;
   *) kind="$sandbox" ;;
   esac
+  # As Codex 0.171 does: a named profile is reported as the active one,
+  # its legacy sandbox as readOnly or, where it writes the project,
+  # workspaceWrite.
+  if [ -n "$profile" ]; then
+    case "$ARGV" in
+    *'":project_roots"="write"'*) kind=workspaceWrite ;;
+    *) kind=readOnly ;;
+    esac
+    active="{\"id\":\"${FAKE_CODEX_PROFILE:-$profile}\",\"extends\":null}"
+  fi
   kind="${FAKE_CODEX_SANDBOX:-$kind}"
   reviewer="${FAKE_CODEX_REVIEWER:-$reviewer}"
-  printf '{"thread":{"id":"%s","sessionId":"%s","preview":"","projectId":null,"ephemeral":false,"modelProvider":"openai","model":"%s","createdAt":1790344936,"updatedAt":1790344936,"status":{"type":"idle"},"path":"%s","cwd":"%s","cliVersion":"0.154.0","source":"appServer","turns":[]},"model":"%s","modelProvider":"openai","serviceTier":null,"cwd":"%s","instructionSources":[],"approvalPolicy":"%s","approvalsReviewer":"%s","sandbox":{"type":"%s","networkAccess":false},"reasoningEffort":null}' \
-    "$THREAD" "$THREAD" "$MODEL" "$path" "$CWD" "$MODEL" "$CWD" "$approval" "$reviewer" "$kind"
+  printf '{"thread":{"id":"%s","sessionId":"%s","preview":"","projectId":null,"ephemeral":false,"modelProvider":"openai","model":"%s","createdAt":1790344936,"updatedAt":1790344936,"status":{"type":"idle"},"path":"%s","cwd":"%s","cliVersion":"0.154.0","source":"appServer","turns":[]},"model":"%s","modelProvider":"openai","serviceTier":null,"cwd":"%s","instructionSources":[],"approvalPolicy":"%s","approvalsReviewer":"%s","sandbox":{"type":"%s","networkAccess":false},"activePermissionProfile":%s,"reasoningEffort":null}' \
+    "$THREAD" "$THREAD" "$MODEL" "$path" "$CWD" "$MODEL" "$CWD" "$approval" "$reviewer" "$kind" "$active"
 }
 
 # A request gruntas sent while the scenario waits on something else: steering
@@ -359,7 +371,11 @@ while IFS= read -r line <&3; do
       fi
       log "resume-lines $(wc -l <"$rollout" | tr -d ' ') $rollout"
     fi
-    say "{\"id\":$id,\"result\":$(thread_result "$(field "$line" sandbox)" "$(field "$line" approvalPolicy)" "$(field "$line" approvalsReviewer)")}"
+    if [ -n "$(field "$line" permissions)" ] && [ -n "$(field "$line" sandbox)" ]; then
+      say "{\"id\":$id,\"error\":{\"code\":-32600,\"message\":\"\`permissions\` cannot be combined with \`sandbox\`\"}}"
+      continue
+    fi
+    say "{\"id\":$id,\"result\":$(thread_result "$(field "$line" sandbox)" "$(field "$line" approvalPolicy)" "$(field "$line" approvalsReviewer)" "$(field "$line" permissions)")}"
     say "{\"method\":\"thread/started\",\"params\":{\"thread\":{\"id\":\"$THREAD\",\"sessionId\":\"$THREAD\",\"preview\":\"\",\"projectId\":null,\"ephemeral\":false,\"modelProvider\":\"openai\",\"createdAt\":1790344936,\"updatedAt\":1790344936,\"status\":{\"type\":\"idle\"},\"cwd\":\"$CWD\",\"cliVersion\":\"0.154.0\",\"source\":\"appServer\",\"turns\":[]}}}"
     ;;
   turn/start)

@@ -30,6 +30,54 @@ breaking changes may affect it without notice.
   account is ready is `gruntas providers list --check`: the same table,
   JSON and exit 3.
 
+### Added
+
+- **`gruntas run claude|codex` starts the stock harness on one of your
+  accounts** (`--account work` is `claude:work`; none is the account plain
+  `claude` or `codex` in your shell uses), with the gruntas plugin and a sandbox that
+  keeps the session out of the gruntas home. Claude Code gets one
+  `--settings` that merges yours with the sandbox block and gruntas's
+  worktree hooks; Codex gets a permissions profile that can't read the home.
+  `--no-sandbox` drops the sandbox for one attended run, `--unattended
+  "<task>"` starts a background session, and nothing is written into the
+  account. Arguments gruntas doesn't own pass through to the harness as
+  typed. Linux and macOS.
+- **Unattended Claude Code workers stop themselves when done.** `gruntas
+  run claude --unattended "<task>"` starts a `claude --bg` session inside
+  Claude Code's full sandbox and prints its id; it refuses where that
+  sandbox can't run (bubblewrap and socat on Linux). The gruntas daemon
+  stops the session once its agent reports the task finished and its turn
+  has ended, never mid-turn. The workspace must already be trusted on that
+  account: open it once with `gruntas run claude --account <name>`.
+- **`gruntas run <harness> --account auto`** starts on that harness's
+  account ranked first by rollover's headroom ranking, and says
+  which it picked, how much was left and when it next resets. A signed-out
+  account is passed over. With no other account to spare it uses your own.
+- **`gruntas run claude` hands the terminal to Claude Code** on the account
+  you pick. Where Claude Code's sandbox can't run (Linux without bubblewrap
+  or socat), it says so and starts only with `--no-sandbox`. Each run
+  writes the gruntas plugin this gruntas carries into gruntas's own data
+  directory and loads it from there, so the session registers with the
+  daemon without the plugin being installed in any account.
+- **`gruntas run codex` works attended and unattended.** Attended, gruntas
+  becomes `codex` on the account's `CODEX_HOME`, in a permissions profile
+  that reads everything and writes the project but can't read the gruntas
+  home or reach the gruntas daemon.
+  `--unattended "<task>"` starts the task as a session of the host daemon's
+  Codex engine, held to the same profile on every turn, and prints its id;
+  a thread Codex opens outside the profile is stopped before it runs
+  anything. Such a session stays on Codex accounts, and needs the host
+  daemon on the same gruntas version. Codex can't load a plugin it hasn't installed, so the first run
+  on an account without the gruntas plugin says how to install it.
+
+### Changed
+
+- **The first `gruntas config set rollover auto` asks you to accept** that
+  you are responsible for how your accounts are used under each vendor's
+  terms. It needs a yes at a terminal and is refused without one; the date
+  you accepted is kept in `~/.gruntas/config.json` as `rolloverAcknowledged`,
+  and later sets don't ask again.
+
 ## [2026.11.1] - 2026-11-23
 
 **Every agent on every machine of yours, in one place.** Agent sessions in

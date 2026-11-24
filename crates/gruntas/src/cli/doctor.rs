@@ -448,6 +448,15 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    /// `gruntas run` passes the block doctor asks a settings file for, so a
+    /// launched session is kept out of the home exactly as one doctor passes.
+    #[cfg(feature = "harness")]
+    #[test]
+    fn the_launcher_carries_the_block_doctor_asks_for() {
+        let home = Path::new("/u/me/.gruntas");
+        assert_eq!(gruntas_harness::launch::claude_sandbox(&[home.to_path_buf()]), sandbox_block(home));
+    }
+
     #[test]
     fn kt07_the_sandbox_block_is_found_however_the_home_is_spelled_and_each_gap_is_named() {
         let home = Path::new("/u/me/.gruntas");

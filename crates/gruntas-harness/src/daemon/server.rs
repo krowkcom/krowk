@@ -37,7 +37,7 @@ use crate::host::{Host, HostConfig};
 use crate::log;
 use super::outbox::{self, Caps, Out, Outbox, Pushed};
 use super::registry::Registry;
-use super::tasks::Tasks;
+use super::tasks::{activity_session, Tasks};
 use super::replay::{self, Tail};
 use crate::protocol::{Activity, ClientFrame, Command, ErrorInfo, HostSession, HostStatus, LogBody, ServerFrame, StreamLine, PROTOCOL_VERSION};
 use std::cell::RefCell;
@@ -570,22 +570,6 @@ async fn sweep(state: Shared) {
     }
 }
 
-/// The session an activity is of, if it is of one.
-fn activity_session(a: &Activity) -> Option<&str> {
-    match a {
-        Activity::Register(r) => Some(&r.session_id),
-        Activity::Deregister { session_id }
-        | Activity::HeavyStart { session_id, .. }
-        | Activity::HeavyEnd { session_id, .. }
-        | Activity::TurnEnd { session_id }
-        | Activity::ToolEnd { session_id }
-        | Activity::Report { session_id, .. }
-        | Activity::PermissionRequest { session_id }
-        | Activity::Active { session_id } => Some(session_id),
-        Activity::Usage { .. } => None,
-    }
-}
-
 fn stopping_error() -> EngineError {
     EngineError::new("host_stopping", "the host daemon is exiting — send it again, and the next daemon runs it")
 }
@@ -908,7 +892,7 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
                     if let Activity::TurnEnd { session_id } = &activity {
                         report_due = s.registry.report_due(session_id);
                     }
-                    s.activity(&activity);
+                    s.activity(&activity, report_due);
                     if let Activity::Report { session_id, .. } = &activity {
                         task = s.registry.task(session_id).cloned().map(Box::new);
                     }
@@ -1262,15 +1246,17 @@ impl State {
     /// (`builds::RUNNING`), its account's usage windows written to the usage
     /// record (R-KIT-7), the registry, with the entries whose harness has
     /// gone pruned, written off the thread when it changed (R-LAG-9), and
-    /// the session's status (`tasks`), its git context due again.
-    fn activity(&mut self, a: &Activity) {
+    /// the session's status (`tasks`), its turn's end as it was answered
+    /// (`report_due`), its git context due again, and the launched sessions
+    /// now done stopped.
+    fn activity(&mut self, a: &Activity, report_due: bool) {
         {
             let mut running = crate::builds::RUNNING.lock().unwrap_or_else(|e| e.into_inner());
             match a {
                 Activity::HeavyStart { session_id, tool_call_id } => running.start(session_id, tool_call_id, std::time::Instant::now()),
                 Activity::HeavyEnd { session_id, tool_call_id } => running.end(session_id, tool_call_id),
                 Activity::TurnEnd { session_id } | Activity::Deregister { session_id } => running.end_session(session_id),
-                Activity::Register(_) | Activity::Usage { .. } | Activity::ToolEnd { .. } | Activity::Report { .. } | Activity::PermissionRequest { .. } | Activity::Active { .. } => {}
+                Activity::Register(_) | Activity::Usage { .. } | Activity::ToolEnd { .. } | Activity::Report { .. } | Activity::PermissionRequest { .. } | Activity::Active { .. } | Activity::Launched { .. } => {}
             }
         }
         if let (Activity::Usage { config_home, windows }, Some(usage)) = (a, &self.opts.usage) {
@@ -1289,6 +1275,9 @@ impl State {
         let now = super::tasks::now();
         if self.tasks.apply(a, &now) {
             self.tasks_changed = true;
+        }
+        if let Activity::TurnEnd { session_id } = a {
+            self.tasks_changed |= self.tasks.turn_end(session_id, report_due);
         }
         // The registry forgets a report with its session; the Task keeps
         // it, taken before the prune below can drop a session whose harness
@@ -1309,6 +1298,20 @@ impl State {
         if changed {
             self.registry_changed();
         }
+        self.stop_finished();
+    }
+
+    /// The launched background sessions that are done stopped, off the
+    /// thread (R-RUN-3).
+    fn stop_finished(&mut self) {
+        let (due, changed) = self.tasks.to_stop();
+        self.tasks_changed |= changed;
+        for (id, launch) in due {
+            tokio::task::spawn_blocking(move || match super::tasks::stop(&id, &launch) {
+                Ok(()) => eprintln!("stopped background session {id}: its task is done"),
+                Err(e) => eprintln!("background session {id} is done but was not stopped: {e} — stop it with `claude stop {id}` on its account ({})", launch.config_home.as_deref().unwrap_or("Claude Code's own")),
+            });
+        }
     }
 
     /// The sweep's work on the daemon's thread: harnesses gone, the git
@@ -1323,6 +1326,8 @@ impl State {
         if self.tasks.vanished(|id| registry.get(id).is_some(), &now) {
             self.tasks_changed = true;
         }
+        self.stop_finished();
+        let registry = &self.registry;
         self.git.retain(|id, _| registry.get(id).is_some());
         let mut reads = Vec::new();
         for (id, c) in &mut self.git {

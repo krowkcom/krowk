@@ -741,7 +741,7 @@ async fn follow(c: &Config, a: &Announcer, task: &RunTask, child: &Child, ran: &
     }
     let (tx, mut rx) = tokio::sync::mpsc::channel(256);
     let budget = (!task.budget.is_empty()).then_some(task.budget);
-    let prompt = Command::Prompt { session_id: None, text: child.prompt.clone(), images: Vec::new(), model: Some(child.model.clone()), permission_mode: child.mode, toolset: None, effort: None, rollover: None, budget, attendance: Some(Attendance::Unattended), origin: sent_by(task.sending_session.as_deref()) };
+    let prompt = Command::Prompt { session_id: None, text: child.prompt.clone(), images: Vec::new(), model: Some(child.model.clone()), permission_mode: child.mode, toolset: None, effort: None, rollover: None, budget, attendance: Some(Attendance::Unattended), fenced: false, origin: sent_by(task.sending_session.as_deref()) };
     ran.store(true, std::sync::atomic::Ordering::SeqCst);
     let run = d.execute(prompt, tx);
     tokio::pin!(run);
@@ -824,7 +824,7 @@ async fn start(c: &Config, cwd: &str, model: crate::protocol::ModelRef, prompt: 
         return tell(refused(e));
     }
     let (tx, mut rx) = tokio::sync::mpsc::channel(256);
-    let prompt = Command::Prompt { session_id: None, text: prompt, images: Vec::new(), model: Some(model), permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None, attendance: Some(Attendance::Unattended), origin: sent_by(sending_session.as_deref()) };
+    let prompt = Command::Prompt { session_id: None, text: prompt, images: Vec::new(), model: Some(model), permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None, attendance: Some(Attendance::Unattended), fenced: false, origin: sent_by(sending_session.as_deref()) };
     let run = d.execute(prompt, tx);
     tokio::pin!(run);
     let started = |l: &StreamLine| match l {

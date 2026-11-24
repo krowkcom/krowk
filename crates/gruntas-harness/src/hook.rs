@@ -368,6 +368,16 @@ pub fn send(socket: &Path, cwd: &str, version: &str, activity: Activity) -> Resu
     talk(stream, cwd, version, activity)
 }
 
+/// `send`, to the daemon `env` names, started when none runs: what
+/// `gruntas run claude --unattended` tells it of the session it started.
+pub fn tell(env: &dyn Fn(&str) -> String, cwd: &str, version: &str, activity: Activity) -> Result<Answer, String> {
+    let socket = crate::daemon::socket(env)?;
+    let stream = connect_or_start(env, &socket)?;
+    let _ = stream.set_read_timeout(Some(SEND_MOST));
+    let _ = stream.set_write_timeout(Some(SEND_MOST));
+    talk(stream, cwd, version, activity)
+}
+
 /// The daemon on `socket`, started when none runs: under its lock, as
 /// `daemon::ensure` starts it, from this very binary, its output to
 /// `host.log` in gruntas's home.
@@ -475,7 +485,7 @@ pub fn run(args: &[String], stdin: impl Read, env: &dyn Fn(&str) -> String, vers
     // tool call or permission prompt is not held up for a daemon to start
     // (its session's start started one). Only the rest start one.
     let stream = match &activity {
-        Activity::Register(_) | Activity::Usage { .. } => connect_or_start(env, &socket),
+        Activity::Register(_) | Activity::Usage { .. } | Activity::Launched { .. } => connect_or_start(env, &socket),
         Activity::Deregister { .. } | Activity::HeavyStart { .. } | Activity::HeavyEnd { .. } | Activity::TurnEnd { .. } | Activity::ToolEnd { .. } | Activity::Report { .. } | Activity::PermissionRequest { .. } | Activity::Active { .. } => std::os::unix::net::UnixStream::connect(&socket).map_err(|e| format!("no daemon on {}: {e}", socket.display())),
     };
     let active = matches!(ev, HookEvent::Stop { active: true, .. });

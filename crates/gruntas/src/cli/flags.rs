@@ -157,6 +157,14 @@ pub struct Flags {
     #[cfg(feature = "harness")]
     pub origin: String,
     pub relay_state: String,
+    /// `run`'s own flags, which `launcher.rs` reads; here only so the
+    /// parser can refuse them anywhere else.
+    #[cfg(feature = "harness")]
+    pub account: String,
+    #[cfg(feature = "harness")]
+    pub unattended: String,
+    #[cfg(feature = "harness")]
+    pub no_sandbox: bool,
     /// Which flags were typed, by canonical name — a different question from
     /// what they carry: `--jq "$UNSET"` was given and is empty.
     pub given: BTreeSet<String>,
@@ -367,6 +375,10 @@ impl Flags {
             #[cfg(feature = "harness")]
             "origin" => text(&mut self.origin),
             "state" => text(&mut self.relay_state),
+            #[cfg(feature = "harness")]
+            "account" => text(&mut self.account),
+            #[cfg(feature = "harness")]
+            "unattended" => text(&mut self.unattended),
             _ => {
                 let b = parse_bool(name, v)?;
                 *match name {
@@ -410,6 +422,8 @@ impl Flags {
                     "sign-out-vendor" => &mut self.sign_out_vendor,
                     #[cfg(feature = "harness")]
                     "key-stdin" => &mut self.key_stdin,
+                    #[cfg(feature = "harness")]
+                    "no-sandbox" => &mut self.no_sandbox,
                     other => unreachable!("catalog flag {other} has no field"),
                 } = b;
             }

@@ -46,7 +46,25 @@ pub struct Tasks {
     /// By session id.
     #[serde(default)]
     tasks: BTreeMap<String, Entry>,
+    /// The background sessions `gruntas run claude --unattended` started,
+    /// by the id `claude --bg` printed, until they are stopped (`to_stop`)
+    /// or end by themselves.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    launched: BTreeMap<String, Launch>,
 }
+
+/// A background session to stop once it is done: `program stop <id>`
+/// under its account's config home.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Launch {
+    pub program: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_home: Option<String>,
+}
+
+/// The most launched sessions kept: past it, the first by id goes.
+const MOST_LAUNCHED: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,6 +73,31 @@ struct Entry {
     /// The state its agent last reported, if it has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent_state: Option<TaskState>,
+    /// Where its turn stands (`turn_end`).
+    #[serde(default, skip_serializing_if = "Turn::going")]
+    turn: Turn,
+}
+
+/// Where a session's turn stands, by its hooks.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum Turn {
+    /// Under way: any activity but its end.
+    #[default]
+    Going,
+    /// Its end was answered with `reportDue`, which the plugin's Stop hook
+    /// turns into a block: the turn goes on, and its next end is the end,
+    /// whatever was done between. As answered, not as the hook acted: a
+    /// hook that died before reading the answer blocked nothing.
+    Reminded,
+    /// Over: the session waits.
+    Ended,
+}
+
+impl Turn {
+    fn going(&self) -> bool {
+        *self == Turn::Going
+    }
 }
 
 /// A session's git context, as `git` reads it.
@@ -123,11 +166,21 @@ impl Tasks {
     /// registration makes a Task: any other activity of a session the
     /// daemon has none for changes nothing.
     pub fn apply(&mut self, a: &Activity, now: &str) -> bool {
-        match a {
+        // Any activity of a session but its turn's end (`turn_end`) is its
+        // turn under way: an ended one going again, a reminded one still
+        // reminded until its next end, unless the session started anew.
+        let mut going = false;
+        if !matches!(a, Activity::TurnEnd { .. })
+            && let Some(e) = activity_session(a).and_then(|id| self.tasks.get_mut(id))
+            && (e.turn == Turn::Ended || matches!(a, Activity::Register(_)))
+        {
+            going = !std::mem::take(&mut e.turn).going();
+        }
+        going | match a {
             Activity::Register(r) if r.session_id.len() > MOST_NAME => false,
             Activity::Register(r) => {
                 self.make_room(&r.session_id);
-                let e = self.tasks.entry(r.session_id.clone()).or_insert_with(|| Entry { task: blank(&r.session_id, now), agent_state: None });
+                let e = self.tasks.entry(r.session_id.clone()).or_insert_with(|| Entry { task: blank(&r.session_id, now), agent_state: None, turn: Turn::Going });
                 let before = e.clone();
                 // A session resumed is at work again, whatever its agent said
                 // as it ended.
@@ -164,8 +217,54 @@ impl Tasks {
                     set_state(&mut e.task, state, source, now);
                 }
             }),
+            Activity::Launched { id, .. } if id.is_empty() || id.len() > MOST_NAME => false,
+            Activity::Launched { id, program, config_home } => {
+                if self.launched.len() >= MOST_LAUNCHED && !self.launched.contains_key(id) {
+                    let first = self.launched.keys().next().cloned();
+                    if let Some(k) = first {
+                        self.launched.remove(&k);
+                    }
+                }
+                let l = Launch { program: program.clone(), config_home: config_home.clone() };
+                self.launched.insert(id.clone(), l.clone()) != Some(l)
+            }
             Activity::Usage { .. } => false,
         }
+    }
+
+    /// A turn's end (`TurnEnd`), as the daemon answered it: with
+    /// `reportDue`, the Stop hook blocks it once to remind its agent to
+    /// report, so it is no end yet; otherwise, or the next time, it is.
+    /// Whether it changed.
+    pub fn turn_end(&mut self, session_id: &str, report_due: bool) -> bool {
+        let Some(e) = self.tasks.get_mut(session_id) else { return false };
+        let turn = match (report_due, e.turn) {
+            (true, Turn::Going) => Turn::Reminded,
+            _ => Turn::Ended,
+        };
+        std::mem::replace(&mut e.turn, turn) != turn
+    }
+
+    /// The launched sessions that are done, taken out to be stopped: their
+    /// Task terminal (Status layer) and their turn over, so a session is
+    /// never stopped mid-turn. One that ended by itself (no longer
+    /// serving) is forgotten, with nothing to stop. Whether anything was
+    /// taken or forgotten is whether the Tasks changed.
+    pub fn to_stop(&mut self) -> (Vec<(String, Launch)>, bool) {
+        let mut due = Vec::new();
+        let mut changed = false;
+        let tasks = &self.tasks;
+        self.launched.retain(|id, l| {
+            let Some(e) = launched_entry(tasks, id) else { return true };
+            let serving = e.task.metadata.gruntas.health.as_ref().is_none_or(|h| h.value == Health::Serving);
+            let done = serving && e.task.status.state.is_terminal() && e.turn == Turn::Ended;
+            if done {
+                due.push((id.clone(), l.clone()));
+            }
+            changed |= done || !serving;
+            serving && !done
+        });
+        (due, changed)
     }
 
     /// What an agent's report sets: its own state, with agent provenance,
@@ -247,6 +346,65 @@ impl Tasks {
         }
     }
 }
+
+/// The Task of the session `claude --bg` printed `id` for: the first part
+/// of its session id, or the whole of it.
+fn launched_entry<'t>(tasks: &'t BTreeMap<String, Entry>, id: &str) -> Option<&'t Entry> {
+    tasks.get(id).or_else(|| tasks.range(id.to_string()..).take_while(|(k, _)| k.starts_with(id)).find(|(k, _)| k.as_bytes().get(id.len()) == Some(&b'-')).map(|(_, e)| e))
+}
+
+/// The session an activity is of, if it is of one.
+pub fn activity_session(a: &Activity) -> Option<&str> {
+    match a {
+        Activity::Register(r) => Some(&r.session_id),
+        Activity::Deregister { session_id }
+        | Activity::HeavyStart { session_id, .. }
+        | Activity::HeavyEnd { session_id, .. }
+        | Activity::TurnEnd { session_id }
+        | Activity::ToolEnd { session_id }
+        | Activity::Report { session_id, .. }
+        | Activity::PermissionRequest { session_id }
+        | Activity::Active { session_id } => Some(session_id),
+        Activity::Launched { .. } | Activity::Usage { .. } => None,
+    }
+}
+
+/// Stops a launched session: `program stop <id>` under its config home
+/// (none: Claude Code's own, whatever the daemon inherited), given
+/// `STOP_WAIT` before it is killed.
+// blocking: the daemon runs it on the blocking pool.
+pub fn stop(id: &str, l: &Launch) -> Result<(), String> {
+    let mut cmd = std::process::Command::new(&l.program);
+    cmd.args(["stop", id]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+    match &l.config_home {
+        Some(h) => cmd.env("CLAUDE_CONFIG_DIR", h),
+        None => cmd.env_remove("CLAUDE_CONFIG_DIR"),
+    };
+    let mut child = cmd.spawn().map_err(|e| format!("{} could not be run: {e}", l.program))?;
+    let deadline = std::time::Instant::now() + STOP_WAIT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(s)) if s.success() => return Ok(()),
+            Ok(Some(s)) => {
+                let mut err = String::new();
+                if let Some(mut e) = child.stderr.take() {
+                    let _ = std::io::Read::read_to_string(&mut e, &mut err);
+                }
+                return Err(format!("`{} stop {id}` failed ({s}): {}", l.program, err.trim()));
+            }
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("`{} stop {id}` did not finish within {}s", l.program, STOP_WAIT.as_secs()));
+            }
+            Err(e) => return Err(format!("`{} stop {id}`: {e}", l.program)),
+        }
+    }
+}
+
+/// How long `claude stop` may take.
+const STOP_WAIT: Duration = Duration::from_secs(30);
 
 impl Entry {
     /// The agent's last state: what it reported, else working as far as
@@ -458,6 +616,64 @@ mod tests {
         t.apply(&Activity::PermissionRequest { session_id: "s".into() }, T1);
         t.apply(&Activity::Active { session_id: "s".into() }, T2);
         assert_eq!(state(&t, "s"), (TaskState::Working, Some(Provenance::Harness)));
+    }
+
+    fn report(id: &str, state: TaskState) -> Activity {
+        let report = gruntas_client::status::Report { state: Some(state), phase: None, blocked_on: None, pr: None, next: None, timestamp: T1.into() };
+        Activity::Report { session_id: id.into(), summary: "s".into(), report }
+    }
+
+    fn launched(id: &str) -> Activity {
+        Activity::Launched { id: id.into(), program: "/bin/claude".into(), config_home: Some("/h/work".into()) }
+    }
+
+    /// A turn's end as the daemon takes it: the activity, then its answer.
+    fn turn_end(t: &mut Tasks, id: &str, report_due: bool) {
+        t.apply(&Activity::TurnEnd { session_id: id.into() }, T1);
+        t.turn_end(id, report_due);
+    }
+
+    /// R-RUN-3: a launched session is stopped once its Task is terminal
+    /// and its turn has ended, never before; one that ended by itself is
+    /// forgotten. `claude --bg` names it by its session id's first part.
+    #[test]
+    fn ln03_a_finished_task_with_an_ended_turn_stops_its_session() {
+        let (done, working, mid_turn, reminded, gone) = ("aaaa0001-1111", "aaaa0002-2222", "aaaa0003-3333", "aaaa0005-5555", "aaaa0004-4444");
+        let mut t = Tasks::default();
+        for id in [done, working, mid_turn, reminded, gone] {
+            assert!(t.apply(&launched(&id[..8]), T0));
+            t.apply(&reg(id), T0);
+        }
+        assert!(!t.apply(&launched(&done[..8]), T0), "the same again changes nothing");
+        for a in [report(done, TaskState::Completed), report(mid_turn, TaskState::Completed), report(reminded, TaskState::Completed), Activity::Deregister { session_id: gone.into() }] {
+            t.apply(&a, T1);
+        }
+        turn_end(&mut t, done, false);
+        turn_end(&mut t, working, false);
+        turn_end(&mut t, mid_turn, false);
+        t.apply(&Activity::Active { session_id: mid_turn.into() }, T1);
+        // Work after its report: its Stop hook blocks the end to remind it.
+        turn_end(&mut t, reminded, true);
+        let launch = Launch { program: "/bin/claude".into(), config_home: Some("/h/work".into()) };
+        assert_eq!(t.to_stop(), (vec![("aaaa0001".to_string(), launch)], true), "only the finished one, its turn over");
+        assert_eq!(t.to_stop(), (vec![], false), "taken once");
+        // The working one stays until its agent says it is done.
+        t.apply(&report(working, TaskState::Failed), T2);
+        assert!(t.to_stop().0.is_empty(), "its turn is under way again");
+        turn_end(&mut t, working, false);
+        turn_end(&mut t, mid_turn, false);
+        // The reminded turn's next end is its end, after more work and
+        // reminded again or not.
+        t.apply(&Activity::ToolEnd { session_id: reminded.into() }, T2);
+        turn_end(&mut t, reminded, true);
+        let stopped: Vec<String> = t.to_stop().0.into_iter().map(|(id, _)| id).collect();
+        assert_eq!(stopped, ["aaaa0002", "aaaa0003", "aaaa0005"]);
+        assert!(t.launched.is_empty(), "the one that ended by itself is forgotten");
+        // Kept across a restart: in the status file.
+        let mut t = Tasks::default();
+        t.apply(&launched("bbbb"), T0);
+        let back: Tasks = serde_json::from_slice(&t.to_json()).unwrap();
+        assert_eq!(back, t);
     }
 
     #[test]

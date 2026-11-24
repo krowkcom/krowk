@@ -622,6 +622,13 @@ pub enum Command {
         /// recorded in its start record. Ignored for an existing session.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         attendance: Option<Attendance>,
+        /// For a prompt that starts a session: the session runs kept out of
+        /// the gruntas home (Launcher D3, `gruntas run codex --unattended`),
+        /// recorded in its start record and held for every turn. Codex only:
+        /// a fenced session's turn on another backend is refused. Ignored
+        /// for an existing session.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        fenced: bool,
         /// Where the prompt came from. For one that starts a session, an
         /// agent origin's `sessionId` is recorded as the new session's
         /// parent.
@@ -861,6 +868,10 @@ pub enum LogBody {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(regex(pattern = UUID7_PATTERN))]
         started_by_session_id: Option<String>,
+        /// The session runs kept out of the gruntas home, as the prompt that
+        /// started it asked (`Command::Prompt`'s `fenced`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        fenced: bool,
     },
     /// A prompt arrived; the turn runs on `model`. The exact system prompt
     /// and tools it ran with are in the session's `context.jsonl` under
@@ -1613,6 +1624,20 @@ pub enum Activity {
     /// call off the heavy list, a refused permission): its last activity,
     /// and the end of a permission prompt.
     Active { session_id: String },
+    /// `gruntas run claude --unattended` started a background session
+    /// (`claude --bg`): the daemon keeps it and stops it (`<program> stop
+    /// <id>` under its config home) once its Task is terminal and its turn
+    /// has ended.
+    Launched {
+        /// The id `claude --bg` printed: the first part of its session id.
+        id: String,
+        /// The `claude` that started it.
+        program: String,
+        /// The account's config home (`CLAUDE_CONFIG_DIR`); none is
+        /// Claude Code's own default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        config_home: Option<String>,
+    },
     /// An account's usage windows, as its harness reads them.
     Usage {
         /// The account's config home (`CLAUDE_CONFIG_DIR`, `~/.claude`).
