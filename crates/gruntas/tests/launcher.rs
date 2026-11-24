@@ -145,24 +145,6 @@ fn claude_attended_execs_claude_with_the_account_plugin_and_settings() {
         assert_eq!(env.contains(&work), named, "{account:?}: {env:?}");
         assert_eq!(env.iter().any(|e| e.starts_with("CLAUDE_CONFIG_DIR=")), named, "the default keeps Claude's own home");
     }
-    // The plugin as this binary carries it, and only what differs rewritten.
-    let hooks = plugin.join("hooks/hooks.json");
-    assert_eq!(std::fs::read_to_string(&hooks).unwrap(), include_str!("../../../hooks/hooks.json"));
-    for f in [".claude-plugin/plugin.json", "hooks/usage.ts", "skills/gruntas/SKILL.md"] {
-        assert!(plugin.join(f).is_file(), "{f}");
-    }
-    std::fs::write(&hooks, "{}").unwrap();
-    let before = std::fs::metadata(plugin.join("hooks/usage.ts")).unwrap().modified().unwrap();
-    // The default account from a shell that exports CLAUDE_CONFIG_DIR: kept,
-    // as `claude` there would have it.
-    let elsewhere = format!("CLAUDE_CONFIG_DIR={}", b.root.join("accounts/elsewhere").display());
-    assert!(b.command(&["run", "claude"]).env("CLAUDE_CONFIG_DIR", b.root.join("accounts/elsewhere")).status().unwrap().success());
-    assert!(b.started("claude").1.contains(&elsewhere), "the inherited one kept");
-    assert_eq!(std::fs::read_to_string(&hooks).unwrap(), include_str!("../../../hooks/hooks.json"), "put back");
-    assert_eq!(std::fs::metadata(plugin.join("hooks/usage.ts")).unwrap().modified().unwrap(), before, "an unchanged file is left alone");
-    // A named account sets its own over the inherited one.
-    assert!(b.command(&["run", "claude", "--account", "work"]).env("CLAUDE_CONFIG_DIR", b.root.join("accounts/elsewhere")).status().unwrap().success());
-    assert!(b.started("claude").1.contains(&work));
     // --no-sandbox: the hooks, no sandbox parts.
     assert!(b.gruntas(&["run", "claude", "--account", "work", "--no-sandbox", "-c"]).status.success());
     let (args, env) = b.started("claude");
@@ -198,6 +180,39 @@ fn claude_attended_execs_claude_with_the_account_plugin_and_settings() {
         assert!(bare(&["--no-sandbox"]).status.success());
         assert!(settings(&b.started("claude").0).get("sandbox").is_none());
     }
+}
+
+/// D5: the plugin this binary carries, written into gruntas's own plugin
+/// directory, only what differs rewritten; the default account keeps an
+/// inherited CLAUDE_CONFIG_DIR, as `claude` in that shell would, and a
+/// named account sets its own over it.
+#[test]
+fn claude_writes_its_plugin_and_the_default_keeps_an_inherited_config_dir() {
+    let b = Sandbox::new("ln06");
+    for bin in ["bwrap", "socat"] {
+        b.fake(bin);
+    }
+    let plugin = b.root.join("data/gruntas/plugin");
+    let work = format!("CLAUDE_CONFIG_DIR={}", b.root.join("accounts/claude-work").display());
+    assert!(b.gruntas(&["run", "claude", "--account", "work"]).status.success());
+    // The plugin as this binary carries it, and only what differs rewritten.
+    let hooks = plugin.join("hooks/hooks.json");
+    assert_eq!(std::fs::read_to_string(&hooks).unwrap(), include_str!("../../../hooks/hooks.json"));
+    for f in [".claude-plugin/plugin.json", "hooks/usage.ts", "skills/gruntas/SKILL.md"] {
+        assert!(plugin.join(f).is_file(), "{f}");
+    }
+    std::fs::write(&hooks, "{}").unwrap();
+    let before = std::fs::metadata(plugin.join("hooks/usage.ts")).unwrap().modified().unwrap();
+    // The default account from a shell that exports CLAUDE_CONFIG_DIR: kept,
+    // as `claude` there would have it.
+    let elsewhere = format!("CLAUDE_CONFIG_DIR={}", b.root.join("accounts/elsewhere").display());
+    assert!(b.command(&["run", "claude"]).env("CLAUDE_CONFIG_DIR", b.root.join("accounts/elsewhere")).status().unwrap().success());
+    assert!(b.started("claude").1.contains(&elsewhere), "the inherited one kept");
+    assert_eq!(std::fs::read_to_string(&hooks).unwrap(), include_str!("../../../hooks/hooks.json"), "put back");
+    assert_eq!(std::fs::metadata(plugin.join("hooks/usage.ts")).unwrap().modified().unwrap(), before, "an unchanged file is left alone");
+    // A named account sets its own over the inherited one.
+    assert!(b.command(&["run", "claude", "--account", "work"]).env("CLAUDE_CONFIG_DIR", b.root.join("accounts/elsewhere")).status().unwrap().success());
+    assert!(b.started("claude").1.contains(&work));
 }
 
 /// R-RUN-3, against a daemon in this process: `--unattended` starts a
