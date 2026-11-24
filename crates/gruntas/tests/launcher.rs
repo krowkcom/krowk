@@ -112,6 +112,12 @@ fn run_refuses_what_it_cannot_launch_and_names_the_fix() {
 #[test]
 fn claude_attended_execs_claude_with_the_account_plugin_and_settings() {
     let b = Sandbox::new("ln02");
+    // The default account configured with Claude Code's own home, which it
+    // must still find with no CLAUDE_CONFIG_DIR.
+    let path = b.home().join("config.json");
+    let mut config: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    config["instances"]["claude"] = serde_json::json!({ "kind": "claude-code", "binary": b.root.join("bin/claude"), "configDir": b.root.join("home/.claude") });
+    std::fs::write(&path, config.to_string()).unwrap();
     // Claude Code's sandbox runs here: bubblewrap and socat are on PATH.
     for bin in ["bwrap", "socat"] {
         b.fake(bin);
