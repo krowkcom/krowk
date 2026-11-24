@@ -483,16 +483,21 @@ fn agent_origin(o: &Origin) -> Option<String> {
 /// refusal's code and message are cut to `MAX_CODE` and `MAX_MESSAGE` bytes
 /// of JSON, so it always fits what the registry takes.
 pub fn seal_answer(a: &HostAnswer, id: &str, me: &DeviceId, to: &DeviceId, keys: &UserKeys, current_generation: u32) -> Result<Vec<u8>, String> {
+    let sealed = seal_any_size(a, id, me, to, keys, current_generation)?;
+    if sealed.len() > MAX_ANSWER {
+        return Err(format!("the answer seals to {} bytes, more than the registry carries ({MAX_ANSWER})", sealed.len()));
+    }
+    Ok(sealed)
+}
+
+/// `seal_answer` with no limit on the size.
+fn seal_any_size(a: &HostAnswer, id: &str, me: &DeviceId, to: &DeviceId, keys: &UserKeys, current_generation: u32) -> Result<Vec<u8>, String> {
     let a = match a {
         HostAnswer::Refused { code, message } => HostAnswer::Refused { code: cut(code, MAX_CODE), message: cut(message, MAX_MESSAGE) },
         done => done.clone(),
     };
     let json = serde_json::to_vec(&a).map_err(|e| format!("the answer does not encode: {e}"))?;
-    let sealed = e2e::seal_to_person(keys, current_generation, Label::HostAnswer, &binding(id, me, to), &json).map_err(|e| e.0)?;
-    if sealed.len() > MAX_ANSWER {
-        return Err(format!("the answer seals to {} bytes, more than the registry carries ({MAX_ANSWER})", sealed.len()));
-    }
-    Ok(sealed)
+    e2e::seal_to_person(keys, current_generation, Label::HostAnswer, &binding(id, me, to), &json).map_err(|e| e.0)
 }
 
 /// `a`, too big for an answer, sealed as the command `id`'s answer record:
@@ -525,13 +530,12 @@ pub fn open_record(sealed: &[u8], id: &str, from: &DeviceId, me: &DeviceId, keys
 /// else the answer is `recorded` and the second bytes are its answer
 /// record, which the host writes before it answers.
 pub fn seal_answer_or_record(a: &HostAnswer, id: &str, me: &DeviceId, to: &DeviceId, keys: &UserKeys, current_generation: u32) -> Result<(Vec<u8>, Option<Vec<u8>>), String> {
-    match seal_answer(a, id, me, to, keys, current_generation) {
-        Ok(sealed) => Ok((sealed, None)),
-        Err(_) => {
-            let record = seal_record(a, id, me, to, keys, current_generation)?;
-            Ok((seal_answer(&HostAnswer::Recorded, id, me, to, keys, current_generation)?, Some(record)))
-        }
+    let sealed = seal_any_size(a, id, me, to, keys, current_generation)?;
+    if sealed.len() <= MAX_ANSWER {
+        return Ok((sealed, None));
     }
+    let record = seal_record(a, id, me, to, keys, current_generation)?;
+    Ok((seal_answer(&HostAnswer::Recorded, id, me, to, keys, current_generation)?, Some(record)))
 }
 
 /// The answer `from`, the host, gave `me` to the command `id`, opened: the

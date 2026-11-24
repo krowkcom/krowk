@@ -170,14 +170,30 @@ impl State {
             Kept::Sealed(b) => return Some(b.clone()),
             Kept::Answer { from, answer } => match host_command::seal_answer_or_record(answer, id, &a.device, from, &a.keys, a.chain.generation()) {
                 Ok(b) => b,
-                Err(e) => {
-                    eprintln!("gruntas: the answer to command {id} could not be sealed: {e}; it is tried again at the next refresh");
-                    return None;
-                }
+                // Too big even for an answer record: sealing it again won't
+                // help, so the asker is told, in a refusal, which fits.
+                Err(e) => match host_command::seal_answer(&HostAnswer::refused("host_failed", format!("the answer could not be sent: {e}")), id, &a.device, from, &a.keys, a.chain.generation()) {
+                    Ok(b) => {
+                        eprintln!("gruntas: the answer to command {id} could not be sealed: {e}; it is answered host_failed");
+                        (b, None)
+                    }
+                    Err(e) => {
+                        eprintln!("gruntas: the answer to command {id} could not be sealed: {e}; it is tried again at the next refresh");
+                        return None;
+                    }
+                },
             },
         };
         self.keep(id, Kept::Sealed(sealed.clone()));
         Some(sealed)
+    }
+
+    /// The answer to `id` landed: its record's bytes, up to 64 KB, are not
+    /// kept for a resend that won't come.
+    fn landed(&mut self, id: &str) {
+        if let Some(Kept::Sealed((_, record))) = self.kept.get_mut(id) {
+            *record = None;
+        }
     }
 }
 
@@ -298,7 +314,7 @@ fn finish(me: &Arc<Commands>, c: &Config, id: &str, from: DeviceId, answer: Host
     };
     // On a thread of its own already: sent from here, the id still worked on.
     if let (Some(sealed), Some(a)) = (sealed, a) {
-        deliver(&a.api, id, &sealed);
+        deliver(me, &a.api, id, &sealed);
     }
     me.lock().working.remove(id);
 }
@@ -309,7 +325,7 @@ fn send(me: &Arc<Commands>, id: &str, sealed: Sealed, api: Arc<gruntas_api::Clie
     me.lock().working.insert(id.to_string());
     let (me2, id2) = (me.clone(), id.to_string());
     let spawned = std::thread::Builder::new().name("gruntas-host-answer".into()).spawn(move || {
-        deliver(&api, &id2, &sealed);
+        deliver(&me2, &api, &id2, &sealed);
         me2.lock().working.remove(&id2);
     });
     if spawned.is_err() {
@@ -319,15 +335,19 @@ fn send(me: &Arc<Commands>, id: &str, sealed: Sealed, api: Arc<gruntas_api::Clie
 
 /// The answer record first, when there is one, then the answer that points
 /// at it: an answer whose record did not land is not sent, so it is sent
-/// again, both, at the next delivery.
-fn deliver(api: &gruntas_api::Client, id: &str, (answer, record): &Sealed) {
+/// again, both, at the next delivery. A record already written (a resend
+/// whose answer was lost) is landed: it is the same, as the first is kept.
+fn deliver(me: &Commands, api: &gruntas_api::Client, id: &str, (answer, record): &Sealed) {
     if let Some(record) = record
         && let Err(e) = api.put_answer_record(id, record)
+        && e.code() != "answer_record_written"
     {
         eprintln!("gruntas: the answer record for command {} did not land: {}; it is sent again at the next delivery", id.escape_debug(), e.code());
         return;
     }
-    let _ = api.answer_host_command(id, answer);
+    if api.answer_host_command(id, answer).is_ok() {
+        me.lock().landed(id);
+    }
 }
 
 /// The directories this host offers now: the trusted repositories, less

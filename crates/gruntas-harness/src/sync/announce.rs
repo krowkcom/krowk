@@ -696,9 +696,8 @@ mod tests {
         AnnouncedInstance { name: name.into(), kind: "anthropic-api".into(), ready: true, state: "ready".into(), fix: Some("a\u{202e}b".into()), models: (0..models).map(|i| format!("model-{i:03}")).collect(), limit: None }
     }
 
-    /// R-HOST-3: the record is brought within its bounds before it is
-    /// sealed — a name the record would refuse left out, models first,
-    /// then directories, then the oldest sessions — and so always seals.
+    /// GA01 (D8): a host that was delivered a command refreshes every 2 s
+    /// for the next 2 minutes.
     #[test]
     fn ga01_a_host_sent_a_command_refreshes_every_2_s_for_2_minutes() {
         let (t0, every) = (Instant::now(), EVERY);
@@ -713,6 +712,9 @@ mod tests {
         assert_eq!(r.every(Duration::from_millis(50), t0 + Duration::from_secs(200)), Duration::from_millis(50), "never slower than asked");
     }
 
+    /// R-HOST-3: the record is brought within its bounds before it is
+    /// sealed — a name the record would refuse left out, models first,
+    /// then directories, then the oldest sessions — and so always seals.
     #[test]
     fn r_host_3_an_announcement_is_trimmed_to_its_bounds_models_first() {
         let mut a = record();
