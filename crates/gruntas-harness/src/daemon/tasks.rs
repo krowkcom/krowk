@@ -175,6 +175,12 @@ impl Tasks {
         self.tasks.get(session_id).map(|e| &e.task)
     }
 
+    /// Whether session `id` continued on the other harness: its summary
+    /// says where, whatever it last reported.
+    pub fn continued(&self, id: &str) -> bool {
+        self.tasks.get(id).is_some_and(|e| e.continued_on.is_some())
+    }
+
     pub fn tasks(&self) -> impl Iterator<Item = &Task> {
         self.tasks.values().map(|e| &e.task)
     }
@@ -375,7 +381,8 @@ impl Tasks {
         let Some(e) = self.tasks.get_mut(&reported.id) else { return false };
         let before = e.clone();
         let (t, g) = (&mut e.task, &reported.metadata.gruntas);
-        if !e.capped {
+        // Capped or continued elsewhere, its summary says why or where.
+        if !e.capped && e.continued_on.is_none() {
             t.status.message.clone_from(&reported.status.message);
         }
         t.history.clone_from(&reported.history);

@@ -140,13 +140,16 @@ pub(super) fn continue_on(ctx: &mut Ctx, step: &gruntas_harness::ladder::Step, f
         Some(w) => std::path::PathBuf::from(&w.value),
         None => std::env::current_dir().map_err(|e| fail("no_directory", format!("the working directory cannot be read: {e}")))?,
     };
-    // Claude Code's transcript: where its registration said, while it
-    // stands, else where Claude Code keeps it under the account's home.
+    // Claude Code's transcript (Codex's is not read): where its
+    // registration said, while it stands, else where Claude Code keeps it
+    // under the account's home.
+    let claude = g.harness.as_ref().is_some_and(|h| h.value == Harness::Claude.name());
     let transcript = Sessions::read(dir).get(from).and_then(|r| r.transcript_path.clone()).map(std::path::PathBuf::from).or_else(|| {
         let env = |k: &str| Some((ctx.io.env)(k)).filter(|v| !v.is_empty());
         let home = g.account.as_ref().map(|a| a.value.clone()).or_else(|| env("CLAUDE_CONFIG_DIR")).or_else(|| env("HOME").map(|h| format!("{h}/.claude")))?;
-        g.harness.as_ref().is_some_and(|h| h.value == Harness::Claude.name()).then(|| gruntas_harness::claude::transcript_path(std::path::Path::new(&home), &cwd.display().to_string(), from))
+        Some(gruntas_harness::claude::transcript_path(std::path::Path::new(&home), &cwd.display().to_string(), from))
     });
+    let transcript = transcript.filter(|_| claude);
     let prompt = gruntas_harness::crossover::prompt(&task, transcript.as_deref());
     let home = gruntas_api::home::dir(ctx.io.env)?;
     let plugin_dir = launch::plugin_dir(ctx.io.env).ok_or_else(|| fail("no_home", "there is no home directory to keep the gruntas plugin in — set HOME"))?;
@@ -164,7 +167,10 @@ pub(super) fn continue_on(ctx: &mut Ctx, step: &gruntas_harness::ladder::Step, f
     let plan = launch::plan(&req, &|p| std::fs::read_to_string(p)).map_err(|e| fail("launch_failed", e))?;
     let id = match harness {
         Harness::Claude => claude_unattended(ctx, plan, Some(&cwd))?,
-        Harness::Codex => codex_start(ctx, &prompt, &plan, instance, &registry, &cwd, Some(&step.to.model))?,
+        Harness::Codex => {
+            let id = codex_start(ctx, &prompt, &plan, instance, &registry, &cwd, Some(&step.to.model))?;
+            codex_thread(ctx.io.env, &id).unwrap_or(id)
+        }
     };
     let continued = gruntas_harness::protocol::Activity::Continued { from: from.to_string(), to: id.clone() };
     gruntas_harness::hook::tell(ctx.io.env, &cwd.display().to_string(), super::VERSION, continued).map_err(|e| fail("no_daemon", format!("session {from} continued as {id}, but the gruntas daemon could not be told to link the two ({e})")))?;
@@ -273,6 +279,30 @@ fn claude_attended(ctx: &mut Ctx, mut plan: Plan) -> Result<(), Error> {
         std::process::exit(status.code().unwrap_or(1));
     }
 }
+
+/// The Codex thread behind the engine's session `id`, once its log names
+/// it: the id Codex's own hooks register the session by, and so its Task's.
+/// None when it is not named within `THREAD_WAIT`.
+#[cfg(unix)]
+fn codex_thread(env: &dyn Fn(&str) -> String, id: &str) -> Option<String> {
+    use gruntas_harness::{log, protocol::LogBody};
+    let events = log::sessions_dir(env).ok()?.join(id).join(log::EVENTS_FILE);
+    let deadline = std::time::Instant::now() + THREAD_WAIT;
+    loop {
+        let named = log::read_events(&events).ok().into_iter().flatten().find_map(|e| match e.body {
+            LogBody::BackendSession { vendor_session_id, .. } => Some(vendor_session_id),
+            _ => None,
+        });
+        if named.is_some() || std::time::Instant::now() >= deadline {
+            return named;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+/// How long `codex_thread` waits for the thread to be named.
+#[cfg(unix)]
+const THREAD_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// LN03: start the `--bg` session, in `cwd` (none: this one), record it
 /// with the daemon as a launched unattended session (stopped once its Task
