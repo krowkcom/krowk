@@ -48,6 +48,15 @@ breaking changes may affect it without notice.
   input-required, with the reason on its status. The switch notice names
   the account, its rung and the cap. Attended Codex sessions, whose spend
   cannot be read, never move onto an API-key account.
+- **A session can continue on the other harness without losing its
+  place.** When the ladder moves a launched session from Claude Code to
+  Codex or back, the new session starts in the same worktree at the
+  equivalent model, its first message a handoff: what the old session last
+  reported (summary, phase, plan, next step, recent reports) and, from a
+  Claude Code session, a summary of its recent turns. `gruntas status`
+  shows the two as one chain (`old → new`); the old session reads
+  `canceled`, "continued on" the new one, and `--json` names it under
+  `continuedFrom`.
 - **The god agent: ask any agent what your swarm is doing.** The plugin's
   MCP server offers `gruntas_status`, `gruntas_changes`, `gruntas_read` and
   `gruntas_ping` to every agent, and `gruntas_message` and
