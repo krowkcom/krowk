@@ -79,6 +79,17 @@ breaking changes may affect it without notice.
   ladder, however soon after the last move. Without `auto`, the
   session's status turns input-required and names the account it would
   move to.
+- **See your accounts and move a session to one with `/gruntas:account`.**
+  `gruntas providers list --check` (and `--json`) now says, for each Claude
+  Code or Codex account, the login it is signed in as, its plan where the
+  vendor names it, how much of each usage window is left and when it
+  resets, and which accounts share one login. Inside Claude Code,
+  `/gruntas:account` lists the same for the session's harness, marking the
+  account it runs on, and answers locally, without a model turn. In a
+  session `gruntas run claude` started, `/gruntas:account <name>` queues that
+  account: type `/exit` and the same session resumes there on the same
+  model; `/gruntas:account --cancel` drops it. It moves only to a ready
+  account of the same harness on another login, and says why otherwise.
 - **The god agent: ask any agent what your swarm is doing.** The plugin's
   MCP server offers `gruntas_status`, `gruntas_changes`, `gruntas_read` and
   `gruntas_ping` to every agent, and `gruntas_message` and

@@ -624,3 +624,121 @@ fn rl06_an_attended_session_is_told_and_continues_after_exit() {
     assert!(resumed.starts_with(&format!("{} |", spare.display())) && resumed.contains(&format!("--resume {session} --model opus")), "{resumed}");
     assert_eq!(std::fs::read_to_string(spare.join(format!("projects/-r/{session}.jsonl"))).unwrap(), "{}\n", "the transcript, where --resume finds it");
 }
+
+/// RL07 fixtures: `claude:spare` on another login, `claude:same` on
+/// `claude:work`'s, `claude:out` signed out; the usage records say each
+/// one's login and `claude:work`'s windows. Every Claude Code fake answers
+/// `auth status` as a Max subscription, `claude:out`'s as signed out.
+fn rl07_accounts(b: &Sandbox, now_ms: i64) {
+    let mut config: serde_json::Value = serde_json::from_slice(&std::fs::read(b.home().join("config.json")).unwrap()).unwrap();
+    for name in ["spare", "same", "out"] {
+        std::fs::create_dir_all(b.root.join(format!("accounts/claude-{name}"))).unwrap();
+        let bin = if name == "out" { "claude-out" } else { "claude" };
+        config["instances"][format!("claude:{name}")] = serde_json::json!({ "kind": "claude-code", "binary": b.root.join("bin").join(bin), "configDir": b.root.join(format!("accounts/claude-{name}")) });
+    }
+    std::fs::write(b.home().join("config.json"), config.to_string()).unwrap();
+    script(b, "claude-out", "echo '{\"loggedIn\":false}'\nexit 1\n");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(b.root.join("bin/claude-out"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let seen = |login: &str| serde_json::json!({ "login": login, "seenAtMs": now_ms });
+    let usage = serde_json::json!({
+        "logins": { "w@x.io": {
+            "five_hour": { "status": "allowed", "usedPercent": 40.0, "resetsAtMs": now_ms + 3_600_000, "seenAtMs": now_ms },
+            "seven_day": { "status": "allowed", "usedPercent": 90.0, "resetsAtMs": now_ms + 86_400_000, "seenAtMs": now_ms },
+        } },
+        "instances": { "claude:work": seen("w@x.io"), "claude:same": seen("w@x.io"), "claude:spare": seen("s@x.io") },
+    });
+    std::fs::write(b.home().join("usage.json"), usage.to_string()).unwrap();
+}
+
+const RL07_AUTH: &str = "case \"$1 $2\" in \"auth status\") echo '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"subscriptionType\":\"max\"}'; exit 0;; esac\n";
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64
+}
+
+/// RL07 (D8, R-RL-8): each account's row says its login, plan, what each
+/// window has left and when it resets, and the accounts on the same login.
+#[test]
+fn rl07_providers_check_rows_carry_login_plan_usage_and_shared_logins() {
+    let b = Sandbox::new("rl07-rows");
+    let now = now_ms();
+    rl07_accounts(&b, now);
+    script(&b, "claude", RL07_AUTH);
+    let o = b.gruntas(&["providers", "list", "--check", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&o.stderr)));
+    let row = |n: &str| v["data"]["instances"].as_array().unwrap().iter().find(|r| r["instance"] == n).cloned().unwrap_or_else(|| panic!("{n} not in {v}"));
+    let work = row("claude:work");
+    assert_eq!((work["login"].as_str(), work["plan"].as_str(), &work["sharedWith"]), (Some("w@x.io"), Some("max"), &serde_json::json!(["claude:same"])), "{work}");
+    assert_eq!(work["usage"], serde_json::json!([
+        { "window": "five_hour", "left": 60.0, "resetsAtMs": now + 3_600_000 },
+        { "window": "seven_day", "left": 10.0, "resetsAtMs": now + 86_400_000 },
+    ]));
+    let spare = row("claude:spare");
+    assert_eq!((spare["login"].as_str(), &spare["usage"], &spare["sharedWith"]), (Some("s@x.io"), &serde_json::json!([]), &serde_json::json!([])), "{spare}");
+    let out = row("claude:out");
+    assert_eq!((out["ready"].as_bool(), &out["plan"]), (Some(false), &serde_json::Value::Null), "{out}");
+    assert_eq!(row("claude")["login"], serde_json::Value::Null, "never seen: unknown");
+    let human = String::from_utf8_lossy(&b.gruntas(&["providers", "list", "--check", "--format", "human"]).stdout).into_owned();
+    assert!(human.contains("w@x.io (max) · 5h 60% left, resets ") && human.contains("same login as claude:same"), "{human}");
+    assert!(human.contains("s@x.io (max) · usage unknown"), "{human}");
+}
+
+/// RL07 (D8, R-RL-8): inside a session `gruntas run` started,
+/// `gruntas hook claude account` (the mod's `/gruntas:account`) lists the
+/// accounts with the session's marked; refuses an unknown, other-harness,
+/// not-ready, same-login or current account with why and the valid
+/// choices; queues a good one, which `--cancel` drops; and after `/exit`
+/// the same session resumes on the account queued, on the same model.
+/// Outside such a session it says how to start one that can move.
+#[test]
+fn rl07_a_picked_account_continues_the_session_after_exit() {
+    let b = Sandbox::new("rl07-pick");
+    rl07_accounts(&b, now_ms());
+    std::fs::create_dir_all(b.root.join("run")).unwrap();
+    let (runs, said) = (b.root.join("runs"), b.root.join("said"));
+    let gruntas = env!("CARGO_BIN_EXE_gruntas");
+    let session = "0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e71";
+    // Where Claude Code keeps the session's transcript, for the directory it runs in.
+    let slug: String = b.root.display().to_string().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let transcript = b.root.join(format!("accounts/claude-work/projects/{slug}/{session}.jsonl"));
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    std::fs::write(&transcript, "{}\n").unwrap();
+    script(&b, "claude", &format!("{RL07_AUTH}i=0\nuntil a=$(ls -d {run}/gruntas/*/attended 2>/dev/null) && [ -e \"$a/$$.json\" ]; do i=$((i+1)); [ $i -gt 500 ] && exit 9; sleep 0.01; done\necho \"$CLAUDE_CONFIG_DIR | $*\" >> '{runs}'\ncase \"$*\" in *--resume*) exit 3;; esac\nfor w in . claude:nope codex:team claude:out claude:same claude:work claude:spare --cancel --cancel claude:spare; do [ \"$w\" = . ] && w=; echo \"> $w\" >> '{said}'; {gruntas} hook claude account {session} $w >> '{said}' 2>&1; echo \"= $? queued=$([ -e $a/$$.next.json ] && echo y || echo n)\" >> '{said}'; done\nexit 5\n", run = b.root.join("run").display(), runs = runs.display(), said = said.display()));
+    let o = b.command(&["run", "claude", "--account", "work", "--no-sandbox", "--model", "opus"]).env("XDG_RUNTIME_DIR", b.root.join("run")).output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    let said = std::fs::read_to_string(&said).unwrap_or_default();
+    assert_eq!(o.status.code(), Some(3), "the resumed run's code; {err}\n{said}");
+    let answers: Vec<&str> = said.split("> ").skip(1).collect();
+    assert_eq!(answers.len(), 10, "{said}");
+    let list = answers[0];
+    assert!(list.contains("* claude:work ") && list.contains("  claude:spare ") && !list.contains("codex:team") && list.ends_with("= 0 queued=n\n"), "the list, the session's account marked: {list}");
+    let refused = |i: usize, why: &str| assert!(answers[i].contains(why) && answers[i].contains("choose one of claude, claude:spare.") && answers[i].ends_with("= 1 queued=n\n"), "{}", answers[i]);
+    refused(1, "There is no account named claude:nope");
+    refused(2, "codex:team is not a claude account");
+    refused(3, "claude:out is not ready (not signed in");
+    refused(4, "claude:same is signed in as the same login as claude:work, so moving there gains nothing");
+    refused(5, "This session already runs on claude:work");
+    assert_eq!(answers[6], "claude:spare\nType /exit to continue on claude:spare.\n= 0 queued=y\n");
+    assert_eq!(answers[7], "--cancel\nclaude:spare is no longer queued: /exit ends this session as usual.\n= 0 queued=n\n");
+    assert_eq!(answers[8], "--cancel\nNothing is queued: /exit ends this session as usual.\n= 0 queued=n\n");
+    assert_eq!(answers[9], "claude:spare\nType /exit to continue on claude:spare.\n= 0 queued=y\n");
+    let l: Vec<String> = std::fs::read_to_string(&runs).unwrap().lines().map(String::from).collect();
+    assert_eq!(l.len(), 2, "{l:?}");
+    assert!(l[1].starts_with(&format!("{} |", b.root.join("accounts/claude-spare").display())) && l[1].contains(&format!("--resume {session} --model opus")), "{l:?}");
+    assert!(err.contains(&format!("continuing session {session} on claude:spare")), "{err}");
+    assert!(b.root.join(format!("accounts/claude-spare/projects/{slug}/{session}.jsonl")).exists(), "the transcript, where --resume finds it");
+
+    // Outside a session `gruntas run` started: the list, and no move.
+    let o = b.command(&["hook", "claude", "account", session, "claude:spare"]).env("XDG_RUNTIME_DIR", b.root.join("run")).output().unwrap();
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "This session was not started by gruntas, so it cannot move to another account: start Claude Code with `gruntas run claude` to be able to.\n");
+    let o = b.command(&["hook", "claude", "account", session]).env("XDG_RUNTIME_DIR", b.root.join("run")).output().unwrap();
+    let list = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success() && list.contains("* claude ") && list.contains("claude:spare"), "the session's home is ~/.claude: {list}");
+    let o = b.command(&["hook", "claude", "account", session]).env("XDG_RUNTIME_DIR", b.root.join("run")).env("CLAUDE_CONFIG_DIR", b.root.join("accounts/claude-spare")).output().unwrap();
+    let list = String::from_utf8_lossy(&o.stdout);
+    assert!(list.contains("* claude:spare ") && !list.contains("* claude "), "the named account whose home it is: {list}");
+    let o = b.command(&["hook", "claude", "account", "--dangerously-skip-permissions", "claude:spare"]).env("XDG_RUNTIME_DIR", b.root.join("run")).output().unwrap();
+    assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).into_owned()), (Some(1), "\"--dangerously-skip-permissions\" is not a session id\n".to_string()));
+}

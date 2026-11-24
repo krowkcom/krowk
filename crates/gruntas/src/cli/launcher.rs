@@ -292,6 +292,7 @@ const PLUGIN: &[(&str, &str)] = &[
     (".claude-plugin/plugin.json", include_str!("../../../../.claude-plugin/plugin.json")),
     ("hooks/hooks.json", include_str!("../../../../hooks/hooks.json")),
     ("hooks/usage.ts", include_str!("../../../../hooks/usage.ts")),
+    ("commands/account.md", include_str!("../../../../commands/account.md")),
     ("skills/gruntas/SKILL.md", include_str!("../../../../skills/gruntas/SKILL.md")),
 ];
 
