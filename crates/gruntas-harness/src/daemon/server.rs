@@ -892,7 +892,7 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
                     if let Activity::TurnEnd { session_id } = &activity {
                         report_due = s.registry.report_due(session_id);
                     }
-                    s.activity(&activity);
+                    s.activity(&activity, report_due);
                     if let Activity::Report { session_id, .. } = &activity {
                         task = s.registry.task(session_id).cloned().map(Box::new);
                     }
@@ -1246,8 +1246,10 @@ impl State {
     /// (`builds::RUNNING`), its account's usage windows written to the usage
     /// record (R-KIT-7), the registry, with the entries whose harness has
     /// gone pruned, written off the thread when it changed (R-LAG-9), and
-    /// the session's status (`tasks`), its git context due again.
-    fn activity(&mut self, a: &Activity) {
+    /// the session's status (`tasks`), its turn's end as it was answered
+    /// (`report_due`), its git context due again, and the launched sessions
+    /// now done stopped.
+    fn activity(&mut self, a: &Activity, report_due: bool) {
         {
             let mut running = crate::builds::RUNNING.lock().unwrap_or_else(|e| e.into_inner());
             match a {
@@ -1273,6 +1275,9 @@ impl State {
         let now = super::tasks::now();
         if self.tasks.apply(a, &now) {
             self.tasks_changed = true;
+        }
+        if let Activity::TurnEnd { session_id } = a {
+            self.tasks_changed |= self.tasks.turn_end(session_id, report_due);
         }
         // The registry forgets a report with its session; the Task keeps
         // it, taken before the prune below can drop a session whose harness
@@ -1304,7 +1309,7 @@ impl State {
         for (id, launch) in due {
             tokio::task::spawn_blocking(move || match super::tasks::stop(&id, &launch) {
                 Ok(()) => eprintln!("stopped background session {id}: its task is done"),
-                Err(e) => eprintln!("background session {id} is done but was not stopped: {e}"),
+                Err(e) => eprintln!("background session {id} is done but was not stopped: {e} — stop it with `claude stop {id}` on its account ({})", launch.config_home.as_deref().unwrap_or("Claude Code's own")),
             });
         }
     }

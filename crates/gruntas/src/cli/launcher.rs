@@ -168,8 +168,8 @@ fn claude_unattended(ctx: &mut Ctx, plan: Plan) -> Result<(), Error> {
 /// (`backgrounded · 075bf2a9`).
 fn bg_id(said: &str) -> Option<String> {
     let line = said.lines().find(|l| l.trim_start().starts_with("backgrounded"))?;
-    let id = line.rsplit(|c: char| c.is_whitespace() || c == '·').find(|w| !w.is_empty())?;
-    (id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')).then(|| id.to_string())
+    let id = line.split_once('·')?.1.trim();
+    (!id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')).then(|| id.to_string())
 }
 
 /// Whether Claude Code's sandbox can run here, or why not: bubblewrap that
@@ -224,6 +224,7 @@ mod tests {
         let said = "Starting background service…\nbackgrounded · 075bf2a9\n  claude agents             list sessions\n";
         assert_eq!(bg_id(said).as_deref(), Some("075bf2a9"));
         assert_eq!(bg_id("backgrounded · ../x"), None);
+        assert_eq!(bg_id("backgrounded"), None);
         assert_eq!(bg_id("Workspace not trusted."), None);
     }
 }

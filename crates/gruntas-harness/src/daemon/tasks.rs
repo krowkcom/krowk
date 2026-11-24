@@ -73,9 +73,29 @@ struct Entry {
     /// The state its agent last reported, if it has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent_state: Option<TaskState>,
-    /// Its last activity was its turn's end: it is waiting, not working.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    turn_ended: bool,
+    /// Where its turn stands (`turn_end`).
+    #[serde(default, skip_serializing_if = "Turn::going")]
+    turn: Turn,
+}
+
+/// Where a session's turn stands, by its hooks.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum Turn {
+    /// Under way: any activity but its end.
+    #[default]
+    Going,
+    /// Its end was answered with `reportDue`, which the plugin's Stop hook
+    /// turns into a block: the turn goes on, and its next end is the end.
+    Reminded,
+    /// Over: the session waits.
+    Ended,
+}
+
+impl Turn {
+    fn going(&self) -> bool {
+        *self == Turn::Going
+    }
 }
 
 /// A session's git context, as `git` reads it.
@@ -144,15 +164,19 @@ impl Tasks {
     /// registration makes a Task: any other activity of a session the
     /// daemon has none for changes nothing.
     pub fn apply(&mut self, a: &Activity, now: &str) -> bool {
-        // Any activity of a session but its turn's end is its turn under way.
-        if let Some(e) = activity_session(a).and_then(|id| self.tasks.get_mut(id)) {
-            e.turn_ended = matches!(a, Activity::TurnEnd { .. });
+        // Any activity of a session but its turn's end (`turn_end`) is its
+        // turn under way.
+        let mut going = false;
+        if !matches!(a, Activity::TurnEnd { .. })
+            && let Some(e) = activity_session(a).and_then(|id| self.tasks.get_mut(id))
+        {
+            going = !std::mem::take(&mut e.turn).going();
         }
-        match a {
+        going | match a {
             Activity::Register(r) if r.session_id.len() > MOST_NAME => false,
             Activity::Register(r) => {
                 self.make_room(&r.session_id);
-                let e = self.tasks.entry(r.session_id.clone()).or_insert_with(|| Entry { task: blank(&r.session_id, now), agent_state: None, turn_ended: false });
+                let e = self.tasks.entry(r.session_id.clone()).or_insert_with(|| Entry { task: blank(&r.session_id, now), agent_state: None, turn: Turn::Going });
                 let before = e.clone();
                 // A session resumed is at work again, whatever its agent said
                 // as it ended.
@@ -204,6 +228,19 @@ impl Tasks {
         }
     }
 
+    /// A turn's end (`TurnEnd`), as the daemon answered it: with
+    /// `reportDue`, the Stop hook blocks it once to remind its agent to
+    /// report, so it is no end yet; otherwise, or the next time, it is.
+    /// Whether it changed.
+    pub fn turn_end(&mut self, session_id: &str, report_due: bool) -> bool {
+        let Some(e) = self.tasks.get_mut(session_id) else { return false };
+        let turn = match (report_due, e.turn) {
+            (true, Turn::Going) => Turn::Reminded,
+            _ => Turn::Ended,
+        };
+        std::mem::replace(&mut e.turn, turn) != turn
+    }
+
     /// The launched sessions that are done, taken out to be stopped: their
     /// Task terminal (Status layer) and their turn over, so a session is
     /// never stopped mid-turn. One that ended by itself (no longer
@@ -216,7 +253,7 @@ impl Tasks {
         self.launched.retain(|id, l| {
             let Some(e) = launched_entry(tasks, id) else { return true };
             let serving = e.task.metadata.gruntas.health.as_ref().is_none_or(|h| h.value == Health::Serving);
-            let done = serving && e.task.status.state.is_terminal() && e.turn_ended;
+            let done = serving && e.task.status.state.is_terminal() && e.turn == Turn::Ended;
             if done {
                 due.push((id.clone(), l.clone()));
             }
@@ -586,32 +623,45 @@ mod tests {
         Activity::Launched { id: id.into(), program: "/bin/claude".into(), config_home: Some("/h/work".into()) }
     }
 
+    /// A turn's end as the daemon takes it: the activity, then its answer.
+    fn turn_end(t: &mut Tasks, id: &str, report_due: bool) {
+        t.apply(&Activity::TurnEnd { session_id: id.into() }, T1);
+        t.turn_end(id, report_due);
+    }
+
     /// R-RUN-3: a launched session is stopped once its Task is terminal
     /// and its turn has ended, never before; one that ended by itself is
     /// forgotten. `claude --bg` names it by its session id's first part.
     #[test]
     fn ln03_a_finished_task_with_an_ended_turn_stops_its_session() {
-        let (done, working, mid_turn, gone) = ("aaaa0001-1111", "aaaa0002-2222", "aaaa0003-3333", "aaaa0004-4444");
+        let (done, working, mid_turn, reminded, gone) = ("aaaa0001-1111", "aaaa0002-2222", "aaaa0003-3333", "aaaa0005-5555", "aaaa0004-4444");
         let mut t = Tasks::default();
-        for id in [done, working, mid_turn, gone] {
+        for id in [done, working, mid_turn, reminded, gone] {
             assert!(t.apply(&launched(&id[..8]), T0));
             t.apply(&reg(id), T0);
         }
         assert!(!t.apply(&launched(&done[..8]), T0), "the same again changes nothing");
-        let turn_end = |id: &str| Activity::TurnEnd { session_id: id.into() };
-        for a in [report(done, TaskState::Completed), turn_end(done), turn_end(working), report(mid_turn, TaskState::Completed), turn_end(mid_turn), Activity::Active { session_id: mid_turn.into() }, Activity::Deregister { session_id: gone.into() }] {
+        for a in [report(done, TaskState::Completed), report(mid_turn, TaskState::Completed), report(reminded, TaskState::Completed), Activity::Deregister { session_id: gone.into() }] {
             t.apply(&a, T1);
         }
+        turn_end(&mut t, done, false);
+        turn_end(&mut t, working, false);
+        turn_end(&mut t, mid_turn, false);
+        t.apply(&Activity::Active { session_id: mid_turn.into() }, T1);
+        // Work after its report: its Stop hook blocks the end to remind it.
+        turn_end(&mut t, reminded, true);
         let launch = Launch { program: "/bin/claude".into(), config_home: Some("/h/work".into()) };
         assert_eq!(t.to_stop(), (vec![("aaaa0001".to_string(), launch)], true), "only the finished one, its turn over");
         assert_eq!(t.to_stop(), (vec![], false), "taken once");
         // The working one stays until its agent says it is done.
         t.apply(&report(working, TaskState::Failed), T2);
         assert!(t.to_stop().0.is_empty(), "its turn is under way again");
-        t.apply(&turn_end(working), T2);
-        t.apply(&turn_end(mid_turn), T2);
+        turn_end(&mut t, working, false);
+        turn_end(&mut t, mid_turn, false);
+        // The reminded turn's next end is its end, reminded again or not.
+        turn_end(&mut t, reminded, true);
         let stopped: Vec<String> = t.to_stop().0.into_iter().map(|(id, _)| id).collect();
-        assert_eq!(stopped, ["aaaa0002", "aaaa0003"]);
+        assert_eq!(stopped, ["aaaa0002", "aaaa0003", "aaaa0005"]);
         assert!(t.launched.is_empty(), "the one that ended by itself is forgotten");
         // Kept across a restart: in the status file.
         let mut t = Tasks::default();

@@ -137,8 +137,16 @@ fn claude_unattended_starts_in_the_background_and_prints_the_session() {
     for bin in ["bwrap", "socat"] {
         script(b.root.join("bin").join(bin), "exit 0\n");
     }
-    let run = std::path::PathBuf::from("/tmp").join(format!("gruntas-ln03-{}", std::process::id()));
-    std::fs::create_dir_all(&run).unwrap();
+    // Under /tmp, so the socket's path fits `sun_path`; gone with the test.
+    struct Gone(PathBuf);
+    impl Drop for Gone {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let run = Gone(PathBuf::from("/tmp").join(format!("gruntas-ln03-{}", std::process::id())));
+    let run = &run.0;
+    std::fs::create_dir_all(run).unwrap();
     let (home, run_dir) = (b.root.join("home").display().to_string(), run.display().to_string());
     let env = move |k: &str| match k {
         "HOME" => home.clone(),
@@ -158,7 +166,7 @@ fn claude_unattended_starts_in_the_background_and_prints_the_session() {
         assert!(std::time::Instant::now() < deadline, "the daemon never listened");
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    let gruntas = |path: &str| b.command(&["run", "claude", "--account", "work", "--unattended", "fix it"]).env("XDG_RUNTIME_DIR", &run).env("PATH", path).output().unwrap();
+    let gruntas = |path: &str| b.command(&["run", "claude", "--account", "work", "--unattended", "fix it"]).env("XDG_RUNTIME_DIR", run).env("PATH", path).output().unwrap();
 
     // No sandbox, no session: on Linux, without bubblewrap.
     if cfg!(target_os = "linux") {
@@ -183,7 +191,8 @@ fn claude_unattended_starts_in_the_background_and_prints_the_session() {
     let config_home = b.root.join("accounts/claude-work").display().to_string();
     send(Activity::Register(Registration { session_id: session.into(), harness: PluginHarness::Claude, harness_pid: Some(std::process::id()), config_home: Some(config_home.clone()), cwd: None, repository: None, transcript_path: None, attendance: None }));
     send(Activity::TurnEnd { session_id: session.into() });
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    // A stop is started as the activity is taken, and every sweep.
+    std::thread::sleep(std::time::Duration::from_millis(1200));
     assert!(!b.root.join("claude.stop").exists(), "an unfinished Task's session runs on");
     let report = gruntas_client::status::Report { state: Some(gruntas_client::status::TaskState::Completed), phase: None, blocked_on: None, pr: None, next: None, timestamp: "2026-11-24T00:00:00Z".into() };
     send(Activity::Report { session_id: session.into(), summary: "fixed".into(), report });
@@ -196,7 +205,6 @@ fn claude_unattended_starts_in_the_background_and_prints_the_session() {
     }
     std::thread::sleep(std::time::Duration::from_millis(200));
     assert_eq!(std::fs::read_to_string(&stopped).unwrap(), format!("1234abcd {config_home}\n"), "stopped once, under its account's config home");
-    let _ = std::fs::remove_dir_all(&run);
 }
 
 #[test]
