@@ -180,6 +180,15 @@ pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> R
         settings: None,
         sandboxed: req.sandbox,
     };
+    // The default account is Claude Code's own home, which it finds with no
+    // CLAUDE_CONFIG_DIR, set or inherited: given `~/.claude` as one, it reads
+    // `~/.claude/.claude.json` rather than `~/.claude.json`, and every
+    // workspace the person trusted looks untrusted.
+    if req.harness == Harness::Claude && req.instance.name == req.harness.name() {
+        plan.config_home = None;
+        plan.env_set.retain(|(k, _)| k != "CLAUDE_CONFIG_DIR");
+        plan.env_remove.push("CLAUDE_CONFIG_DIR");
+    }
     match req.harness {
         Harness::Claude => {
             // The instance's own arguments' `--settings` too: a second one
@@ -358,6 +367,8 @@ mod tests {
         let extra = BTreeMap::from([("ANTHROPIC_BASE_URL".to_string(), "https://router".to_string())]);
         cfg.instances.insert("claude:work".into(), InstanceKind::ClaudeCode { binary: Some("/opt/claude".into()), config_dir: Some("/h/.gruntas/accounts/claude-work".into()), env: extra, args: vec!["--verbose".into()], api_key_env: None, effort: None });
         cfg.instances.insert("codex:team".into(), InstanceKind::CodexAppServer { binary: None, codex_home: Some("/h/.gruntas/accounts/codex-team".into()), env: BTreeMap::new(), args: vec!["-c".into(), "model_provider=\"x\"".into()], api_key_env: None, effort: None });
+        // The default account, configured with Claude Code's own home.
+        cfg.instances.insert("claude".into(), InstanceKind::ClaudeCode { binary: None, config_dir: Some("/h/.claude".into()), env: BTreeMap::new(), args: vec![], api_key_env: None, effort: None });
         cfg.instances.insert("claude:own".into(), InstanceKind::ClaudeCode { binary: None, config_dir: None, env: BTreeMap::new(), args: vec!["--settings".into(), r#"{"sandbox":{"enabled":false},"model":"opus"}"#.into()], api_key_env: None, effort: None });
         Registry::resolve(&cfg, &env)
     }
@@ -437,6 +448,7 @@ mod tests {
         assert!(s["hooks"]["Stop"].is_array() && s["hooks"]["WorktreeCreate"].is_array());
         assert_eq!(p.args.iter().filter(|a| *a == "--settings").count(), 1);
         assert!(p.config_home.is_none() && set(&p, "CLAUDE_CONFIG_DIR").is_none(), "the default account keeps Claude's own home");
+        assert!(p.env_remove.contains(&"CLAUDE_CONFIG_DIR"), "an inherited one too");
         for bad in [&["--settings", "gone.json"][..], &["--settings", "[1]"], &["--settings"]] {
             assert!(plan(&request(Harness::Claude, Mode::Attended, inst, bad), &no_file).is_err(), "{bad:?}");
         }

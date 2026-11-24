@@ -139,9 +139,41 @@ fn pick_auto(ctx: &mut Ctx, registry: &Registry, harness: Harness) -> Result<Str
 }
 
 /// LN02: replace gruntas with `claude` per the plan; where the sandbox
-/// cannot run, say so, and start only with `--no-sandbox`.
-fn claude_attended(_ctx: &mut Ctx, _plan: Plan) -> Result<(), Error> {
-    Err(not_yet("`gruntas run claude`", "LN02"))
+/// cannot run, say so, and start only with `--no-sandbox`. A plugin
+/// directory nothing has filled yet is left out with a note, where Claude
+/// Code would pass over it without a word.
+fn claude_attended(ctx: &mut Ctx, mut plan: Plan) -> Result<(), Error> {
+    if plan.sandboxed
+        && let Err(why) = claude_sandbox_runs(ctx.io.env)
+    {
+        return Err(fail("sandbox_unavailable", format!("Claude Code's sandbox cannot run here: {why}. Or start this run with --no-sandbox, which leaves the gruntas home readable to it")));
+    }
+    if let Some(i) = plan.args.iter().position(|a| a == "--plugin-dir") {
+        let dir = std::path::PathBuf::from(&plan.args[i + 1]);
+        if !dir.is_dir() {
+            let _ = writeln!(ctx.io.stderr, "gruntas: no gruntas plugin at {} yet, so claude starts without it", dir.display());
+            plan.args.drain(i..i + 2);
+        }
+    }
+    let _ = ctx.io.stdout.flush();
+    let _ = ctx.io.stderr.flush();
+    let mut cmd = std::process::Command::new(&plan.program);
+    cmd.args(&plan.args);
+    for k in &plan.env_remove {
+        cmd.env_remove(k);
+    }
+    cmd.envs(plan.env_set.iter().map(|(k, v)| (k, v)));
+    let cant = |e: std::io::Error| fail("no_binary", format!("{} could not be started: {e}. Is Claude Code installed? `gruntas providers list --check` checks", plan.program.display()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        Err(cant(cmd.exec()))
+    }
+    #[cfg(not(unix))]
+    {
+        let status = cmd.status().map_err(cant)?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
 }
 
 /// LN03: start the `--bg` session, record it with the daemon as a launched
