@@ -138,7 +138,7 @@ fn claude_attended_execs_claude_with_the_account_plugin_and_settings() {
         assert!(!args.contains(&"--plugin-dir".to_string()), "a missing plugin is left out: {args:?}");
         let s = settings(&args);
         assert_eq!(s["sandbox"]["enabled"], true);
-        assert_eq!(s["sandbox"]["filesystem"]["denyRead"], serde_json::json!([home]));
+        assert_eq!(s["sandbox"]["filesystem"]["denyRead"][0], serde_json::json!(home), "the home first, then the rest the fence hides");
         assert!(s["hooks"]["WorktreeCreate"].is_array());
         assert!(args.ends_with(&["--model".into(), "opus".into(), "fix it".into()]), "{args:?}");
         let named = account.iter().any(|a| a.contains("work"));

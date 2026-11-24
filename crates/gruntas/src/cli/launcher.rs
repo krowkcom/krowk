@@ -110,10 +110,6 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<(), Error> {
     }
 }
 
-fn not_yet(what: &str, ticket: &str) -> Error {
-    fail("not_yet", format!("{what} is not in this build yet ({ticket})"))
-}
-
 /// `--account auto` (R-RUN-2): `harness`'s accounts ranked as rollover
 /// ranks them, measured from the default account's login, and the top one
 /// said, with why. None ranks (each limited, low on room, or on the
