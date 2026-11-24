@@ -275,6 +275,11 @@ fn claude_unattended_starts_in_the_background_and_prints_the_session() {
     }
     std::thread::sleep(std::time::Duration::from_millis(200));
     assert_eq!(std::fs::read_to_string(&stopped).unwrap(), format!("1234abcd {config_home}\n"), "stopped once, under its account's config home");
+
+    // The default account, from a shell that exports another account's
+    // CLAUDE_CONFIG_DIR: the stop it says leaves that out, as the launch did.
+    let o = b.command(&["run", "claude", "--unattended", "fix it"]).env("XDG_RUNTIME_DIR", run).env("CLAUDE_CONFIG_DIR", b.root.join("accounts/claude-work")).output().unwrap();
+    assert!(String::from_utf8_lossy(&o.stderr).contains("Stop it sooner with `env -u CLAUDE_CONFIG_DIR claude stop 1234abcd`"), "{}", String::from_utf8_lossy(&o.stderr));
 }
 
 /// LN04: `codex` replaces gruntas on the account's CODEX_HOME, in the
@@ -313,9 +318,14 @@ fn account_auto_picks_the_account_with_the_most_headroom() {
     let b = Sandbox::new("ln05");
     let mut config: serde_json::Value = serde_json::from_slice(&std::fs::read(b.home().join("config.json")).unwrap()).unwrap();
     for name in ["claude:apart", "claude:spare"] {
-        config["instances"][name] = serde_json::json!({ "kind": "claude-code", "binary": b.root.join("bin/claude"), "configDir": b.root.join("accounts/claude-work") });
+        let dir = b.root.join("accounts").join(name.replace(':', "-"));
+        std::fs::create_dir_all(&dir).unwrap();
+        config["instances"][name] = serde_json::json!({ "kind": "claude-code", "binary": b.root.join("bin/claude"), "configDir": dir });
     }
     std::fs::write(b.home().join("config.json"), config.to_string()).unwrap();
+    // `claude auth status`: signed in, unless the account says otherwise.
+    let claude = b.root.join("bin/claude");
+    std::fs::write(&claude, "#!/bin/sh\nif [ \"$1\" = auth ]; then\n  if [ -e \"$CLAUDE_CONFIG_DIR/signed-out\" ]; then echo '{\"loggedIn\":false}'; else echo '{\"loggedIn\":true}'; fi\nfi\n").unwrap();
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
     let window = |used: f64| serde_json::json!({ "five_hour": { "status": "allowed", "usedPercent": used, "resetsAtMs": now + 3_600_000, "seenAtMs": now } });
     let login = |login: &str| serde_json::json!({ "login": login, "seenAtMs": now });
@@ -330,6 +340,10 @@ fn account_auto_picks_the_account_with_the_most_headroom() {
     let o = b.gruntas(&["run", "claude", "--account", "auto"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("--account auto: claude:spare, first by rollover's ranking: 70% left as of") && err.contains("next reset"), "{err}");
+    // Signed out, it is passed over for the next, as rollover passes it.
+    std::fs::write(b.root.join("accounts/claude-spare/signed-out"), "").unwrap();
+    let err = String::from_utf8_lossy(&b.gruntas(&["run", "claude", "--account", "auto"]).stderr).into_owned();
+    assert!(err.contains("--account auto: claude:apart, first by rollover's ranking: 40% left"), "{err}");
 
     // Nothing else with room: the default account, saying so.
     let usage = serde_json::json!({ "instances": { "claude": login("me"), "claude:apart": login("apart"), "claude:spare": login("spare"), "claude:work": login("me") }, "logins": { "apart": window(92.0), "spare": window(95.0) } });

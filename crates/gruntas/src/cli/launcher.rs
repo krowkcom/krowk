@@ -112,14 +112,17 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<(), Error> {
 
 /// `--account auto` (R-RUN-2): `harness`'s accounts ranked as rollover
 /// ranks them, measured from the default account's login, and the top one
-/// said, with why. None ranks (each limited, low on room, or on the
+/// said, with why. A signed-out account is passed over, as rollover passes
+/// it over. None ranks (each limited, low on room, signed out, or on the
 /// default's own login) → the default account, saying so.
 fn pick_auto(ctx: &mut Ctx, registry: &Registry, harness: Harness) -> Result<String, Error> {
-    use gruntas_harness::{host::clock, protocol::ModelRef, usage::Usage};
+    use gruntas_harness::{host::clock, protocol::ModelRef, readiness, usage::Usage};
     let data = Usage::in_home(&gruntas_api::home::dir(ctx.io.env)?).read();
     let own = harness.name();
     let candidates: Vec<ModelRef> = registry.instances.keys().filter(|n| launch::account(registry, harness, n).is_ok()).map(|n| ModelRef { instance: n.clone(), model: String::new() }).collect();
-    let Some(top) = data.rank(data.login_of(own), &candidates, gruntas_store::now_ms()).into_iter().next() else {
+    let (credentials, probe) = (super::providers::credentials_path()?, super::status::neutral_probe(ctx)?);
+    let signed_in = |name: &str| launch::account(registry, harness, name).is_ok_and(|i| readiness::check(i, &credentials, &probe).refusal(i).is_none());
+    let Some(top) = data.rank(data.login_of(own), &candidates, gruntas_store::now_ms()).into_iter().find(|r| signed_in(&r.model.instance)) else {
         let _ = writeln!(ctx.io.stderr, "--account auto: {own}, your own account — no other {own} account has room to spare");
         return Ok(own.into());
     };
@@ -200,6 +203,9 @@ fn claude_unattended(ctx: &mut Ctx, plan: Plan) -> Result<(), Error> {
     let config_home = plan.config_home.as_ref().map(|h| h.display().to_string());
     let stop = match &config_home {
         Some(h) => format!("CLAUDE_CONFIG_DIR={} claude stop {id}", gruntas_harness::worktree::manage::quote(std::path::Path::new(h))),
+        // The default account has no CLAUDE_CONFIG_DIR: one this shell
+        // exports would point the stop at another account.
+        None if !(ctx.io.env)("CLAUDE_CONFIG_DIR").is_empty() => format!("env -u CLAUDE_CONFIG_DIR claude stop {id}"),
         None => format!("claude stop {id}"),
     };
     let launched = gruntas_harness::protocol::Activity::Launched { id: id.clone(), program: plan.program.display().to_string(), config_home };

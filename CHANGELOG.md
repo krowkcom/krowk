@@ -51,8 +51,8 @@ breaking changes may affect it without notice.
   account: open it once with `gruntas run claude --account <name>`.
 - **`gruntas run <harness> --account auto`** starts on that harness's
   account ranked first by rollover's headroom ranking, and says
-  which it picked, how much was left and when it next resets. With no other
-  account to spare it uses your own.
+  which it picked, how much was left and when it next resets. A signed-out
+  account is passed over. With no other account to spare it uses your own.
 - **`gruntas run claude` hands the terminal to Claude Code** on the account
   you pick. Where Claude Code's sandbox can't run (Linux without bubblewrap
   or socat), it says so and starts only with `--no-sandbox`. Until the
