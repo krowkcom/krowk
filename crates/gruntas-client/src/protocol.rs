@@ -1613,6 +1613,20 @@ pub enum Activity {
     /// call off the heavy list, a refused permission): its last activity,
     /// and the end of a permission prompt.
     Active { session_id: String },
+    /// `gruntas run claude --unattended` started a background session
+    /// (`claude --bg`): the daemon keeps it and stops it (`<program> stop
+    /// <id>` under its config home) once its Task is terminal and its turn
+    /// has ended.
+    Launched {
+        /// The id `claude --bg` printed: the first part of its session id.
+        id: String,
+        /// The `claude` that started it.
+        program: String,
+        /// The account's config home (`CLAUDE_CONFIG_DIR`); none is
+        /// Claude Code's own default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        config_home: Option<String>,
+    },
     /// An account's usage windows, as its harness reads them.
     Usage {
         /// The account's config home (`CLAUDE_CONFIG_DIR`, `~/.claude`).

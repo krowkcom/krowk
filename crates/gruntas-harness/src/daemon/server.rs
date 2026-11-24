@@ -37,7 +37,7 @@ use crate::host::{Host, HostConfig};
 use crate::log;
 use super::outbox::{self, Caps, Out, Outbox, Pushed};
 use super::registry::Registry;
-use super::tasks::Tasks;
+use super::tasks::{activity_session, Tasks};
 use super::replay::{self, Tail};
 use crate::protocol::{Activity, ClientFrame, Command, ErrorInfo, HostSession, HostStatus, LogBody, ServerFrame, StreamLine, PROTOCOL_VERSION};
 use std::cell::RefCell;
@@ -567,22 +567,6 @@ async fn sweep(state: Shared) {
                 }
             });
         }
-    }
-}
-
-/// The session an activity is of, if it is of one.
-fn activity_session(a: &Activity) -> Option<&str> {
-    match a {
-        Activity::Register(r) => Some(&r.session_id),
-        Activity::Deregister { session_id }
-        | Activity::HeavyStart { session_id, .. }
-        | Activity::HeavyEnd { session_id, .. }
-        | Activity::TurnEnd { session_id }
-        | Activity::ToolEnd { session_id }
-        | Activity::Report { session_id, .. }
-        | Activity::PermissionRequest { session_id }
-        | Activity::Active { session_id } => Some(session_id),
-        Activity::Usage { .. } => None,
     }
 }
 
@@ -1270,7 +1254,7 @@ impl State {
                 Activity::HeavyStart { session_id, tool_call_id } => running.start(session_id, tool_call_id, std::time::Instant::now()),
                 Activity::HeavyEnd { session_id, tool_call_id } => running.end(session_id, tool_call_id),
                 Activity::TurnEnd { session_id } | Activity::Deregister { session_id } => running.end_session(session_id),
-                Activity::Register(_) | Activity::Usage { .. } | Activity::ToolEnd { .. } | Activity::Report { .. } | Activity::PermissionRequest { .. } | Activity::Active { .. } => {}
+                Activity::Register(_) | Activity::Usage { .. } | Activity::ToolEnd { .. } | Activity::Report { .. } | Activity::PermissionRequest { .. } | Activity::Active { .. } | Activity::Launched { .. } => {}
             }
         }
         if let (Activity::Usage { config_home, windows }, Some(usage)) = (a, &self.opts.usage) {
@@ -1309,6 +1293,20 @@ impl State {
         if changed {
             self.registry_changed();
         }
+        self.stop_finished();
+    }
+
+    /// The launched background sessions that are done stopped, off the
+    /// thread (R-RUN-3).
+    fn stop_finished(&mut self) {
+        let (due, changed) = self.tasks.to_stop();
+        self.tasks_changed |= changed;
+        for (id, launch) in due {
+            tokio::task::spawn_blocking(move || match super::tasks::stop(&id, &launch) {
+                Ok(()) => eprintln!("stopped background session {id}: its task is done"),
+                Err(e) => eprintln!("background session {id} is done but was not stopped: {e}"),
+            });
+        }
     }
 
     /// The sweep's work on the daemon's thread: harnesses gone, the git
@@ -1323,6 +1321,8 @@ impl State {
         if self.tasks.vanished(|id| registry.get(id).is_some(), &now) {
             self.tasks_changed = true;
         }
+        self.stop_finished();
+        let registry = &self.registry;
         self.git.retain(|id, _| registry.get(id).is_some());
         let mut reads = Vec::new();
         for (id, c) in &mut self.git {
