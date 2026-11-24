@@ -61,20 +61,7 @@ struct Entry {
 /// A Claude Code transcript's last `TAIL_BYTES`, from the first line that
 /// starts in them, parsed by the importer.
 fn claude(path: &Path) -> Result<Vec<Entry>, String> {
-    // Not a FIFO or a device, which would hold the command's thread.
-    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
-        return Err("its transcript is not a file".into());
-    }
-    let mut f = std::fs::File::open(path).map_err(|e| format!("its transcript does not open: {e}"))?;
-    let len = f.metadata().map_err(|e| e.to_string())?.len();
-    let mut from = 0;
-    if len > TAIL_BYTES {
-        f.seek(SeekFrom::Start(len - TAIL_BYTES)).map_err(|e| e.to_string())?;
-        // The line the tail starts inside is left out: from the next one.
-        let skipped = std::io::BufReader::new(&f).skip_until(b'\n').map_err(|e| e.to_string())?;
-        from = len - TAIL_BYTES + skipped as u64;
-    }
-    let messages = gruntas_import::claude::messages_from(&mut f, from).map_err(|e| e.message().to_string())?;
+    let messages = claude_tail(path)?;
     let mut out = Vec::new();
     for m in messages {
         for (n, p) in m.parts.iter().enumerate() {
@@ -89,6 +76,26 @@ fn claude(path: &Path) -> Result<Vec<Entry>, String> {
         }
     }
     Ok(out)
+}
+
+/// The messages of a Claude Code transcript's last `TAIL_BYTES`, from the
+/// first line that starts in them, oldest first, parsed by the importer:
+/// what `read` pages and a cross-harness handoff (`crossover`) summarizes.
+pub(crate) fn claude_tail(path: &Path) -> Result<Vec<gruntas_store::Message>, String> {
+    // Not a FIFO or a device, which would hold the command's thread.
+    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+        return Err("its transcript is not a file".into());
+    }
+    let mut f = std::fs::File::open(path).map_err(|e| format!("its transcript does not open: {e}"))?;
+    let len = f.metadata().map_err(|e| e.to_string())?.len();
+    let mut from = 0;
+    if len > TAIL_BYTES {
+        f.seek(SeekFrom::Start(len - TAIL_BYTES)).map_err(|e| e.to_string())?;
+        // The line the tail starts inside is left out: from the next one.
+        let skipped = std::io::BufReader::new(&f).skip_until(b'\n').map_err(|e| e.to_string())?;
+        from = len - TAIL_BYTES + skipped as u64;
+    }
+    gruntas_import::claude::messages_from(&mut f, from).map_err(|e| e.message().to_string())
 }
 
 /// A gruntas-run session's log, its current branch, through the session

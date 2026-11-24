@@ -1638,6 +1638,15 @@ pub enum Activity {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         config_home: Option<String>,
     },
+    /// A session continued on the other harness (Rollover for launched
+    /// sessions D6): `from`'s Task is canceled, "continued on `to`", and
+    /// `to`'s, once it registers, carries `continuedFrom`.
+    Continued {
+        from: String,
+        /// The new session: its id, or the first part of it `claude --bg`
+        /// printed.
+        to: String,
+    },
     /// An account's usage windows, as its harness reads them.
     Usage {
         /// The account's config home (`CLAUDE_CONFIG_DIR`, `~/.claude`).

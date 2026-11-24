@@ -167,7 +167,15 @@ pub(crate) fn tree(machines: &[Machine], only: Option<&str>, now: jiff::Timestam
                 .iter()
                 .map(|(&i, tasks)| {
                     let m = &machines[i];
-                    let sessions: Vec<Value> = roots(tasks).into_iter().map(|t| with_children(t, tasks, &|t| session(m, t))).collect();
+                    // A session continued on the other harness is one chain,
+                    // shown as its newest session's row.
+                    let shown: Vec<&Task> = tasks.iter().copied().filter(|t| !tasks.iter().any(|o| o.id != t.id && continued_from(o) == Some(t.id.as_str()))).collect();
+                    let row = |t: &Task| {
+                        let mut v = session(m, t);
+                        v["continuedFrom"] = json!(chain(t, tasks));
+                        v
+                    };
+                    let sessions: Vec<Value> = roots(&shown).into_iter().map(|t| with_children(t, &shown, &row)).collect();
                     json!({"device": m.device, "name": m.name, "health": m.health, "publishedAt": m.board.published_at, "sessions": sessions})
                 })
                 .collect();
@@ -205,6 +213,25 @@ fn roots<'a>(tasks: &[&'a Task]) -> Vec<&'a Task> {
     roots
 }
 
+fn continued_from(t: &Task) -> Option<&str> {
+    t.metadata.gruntas.continued_from.as_ref().map(|c| c.value.as_str())
+}
+
+/// The sessions `t` continues, oldest first, as far as `tasks` go back.
+fn chain<'a>(t: &'a Task, tasks: &[&'a Task]) -> Vec<&'a str> {
+    let mut back = Vec::new();
+    let mut at = t;
+    while let Some(from) = continued_from(at).filter(|f| *f != t.id && !back.contains(f)) {
+        back.push(from);
+        match tasks.iter().find(|o| o.id == from) {
+            Some(o) => at = o,
+            None => break,
+        }
+    }
+    back.reverse();
+    back
+}
+
 fn parent(t: &Task) -> Option<&str> {
     t.metadata.gruntas.parent_session_id.as_ref().map(|p| p.value.as_str())
 }
@@ -231,7 +258,8 @@ fn print_session(out: &mut dyn std::io::Write, s: &Value, depth: usize) {
     let state = serde_json::from_value::<TaskState>(s["state"].clone()).map_or_else(|_| "unspecified".into(), state_word);
     let quiet = s["quietForSeconds"].as_i64().map_or_else(|| "quiet ?".to_string(), |q| format!("quiet {}", span(jiff::SignedDuration::from_secs(q))));
     let summary = s["summary"].as_str().map(|m| format!("  {}", printable(m))).unwrap_or_default();
-    let _ = writeln!(out, "{:indent$}{}  {state}  {}  {quiet}{summary}", "", printable(s["id"].as_str().unwrap_or_default()), s["health"].as_str().unwrap_or_default(), indent = depth * 2);
+    let ids: Vec<&str> = s["continuedFrom"].as_array().into_iter().flatten().chain([&s["id"]]).filter_map(Value::as_str).collect();
+    let _ = writeln!(out, "{:indent$}{}  {state}  {}  {quiet}{summary}", "", printable(&ids.join(" → ")), s["health"].as_str().unwrap_or_default(), indent = depth * 2);
     for c in s["children"].as_array().into_iter().flatten() {
         print_session(out, c, depth + 1);
     }
@@ -430,4 +458,44 @@ pub(crate) fn ping_data(target: &str) -> Result<Value, Error> {
         ping(&mut ctx, &[target.to_string()])?;
     }
     serde_json::from_slice(&out).map_err(|e| fail("bad_answer", format!("gruntas ping did not print JSON: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gruntas_client::status::{Field, Message, TaskMetadata, TaskStatus};
+
+    fn task(id: &str, state: TaskState, harness: &str, from: Option<&str>, summary: &str) -> Task {
+        let mut t = Task { id: id.into(), status: TaskStatus { state, message: Some(Message::text("m", summary)), timestamp: "2026-11-24T12:00:00Z".into() }, history: Vec::new(), metadata: TaskMetadata::default() };
+        let g = &mut t.metadata.gruntas;
+        g.project = Some(Field::harness("github.com/acme/app".into()));
+        g.harness = Some(Field::harness(harness.into()));
+        g.health = Some(Field::harness(if state.is_terminal() { Health::NotServing } else { Health::Serving }));
+        g.continued_from = from.map(|f| Field::harness(f.into()));
+        g.last_activity = Some(Field::harness("2026-11-24T12:00:00Z".into()));
+        t
+    }
+
+    /// RL04 (D6): a session continued on the other harness, twice, is one
+    /// chain in `gruntas status`: its newest session's row, naming the
+    /// ones it continues, oldest first.
+    #[test]
+    fn rl04_status_shows_a_continued_session_as_one_chain() {
+        let tasks = vec![
+            task("a", TaskState::Canceled, "claude", None, "continued on b"),
+            task("b", TaskState::Canceled, "codex", Some("a"), "continued on c"),
+            task("c", TaskState::Working, "claude", Some("b"), "wiring the handoff"),
+            task("x", TaskState::Working, "claude", None, "something else"),
+        ];
+        let board = Board { device: "aa".into(), published_at: "2026-11-24T12:00:00Z".into(), sessions: tasks.iter().map(|t| t.id.clone()).collect(), tasks };
+        let now: jiff::Timestamp = "2026-11-24T12:00:00Z".parse().unwrap();
+        let machines = [Machine { device: "aa".into(), name: "laptop".into(), health: Health::Serving, board, received_at: now }];
+        let (tree, _) = tree(&machines, None, now);
+        let sessions = tree[0]["machines"][0]["sessions"].as_array().unwrap();
+        let rows: Vec<(&str, &Value)> = sessions.iter().map(|s| (s["id"].as_str().unwrap(), &s["continuedFrom"])).collect();
+        assert_eq!(rows, [("c", &json!(["a", "b"])), ("x", &json!([]))]);
+        let mut out = Vec::new();
+        print_session(&mut out, &sessions[0], 2);
+        assert_eq!(String::from_utf8(out).unwrap(), "    a → b → c  working  SERVING  quiet 0s  wiring the handoff\n");
+    }
 }

@@ -1258,7 +1258,7 @@ impl State {
                 Activity::HeavyStart { session_id, tool_call_id } => running.start(session_id, tool_call_id, std::time::Instant::now()),
                 Activity::HeavyEnd { session_id, tool_call_id } => running.end(session_id, tool_call_id),
                 Activity::TurnEnd { session_id } | Activity::Deregister { session_id } => running.end_session(session_id),
-                Activity::Register(_) | Activity::Usage { .. } | Activity::ToolEnd { .. } | Activity::Report { .. } | Activity::PermissionRequest { .. } | Activity::Active { .. } | Activity::Launched { .. } => {}
+                Activity::Register(_) | Activity::Usage { .. } | Activity::ToolEnd { .. } | Activity::Report { .. } | Activity::PermissionRequest { .. } | Activity::Active { .. } | Activity::Launched { .. } | Activity::Continued { .. } => {}
             }
         }
         if let (Activity::Usage { config_home, windows }, Some(usage)) = (a, &self.opts.usage) {

@@ -1173,6 +1173,28 @@
           ]
         },
         {
+          "description": "A session continued on the other harness (Rollover for launched\nsessions D6): `from`'s Task is canceled, \"continued on `to`\", and\n`to`'s, once it registers, carries `continuedFrom`.",
+          "type": "object",
+          "properties": {
+            "from": {
+              "type": "string"
+            },
+            "to": {
+              "description": "The new session: its id, or the first part of it `claude --bg`\nprinted.",
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "continued"
+            }
+          },
+          "required": [
+            "type",
+            "from",
+            "to"
+          ]
+        },
+        {
           "description": "An account's usage windows, as its harness reads them.",
           "type": "object",
           "properties": {

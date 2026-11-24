@@ -122,7 +122,9 @@ pub fn board(dir: &Path, device: &DeviceId) -> Board {
         .map(|t| {
             let mut t = t.clone();
             if let Some(r) = registry.task(&t.id) {
-                t.status.message.clone_from(&r.status.message);
+                if !kept.continued(&t.id) {
+                    t.status.message.clone_from(&r.status.message);
+                }
                 t.history.clone_from(&r.history);
                 t.metadata.gruntas.phase.clone_from(&r.metadata.gruntas.phase);
                 t.metadata.gruntas.pr.clone_from(&r.metadata.gruntas.pr);
