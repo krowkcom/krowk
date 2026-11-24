@@ -55,6 +55,10 @@
         "type": "string"
       }
     },
+    "ladder": {
+      "description": "The rollover ladder a launched session climbs (`ladder`): its tier\ntable and its rungs in order.",
+      "$ref": "#/$defs/Ladder"
+    },
     "renamed": {
       "description": "Names instances were renamed from, and the name each is now\n(`gruntas providers rename`): a session that ran on the old name\nresumes on the new one, and `--model <old>/<model>` still runs.\nA name an instance has now is never read through it.",
       "type": "object",
@@ -635,6 +639,123 @@
           "description": "Fail the turn: no offer, and no hint to continue elsewhere.",
           "type": "string",
           "const": "off"
+        }
+      ]
+    },
+    "Ladder": {
+      "description": "config.json's `ladder`: the tier table and the rungs in the order they\nare tried; a rung left out is never tried. Either absent → its default.",
+      "type": "object",
+      "properties": {
+        "tiers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TierModels"
+          },
+          "default": [
+            {
+              "tier": "frontier",
+              "claude": [
+                "opus",
+                "claude-opus-*",
+                "opus[*"
+              ],
+              "codex": [
+                "gpt-5.5",
+                "gpt-5.5-codex"
+              ]
+            },
+            {
+              "tier": "standard",
+              "claude": [
+                "sonnet",
+                "claude-sonnet-*",
+                "sonnet[*"
+              ],
+              "codex": [
+                "gpt-5.4",
+                "gpt-5.3-codex"
+              ]
+            },
+            {
+              "tier": "fast",
+              "claude": [
+                "haiku",
+                "claude-haiku-*"
+              ],
+              "codex": [
+                "gpt-5.4-mini",
+                "gpt-5.5-mini"
+              ]
+            }
+          ]
+        },
+        "rungs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Rung"
+          },
+          "default": [
+            "same-harness",
+            "other-harness",
+            "api-key"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "TierModels": {
+      "description": "One tier's model ids on each harness: `*` matches any run of\ncharacters, case aside. The first id without a `*` is the model a\nsession moving to that harness at this tier runs on.",
+      "type": "object",
+      "properties": {
+        "tier": {
+          "$ref": "#/$defs/Tier"
+        },
+        "claude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "codex": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "tier"
+      ]
+    },
+    "Tier": {
+      "description": "A model tier (D2).",
+      "type": "string",
+      "enum": [
+        "frontier",
+        "standard",
+        "fast"
+      ]
+    },
+    "Rung": {
+      "description": "A rung of the ladder (D1).",
+      "oneOf": [
+        {
+          "description": "Another subscription account of the same harness, the same model.",
+          "type": "string",
+          "const": "same-harness"
+        },
+        {
+          "description": "A subscription account of the other harness, at the equivalent tier.",
+          "type": "string",
+          "const": "other-harness"
+        },
+        {
+          "description": "API-key accounts, the same harness first, within the spend cap.",
+          "type": "string",
+          "const": "api-key"
         }
       ]
     }
