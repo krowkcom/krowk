@@ -50,6 +50,12 @@ breaking changes may affect it without notice.
   mode and framed with who sent it; to a running one it is a steer into the
   turn. Codex and headless sessions answer "can't steer this session yet"
   with the reason.
+- **The god agent messages and interrupts interactive Claude Code
+  sessions.** In a session with the gruntas plugin, a message arrives as a
+  prompt marked with who sent it, and an interrupt stops the running turn or
+  says nothing is running. The target machine's `steer` setting decides
+  first. The plugin's mod checks for steers every 2 seconds without starting
+  a process.
 
 - **The god agent's status, changes and ping.** `gruntas_status` lists one
   line per session (state, health, quiet for, summary) from every machine's
