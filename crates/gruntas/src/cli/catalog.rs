@@ -756,7 +756,7 @@ fn run_command() -> Command {
     Command {
         args: vec![arg("harness", "claude or codex", true), Arg { repeated: true, ..arg("args", "The harness's own arguments, passed through as typed; any after a -- too", false) }],
         flags: vec![
-            flag("account", STRING, "The account: its name (work for claude:work), or auto for the one with the most headroom (default: your own ~/.claude or ~/.codex)"),
+            flag("account", STRING, "The account: its name (work for claude:work), or auto for the one with the most headroom (default: the one plain claude or codex in your shell uses)"),
             flag("unattended", STRING, "Start a background session on this task instead of taking the terminal"),
             flag("no-sandbox", BOOL, "Run without the sandbox that keeps the session out of the gruntas home, this once; attended only"),
         ],
@@ -1247,7 +1247,8 @@ CODEX_HOME), the gruntas plugin, and a sandbox that keeps it out of the gruntas
 home: for Claude Code one --settings, merged with any --settings you pass, that
 also carries gruntas's worktree hooks; for Codex a permissions profile. Nothing
 is written into the account. --account work is claude:work (or codex:work);
-none, or the harness's own name, is your own ~/.claude or ~/.codex.",
+none, or the harness's own name, is the account plain claude or codex in your
+shell uses.",
         #[cfg(feature = "harness")]
         "worktrees add" => "\
 The worktree is of the repository you are in, on a new branch gruntas/<hex>,

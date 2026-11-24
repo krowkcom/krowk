@@ -129,13 +129,13 @@ fn claude_attended_execs_claude_with_the_account_plugin_and_settings() {
         serde_json::from_str(&args[i + 1]).unwrap()
     };
     let work = format!("CLAUDE_CONFIG_DIR={}", b.root.join("accounts/claude-work").display());
+    let plugin = b.root.join("data/gruntas/plugin");
     for account in [&[][..], &["--account", "claude"], &["--account", "work"], &["--account=claude:work"]] {
         let _ = std::fs::remove_file(b.root.join("claude.args"));
         let o = b.gruntas(&[&["run", "claude"][..], account, &["--model", "opus", "fix it"]].concat());
         assert!(o.status.success(), "{account:?}: {}", String::from_utf8_lossy(&o.stderr));
-        assert!(String::from_utf8_lossy(&o.stderr).contains("no gruntas plugin at"), "{account:?}");
         let (args, env) = b.started("claude");
-        assert!(!args.contains(&"--plugin-dir".to_string()), "a missing plugin is left out: {args:?}");
+        assert_eq!(args[..2], ["--plugin-dir".to_string(), plugin.display().to_string()], "the plugin, written there and passed");
         let s = settings(&args);
         assert_eq!(s["sandbox"]["enabled"], true);
         assert_eq!(s["sandbox"]["filesystem"]["denyRead"][0], serde_json::json!(home), "the home first, then the rest the fence hides");
@@ -145,9 +145,7 @@ fn claude_attended_execs_claude_with_the_account_plugin_and_settings() {
         assert_eq!(env.contains(&work), named, "{account:?}: {env:?}");
         assert_eq!(env.iter().any(|e| e.starts_with("CLAUDE_CONFIG_DIR=")), named, "the default keeps Claude's own home");
     }
-    // The plugin there: loaded. --no-sandbox: the hooks, no sandbox parts.
-    let plugin = b.root.join("data/gruntas/plugin");
-    std::fs::create_dir_all(&plugin).unwrap();
+    // --no-sandbox: the hooks, no sandbox parts.
     assert!(b.gruntas(&["run", "claude", "--account", "work", "--no-sandbox", "-c"]).status.success());
     let (args, env) = b.started("claude");
     assert_eq!(args[..2], ["--plugin-dir".to_string(), plugin.display().to_string()]);
@@ -182,6 +180,39 @@ fn claude_attended_execs_claude_with_the_account_plugin_and_settings() {
         assert!(bare(&["--no-sandbox"]).status.success());
         assert!(settings(&b.started("claude").0).get("sandbox").is_none());
     }
+}
+
+/// D5: the plugin this binary carries, written into gruntas's own plugin
+/// directory, only what differs rewritten; the default account keeps an
+/// inherited CLAUDE_CONFIG_DIR, as `claude` in that shell would, and a
+/// named account sets its own over it.
+#[test]
+fn claude_writes_its_plugin_and_the_default_keeps_an_inherited_config_dir() {
+    let b = Sandbox::new("ln06");
+    for bin in ["bwrap", "socat"] {
+        b.fake(bin);
+    }
+    let plugin = b.root.join("data/gruntas/plugin");
+    let work = format!("CLAUDE_CONFIG_DIR={}", b.root.join("accounts/claude-work").display());
+    assert!(b.gruntas(&["run", "claude", "--account", "work"]).status.success());
+    // The plugin as this binary carries it, and only what differs rewritten.
+    let hooks = plugin.join("hooks/hooks.json");
+    assert_eq!(std::fs::read_to_string(&hooks).unwrap(), include_str!("../../../hooks/hooks.json"));
+    for f in [".claude-plugin/plugin.json", "hooks/usage.ts", "skills/gruntas/SKILL.md"] {
+        assert!(plugin.join(f).is_file(), "{f}");
+    }
+    std::fs::write(&hooks, "{}").unwrap();
+    let before = std::fs::metadata(plugin.join("hooks/usage.ts")).unwrap().modified().unwrap();
+    // The default account from a shell that exports CLAUDE_CONFIG_DIR: kept,
+    // as `claude` there would have it.
+    let elsewhere = format!("CLAUDE_CONFIG_DIR={}", b.root.join("accounts/elsewhere").display());
+    assert!(b.command(&["run", "claude"]).env("CLAUDE_CONFIG_DIR", b.root.join("accounts/elsewhere")).status().unwrap().success());
+    assert!(b.started("claude").1.contains(&elsewhere), "the inherited one kept");
+    assert_eq!(std::fs::read_to_string(&hooks).unwrap(), include_str!("../../../hooks/hooks.json"), "put back");
+    assert_eq!(std::fs::metadata(plugin.join("hooks/usage.ts")).unwrap().modified().unwrap(), before, "an unchanged file is left alone");
+    // A named account sets its own over the inherited one.
+    assert!(b.command(&["run", "claude", "--account", "work"]).env("CLAUDE_CONFIG_DIR", b.root.join("accounts/elsewhere")).status().unwrap().success());
+    assert!(b.started("claude").1.contains(&work));
 }
 
 /// R-RUN-3, against a daemon in this process: `--unattended` starts a
@@ -275,6 +306,18 @@ fn claude_unattended_starts_in_the_background_and_prints_the_session() {
     }
     std::thread::sleep(std::time::Duration::from_millis(200));
     assert_eq!(std::fs::read_to_string(&stopped).unwrap(), format!("1234abcd {config_home}\n"), "stopped once, under its account's config home");
+
+    // The default account, from a shell that exports CLAUDE_CONFIG_DIR: it
+    // runs there, so the daemon, started without it, stops it there.
+    let elsewhere = b.root.join("accounts/elsewhere").display().to_string();
+    let o = b.command(&["run", "claude", "--unattended", "fix it"]).env("XDG_RUNTIME_DIR", run).env("CLAUDE_CONFIG_DIR", &elsewhere).output().unwrap();
+    assert!(String::from_utf8_lossy(&o.stderr).contains("Stop it sooner with `claude stop 1234abcd`"), "{}", String::from_utf8_lossy(&o.stderr));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::fs::read_to_string(&stopped).unwrap().lines().count() < 2 {
+        assert!(std::time::Instant::now() < deadline, "the finished session, launched again, was never stopped");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(std::fs::read_to_string(&stopped).unwrap().lines().nth(1), Some(format!("1234abcd {elsewhere}").as_str()));
 }
 
 /// LN04: `codex` replaces gruntas on the account's CODEX_HOME, in the
@@ -313,9 +356,14 @@ fn account_auto_picks_the_account_with_the_most_headroom() {
     let b = Sandbox::new("ln05");
     let mut config: serde_json::Value = serde_json::from_slice(&std::fs::read(b.home().join("config.json")).unwrap()).unwrap();
     for name in ["claude:apart", "claude:spare"] {
-        config["instances"][name] = serde_json::json!({ "kind": "claude-code", "binary": b.root.join("bin/claude"), "configDir": b.root.join("accounts/claude-work") });
+        let dir = b.root.join("accounts").join(name.replace(':', "-"));
+        std::fs::create_dir_all(&dir).unwrap();
+        config["instances"][name] = serde_json::json!({ "kind": "claude-code", "binary": b.root.join("bin/claude"), "configDir": dir });
     }
     std::fs::write(b.home().join("config.json"), config.to_string()).unwrap();
+    // `claude auth status`: signed in, unless the account says otherwise.
+    let claude = b.root.join("bin/claude");
+    std::fs::write(&claude, "#!/bin/sh\nif [ \"$1\" = auth ]; then\n  if [ -e \"$CLAUDE_CONFIG_DIR/signed-out\" ]; then echo '{\"loggedIn\":false}'; else echo '{\"loggedIn\":true}'; fi\nfi\n").unwrap();
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
     let window = |used: f64| serde_json::json!({ "five_hour": { "status": "allowed", "usedPercent": used, "resetsAtMs": now + 3_600_000, "seenAtMs": now } });
     let login = |login: &str| serde_json::json!({ "login": login, "seenAtMs": now });
@@ -330,6 +378,10 @@ fn account_auto_picks_the_account_with_the_most_headroom() {
     let o = b.gruntas(&["run", "claude", "--account", "auto"]);
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("--account auto: claude:spare, first by rollover's ranking: 70% left as of") && err.contains("next reset"), "{err}");
+    // Signed out, it is passed over for the next, as rollover passes it.
+    std::fs::write(b.root.join("accounts/claude-spare/signed-out"), "").unwrap();
+    let err = String::from_utf8_lossy(&b.gruntas(&["run", "claude", "--account", "auto"]).stderr).into_owned();
+    assert!(err.contains("--account auto: claude:apart, first by rollover's ranking: 40% left"), "{err}");
 
     // Nothing else with room: the default account, saying so.
     let usage = serde_json::json!({ "instances": { "claude": login("me"), "claude:apart": login("apart"), "claude:spare": login("spare"), "claude:work": login("me") }, "logins": { "apart": window(92.0), "spare": window(95.0) } });
