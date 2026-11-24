@@ -18,6 +18,10 @@ use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
+/// The god agent's tools (D1, D2).
+#[cfg(all(feature = "harness", unix))]
+mod god;
+
 const PROTOCOLS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const MAX_LINE: usize = 4 << 20;
 
@@ -278,7 +282,16 @@ impl Server<'_> {
             "gruntas_session_info" => session_info(self.env),
             #[cfg(all(feature = "harness", unix))]
             "gruntas_report" => report(self.env, &self.version, &args),
-            other => return Err(rpc_error(-32602, &format!("unknown tool {other}"))),
+            other => {
+                #[cfg(all(feature = "harness", unix))]
+                let god = god::call(other, &args);
+                #[cfg(not(all(feature = "harness", unix)))]
+                let god: Option<Outcome> = None;
+                match god {
+                    Some(outcome) => outcome,
+                    None => return Err(rpc_error(-32602, &format!("unknown tool {other}"))),
+                }
+            }
         };
         Ok(match outcome {
             Ok((text, structured)) => tool_result(&text, Some(structured), false),
@@ -1166,6 +1179,7 @@ fn tool_schemas() -> Value {
             }, "additionalProperties": false }
         }));
         list.extend(delegation_schemas());
+        list.extend(god::schemas());
     }
     tools
 }
@@ -1270,7 +1284,7 @@ mod tests {
         let listed: Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
         let mut names: Vec<&str> = listed["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
         names.sort_unstable();
-        let mut want = ["gruntas_push", "gruntas_list_artifacts", "gruntas_get_artifact", "gruntas_claim_artifact", "gruntas_get_run", "gruntas_verify_key", "gruntas_session_info", "gruntas_report", "gruntas_delegate", "gruntas_collect", "gruntas_machines"];
+        let mut want = ["gruntas_push", "gruntas_list_artifacts", "gruntas_get_artifact", "gruntas_claim_artifact", "gruntas_get_run", "gruntas_verify_key", "gruntas_session_info", "gruntas_report", "gruntas_delegate", "gruntas_collect", "gruntas_machines", "gruntas_status", "gruntas_changes", "gruntas_read", "gruntas_ping", "gruntas_message", "gruntas_interrupt"];
         want.sort_unstable();
         assert_eq!(names, want);
     }

@@ -349,7 +349,7 @@ fn kt04_session_info_answers_the_calling_sessions_registration() {
     let answers = mcp(false);
     let mut names: Vec<&str> = answers[1]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
     names.sort_unstable();
-    assert_eq!(names, ["gruntas_claim_artifact", "gruntas_collect", "gruntas_delegate", "gruntas_get_artifact", "gruntas_get_run", "gruntas_list_artifacts", "gruntas_machines", "gruntas_push", "gruntas_report", "gruntas_session_info", "gruntas_verify_key"]);
+    assert_eq!(names, ["gruntas_changes", "gruntas_claim_artifact", "gruntas_collect", "gruntas_delegate", "gruntas_get_artifact", "gruntas_get_run", "gruntas_interrupt", "gruntas_list_artifacts", "gruntas_machines", "gruntas_message", "gruntas_ping", "gruntas_push", "gruntas_read", "gruntas_report", "gruntas_session_info", "gruntas_status", "gruntas_verify_key"]);
     let info = &answers[2]["result"];
     assert_eq!(info["isError"], false, "{info}");
     assert_eq!(info["structuredContent"]["registered"], true, "{info}");

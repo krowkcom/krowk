@@ -251,6 +251,10 @@ pub struct HostCommand {
     pub answered_at: Option<Timestamp>,
     pub created_at: Timestamp,
     pub expires_at: Timestamp,
+    /// The answer record (god agent D3): the answer too big for `answer`,
+    /// sealed to the sender, and when it expires, ten minutes from its
+    /// first write.
+    pub record: Option<(Vec<u8>, Timestamp)>,
 }
 
 /// A host's presence as the registry keeps it: the bytes, opaque, and when

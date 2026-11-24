@@ -32,6 +32,14 @@ breaking changes may affect it without notice.
 
 ### Added
 
+- **The god agent: ask any agent what your swarm is doing.** The plugin's
+  MCP server offers `gruntas_status`, `gruntas_changes`, `gruntas_read` and
+  `gruntas_ping` to every agent, and `gruntas_message` and
+  `gruntas_interrupt` within each machine's `steer` setting, on any paired
+  device. Answers from other machines take a few seconds: a machine that
+  was just asked something refreshes every 2 seconds for the next 2
+  minutes. A machine on an older gruntas is reported as needing an update.
+
 - **`gruntas run claude|codex` starts the stock harness on one of your
   accounts** (`--account work` is `claude:work`; none is the account plain
   `claude` or `codex` in your shell uses), with the gruntas plugin and a sandbox that
