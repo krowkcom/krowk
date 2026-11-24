@@ -19,6 +19,17 @@ breaking changes may affect it without notice.
 
 ## [Unreleased]
 
+## [2026.11.2] - 2026-11-24
+
+**Start Claude Code or Codex on any of your accounts, and keep working when
+one runs out.** `gruntas run claude|codex` launches the stock harness on the
+account you pick, sandboxed and with the gruntas plugin. When that account's
+usage runs out, the session moves to the next account with room at the same
+model tier: another subscription, then the other harness, then API keys
+within a spend cap. Any agent can now ask what your swarm is doing (the god
+agent), and `gruntas status` is the agent tree, as announced in 2026.11.1
+(see Breaking change).
+
 ### Breaking change
 
 - **`gruntas status` is now the agent tree**, announced in 2026.11.1:
@@ -4187,7 +4198,8 @@ was released on GitHub but never published to npm.
   credentials travel, and a refusal is written to stderr and into the JSON
   envelope.
 
-[Unreleased]: https://github.com/gruntas/gruntas/compare/v2026.11.1...HEAD
+[Unreleased]: https://github.com/gruntas/gruntas/compare/v2026.11.2...HEAD
+[2026.11.2]: https://github.com/gruntas/gruntas/compare/v2026.11.1...v2026.11.2
 [2026.11.1]: https://github.com/gruntas/gruntas/compare/v2026.11.0...v2026.11.1
 [2026.11.0]: https://github.com/gruntas/gruntas/compare/v0.18.0...v2026.11.0
 [0.18.0]: https://github.com/krowkcom/krowk/compare/v0.17.0...v0.18.0
