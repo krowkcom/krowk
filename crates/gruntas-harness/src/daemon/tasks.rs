@@ -195,7 +195,10 @@ impl Tasks {
                 e.agent_state = e.agent_state.filter(|s| !s.is_terminal());
                 // A session that ended and came back was moved on; one
                 // registering while it serves (a compaction) was not.
-                e.capped &= e.task.metadata.gruntas.health.as_ref().is_none_or(|h| h.value == Health::Serving);
+                if e.capped && e.task.metadata.gruntas.health.as_ref().is_some_and(|h| h.value == Health::NotServing) {
+                    e.capped = false;
+                    e.task.status.message = None;
+                }
                 let (state, source) = e.last_state();
                 set_state(&mut e.task, state, source, now);
                 registered(&mut e.task, r);
@@ -879,6 +882,7 @@ mod tests {
         // Resumed (moved on by the person): at work again.
         gone.apply(&reg("g"), T2);
         assert_eq!(state(&gone, "g").0, TaskState::Working);
+        assert_eq!(gone.get("g").unwrap().status.message, None, "the cap's reason goes with it");
         let back: Tasks = serde_json::from_slice(&t.to_json()).unwrap();
         assert_eq!(back, t, "kept across a restart");
     }
