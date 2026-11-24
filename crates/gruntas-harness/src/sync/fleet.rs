@@ -36,7 +36,7 @@ pub type Stop = Box<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 const JOB_LEASE: u64 = 120;
 /// A fresh command id: a random UUID, version 4, which is all the registry
 /// takes for one (`gruntas sync new` makes its the same way).
-fn command_id() -> String {
+pub(crate) fn command_id() -> String {
     let mut b = e2e::random::<16>();
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;

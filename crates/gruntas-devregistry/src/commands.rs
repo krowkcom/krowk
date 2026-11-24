@@ -5,6 +5,10 @@
 //! alone. Ten minutes from sending, on the stand-in's clock, a command is
 //! neither delivered nor answered; an hour past that it is gone.
 //!
+//! An answer too big for an answer goes in the command's answer record
+//! (god agent D3, the registry's AnswerRecord): up to 64 KB, written by the
+//! target, read by the sender alone, ten minutes from its first write.
+//!
 //! Only `id`, `sealed` and `answer` are read, and the stand-in keeps the
 //! two devices, the bytes and the times, nothing else (R-E2E-1).
 
@@ -22,6 +26,9 @@ const ANSWER_BYTES: usize = 4 * 1024;
 const LIFETIME: SignedDuration = SignedDuration::from_mins(10);
 pub const DELIVERED: usize = 16;
 const GRACE: SignedDuration = SignedDuration::from_hours(1);
+/// AnswerRecord::SEALED_BYTES and LIFETIME.
+const RECORD_BYTES: usize = 64 * 1024;
+const RECORD_LIFETIME: SignedDuration = SignedDuration::from_mins(10);
 
 /// POST /v1/users/:user_id/devices/:device_id/commands, signed by the
 /// sender: 201 for a new command, 200 with the stored one for the same id,
@@ -53,7 +60,7 @@ pub fn send(app: &App, req: &mut Req, target: &str, by: &str) -> Resp {
             }
             return Err(error(409, "command_id_taken", &format!("command {id} was already sent with other bytes — send a new command with a fresh id"), None));
         }
-        let command = HostCommand { sender: by.to_owned(), target, sealed, answer: None, answered_at: None, created_at: now, expires_at: now + LIFETIME };
+        let command = HostCommand { sender: by.to_owned(), target, sealed, answer: None, answered_at: None, created_at: now, expires_at: now + LIFETIME, record: None };
         let answer = created(&id, &command);
         s.sync.host_commands.insert(id, command);
         Ok(Resp::json(201, &answer))
@@ -109,6 +116,62 @@ pub fn answer(app: &App, req: &mut Req, id: &str, by: &str) -> Resp {
         }
         let answered_at = command.answered_at.map_or(Json::Null, |t| Json::str(rfc3339_nano(t)));
         Ok(Resp::json(200, &Json::map([("command", Json::map([("id", Json::str(&id)), ("answered", Json::Raw("true".into())), ("answered_at", answered_at)]))])))
+    };
+    run().unwrap_or_else(|r| r)
+}
+
+/// PUT /v1/key/device/commands/:id/answer_record, signed by the target:
+/// 201 for the first write, 200 for the same bytes again, 409
+/// `answer_record_written` for others (the first kept), 413
+/// `answer_record_too_large` past 64 KB, 422 for no bytes or no hex; a
+/// command not addressed to the signer, or lapsed, is 404 `no_command`.
+pub fn put_record(app: &App, req: &mut Req, id: &str, by: &str) -> Resp {
+    let mut run = || -> Result<Resp, Resp> {
+        let body = req.read_body(1 << 20).map_err(|_| crate::errors::bad_request())?;
+        let mut s = app.lock();
+        let now = s.now();
+        let id = id.to_ascii_lowercase();
+        let command = s.sync.host_commands.get_mut(&id).filter(|c| c.target == by && c.expires_at > now).ok_or_else(|| no_command(&id))?;
+        let v = crate::json::parse(&body).ok_or_else(crate::errors::bad_request)?;
+        let sealed = match v.get("answer_record").map(|m| m.value.clone()).and_then(|r| r.fields().get_value("sealed").cloned()) {
+            Some(Value::Str(h)) => blob("sealed", &h, None, None)?,
+            _ => return Err(invalid("sealed", "must be hex")),
+        };
+        if sealed.is_empty() {
+            return Err(invalid("sealed", "must not be empty"));
+        }
+        if sealed.len() > RECORD_BYTES {
+            return Err(error(413, "answer_record_too_large", &format!("an answer record is at most {RECORD_BYTES} bytes"), None));
+        }
+        let status = match &command.record {
+            Some((kept, _)) if *kept != sealed => return Err(error(409, "answer_record_written", &format!("command {id}'s answer record was already written differently — the first is kept"), None)),
+            Some(_) => 200,
+            None => {
+                command.record = Some((sealed, now + RECORD_LIFETIME));
+                201
+            }
+        };
+        let expires_at = command.record.as_ref().map_or(now, |(_, at)| *at);
+        Ok(Resp::json(status, &Json::map([("answer_record", Json::map([("command", Json::str(&id)), ("expires_at", Json::str(rfc3339_nano(expires_at)))]))])))
+    };
+    run().unwrap_or_else(|r| r)
+}
+
+/// GET /v1/users/:user_id/devices/:device_id/commands/:id/answer_record,
+/// signed by the sender, and only the sender (anyone else is 404
+/// `no_command`): 404 `no_answer_record` until written, and once expired.
+pub fn show_record(app: &App, req: &Req, target: &str, id: &str, by: &str) -> Resp {
+    let run = || -> Result<Resp, Resp> {
+        let mut s = app.lock();
+        let now = s.now();
+        let who = crate::devices::caller_of(&s.sync, req)?;
+        let target = active_target(&s.sync, &who.person, target)?;
+        sweep(&mut s.sync, now);
+        let id = id.to_ascii_lowercase();
+        let command = s.sync.host_commands.get(&id).filter(|c| c.sender == by && c.target == target).ok_or_else(|| no_command(&id))?;
+        let (sealed, expires_at) = command.record.as_ref().filter(|(_, at)| *at > now).ok_or_else(|| error(404, "no_answer_record", &format!("command {id} has no answer record — not written yet, or expired"), None))?;
+        let record = Json::map([("command", Json::str(&id)), ("sealed", Json::str(hex(sealed))), ("expires_at", Json::str(rfc3339_nano(*expires_at)))]);
+        Ok(Resp::json(200, &Json::map([("answer_record", record)])))
     };
     run().unwrap_or_else(|r| r)
 }

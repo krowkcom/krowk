@@ -384,3 +384,102 @@ fn r_sec_3_a_host_command_may_name_its_sending_session_and_origin() {
     task.sending_session = None;
     assert!(serde_json::to_value(HostCommand::Run(task)).unwrap().get("sendingSession").is_none());
 }
+
+fn agent() -> gruntas_client::protocol::Origin {
+    use gruntas_client::protocol::{Origin, OriginKind};
+    Origin { kind: OriginKind::Agent, session_id: Some("0190f3c2-0000-7000-8000-0000000000aa".into()), device: Some("laptop".into()), attendance: None }
+}
+
+const GOD_SESSION: &str = "0190f3c2-0000-7000-8000-000000000001";
+
+/// GA01 (D1–D5): the god agent's four commands open on the host as sent,
+/// with the wire names the tools and older hosts see.
+#[test]
+fn ga01_the_god_agents_commands_open_on_the_other_side() {
+    let w = world();
+    let c = chain(&w);
+    let commands = [
+        HostCommand::Read { session: GOD_SESSION.into(), page: None },
+        HostCommand::Read { session: GOD_SESSION.into(), page: Some("before:4096".into()) },
+        HostCommand::Changes { since: "2026-11-24T10:00:00Z".into() },
+        HostCommand::Message { session: GOD_SESSION.into(), text: "rebase first".into(), origin: agent() },
+        HostCommand::Interrupt { session: GOD_SESSION.into(), origin: agent() },
+    ];
+    for command in commands {
+        let sealed = host_command::seal_command(&command, ID, &w.phone.id(), &w.host.id(), &keys(1), 1).unwrap();
+        assert_eq!(host_command::open_command(&sealed, ID, &w.phone.id(), &w.host.id(), &keys(1), &c).unwrap(), Ok(command));
+    }
+    let wire = serde_json::to_value(HostCommand::Message { session: GOD_SESSION.into(), text: "t".into(), origin: agent() }).unwrap();
+    assert_eq!(wire, serde_json::json!({"type": "message", "session": GOD_SESSION, "text": "t", "origin": {"kind": "agent", "sessionId": "0190f3c2-0000-7000-8000-0000000000aa", "device": "laptop"}}));
+    assert_eq!(serde_json::to_value(HostCommand::Read { session: GOD_SESSION.into(), page: None }).unwrap(), serde_json::json!({"type": "read", "session": GOD_SESSION}));
+}
+
+/// GA01: what a host takes of the god agent's commands: a session id, a
+/// time, text within bounds, and only an agent's steer.
+#[test]
+fn ga01_the_god_agents_commands_are_held_to_their_shapes() {
+    use gruntas_client::protocol::OriginKind;
+    let w = world();
+    let seal = |c: &HostCommand| host_command::seal_command(c, ID, &w.phone.id(), &w.host.id(), &keys(1), 1).unwrap();
+    let open = |sealed: &[u8]| host_command::open_command(sealed, ID, &w.phone.id(), &w.host.id(), &keys(1), &chain(&w)).unwrap();
+    let person = gruntas_client::protocol::Origin { kind: OriginKind::Person, ..agent() };
+    let bad = [
+        HostCommand::Read { session: "../../etc/passwd".into(), page: None },
+        HostCommand::Read { session: GOD_SESSION.into(), page: Some("x".repeat(host_command::MAX_CURSOR + 1)) },
+        HostCommand::Changes { since: "yesterday".into() },
+        HostCommand::Message { session: GOD_SESSION.into(), text: " ".into(), origin: agent() },
+        HostCommand::Message { session: GOD_SESSION.into(), text: "x".repeat(host_command::MAX_STEER_TEXT + 1), origin: agent() },
+        HostCommand::Message { session: GOD_SESSION.into(), text: "hi".into(), origin: person.clone() },
+        HostCommand::Interrupt { session: GOD_SESSION.into(), origin: person },
+    ];
+    for c in bad {
+        assert!(matches!(open(&seal(&c)), Err(HostAnswer::Refused { ref code, .. }) if code == "bad_command"), "{c:?}");
+    }
+}
+
+/// GA01 (D3, R-GOD-8): each answer opens on the asking side; one too big
+/// for the 4 KB answer goes in the answer record, the answer pointing at
+/// it, and the record opens to the whole answer, bound as the answer is.
+#[test]
+fn ga01_an_answer_too_big_goes_in_the_answer_record() {
+    use gruntas_client::host_command::{Change, ChangesSince, TranscriptPage};
+    let w = world();
+    let c = chain(&w);
+    let small = [
+        HostAnswer::Delivered { session: GOD_SESSION.into() },
+        HostAnswer::Changes(ChangesSince { since: "2026-11-24T10:00:00Z".into(), at: "2026-11-24T10:05:00Z".into(), changes: vec![Change { session: GOD_SESSION.into(), at: "2026-11-24T10:01:00Z".into(), state: Some(gruntas_client::status::TaskState::Completed), summary: Some("PR opened".into()) }] }),
+        HostAnswer::refused(host_command::refusal::NOTHING_RUNNING, "nothing is running"),
+    ];
+    for answer in small {
+        let (sealed, record) = host_command::seal_answer_or_record(&answer, ID, &w.host.id(), &w.phone.id(), &keys(1), 1).unwrap();
+        assert!(record.is_none(), "{answer:?}");
+        assert_eq!(host_command::open_answer(&sealed, ID, &w.host.id(), &w.phone.id(), &keys(1), &c).unwrap(), answer);
+    }
+    let page = HostAnswer::Page(TranscriptPage { session: GOD_SESSION.into(), text: "é".repeat(6 * 1024), next: Some("before:12288".into()) });
+    let (sealed, record) = host_command::seal_answer_or_record(&page, ID, &w.host.id(), &w.phone.id(), &keys(1), 1).unwrap();
+    assert_eq!(host_command::open_answer(&sealed, ID, &w.host.id(), &w.phone.id(), &keys(1), &c).unwrap(), HostAnswer::Recorded);
+    let record = record.expect("a record");
+    assert!(record.len() <= host_command::MAX_RECORD);
+    assert_eq!(host_command::open_record(&record, ID, &w.host.id(), &w.phone.id(), &keys(1), &c).unwrap(), page);
+    // Bound to the command and its devices, and no answer itself.
+    assert!(host_command::open_record(&record, OTHER_ID, &w.host.id(), &w.phone.id(), &keys(1), &c).is_err());
+    assert!(host_command::open_answer(&record, ID, &w.host.id(), &w.phone.id(), &keys(1), &c).is_err());
+    // A record holds an answer, never a pointer; past 64 KB it is refused.
+    assert!(host_command::seal_record(&HostAnswer::Recorded, ID, &w.host.id(), &w.phone.id(), &keys(1), 1).is_err());
+    let huge = HostAnswer::Page(TranscriptPage { session: GOD_SESSION.into(), text: "x".repeat(host_command::MAX_RECORD), next: None });
+    assert!(host_command::seal_answer_or_record(&huge, ID, &w.host.id(), &w.phone.id(), &keys(1), 1).is_err());
+}
+
+/// GA01 (D8): an older host refuses a command it does not know as
+/// `unknown_command`, which the tools say as "that machine needs updating";
+/// any other refusal is its own fix line.
+#[test]
+fn ga01_an_older_hosts_refusal_reads_as_needs_updating() {
+    let older = HostAnswer::refused("unknown_command", "this host does not know the command \"read\" — upgrade gruntas on it");
+    assert!(older.needs_updating());
+    assert!(older.refusal_line("studio").unwrap().starts_with("studio: that machine needs updating"));
+    let refused = HostAnswer::refused(host_command::refusal::CANT_STEER, "can't steer this session yet: it runs in Codex");
+    assert!(!refused.needs_updating());
+    assert_eq!(refused.refusal_line("studio").unwrap(), "studio: can't steer this session yet: it runs in Codex");
+    assert_eq!(HostAnswer::Delivered { session: GOD_SESSION.into() }.refusal_line("studio"), None);
+}
