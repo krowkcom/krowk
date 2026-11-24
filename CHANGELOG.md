@@ -58,7 +58,9 @@ breaking changes may affect it without notice.
   or socat), it says so and starts only with `--no-sandbox`. Each run
   writes the gruntas plugin this gruntas carries into gruntas's own data
   directory and loads it from there, so the session registers with the
-  daemon without the plugin being installed in any account.
+  daemon without the plugin being installed in any account. Its MCP
+  server is the `gruntas-mcp` installed beside that gruntas, so the two
+  match; `npx -y @gruntas/mcp` only when there is none.
 - **`gruntas run codex` works attended and unattended.** Attended, gruntas
   becomes `codex` on the account's `CODEX_HOME`, in a permissions profile
   that reads everything and writes the project but can't read the gruntas
