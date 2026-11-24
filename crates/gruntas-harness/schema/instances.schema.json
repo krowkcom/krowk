@@ -700,6 +700,12 @@
             "other-harness",
             "api-key"
           ]
+        },
+        "keyCapUsd": {
+          "description": "The most a session spends on API-key rungs, in US dollars, from\nwhen it entered one (D3).",
+          "type": "number",
+          "format": "double",
+          "default": 10.0
         }
       },
       "additionalProperties": false
