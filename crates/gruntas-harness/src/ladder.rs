@@ -213,8 +213,11 @@ impl KeySpend {
     }
 
     /// Why the session stops, once its spend since the baseline reached
-    /// the cap; none while it is under.
+    /// the cap, or its reading is no number; none while it is under.
     pub fn capped(&self, reading_usd: f64) -> Option<String> {
+        if !reading_usd.is_finite() {
+            return Some(format!("Stopped on {}'s API key: its spend cannot be read, so the ${:.2} cap cannot be kept.", self.account, self.cap_usd));
+        }
         let spent = self.spent(reading_usd);
         (spent >= self.cap_usd).then(|| format!("Stopped at the API-key spend cap: ${spent:.2} spent on {} since it moved onto the API-key rung, cap ${:.2} (ladder.keyCapUsd in ~/.gruntas/config.json). Raise the cap, or continue once a subscription has room.", self.account, self.cap_usd))
     }
@@ -230,6 +233,7 @@ pub fn keys_open(harness: Harness, attended: bool, reading_usd: Option<f64>, on_
     }
     match (reading_usd, on_key) {
         (None, _) => false,
+        (Some(r), _) if !r.is_finite() => false,
         (Some(r), Some(k)) => k.capped(r).is_none(),
         (Some(_), None) => true,
     }
@@ -406,6 +410,7 @@ mod tests {
         assert!(reason.contains("$2.50 spent on claude:key") && reason.contains("cap $2.50"), "{reason}");
         assert!(!keys_open(Harness::Claude, false, Some(42.5), Some(&k)), "at the cap the key rung closes");
         assert!(!keys_open(Harness::Claude, true, None, None), "a spend that cannot be read opens no key rung");
+        assert!(!keys_open(Harness::Claude, false, Some(f64::NAN), None) && k.capped(f64::NAN).is_some(), "nor one that is no number");
         // The notice names the account, its rung and the cap.
         assert_eq!(notice(&step, 2.5), "Continuing on claude:key (opus): an API-key account, billed per use, up to $2.50 this session.");
         assert_eq!(notice(&Step { rung: Rung::SameHarness, to: on("claude:b", "opus") }, 2.5), "Continuing on claude:b (opus): another subscription of the same harness.");

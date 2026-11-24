@@ -890,7 +890,9 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
                 true => {
                     // Read before it is taken: the turn's end consumes it.
                     if let Activity::TurnEnd { session_id } = &activity {
-                        report_due = s.registry.report_due(session_id);
+                        // One stopped at the spend cap gets no reminder:
+                        // a reminded turn would spend on past it.
+                        report_due = s.registry.report_due(session_id) && !s.tasks.is_capped(session_id);
                     }
                     s.activity(&activity, report_due);
                     if let Activity::Report { session_id, .. } = &activity {
