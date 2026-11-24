@@ -146,7 +146,7 @@ fn claude_attended(ctx: &mut Ctx, mut plan: Plan) -> Result<(), Error> {
     if plan.sandboxed
         && let Err(why) = claude_sandbox_runs(&ctx.env("PATH"))
     {
-        return Err(fail("sandbox_unavailable", format!("{why}; or start this run with --no-sandbox, which leaves the gruntas home readable to it")));
+        return Err(fail("sandbox_unavailable", format!("{why}. Or start this run with --no-sandbox, which leaves the gruntas home readable to it")));
     }
     if let Some(i) = plan.args.iter().position(|a| a == "--plugin-dir") {
         let dir = std::path::PathBuf::from(&plan.args[i + 1]);
@@ -163,7 +163,7 @@ fn claude_attended(ctx: &mut Ctx, mut plan: Plan) -> Result<(), Error> {
         cmd.env_remove(k);
     }
     cmd.envs(plan.env_set.iter().map(|(k, v)| (k, v)));
-    let cant = |e: std::io::Error| fail("no_binary", format!("{} could not be started: {e} — is Claude Code installed? `gruntas providers list --check` says", plan.program.display()));
+    let cant = |e: std::io::Error| fail("no_binary", format!("{} could not be started: {e}. Is Claude Code installed? `gruntas providers list --check` checks", plan.program.display()));
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -184,12 +184,11 @@ fn claude_sandbox_runs(path: &str) -> Result<(), String> {
         return Ok(());
     }
     if !cfg!(target_os = "linux") {
-        return Err("Claude Code has no sandbox on this platform, so it cannot keep the session out of the gruntas home".into());
+        return Err("Claude Code has no sandbox on this platform to keep the session out of the gruntas home".into());
     }
-    let missing: Vec<&str> = ["bwrap", "socat"].into_iter().filter(|b| gruntas_harness::instances::find_binary(b, path).is_none()).collect();
-    match missing.as_slice() {
-        [] => Ok(()),
-        m => Err(format!("Claude Code's sandbox needs bubblewrap and socat, and {} is not installed — install them (`apt install bubblewrap socat`, `dnf install bubblewrap socat`, `pacman -S bubblewrap socat`)", m.join(" and "))),
+    match ["bwrap", "socat"].iter().all(|b| gruntas_harness::instances::find_binary(b, path).is_some()) {
+        true => Ok(()),
+        false => Err("Claude Code's sandbox needs bubblewrap and socat on PATH; install them (`apt install bubblewrap socat`, `dnf install bubblewrap socat`, `pacman -S bubblewrap socat`)".into()),
     }
 }
 

@@ -154,6 +154,8 @@ fn claude_attended_execs_claude_with_the_account_plugin_and_settings() {
         for bin in ["bwrap", "socat"] {
             std::fs::remove_file(b.root.join("bin").join(bin)).unwrap();
         }
+        // The fake claude's own `env`, on the PATH that has nothing else.
+        std::os::unix::fs::symlink("/usr/bin/env", b.root.join("bin/env")).unwrap();
         let _ = std::fs::remove_file(b.root.join("claude.args"));
         let bare = |extra: &[&str]| {
             Command::new(env!("CARGO_BIN_EXE_gruntas"))
@@ -163,6 +165,7 @@ fn claude_attended_execs_claude_with_the_account_plugin_and_settings() {
                 .env("HOME", b.root.join("home"))
                 .env("XDG_DATA_HOME", b.root.join("data"))
                 .env("GRUNTAS_NO_UPDATE_CHECK", "1")
+                .env("GRUNTAS_API_URL", "http://127.0.0.1:9/v1")
                 .current_dir(&b.root)
                 .stdin(Stdio::null())
                 .output()
@@ -170,7 +173,7 @@ fn claude_attended_execs_claude_with_the_account_plugin_and_settings() {
         };
         failed(&bare(&[]), 1, "--no-sandbox");
         assert!(!b.root.join("claude.args").exists(), "nothing started");
-        bare(&["--no-sandbox"]);
+        assert!(bare(&["--no-sandbox"]).status.success());
         assert!(settings(&b.started("claude").0).get("sandbox").is_none());
     }
 }

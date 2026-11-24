@@ -56,7 +56,7 @@ breaking changes may affect it without notice.
 
 - **`gruntas run claude` hands the terminal to Claude Code** on the account
   you pick. Where Claude Code's sandbox can't run (Linux without bubblewrap
-  and socat), it says so and starts only with `--no-sandbox`. Until the
+  or socat), it says so and starts only with `--no-sandbox`. Until the
   gruntas plugin is installed, it starts without it and says so.
 
 ### Changed
