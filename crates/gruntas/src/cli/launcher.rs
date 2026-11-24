@@ -144,9 +144,9 @@ fn pick_auto(ctx: &mut Ctx, registry: &Registry, harness: Harness) -> Result<Str
 /// Code would pass over it without a word.
 fn claude_attended(ctx: &mut Ctx, mut plan: Plan) -> Result<(), Error> {
     if plan.sandboxed
-        && let Err(why) = claude_sandbox_runs(&ctx.env("PATH"))
+        && let Err(why) = claude_sandbox_runs(ctx.io.env)
     {
-        return Err(fail("sandbox_unavailable", format!("{why}. Or start this run with --no-sandbox, which leaves the gruntas home readable to it")));
+        return Err(fail("sandbox_unavailable", format!("Claude Code's sandbox cannot run here: {why}. Or start this run with --no-sandbox, which leaves the gruntas home readable to it")));
     }
     if let Some(i) = plan.args.iter().position(|a| a == "--plugin-dir") {
         let dir = std::path::PathBuf::from(&plan.args[i + 1]);
@@ -173,22 +173,6 @@ fn claude_attended(ctx: &mut Ctx, mut plan: Plan) -> Result<(), Error> {
     {
         let status = cmd.status().map_err(cant)?;
         std::process::exit(status.code().unwrap_or(1));
-    }
-}
-
-/// Whether Claude Code's sandbox can run here, or why not: on Linux it
-/// needs bubblewrap and socat on `path`; macOS has Seatbelt built in; other
-/// platforms have none.
-fn claude_sandbox_runs(path: &str) -> Result<(), String> {
-    if cfg!(target_os = "macos") {
-        return Ok(());
-    }
-    if !cfg!(target_os = "linux") {
-        return Err("Claude Code has no sandbox on this platform to keep the session out of the gruntas home".into());
-    }
-    match ["bwrap", "socat"].iter().all(|b| gruntas_harness::instances::find_binary(b, path).is_some()) {
-        true => Ok(()),
-        false => Err("Claude Code's sandbox needs bubblewrap and socat on PATH; install them (`apt install bubblewrap socat`, `dnf install bubblewrap socat`, `pacman -S bubblewrap socat`)".into()),
     }
 }
 
