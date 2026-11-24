@@ -147,8 +147,8 @@ pub struct Plan {
     /// Inherited variables taken away, and those set.
     pub env_remove: Vec<&'static str>,
     pub env_set: Vec<(String, String)>,
-    /// Every argument after the program. For Codex unattended, what the
-    /// engine adds after `app-server`.
+    /// Every argument after the program. For Codex unattended, the profile
+    /// the engine adds after `app-server` and the instance's own arguments.
     pub args: Vec<String>,
     /// Claude Code's merged `--settings`, also in `args`.
     pub settings: Option<Value>,
@@ -158,8 +158,7 @@ pub struct Plan {
 
 /// The plan for `req`. An unattended Claude session's task is its prompt,
 /// after the person's arguments, so they carry no prompt of their own.
-/// `read` reads a `--settings` the person gave as a
-/// file. Refused: an unattended session without the sandbox (D4), and a
+/// `read` reads a `--settings` the person gave as a file. Refused: an unattended session without the sandbox (D4), and a
 /// `--settings` that is not a JSON object.
 pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> Result<Plan, String> {
     if !req.sandbox && matches!(req.mode, Mode::Unattended { .. }) {
@@ -208,11 +207,16 @@ pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> R
         Harness::Codex => {
             // After the instance's own `-c`s, so none of them picks another
             // profile; before the person's, which may name a subcommand.
-            plan.args.extend(b.args.iter().cloned());
+            // Unattended, the engine puts the instance's own after
+            // `app-server` itself, and the profile after them.
+            let attended = req.mode == Mode::Attended;
+            if attended {
+                plan.args.extend(b.args.iter().cloned());
+            }
             if req.sandbox {
                 plan.args.extend(codex_profile(&req.home));
             }
-            if let Mode::Attended = req.mode {
+            if attended {
                 plan.args.extend(req.args.iter().cloned());
             }
         }
@@ -498,7 +502,7 @@ mod tests {
         // Unattended: the overrides the engine adds after `app-server`;
         // the task is the engine's first turn, not an argument.
         let p = plan(&request(Harness::Codex, Mode::Unattended { task: "t".into() }, inst, &[]), &no_file).unwrap();
-        assert_eq!(p.args, want[..6]);
+        assert_eq!(p.args, want[2..6]);
         assert_eq!(toml_string("/a \"b\"\\c"), r#""/a \"b\"\\c""#);
     }
 
