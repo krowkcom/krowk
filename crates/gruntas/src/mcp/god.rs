@@ -6,11 +6,9 @@
 //! command (`gruntas_harness::sync::god::ask`), answered within seconds.
 //!
 //! Each slice lives in its own file: `status` (GA03: status, changes and
-//! ping), `read` (GA04), `steer` (GA05: message and interrupt). Until a
-//! slice lands, its tool answers `not_yet`, naming the ticket.
+//! ping), `read` (GA04), `steer` (GA05: message and interrupt).
 
 use super::Outcome;
-use gruntas_api::fail;
 use serde_json::{json, Value};
 
 mod read;
@@ -82,11 +80,6 @@ pub(super) fn call(name: &str, args: &Value) -> Option<Outcome> {
         "gruntas_interrupt" => steer::interrupt(args),
         _ => return None,
     })
-}
-
-/// The answer of a tool not built yet.
-fn not_yet(tool: &str, ticket: &str) -> Outcome {
-    Err(fail("not_yet", format!("{tool} is not built yet ({ticket})")))
 }
 
 #[cfg(test)]

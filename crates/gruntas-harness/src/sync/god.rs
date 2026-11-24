@@ -12,8 +12,7 @@
 //! refused `cant_steer` with the reason.
 //!
 //! Each slice lives in its own file: `changes` (GA03), `read` (GA04),
-//! `inbox` (GA05), `run` (GA06). Until a slice lands, its answer is
-//! `not_yet`, naming the ticket.
+//! `inbox` (GA05), `run` (GA06).
 
 use super::announce::Announcer;
 use super::auto::Config;
@@ -105,9 +104,4 @@ pub fn ask(a: &Announcer, to: &DeviceId, name: &str, command: &HostCommand, wait
         Some(line) if answer.needs_updating() => Err(("host_outdated".into(), line)),
         _ => Ok(answer),
     }
-}
-
-/// The answer of a slice not built yet.
-pub(crate) fn not_yet(what: &str, ticket: &str) -> HostAnswer {
-    HostAnswer::refused(refusal::NOT_YET, format!("this machine's gruntas does not answer {what} yet ({ticket})"))
 }
