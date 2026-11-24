@@ -61,6 +61,10 @@ struct Entry {
 /// A Claude Code transcript's last `TAIL_BYTES`, from the first line that
 /// starts in them, parsed by the importer.
 fn claude(path: &Path) -> Result<Vec<Entry>, String> {
+    // Not a FIFO or a device, which would hold the command's thread.
+    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+        return Err("its transcript is not a file".into());
+    }
     let mut f = std::fs::File::open(path).map_err(|e| format!("its transcript does not open: {e}"))?;
     let len = f.metadata().map_err(|e| e.to_string())?.len();
     let mut from = 0;
@@ -107,12 +111,14 @@ fn gruntas_run(path: &Path) -> Result<Vec<Entry>, String> {
     Ok(out)
 }
 
+/// Tool input and output are redacted before they are cut, so no secret is
+/// cut in two and left half-visible.
 fn call(name: &str, input: &serde_json::Value) -> String {
-    format!("tool call {name}: {}", clipped(&input.to_string(), TOOL_BYTES))
+    format!("tool call {name}: {}", clipped(&crate::redact::redacted(&input.to_string()), TOOL_BYTES))
 }
 
 fn result(output: &str, is_error: bool) -> String {
-    format!("tool {}: {}", if is_error { "error" } else { "result" }, clipped(output, TOOL_BYTES))
+    format!("tool {}: {}", if is_error { "error" } else { "result" }, clipped(&crate::redact::redacted(output), TOOL_BYTES))
 }
 
 /// `s` cut to about `n` bytes on a character boundary, marked when it was.
@@ -132,7 +138,9 @@ fn paged(session: &str, entries: &[Entry], page: Option<&str>) -> TranscriptPage
     };
     let (mut text, mut oldest) = (String::new(), end);
     for (i, e) in entries[..end].iter().enumerate().rev() {
-        let clean = crate::redact::redacted(&e.text);
+        // Control characters other than line breaks and tabs go: each would
+        // encode to six bytes and could take a page past what a record holds.
+        let clean = crate::redact::redacted(&e.text).replace(|c: char| c.is_control() && c != '\n' && c != '\t', " ");
         if !text.is_empty() && text.len() + clean.len() + 1 > PAGE_BYTES {
             break;
         }

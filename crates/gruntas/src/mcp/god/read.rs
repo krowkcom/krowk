@@ -4,7 +4,7 @@
 
 use super::super::{arguments, Outcome};
 use gruntas_api::fail;
-use gruntas_client::host_command::{HostAnswer, HostCommand};
+use gruntas_client::host_command::{self, HostAnswer, HostCommand};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -32,11 +32,12 @@ fn told(machine: &str, answer: HostAnswer) -> Outcome {
         HostAnswer::Refused { ref code, .. } => return Err(fail(code, answer.refusal_line(machine).unwrap_or_default())),
         _ => return Err(fail("bad_answer", format!("{machine} answered the read as another command"))),
     };
-    let more = match &p.next {
+    let next = p.next.filter(|n| n.len() <= host_command::MAX_CURSOR && !n.chars().any(char::is_control));
+    let more = match &next {
         Some(next) => format!("\n\nOlder: call gruntas_read with session {} and page {next}.", p.session),
         None => "\n\nThat is the oldest this machine reads.".into(),
     };
-    Ok((format!("{}{more}", p.text), json!({ "session": p.session, "machine": machine, "text": p.text, "next": p.next })))
+    Ok((format!("{}{more}", p.text), json!({ "session": p.session, "machine": machine, "text": p.text, "next": next })))
 }
 
 #[cfg(test)]
@@ -46,7 +47,7 @@ mod tests {
     use gruntas_api::Client;
     use gruntas_client::device_chain::{Chain, Change, Kind, SignedEntry, Subject};
     use gruntas_client::e2e::{hex, DeviceId, DeviceKey, DeviceSigner, SigningKey};
-    use gruntas_client::host_command::{self, TranscriptPage};
+    use gruntas_client::host_command::TranscriptPage;
     use gruntas_client::user_key::UserKeys;
     use gruntas_harness::sync::announce::Announcer;
     use gruntas_harness::sync::god;
