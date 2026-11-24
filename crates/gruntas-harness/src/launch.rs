@@ -301,8 +301,8 @@ pub fn merge(base: Value, ours: Value) -> Value {
 /// outside the agent's sandbox, so the plugin still reaches gruntas.
 pub fn hidden(home: &Path, env: &dyn Fn(&str) -> String) -> Vec<PathBuf> {
     let user = Some(env("HOME")).filter(|h| !h.trim().is_empty()).map(|h| gruntas_api::home::lexical(Path::new(&h)).join(".gruntas"));
-    let krowk = user.as_deref().map(gruntas_api::migrate::krowk_home).filter(|k| k.exists());
-    let homes = std::iter::once(home.to_path_buf()).chain(user).chain(krowk).flat_map(|d| gruntas_api::home::siblings(&d));
+    let old = user.as_deref().map(gruntas_api::migrate::krowk_home).filter(|k| k.exists());
+    let homes = std::iter::once(home.to_path_buf()).chain(user).chain(old).flat_map(|d| gruntas_api::home::siblings(&d));
     #[cfg(unix)]
     let homes = homes.chain([crate::slots::runtime_dir(env).join(crate::daemon::home_key(home))]);
     let mut out: Vec<PathBuf> = Vec::new();
@@ -560,7 +560,7 @@ mod tests {
         for d in ["/g/home", "/h/.gruntas"] {
             assert!(gruntas_api::home::siblings(Path::new(d)).iter().all(|s| hidden.contains(s)), "{d}'s staging and lock: {hidden:?}");
         }
-        assert!(!hidden.iter().any(|p| p.ends_with(".krowk")), "no ~/.krowk where there is none");
+        assert!(!hidden.contains(&gruntas_api::migrate::krowk_home(Path::new("/h/.gruntas"))), "no old home where there is none");
         #[cfg(unix)]
         assert!(hidden.contains(&PathBuf::from("/run/user/7/gruntas").join(crate::daemon::home_key(Path::new("/g/home")))), "the daemon's socket directory");
         let two = [PathBuf::from("/a"), PathBuf::from("/b")];
