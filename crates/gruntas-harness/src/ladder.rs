@@ -133,9 +133,9 @@ impl Ladder {
         // crosses, as nothing there is known to be the same tier.
         let across = self.tier_of(own, &from.model).and_then(|t| self.model_at(other, t));
         let login = data.login_of(&from_name);
-        // An account that listed its models has this one when it lists it
-        // or another id of its tier: Claude Code lists `opus`, not
-        // `claude-opus-5-5`.
+        // An account that listed its models has this one when it lists it,
+        // or on Claude Code an alias of its tier: it lists `opus`, not
+        // `claude-opus-5-5`. Codex's ids of one tier are different models.
         let rank = |rung, harness: Harness, keyed: bool, model: Option<&str>| -> Vec<Step> {
             let Some(model) = model else { return Vec::new() };
             let tier = self.tier_of(harness, model);
@@ -143,7 +143,7 @@ impl Ladder {
                 .instances
                 .iter()
                 .filter(|(n, i)| i.kind == harness.kind() && i.backend.is_some() && i.api_key_env.is_empty() != keyed && **n != from_name)
-                .filter(|(n, _)| data.instance(n).is_none_or(|r| r.models.is_empty() || r.models.iter().any(|m| m == model || self.tier_of(harness, m).is_some_and(|t| Some(t) == tier))))
+                .filter(|(n, _)| data.instance(n).is_none_or(|r| r.models.is_empty() || r.models.iter().any(|m| m == model || (alias(harness, m) && self.tier_of(harness, m).is_some_and(|t| Some(t) == tier)))))
                 .map(|(n, _)| ModelRef { instance: n.clone(), model: model.to_string() })
                 .collect();
             data.rank(login, &candidates, now_ms).into_iter().map(|r| Step { rung, to: r.model }).collect()
@@ -177,6 +177,11 @@ fn ids(t: &TierModels, harness: Harness) -> &[String] {
         Harness::Claude => &t.claude,
         Harness::Codex => &t.codex,
     }
+}
+
+/// A Claude Code alias (`opus`, `sonnet[1m]`): an id without a dash.
+fn alias(harness: Harness, id: &str) -> bool {
+    harness == Harness::Claude && !id.contains('-')
 }
 
 fn harness_of(kind: &str) -> Option<Harness> {
@@ -299,10 +304,14 @@ mod tests {
         let mut d = usage(&[("claude", Some(99.0)), ("claude:b", Some(20.0)), ("claude:c", Some(30.0)), ("codex", None), ("codex:t", None)]);
         // As Claude Code lists its models: aliases, not the account default's id.
         d.instances.get_mut("claude:b").unwrap().models = ["default", "opus", "claude-fable-5-1[1m]", "sonnet", "haiku"].map(String::from).to_vec();
-        d.instances.get_mut("claude:c").unwrap().models = vec!["sonnet".into()];
+        d.instances.get_mut("claude:c").unwrap().models = vec!["sonnet".into(), "claude-opus-4-1".into()];
         let c = reg.instances["claude:b"].clone();
         reg.instances.insert("claude:c".into(), c);
         assert_eq!(steps(&reg, &d, on("claude", "claude-opus-5-5"), false), [row(Rung::SameHarness, "claude:b", "claude-opus-5-5")]);
+        // Codex's ids of one tier are different models: gpt-5.5 is no gpt-6-astra.
+        let mut d2 = usage(&[("claude", Some(99.0)), ("codex", Some(10.0))]);
+        d2.instances.get_mut("codex").unwrap().models = vec!["gpt-5.5".into()];
+        assert!(!steps(&reg, &d2, on("claude", "opus"), false).iter().any(|s| s.1 == "codex"));
         // A session logged under its account's old name.
         reg.renamed.insert("claude:old".into(), "claude".into());
         assert_eq!(steps(&reg, &d, on("claude:old", "claude-opus-5-5"), false), [row(Rung::SameHarness, "claude:b", "claude-opus-5-5")]);
