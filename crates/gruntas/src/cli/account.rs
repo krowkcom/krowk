@@ -32,9 +32,10 @@ pub fn hook(args: &[String]) -> i32 {
     let pid = gruntas_harness::hook::harness_pid();
     // In a session the Launcher started on a named account, the harness's
     // CLAUDE_CONFIG_DIR is that account's: read as the environment's, it
-    // would make the default account (`claude`) look like it.
-    let launched = gruntas_harness::daemon::dir(&var).ok().zip(pid).is_some_and(|(d, p)| attended::launched(&d, p).is_some());
-    let env = |k: &str| if launched && k == "CLAUDE_CONFIG_DIR" { String::new() } else { var(k) };
+    // would make the default account (`claude`) look like it. On the
+    // default account it is the default's own, inherited or not.
+    let named = gruntas_harness::daemon::dir(&var).ok().zip(pid).and_then(|(d, p)| attended::launched(&d, p)).is_some_and(|l| l.account != Harness::Claude.name());
+    let env = |k: &str| if named && k == "CLAUDE_CONFIG_DIR" { String::new() } else { var(k) };
     let (mut out, mut err) = (std::io::stdout(), std::io::stderr());
     let mut io = super::Io { stdout: &mut out, stderr: &mut err, env: &env, tty: false, err_tty: false, stdin_tty: false };
     let mut ctx = Ctx { io: &mut io, f: Default::default(), format: Format::Human, colour: false, filter: None };
@@ -94,8 +95,13 @@ fn run(ctx: &mut Ctx, args: &[String], pid: Option<u32>, var: &dyn Fn(&str) -> S
             let (Some(d), Some(p), Some(l)) = (daemon.as_deref(), pid, launched) else {
                 return Err(format!("This session was not started by gruntas, so it cannot move to another account: start Claude Code with `gruntas run {}` to be able to.", harness.name()));
             };
-            // Only this harness's own session: the daemon knows which runs where.
-            if gruntas_harness::daemon::registry::Registry::read(d).get(session).is_some_and(|r| r.harness_pid != Some(p)) {
+            // Only this harness's own session, where the daemon knows which
+            // runs where: one registered elsewhere, or not among this
+            // harness's (it registers each new one, after a /clear too).
+            let sessions = gruntas_harness::daemon::registry::Registry::read(d);
+            let mut here = sessions.sessions().filter(|r| r.harness_pid == Some(p)).peekable();
+            let elsewhere = sessions.get(session).is_some_and(|r| r.harness_pid != Some(p));
+            if elsewhere || (here.peek().is_some() && !here.any(|r| r.session_id == session)) {
                 return Err(format!("Session {session} is not the one this Claude Code runs."));
             }
             let to = registry.current(name);
