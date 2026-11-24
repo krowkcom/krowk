@@ -129,13 +129,13 @@ fn claude_attended_execs_claude_with_the_account_plugin_and_settings() {
         serde_json::from_str(&args[i + 1]).unwrap()
     };
     let work = format!("CLAUDE_CONFIG_DIR={}", b.root.join("accounts/claude-work").display());
+    let plugin = b.root.join("data/gruntas/plugin");
     for account in [&[][..], &["--account", "claude"], &["--account", "work"], &["--account=claude:work"]] {
         let _ = std::fs::remove_file(b.root.join("claude.args"));
         let o = b.gruntas(&[&["run", "claude"][..], account, &["--model", "opus", "fix it"]].concat());
         assert!(o.status.success(), "{account:?}: {}", String::from_utf8_lossy(&o.stderr));
-        assert!(String::from_utf8_lossy(&o.stderr).contains("no gruntas plugin at"), "{account:?}");
         let (args, env) = b.started("claude");
-        assert!(!args.contains(&"--plugin-dir".to_string()), "a missing plugin is left out: {args:?}");
+        assert_eq!(args[..2], ["--plugin-dir".to_string(), plugin.display().to_string()], "the plugin, written there and passed");
         let s = settings(&args);
         assert_eq!(s["sandbox"]["enabled"], true);
         assert_eq!(s["sandbox"]["filesystem"]["denyRead"][0], serde_json::json!(home), "the home first, then the rest the fence hides");
@@ -145,9 +145,25 @@ fn claude_attended_execs_claude_with_the_account_plugin_and_settings() {
         assert_eq!(env.contains(&work), named, "{account:?}: {env:?}");
         assert_eq!(env.iter().any(|e| e.starts_with("CLAUDE_CONFIG_DIR=")), named, "the default keeps Claude's own home");
     }
-    // The plugin there: loaded. --no-sandbox: the hooks, no sandbox parts.
-    let plugin = b.root.join("data/gruntas/plugin");
-    std::fs::create_dir_all(&plugin).unwrap();
+    // The plugin as this binary carries it, and only what differs rewritten.
+    let hooks = plugin.join("hooks/hooks.json");
+    assert_eq!(std::fs::read_to_string(&hooks).unwrap(), include_str!("../../../hooks/hooks.json"));
+    for f in [".claude-plugin/plugin.json", "hooks/usage.ts", "skills/gruntas/SKILL.md"] {
+        assert!(plugin.join(f).is_file(), "{f}");
+    }
+    std::fs::write(&hooks, "{}").unwrap();
+    let before = std::fs::metadata(plugin.join("hooks/usage.ts")).unwrap().modified().unwrap();
+    // The default account from a shell that exports CLAUDE_CONFIG_DIR: kept,
+    // as `claude` there would have it.
+    let elsewhere = format!("CLAUDE_CONFIG_DIR={}", b.root.join("accounts/elsewhere").display());
+    assert!(b.command(&["run", "claude"]).env("CLAUDE_CONFIG_DIR", b.root.join("accounts/elsewhere")).status().unwrap().success());
+    assert!(b.started("claude").1.contains(&elsewhere), "the inherited one kept");
+    assert_eq!(std::fs::read_to_string(&hooks).unwrap(), include_str!("../../../hooks/hooks.json"), "put back");
+    assert_eq!(std::fs::metadata(plugin.join("hooks/usage.ts")).unwrap().modified().unwrap(), before, "an unchanged file is left alone");
+    // A named account sets its own over the inherited one.
+    assert!(b.command(&["run", "claude", "--account", "work"]).env("CLAUDE_CONFIG_DIR", b.root.join("accounts/elsewhere")).status().unwrap().success());
+    assert!(b.started("claude").1.contains(&work));
+    // --no-sandbox: the hooks, no sandbox parts.
     assert!(b.gruntas(&["run", "claude", "--account", "work", "--no-sandbox", "-c"]).status.success());
     let (args, env) = b.started("claude");
     assert_eq!(args[..2], ["--plugin-dir".to_string(), plugin.display().to_string()]);
@@ -276,10 +292,17 @@ fn claude_unattended_starts_in_the_background_and_prints_the_session() {
     std::thread::sleep(std::time::Duration::from_millis(200));
     assert_eq!(std::fs::read_to_string(&stopped).unwrap(), format!("1234abcd {config_home}\n"), "stopped once, under its account's config home");
 
-    // The default account, from a shell that exports another account's
-    // CLAUDE_CONFIG_DIR: the stop it says leaves that out, as the launch did.
-    let o = b.command(&["run", "claude", "--unattended", "fix it"]).env("XDG_RUNTIME_DIR", run).env("CLAUDE_CONFIG_DIR", b.root.join("accounts/claude-work")).output().unwrap();
-    assert!(String::from_utf8_lossy(&o.stderr).contains("Stop it sooner with `env -u CLAUDE_CONFIG_DIR claude stop 1234abcd`"), "{}", String::from_utf8_lossy(&o.stderr));
+    // The default account, from a shell that exports CLAUDE_CONFIG_DIR: it
+    // runs there, so the daemon, started without it, stops it there.
+    let elsewhere = b.root.join("accounts/elsewhere").display().to_string();
+    let o = b.command(&["run", "claude", "--unattended", "fix it"]).env("XDG_RUNTIME_DIR", run).env("CLAUDE_CONFIG_DIR", &elsewhere).output().unwrap();
+    assert!(String::from_utf8_lossy(&o.stderr).contains("Stop it sooner with `claude stop 1234abcd`"), "{}", String::from_utf8_lossy(&o.stderr));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::fs::read_to_string(&stopped).unwrap().lines().count() < 2 {
+        assert!(std::time::Instant::now() < deadline, "the finished session, launched again, was never stopped");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(std::fs::read_to_string(&stopped).unwrap().lines().nth(1), Some(format!("1234abcd {elsewhere}").as_str()));
 }
 
 /// LN04: `codex` replaces gruntas on the account's CODEX_HOME, in the

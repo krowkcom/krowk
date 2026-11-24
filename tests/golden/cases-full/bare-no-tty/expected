@@ -1471,7 +1471,7 @@ stdout:
           "name": "account",
           "type": "string",
           "default": "",
-          "usage": "The account: its name (work for claude:work), or auto for the one with the most headroom (default: your own ~/.claude or ~/.codex)"
+          "usage": "The account: its name (work for claude:work), or auto for the one with the most headroom (default: the one plain claude or codex in your shell uses)"
         },
         {
           "name": "unattended",
@@ -3627,7 +3627,7 @@ tty:
           "name": "account",
           "type": "string",
           "default": "",
-          "usage": "The account: its name (work for claude:work), or auto for the one with the most headroom (default: your own ~/.claude or ~/.codex)"
+          "usage": "The account: its name (work for claude:work), or auto for the one with the most headroom (default: the one plain claude or codex in your shell uses)"
         },
         {
           "name": "unattended",

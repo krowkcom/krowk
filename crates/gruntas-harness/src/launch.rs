@@ -181,14 +181,14 @@ pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> R
         settings: None,
         sandboxed: req.sandbox,
     };
-    // The default account is Claude Code's own home, which it finds with no
-    // CLAUDE_CONFIG_DIR, set or inherited: given `~/.claude` as one, it reads
+    // The default account is what `claude` in the person's shell is: never
+    // a CLAUDE_CONFIG_DIR set (given `~/.claude` as one, Claude Code reads
     // `~/.claude/.claude.json` rather than `~/.claude.json`, and every
-    // workspace the person trusted looks untrusted.
+    // workspace the person trusted looks untrusted), an inherited one kept.
+    // Its config home is the caller's to fill from that inherited one.
     if req.harness == Harness::Claude && req.instance.name == req.harness.name() {
         plan.config_home = None;
         plan.env_set.retain(|(k, _)| k != "CLAUDE_CONFIG_DIR");
-        plan.env_remove.push("CLAUDE_CONFIG_DIR");
     }
     match req.harness {
         Harness::Claude => {
@@ -474,7 +474,7 @@ mod tests {
         assert!(s["hooks"]["Stop"].is_array() && s["hooks"]["WorktreeCreate"].is_array());
         assert_eq!(p.args.iter().filter(|a| *a == "--settings").count(), 1);
         assert!(p.config_home.is_none() && set(&p, "CLAUDE_CONFIG_DIR").is_none(), "the default account keeps Claude's own home");
-        assert!(p.env_remove.contains(&"CLAUDE_CONFIG_DIR"), "an inherited one too");
+        assert!(!p.env_remove.contains(&"CLAUDE_CONFIG_DIR"), "an inherited one is kept: the default is what `claude` in the shell is");
         for bad in [&["--settings", "gone.json"][..], &["--settings", "[1]"], &["--settings"]] {
             assert!(plan(&request(Harness::Claude, Mode::Attended, inst, bad), &no_file).is_err(), "{bad:?}");
         }

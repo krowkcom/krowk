@@ -101,6 +101,11 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<(), Error> {
         Some(task) => Mode::Unattended { task },
         None => Mode::Attended,
     };
+    if harness == Harness::Claude
+        && let Err(e) = install_plugin(&plugin_dir)
+    {
+        let _ = writeln!(ctx.io.stderr, "gruntas: the gruntas plugin could not be written to {}: {e}", plugin_dir.display());
+    }
     let req = launch::Request { harness, mode, instance, hidden: launch::hidden(&home, ctx.io.env), plugin_dir, gruntas, sandbox: !asked.no_sandbox, args: asked.rest };
     let plan = launch::plan(&req, &|p| std::fs::read_to_string(p)).map_err(bad)?;
     match (plan.harness, &plan.mode) {
@@ -108,6 +113,32 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<(), Error> {
         (Harness::Claude, Mode::Unattended { .. }) => claude_unattended(ctx, plan),
         (Harness::Codex, _) => codex(ctx, plan, instance, &registry),
     }
+}
+
+/// The gruntas plugin for Claude Code, as this binary was built with it:
+/// each file's path under the plugin directory, and its content.
+const PLUGIN: &[(&str, &str)] = &[
+    (".claude-plugin/plugin.json", include_str!("../../../../.claude-plugin/plugin.json")),
+    ("hooks/hooks.json", include_str!("../../../../hooks/hooks.json")),
+    ("hooks/usage.ts", include_str!("../../../../hooks/usage.ts")),
+    ("skills/gruntas/SKILL.md", include_str!("../../../../skills/gruntas/SKILL.md")),
+];
+
+/// The plugin `--plugin-dir` loads (D5), written into `dir`, gruntas's own
+/// and no account's (R-RUN-5): only the files whose content differs, so it
+/// follows this binary's version and an unchanged one is left alone.
+fn install_plugin(dir: &std::path::Path) -> std::io::Result<()> {
+    for (path, content) in PLUGIN {
+        let file = dir.join(path);
+        if std::fs::read(&file).is_ok_and(|had| had == content.as_bytes()) {
+            continue;
+        }
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&file, content)?;
+    }
+    Ok(())
 }
 
 /// `--account auto` (R-RUN-2): `harness`'s accounts ranked as rollover
@@ -139,8 +170,8 @@ fn pick_auto(ctx: &mut Ctx, registry: &Registry, harness: Harness) -> Result<Str
 
 /// LN02: replace gruntas with `claude` per the plan; where the sandbox
 /// cannot run, say so, and start only with `--no-sandbox`. A plugin
-/// directory nothing has filled yet is left out with a note, where Claude
-/// Code would pass over it without a word.
+/// directory that could not be written is left out with a note, where
+/// Claude Code would pass over it without a word.
 fn claude_attended(ctx: &mut Ctx, mut plan: Plan) -> Result<(), Error> {
     if plan.sandboxed
         && let Err(why) = claude_sandbox_runs(ctx.io.env)
@@ -203,11 +234,12 @@ fn claude_unattended(ctx: &mut Ctx, plan: Plan) -> Result<(), Error> {
     let config_home = plan.config_home.as_ref().map(|h| h.display().to_string());
     let stop = match &config_home {
         Some(h) => format!("CLAUDE_CONFIG_DIR={} claude stop {id}", gruntas_harness::worktree::manage::quote(std::path::Path::new(h))),
-        // The default account has no CLAUDE_CONFIG_DIR: one this shell
-        // exports would point the stop at another account.
-        None if !(ctx.io.env)("CLAUDE_CONFIG_DIR").is_empty() => format!("env -u CLAUDE_CONFIG_DIR claude stop {id}"),
         None => format!("claude stop {id}"),
     };
+    // The default account runs on whatever CLAUDE_CONFIG_DIR this shell
+    // has, which the daemon, started without one, must be told.
+    let inherited = Some((ctx.io.env)("CLAUDE_CONFIG_DIR")).filter(|d| !d.is_empty());
+    let config_home = config_home.or(inherited);
     let launched = gruntas_harness::protocol::Activity::Launched { id: id.clone(), program: plan.program.display().to_string(), config_home };
     let cwd = std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_else(|_| "/".into());
     gruntas_harness::hook::tell(ctx.io.env, &cwd, super::VERSION, launched).map_err(|e| fail("no_daemon", format!("session {id} started, but the gruntas daemon could not be told to stop it when it is done ({e}); stop it yourself with `{stop}`")))?;

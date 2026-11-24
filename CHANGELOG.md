@@ -33,8 +33,8 @@ breaking changes may affect it without notice.
 ### Added
 
 - **`gruntas run claude|codex` starts the stock harness on one of your
-  accounts** (`--account work` is `claude:work`; none is your own
-  `~/.claude` or `~/.codex`), with the gruntas plugin and a sandbox that
+  accounts** (`--account work` is `claude:work`; none is the account plain
+  `claude` or `codex` in your shell uses), with the gruntas plugin and a sandbox that
   keeps the session out of the gruntas home. Claude Code gets one
   `--settings` that merges yours with the sandbox block and gruntas's
   worktree hooks; Codex gets a permissions profile that can't read the home.
@@ -55,8 +55,10 @@ breaking changes may affect it without notice.
   account is passed over. With no other account to spare it uses your own.
 - **`gruntas run claude` hands the terminal to Claude Code** on the account
   you pick. Where Claude Code's sandbox can't run (Linux without bubblewrap
-  or socat), it says so and starts only with `--no-sandbox`. Until the
-  gruntas plugin is installed, it starts without it and says so.
+  or socat), it says so and starts only with `--no-sandbox`. Each run
+  writes the gruntas plugin this gruntas carries into gruntas's own data
+  directory and loads it from there, so the session registers with the
+  daemon without the plugin being installed in any account.
 - **`gruntas run codex` works attended and unattended.** Attended, gruntas
   becomes `codex` on the account's `CODEX_HOME`, in a permissions profile
   that reads everything and writes the project but can't read the gruntas
