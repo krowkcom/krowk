@@ -95,6 +95,9 @@ pub struct Options {
     /// low: where an attended launched session goes next (`attended`).
     /// None tells no session.
     pub accounts: Option<Accounts>,
+    /// Continues an unattended session on the other harness (`roll`);
+    /// none holds it instead.
+    pub cross: Option<super::roll::Cross>,
 }
 
 /// Reads the person's accounts, with their ladder, as they are now.
@@ -127,7 +130,7 @@ pub struct TurnEvent {
 
 impl Default for Options {
     fn default() -> Options {
-        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), gruntas_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP, lateness: None, kick: None, turns: None, bridged: None, introductions: None, usage: None, accounts: None }
+        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), gruntas_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP, lateness: None, kick: None, turns: None, bridged: None, introductions: None, usage: None, accounts: None, cross: None }
     }
 }
 
@@ -227,6 +230,12 @@ pub(super) struct State {
     tasks_written: std::sync::Arc<std::sync::Mutex<u64>>,
     /// When each registered session's git context is to be read again.
     git: HashMap<String, GitClock>,
+    /// The launched sessions rollover is moving, by the id `claude --bg`
+    /// printed: their session id, and when the move started or, once it
+    /// is done, was done. Kept until
+    /// `MOVE_SETTLE` after, so the session is neither forgotten nor moved
+    /// again meanwhile, and the old one's late `SessionEnd` ends nothing.
+    moving: HashMap<String, (String, Instant, bool)>,
 }
 
 /// How often the daemon looks for harnesses gone, git context due and
@@ -235,6 +244,12 @@ const SWEEP: Duration = Duration::from_secs(1);
 
 /// A session's git context is read at most this often (D3).
 const GIT_EVERY: Duration = Duration::from_secs(5);
+
+/// How long a moved session's old ending is not taken for its end.
+const MOVE_SETTLE: Duration = Duration::from_secs(30);
+/// How long a move may take before it is given up on: one that never
+/// came back (a continuation that hung) holds nothing past it.
+const MOVE_STUCK: Duration = Duration::from_secs(600);
 
 /// When a session's git context was last read, and whether activity since
 /// asks for it again.
@@ -401,6 +416,7 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         tasks_seq: 0,
         tasks_written: std::sync::Arc::default(),
         git,
+        moving: HashMap::new(),
         working: 0,
         started: Instant::now(),
         opts,
@@ -556,6 +572,61 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         _ = int.recv() => eprintln!("interrupted again: exiting now"),
     }
     Ok(())
+}
+
+/// An account out of usage (`config_home`, a window at 100%): each
+/// launched session on it, not already moving, moved by rollover or held
+/// on the person (`roll::roll`), off the thread.
+fn roll(state: &Shared, s: &mut State, config_home: &str) {
+    let (Some(accounts), Some(usage)) = (s.opts.accounts.clone(), s.opts.usage.clone()) else { return };
+    let cross = s.opts.cross.clone();
+    for w in s.tasks.launched() {
+        // One on another account is not this one's to move; one on the
+        // default account (no config home) is matched off the thread.
+        let elsewhere = w.launch.config_home.as_deref().is_some_and(|h| crate::usage::home_key(h) != crate::usage::home_key(config_home));
+        if elsewhere || s.moving.contains_key(&w.id) {
+            continue;
+        }
+        let place = s.registry.get(&w.session_id).map(|r| super::roll::Place { cwd: r.cwd.clone(), transcript: r.transcript_path.clone() }).unwrap_or_default();
+        s.moving.insert(w.id.clone(), (w.session_id.clone(), Instant::now(), false));
+        let (state, home, accounts, usage, cross) = (state.clone(), config_home.to_string(), accounts.clone(), usage.clone(), cross.clone());
+        tokio::task::spawn_local(async move {
+            let job = w.clone();
+            let out = tokio::task::spawn_blocking(move || {
+                let registry = accounts().map_err(|e| format!("the accounts cannot be read: {e}"))?;
+                Ok::<_, String>(super::roll::roll(&job, &place, &home, &registry, &usage, cross.as_ref(), gruntas_store::now_ms()))
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("rollover failed: {e}")));
+            let mut s = state.borrow_mut();
+            if s.stopping {
+                return;
+            }
+            let now = super::tasks::now();
+            let changed = match out {
+                Ok(None) => {
+                    s.moving.remove(&w.id);
+                    false
+                }
+                Ok(Some(super::roll::Outcome::Moved { account, launch, notice })) => {
+                    eprintln!("moved background session {} to {account}, its account out of usage. {notice}", w.id);
+                    s.moving.insert(w.id.clone(), (w.session_id.clone(), Instant::now(), true));
+                    s.tasks.moved(&w.id, launch)
+                }
+                Ok(Some(super::roll::Outcome::Continued { session, notice })) => {
+                    eprintln!("background session {} continued as {session}, its account out of usage. {notice}", w.id);
+                    s.moving.remove(&w.id);
+                    s.tasks.unlaunch(&w.id)
+                }
+                Ok(Some(super::roll::Outcome::Held(why))) | Err(why) => {
+                    eprintln!("background session {}: {why}", w.id);
+                    s.moving.remove(&w.id);
+                    s.tasks.held(&w.session_id, &why, &now)
+                }
+            };
+            s.tasks_changed |= changed;
+        });
+    }
 }
 
 /// Every `SWEEP`: the sessions whose harness is gone canceled
@@ -920,6 +991,11 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
                         report_due = s.registry.report_due(session_id) && !s.tasks.is_capped(session_id);
                     }
                     s.activity(&activity, report_due);
+                    if let Activity::Usage { config_home, windows } = &activity
+                        && windows.iter().any(|w| w.used_percent >= 100.0)
+                    {
+                        roll(state, &mut s, config_home);
+                    }
                     if let Activity::Report { session_id, .. } = &activity {
                         task = s.registry.task(session_id).cloned().map(Box::new);
                     }
@@ -1277,6 +1353,13 @@ impl State {
     /// (`report_due`), its git context due again, and the launched sessions
     /// now done stopped.
     fn activity(&mut self, a: &Activity, report_due: bool) {
+        // The session rollover stopped on its old account ends there, and
+        // goes on, the same session, on its new one.
+        if let Activity::Deregister { session_id } = a
+            && self.moving.values().any(|(s, _, _)| s == session_id)
+        {
+            return;
+        }
         {
             let mut running = crate::builds::RUNNING.lock().unwrap_or_else(|e| e.into_inner());
             match a {
@@ -1356,7 +1439,8 @@ impl State {
     /// The launched background sessions that are done stopped, off the
     /// thread (R-RUN-3).
     fn stop_finished(&mut self) {
-        let (due, changed) = self.tasks.to_stop();
+        let moving = &self.moving;
+        let (due, changed) = self.tasks.to_stop(|id| moving.get(id).map(|(_, _, done)| !done));
         self.tasks_changed |= changed;
         for (id, launch) in due {
             tokio::task::spawn_blocking(move || match super::tasks::stop(&id, &launch) {
@@ -1371,6 +1455,7 @@ impl State {
     /// status written off the thread when it changed.
     fn sweep(&mut self) -> Vec<(String, PathBuf)> {
         let now = super::tasks::now();
+        self.moving.retain(|_, (_, at, done)| at.elapsed() < if *done { MOVE_SETTLE } else { MOVE_STUCK });
         if self.registry.prune(super::registry::alive) {
             self.registry_changed();
         }

@@ -137,6 +137,13 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<i32, Error> {
 /// move of an unattended one, call it for an `other-harness` step.
 #[cfg(unix)]
 pub(super) fn continue_on(ctx: &mut Ctx, step: &gruntas_harness::ladder::Step, from: &str) -> Result<String, Error> {
+    continue_in(ctx, step, from, None)
+}
+
+/// `continue_on`, in `workdir` when its Task names no worktree (a session
+/// outside a repository): the daemon's own directory is not the session's.
+#[cfg(unix)]
+pub(super) fn continue_in(ctx: &mut Ctx, step: &gruntas_harness::ladder::Step, from: &str, workdir: Option<&std::path::Path>) -> Result<String, Error> {
     use gruntas_harness::daemon::{registry::Registry as Sessions, tasks::Tasks};
     let registry = Registry::resolve(&super::prompt::load_instances()?, ctx.io.env);
     let kind = registry.instances.get(&registry.current(&step.to.instance)).map(|i| i.kind);
@@ -148,7 +155,10 @@ pub(super) fn continue_on(ctx: &mut Ctx, step: &gruntas_harness::ladder::Step, f
     let g = &task.metadata.gruntas;
     let cwd = match &g.worktree {
         Some(w) => std::path::PathBuf::from(&w.value),
-        None => std::env::current_dir().map_err(|e| fail("no_directory", format!("the working directory cannot be read: {e}")))?,
+        None => match workdir {
+            Some(d) => d.to_path_buf(),
+            None => std::env::current_dir().map_err(|e| fail("no_directory", format!("the working directory cannot be read: {e}")))?,
+        },
     };
     // Claude Code's transcript (Codex's is not read): where its
     // registration said, while it stands, else where Claude Code keeps it
@@ -560,7 +570,9 @@ fn claude_unattended(ctx: &mut Ctx, plan: Plan, cwd: Option<&std::path::Path>) -
     // has, which the daemon, started without one, must be told.
     let inherited = Some((ctx.io.env)("CLAUDE_CONFIG_DIR")).filter(|d| !d.is_empty());
     let config_home = config_home.or(inherited);
-    let launched = gruntas_harness::protocol::Activity::Launched { id: id.clone(), program: plan.program.display().to_string(), config_home };
+    // Its arguments, the task (the last) left out: what rollover resumes it with.
+    let args = plan.args[..plan.args.len().saturating_sub(1)].to_vec();
+    let launched = gruntas_harness::protocol::Activity::Launched { id: id.clone(), program: plan.program.display().to_string(), config_home, args };
     let cwd = cwd.map(std::path::Path::to_path_buf).or_else(|| std::env::current_dir().ok()).map_or_else(|| "/".into(), |d| d.display().to_string());
     gruntas_harness::hook::tell(ctx.io.env, &cwd, super::VERSION, launched).map_err(|e| fail("no_daemon", format!("session {id} started, but the gruntas daemon could not be told to stop it when it is done ({e}); stop it yourself with `{stop}`")))?;
     let _ = writeln!(ctx.io.stdout, "{id}");

@@ -37,6 +37,7 @@ pub mod outbox;
 pub mod registry;
 pub mod remote;
 pub mod replay;
+pub mod roll;
 pub mod server;
 pub mod service;
 pub mod tasks;

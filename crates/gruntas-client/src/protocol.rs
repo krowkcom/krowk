@@ -1637,6 +1637,10 @@ pub enum Activity {
         /// Claude Code's own default.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         config_home: Option<String>,
+        /// The arguments it was started with, its task left out: what
+        /// resumes it on another account (`--resume <id>` after them).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        args: Vec<String>,
     },
     /// A session continued on the other harness (Rollover for launched
     /// sessions D6): `from`'s Task is canceled, "continued on `to`", and
