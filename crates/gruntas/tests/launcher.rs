@@ -390,6 +390,22 @@ fn account_auto_picks_the_account_with_the_most_headroom() {
     assert!(err.contains("--account auto: claude, your own account"), "{err}");
 }
 
+/// `script`, as `script` does, run by a copy of bash named `harness`: a
+/// fake harness that runs `gruntas hook` itself must not look like a shell,
+/// which the hook passes over looking for its harness. Linux names a
+/// script's process after the script; macOS after its interpreter, which
+/// for `#!/bin/sh` is `sh`.
+fn harness_script(b: &Sandbox, name: &str, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let bash = ["/bin/bash", "/usr/bin/bash"].into_iter().find(|p| std::path::Path::new(p).exists()).expect("bash");
+    let interpreter = b.root.join("harness");
+    std::fs::copy(bash, &interpreter).unwrap();
+    std::fs::set_permissions(&interpreter, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = b.root.join("bin").join(name);
+    std::fs::write(&path, format!("#!{}\n{body}", interpreter.display())).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 /// `name`'s fake replaced by `script`, a shell script's body. Runnable even
 /// where there was no fake before (`socat`): gruntas looks for an
 /// executable on PATH, and would otherwise find the machine's own.
@@ -709,7 +725,7 @@ fn rl07_a_picked_account_continues_the_session_after_exit() {
     let transcript = b.root.join(format!("accounts/claude-work/projects/{slug}/{session}.jsonl"));
     std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
     std::fs::write(&transcript, "{}\n").unwrap();
-    script(&b, "claude", &format!("{RL07_AUTH}i=0\nuntil a=$(ls -d {run}/gruntas/*/attended 2>/dev/null) && [ -e \"$a/$$.json\" ]; do i=$((i+1)); [ $i -gt 500 ] && exit 9; sleep 0.01; done\necho \"$CLAUDE_CONFIG_DIR | $*\" >> '{runs}'\ncase \"$*\" in *--resume*) exit 3;; esac\nfor w in . claude:nope codex:team claude:out claude:same claude:work claude:spare --cancel --cancel claude:spare; do [ \"$w\" = . ] && w=; echo \"> $w\" >> '{said}'; {gruntas} hook claude account {session} $w >> '{said}' 2>&1; echo \"= $? queued=$([ -e $a/$$.next.json ] && echo y || echo n)\" >> '{said}'; done\nexit 5\n", run = b.root.join("run").display(), runs = runs.display(), said = said.display()));
+    harness_script(&b, "claude", &format!("{RL07_AUTH}i=0\nuntil a=$(ls -d {run}/gruntas/*/attended 2>/dev/null) && [ -e \"$a/$$.json\" ]; do i=$((i+1)); [ $i -gt 500 ] && exit 9; sleep 0.01; done\necho \"$CLAUDE_CONFIG_DIR | $*\" >> '{runs}'\ncase \"$*\" in *--resume*) exit 3;; esac\nfor w in . claude:nope codex:team claude:out claude:same claude:work claude:spare --cancel --cancel claude:spare; do [ \"$w\" = . ] && w=; echo \"> $w\" >> '{said}'; {gruntas} hook claude account {session} $w >> '{said}' 2>&1; echo \"= $? queued=$([ -e $a/$$.next.json ] && echo y || echo n)\" >> '{said}'; done\nexit 5\n", run = b.root.join("run").display(), runs = runs.display(), said = said.display()));
     let o = b.command(&["run", "claude", "--account", "work", "--no-sandbox", "--model", "opus"]).env("XDG_RUNTIME_DIR", b.root.join("run")).output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
     let said = std::fs::read_to_string(&said).unwrap_or_default();
