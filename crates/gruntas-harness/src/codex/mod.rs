@@ -46,6 +46,17 @@
 //! Codex's read-only sandbox; the OS sandbox (Harness ticket 26) is what
 //! closes that.
 //!
+//! **The fence** (Launcher D3). A session kept out of the gruntas home
+//! (`TurnContext::fence`, `gruntas run codex --unattended`) runs in gruntas's
+//! own permissions profile instead (`launch::codex_profile`: read
+//! everything, every fenced path `none`, and the project written only in
+//! the modes that accept edits — acceptEdits, bypassPermissions, unhinged —
+//! so default and plan still ask before an edit), defined by `-c` on the
+//! process and named on `thread/start` and `thread/resume` as
+//! `permissions`, in place of `sandbox`. The thread is held to it: one Codex
+//! reports in another profile, or looser than the profile allows, is
+//! stopped before a turn runs.
+//!
 //! **Compliance** (R-BACK-3) is structural: gruntas starts the binary as the
 //! user installed it, as itself (client `gruntas`), sends it no system
 //! prompt, never uses Codex's OAuth client and never opens Codex's login
@@ -61,6 +72,7 @@ use crate::bridge::{self, BridgeEnv};
 use crate::catalog::ModelInfo;
 use crate::engine::{cancelled, BoxFuture, Engine, EngineError, EngineEvent, Events, Steer, TurnContext, TurnEnd};
 use crate::instances::{Backend, Resolved};
+use crate::launch::{self, CODEX_PROFILE};
 use crate::permissions::{self, Access, Call, Gate, Verdict};
 use crate::protocol::{Billing, Effort, Item, ItemKind, LimitState, LimitStatus, ModelRef, PermissionMode, Question, QuestionOption, WireApi};
 use serde_json::{json, Value};
@@ -239,6 +251,35 @@ fn sandbox_rank(kind: &str) -> u8 {
         "workspaceWrite" | "workspace-write" => 1,
         _ => 2,
     }
+}
+
+/// The instance's arguments with gruntas's permissions profile defined and
+/// chosen after them, for a fenced session; as they are for another.
+pub fn fenced_args(mut args: Vec<String>, fence: Option<&Fence>) -> Vec<String> {
+    if let Some((hidden, write)) = fence {
+        args.extend(launch::codex_profile(hidden, *write));
+    }
+    args
+}
+
+/// A fenced session's profile: the paths it hides, and whether it writes
+/// the project without asking.
+pub type Fence = (Vec<PathBuf>, bool);
+
+/// The profile a fenced turn runs in, by its mode: the project written
+/// without asking only where edits are accepted.
+fn fence_for(ctx: &TurnContext) -> Option<Fence> {
+    let write = matches!(ctx.permission_mode, PermissionMode::AcceptEdits) || ctx.permission_mode.asks_nothing();
+    ctx.fence.clone().map(|hidden| (hidden, write))
+}
+
+/// Whether a thread Codex opened runs in gruntas's profile: it names it as
+/// the active one, and its sandbox lets through no more than the profile:
+/// writing the workspace when it `write`s, else reading.
+fn in_profile(opened: &Value, write: bool) -> bool {
+    let sandbox = opened.pointer("/sandbox/type").and_then(Value::as_str).unwrap_or_default();
+    let most = if write { "workspace-write" } else { "read-only" };
+    opened.pointer("/activePermissionProfile/id").and_then(Value::as_str) == Some(CODEX_PROFILE) && sandbox_rank(sandbox) <= sandbox_rank(most)
 }
 
 /// `initialize`'s parameters: gruntas as itself, never as a Codex client.
@@ -544,6 +585,7 @@ impl Engine for CodexEngine {
         Box::pin(async move {
             let mut slot = self.proc.lock().await;
             let bypass = ctx.permission_mode.asks_nothing();
+            let fence = fence_for(&ctx);
             let ask = Answers {
                 session_id: ctx.session_id.clone(),
                 turn_id: ctx.turn_id.clone(),
@@ -557,7 +599,7 @@ impl Engine for CodexEngine {
             // the same sandbox; another mode is another thread setting,
             // taken by a new process on `thread/resume`.
             if let Some(p) = slot.as_mut()
-                && (!p.alive() || p.bypass != bypass)
+                && (!p.alive() || p.bypass != bypass || p.fence != fence)
                 && let Some(old) = slot.take()
             {
                 old.shutdown().await;
@@ -569,7 +611,7 @@ impl Engine for CodexEngine {
                 if let (Some(home), Some(own)) = (&self.backend().config_dir, &self.backend().shared_home) {
                     let _ = share(home, own);
                 }
-                *slot = Some(Proc::spawn(self.backend(), &ctx.cwd, bypass, &ask, &self.instance.name).await?);
+                *slot = Some(Proc::spawn(self.backend(), &ctx.cwd, bypass, fence, &ask, &self.instance.name).await?);
             }
             let p = slot.as_mut().expect("spawned above");
             let (stopper, mut stops) = mpsc::unbounded_channel();
@@ -823,6 +865,8 @@ struct Proc {
     binary: String,
     /// Started in `danger-full-access` (gruntas's bypassPermissions or unhinged).
     bypass: bool,
+    /// Started with gruntas's permissions profile, fencing off this home.
+    fence: Option<Fence>,
     next: u64,
     exited: bool,
     /// The process group: Codex and whatever it started.
@@ -1094,14 +1138,15 @@ fn text_input(input: &[Steer], session_dir: &Path) -> Value {
 }
 
 impl Proc {
-    async fn spawn(b: &Backend, cwd: &Path, bypass: bool, ask: &Answers, instance: &str) -> Result<Proc, EngineError> {
+    async fn spawn(b: &Backend, cwd: &Path, bypass: bool, fence: Option<Fence>, ask: &Answers, instance: &str) -> Result<Proc, EngineError> {
         let mut cmd = tokio::process::Command::new(b.path.as_deref().unwrap_or(Path::new(&b.binary)));
         // Unix only: how Codex runs a hook's command on Windows is not
         // known here, so it is not guessed at.
         let guard = std::env::current_exe().ok().filter(|_| cfg!(unix)).map(|exe| paste_guard_command(&exe));
+        let argv = fenced_args(b.args.clone(), fence.as_ref());
         let argv = match &guard {
-            Some(command) => args(&with_paste_guard(b.args.clone(), command)),
-            None => args(&b.args),
+            Some(command) => args(&with_paste_guard(argv, command)),
+            None => args(&argv),
         };
         cmd.args(argv).current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         let (remove, set) = environment(b);
@@ -1142,7 +1187,7 @@ impl Proc {
                 }
             });
         }
-        let mut p = Proc { child, stdin, out, stderr, binary: b.binary.clone(), bypass, next: 0, exited: false, pid, group_done: false, billing: None, efforts: HashMap::new(), thread: None, transcript: None, kids: children::Children::default() };
+        let mut p = Proc { child, stdin, out, stderr, binary: b.binary.clone(), bypass, fence, next: 0, exited: false, pid, group_done: false, billing: None, efforts: HashMap::new(), thread: None, transcript: None, kids: children::Children::default() };
         p.request("initialize", initialize_params(&ask.gruntas_version), ask, INITIALIZE_TIMEOUT).await?;
         p.notify("initialized").await?;
         // Signed in, and to what, asked before a thread exists for a turn
@@ -1277,6 +1322,11 @@ impl Proc {
             Some(thread) => ("thread/resume", json!({"threadId": thread, "model": ctx.model.model, "cwd": cwd, "approvalPolicy": pol.approval, "approvalsReviewer": "user", "sandbox": pol.sandbox, "excludeTurns": true})),
             None => ("thread/start", json!({"model": ctx.model.model, "cwd": cwd, "approvalPolicy": pol.approval, "approvalsReviewer": "user", "sandbox": pol.sandbox, "dynamicTools": dynamic_tools()})),
         };
+        // Codex takes a profile or a sandbox, never both.
+        if self.fence.is_some() {
+            params.as_object_mut().expect("an object").remove("sandbox");
+            params["permissions"] = json!(CODEX_PROFILE);
+        }
         // A rollout copied from another account's home is resumed from where
         // it was copied to, not looked up by id in Codex's index of this
         // home, which has never heard of it.
@@ -1306,13 +1356,20 @@ impl Proc {
         };
         let sandbox = r.pointer("/sandbox/type").and_then(Value::as_str).unwrap_or_default();
         let reviewer = str_of(&r, "approvalsReviewer");
-        if sandbox_rank(sandbox) > sandbox_rank(pol.sandbox) || (!reviewer.is_empty() && reviewer != "user") {
+        let held = match self.fence {
+            None => sandbox_rank(sandbox) <= sandbox_rank(pol.sandbox),
+            Some((_, write)) => in_profile(&r, write),
+        };
+        if !held || (!reviewer.is_empty() && reviewer != "user") {
             self.terminate().await;
+            let asked = match self.fence {
+                None => format!("gruntas's `{}` for this turn", ctx.permission_mode.name()),
+                Some(_) => format!("gruntas's `{CODEX_PROFILE}` permissions profile, which keeps it out of the gruntas home"),
+            };
             return Err(EngineError::new(
                 "backend_permission_mode",
                 format!(
-                    "Codex on {instance} opened the thread in its `{sandbox}` sandbox with `{reviewer}` reviewing approvals, looser than gruntas's `{}` for this turn, so gruntas stopped it before it ran anything — check `sandbox_mode`, `approvals_reviewer` and any managed requirements in its config, and the instance's `args`",
-                    ctx.permission_mode.name()
+                    "Codex on {instance} opened the thread in its `{sandbox}` sandbox with `{reviewer}` reviewing approvals, looser than {asked}, so gruntas stopped it before it ran anything — check `sandbox_mode`, `default_permissions`, `approvals_reviewer` and any managed requirements in its config, and the instance's `args`",
                 ),
             ));
         }

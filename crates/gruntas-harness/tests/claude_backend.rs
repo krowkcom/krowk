@@ -157,7 +157,7 @@ fn prompt_within(session_id: Option<&str>, text: &str, model: &str, mode: Permis
         permission_mode: mode,
         toolset: None,
         effort: None,
-        budget, attendance: None, origin: None,
+        budget, attendance: None, fenced: false, origin: None,
     }
 }
 
@@ -896,7 +896,7 @@ fn a_renamed_instance_keeps_its_session_process() {
             ..Default::default()
         };
         host.set_registry_renamed(Registry::resolve(&cfg, &home.env()), "claude:work", "claude:personal");
-        let (lines, r) = run(&host, Command::Prompt { session_id: Some(sid.clone()), text: "again".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None }).await;
+        let (lines, r) = run(&host, Command::Prompt { session_id: Some(sid.clone()), text: "again".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: None, fenced: false, origin: None }).await;
         let r = r.unwrap().unwrap();
         assert_eq!((r.status, r.model.instance.as_str()), (TurnStatus::Completed, "claude:personal"), "{lines:?}");
         let (_, r) = run(&host, prompt(Some(&sid), "old name", "claude:work/sonnet", PermissionMode::Default)).await;

@@ -121,8 +121,9 @@ pub struct Request<'a> {
     pub mode: Mode,
     /// The account's instance (`account`).
     pub instance: &'a Resolved,
-    /// The gruntas home, by its resolved absolute path (`gruntas_api::home::resolve`).
-    pub home: PathBuf,
+    /// Every path the sandbox hides (`hidden`): the gruntas home by its
+    /// resolved absolute path first.
+    pub hidden: Vec<PathBuf>,
     /// The gruntas plugin's directory (`plugin_dir`).
     pub plugin_dir: PathBuf,
     /// The gruntas binary the worktree hooks run.
@@ -198,7 +199,7 @@ pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> R
             theirs.extend(typed);
             let mut ours = worktree_hooks(&req.gruntas);
             if req.sandbox {
-                ours = merge(ours, claude_sandbox(&req.home));
+                ours = merge(ours, claude_sandbox(&req.hidden));
             }
             let settings = theirs.into_iter().fold(Value::Object(Map::new()), merge);
             let settings = merge(settings, ours);
@@ -223,7 +224,7 @@ pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> R
                 plan.args.extend(b.args.iter().cloned());
             }
             if req.sandbox {
-                plan.args.extend(codex_profile(&req.home));
+                plan.args.extend(codex_profile(&req.hidden, true));
             }
             if attended {
                 plan.args.extend(req.args.iter().cloned());
@@ -291,16 +292,40 @@ pub fn merge(base: Value, ours: Value) -> Value {
     }
 }
 
-/// Claude Code's block that keeps a session out of `home` (D4, the spike's
-/// four parts, all needed): the sandbox on, no session without it, no
-/// command outside it, the home unreadable to commands, and a `Read` deny
-/// rule for Claude's own file tools (`//` is Claude Code's spelling of an
-/// absolute path in a rule). The network rules are left as they are.
-pub fn claude_sandbox(home: &Path) -> Value {
-    let home = home.display().to_string();
+/// Every path a launched session is kept out of, the gruntas home `home`
+/// (resolved) first: what gruntas's own tools hold secret
+/// (`permissions::Policy::load`) — that home and the default `~/.gruntas`,
+/// each with its migration staging directory and lock, as named and as
+/// they lead, and the old `~/.krowk` where it is — and the host daemon's
+/// runtime directory, its socket included. Hooks and MCP servers run
+/// outside the agent's sandbox, so the plugin still reaches gruntas.
+pub fn hidden(home: &Path, env: &dyn Fn(&str) -> String) -> Vec<PathBuf> {
+    let user = Some(env("HOME")).filter(|h| !h.trim().is_empty()).map(|h| gruntas_api::home::lexical(Path::new(&h)).join(".gruntas"));
+    let old = user.as_deref().map(gruntas_api::migrate::krowk_home).filter(|k| k.exists());
+    let homes = std::iter::once(home.to_path_buf()).chain(user).chain(old).flat_map(|d| gruntas_api::home::siblings(&d));
+    #[cfg(unix)]
+    let homes = homes.chain([crate::slots::runtime_dir(env).join(crate::daemon::home_key(home))]);
+    let mut out: Vec<PathBuf> = Vec::new();
+    for p in homes.flat_map(|d| [Some(d.clone()), d.canonicalize().ok()]).flatten() {
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// Claude Code's block that keeps a session out of `hidden` (D4, the
+/// spike's four parts, all needed): the sandbox on, no session without it,
+/// no command outside it, each path unreadable to commands, and a `Read`
+/// deny rule for each for Claude's own file tools (`//` is Claude Code's
+/// spelling of an absolute path in a rule). The network rules are left as
+/// they are.
+pub fn claude_sandbox(hidden: &[PathBuf]) -> Value {
+    let paths: Vec<String> = hidden.iter().map(|p| p.display().to_string()).collect();
+    let deny: Vec<String> = paths.iter().map(|p| format!("Read(/{p}/**)")).collect();
     json!({
-        "sandbox": { "enabled": true, "failIfUnavailable": true, "allowUnsandboxedCommands": false, "filesystem": { "denyRead": [home] } },
-        "permissions": { "deny": [format!("Read(/{home}/**)")] },
+        "sandbox": { "enabled": true, "failIfUnavailable": true, "allowUnsandboxedCommands": false, "filesystem": { "denyRead": paths } },
+        "permissions": { "deny": deny },
     })
 }
 
@@ -316,16 +341,17 @@ pub fn worktree_hooks(gruntas: &Path) -> Value {
 pub const CODEX_PROFILE: &str = "gruntas";
 
 /// Codex's overrides for `CODEX_PROFILE`: chosen as the default
-/// permissions, reading everything, writing the project, and the gruntas
-/// home `none` — a built-in profile still reads it (the spike). Codex
-/// 0.171 has no `-P`; `default_permissions` picks the profile.
-pub fn codex_profile(home: &Path) -> Vec<String> {
-    let home = toml_string(&home.display().to_string());
+/// permissions, reading everything, writing the project when `write`, and
+/// each of `hidden` `none` — a built-in profile still reads the home (the
+/// spike). Codex 0.171 has no `-P`; `default_permissions` picks the profile.
+pub fn codex_profile(hidden: &[PathBuf], write: bool) -> Vec<String> {
+    let project = if write { "write" } else { "read" };
+    let none: String = hidden.iter().map(|p| format!(",{}=\"none\"", toml_string(&p.display().to_string()))).collect();
     vec![
         "-c".into(),
         format!("default_permissions=\"{CODEX_PROFILE}\""),
         "-c".into(),
-        format!("permissions.{CODEX_PROFILE}.filesystem={{\":root\"=\"read\",\":project_roots\"=\"write\",{home}=\"none\"}}"),
+        format!("permissions.{CODEX_PROFILE}.filesystem={{\":root\"=\"read\",\":project_roots\"=\"{project}\"{none}}}"),
     ]
 }
 
@@ -378,7 +404,7 @@ mod tests {
             harness,
             mode,
             instance,
-            home: "/h/.gruntas".into(),
+            hidden: vec!["/h/.gruntas".into()],
             plugin_dir: "/h/.local/share/gruntas/plugin".into(),
             gruntas: "/usr/bin/gruntas".into(),
             sandbox: true,
@@ -518,6 +544,31 @@ mod tests {
         assert_eq!(toml_string("/a \"b\"\\c"), r#""/a \"b\"\\c""#);
     }
 
+    /// The fence hides what gruntas's own tools hold secret, and the
+    /// daemon's runtime directory, in both harnesses.
+    #[test]
+    fn the_fence_hides_the_homes_their_siblings_and_the_daemon() {
+        let run = |k: &str| match k {
+            "HOME" => "/h".into(),
+            "XDG_RUNTIME_DIR" => "/run/user/7".into(),
+            _ => String::new(),
+        };
+        let hidden = hidden(Path::new("/g/home"), &run);
+        let has = |p: &str| hidden.contains(&PathBuf::from(p));
+        assert_eq!(hidden[0], PathBuf::from("/g/home"), "the home in use first");
+        assert!(has("/h/.gruntas") && hidden.len() >= 7, "{hidden:?}");
+        for d in ["/g/home", "/h/.gruntas"] {
+            assert!(gruntas_api::home::siblings(Path::new(d)).iter().all(|s| hidden.contains(s)), "{d}'s staging and lock: {hidden:?}");
+        }
+        assert!(!hidden.contains(&gruntas_api::migrate::krowk_home(Path::new("/h/.gruntas"))), "no old home where there is none");
+        #[cfg(unix)]
+        assert!(hidden.contains(&PathBuf::from("/run/user/7/gruntas").join(crate::daemon::home_key(Path::new("/g/home")))), "the daemon's socket directory");
+        let two = [PathBuf::from("/a"), PathBuf::from("/b")];
+        let s = claude_sandbox(&two);
+        assert_eq!((&s["sandbox"]["filesystem"]["denyRead"], &s["permissions"]["deny"]), (&json!(["/a", "/b"]), &json!(["Read(//a/**)", "Read(//b/**)"])));
+        assert_eq!(codex_profile(&two, false)[3], r#"permissions.gruntas.filesystem={":root"="read",":project_roots"="read","/a"="none","/b"="none"}"#);
+    }
+
     #[test]
     fn the_plugin_is_kept_beside_the_worktrees() {
         assert_eq!(plugin_dir(&env), Some(PathBuf::from("/h/.local/share/gruntas/plugin")));
@@ -540,7 +591,7 @@ mod tests {
         let r = Registry::resolve(&cfg, &env);
         for (h, name) in [(Harness::Claude, "claude:work"), (Harness::Codex, "codex:team")] {
             for mode in [Mode::Attended, Mode::Unattended { task: "t".into() }] {
-                let req = Request { home: dir.clone(), ..request(h, mode, account(&r, h, name).unwrap(), &[]) };
+                let req = Request { hidden: vec![dir.clone()], ..request(h, mode, account(&r, h, name).unwrap(), &[]) };
                 plan(&req, &|p| std::fs::read_to_string(p)).unwrap();
             }
         }

@@ -454,7 +454,7 @@ mod tests {
     #[test]
     fn the_launcher_carries_the_block_doctor_asks_for() {
         let home = Path::new("/u/me/.gruntas");
-        assert_eq!(gruntas_harness::launch::claude_sandbox(home), sandbox_block(home));
+        assert_eq!(gruntas_harness::launch::claude_sandbox(&[home.to_path_buf()]), sandbox_block(home));
     }
 
     #[test]

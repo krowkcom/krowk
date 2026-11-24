@@ -80,6 +80,10 @@
           ],
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
         },
+        "fenced": {
+          "description": "The session runs kept out of the gruntas home, as the prompt that\nstarted it asked (`Command::Prompt`'s `fenced`).",
+          "type": "boolean"
+        },
         "type": {
           "type": "string",
           "const": "session.started"

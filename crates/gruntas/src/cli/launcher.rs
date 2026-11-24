@@ -13,7 +13,7 @@
 use super::{flags::Flags, report, Ctx, Io};
 use crate::output::{self, Format};
 use gruntas_api::{fail, Error};
-use gruntas_harness::instances::Registry;
+use gruntas_harness::instances::{Registry, Resolved};
 use gruntas_harness::launch::{self, Account, Harness, Mode, Plan};
 
 /// The words `gruntas run <harness> …` was given after `run`, when that is
@@ -101,17 +101,13 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<(), Error> {
         Some(task) => Mode::Unattended { task },
         None => Mode::Attended,
     };
-    let req = launch::Request { harness, mode, instance, home, plugin_dir, gruntas, sandbox: !asked.no_sandbox, args: asked.rest };
+    let req = launch::Request { harness, mode, instance, hidden: launch::hidden(&home, ctx.io.env), plugin_dir, gruntas, sandbox: !asked.no_sandbox, args: asked.rest };
     let plan = launch::plan(&req, &|p| std::fs::read_to_string(p)).map_err(bad)?;
     match (plan.harness, &plan.mode) {
         (Harness::Claude, Mode::Attended) => claude_attended(ctx, plan),
         (Harness::Claude, Mode::Unattended { .. }) => claude_unattended(ctx, plan),
-        (Harness::Codex, _) => codex(ctx, plan),
+        (Harness::Codex, _) => codex(ctx, plan, instance, &registry),
     }
-}
-
-fn not_yet(what: &str, ticket: &str) -> Error {
-    fail("not_yet", format!("{what} is not in this build yet ({ticket})"))
 }
 
 /// `--account auto` (R-RUN-2): `harness`'s accounts ranked as rollover
@@ -241,10 +237,83 @@ fn claude_sandbox_runs(env: &dyn Fn(&str) -> String) -> Result<(), String> {
     }
 }
 
-/// LN04: attended, replace gruntas with `codex` per the plan; unattended,
-/// run the task through the Codex engine in the plan's profile.
-fn codex(_ctx: &mut Ctx, _plan: Plan) -> Result<(), Error> {
-    Err(not_yet("`gruntas run codex`", "LN04"))
+/// Attended, gruntas replaced with `codex` per the plan; unattended, the
+/// task started as a new session of the host daemon's Codex engine, fenced
+/// off the gruntas home by the plan's profile (D3), and its id printed.
+fn codex(ctx: &mut Ctx, plan: Plan, instance: &Resolved, registry: &Registry) -> Result<(), Error> {
+    plugin_hint(ctx, instance)?;
+    match &plan.mode {
+        Mode::Attended => exec(&plan),
+        Mode::Unattended { task } => codex_unattended(ctx, task, &plan, instance, registry),
+    }
+}
+
+/// Replaces gruntas with the plan's program, its environment and arguments.
+#[cfg(unix)]
+fn exec(plan: &Plan) -> Result<(), Error> {
+    use std::os::unix::process::CommandExt;
+    let mut cmd = std::process::Command::new(&plan.program);
+    for k in &plan.env_remove {
+        cmd.env_remove(k);
+    }
+    let e = cmd.envs(plan.env_set.iter().map(|(k, v)| (k, v))).args(&plan.args).exec();
+    Err(fail("no_binary", format!("{} could not be started: {e}", plan.program.display())))
+}
+
+#[cfg(not(unix))]
+fn exec(_plan: &Plan) -> Result<(), Error> {
+    Err(fail("not_supported", "`gruntas run` replaces itself with the harness, which this platform's build cannot do yet"))
+}
+
+#[cfg(unix)]
+fn codex_unattended(ctx: &mut Ctx, task: &str, plan: &Plan, instance: &Resolved, registry: &Registry) -> Result<(), Error> {
+    use gruntas_harness::protocol::{Attendance, Command, ModelRef, PermissionMode};
+    let model = registry.model_on(instance, None, &|_| Vec::new()).map_err(|e| fail("no_model", e))?;
+    let cwd = std::env::current_dir().map_err(|e| fail("no_directory", format!("the working directory cannot be read: {e}")))?;
+    // The engine defines and chooses the profile itself, from the fence. A
+    // worker edits the project: in acceptEdits its profile writes it, and
+    // what would still be asked is refused, nobody being there to answer.
+    let prompt = Command::Prompt { session_id: None, text: task.to_string(), images: Vec::new(), model: Some(ModelRef { instance: instance.name.clone(), model }), permission_mode: PermissionMode::AcceptEdits, toolset: None, effort: None, rollover: None, budget: None, attendance: Some(Attendance::Unattended), fenced: plan.sandboxed, origin: None };
+    let spawn = super::host::spawner(ctx)?;
+    let id = gruntas_harness::headless::start_on_daemon(ctx.io.env, &cwd, super::VERSION, &spawn, prompt).map_err(|e| super::prompt::engine_error(&e.code, &e.message, e.status))?;
+    let rendered = match ctx.format {
+        Format::Json => output::encode(&serde_json::json!({ "ok": true, "data": { "sessionId": id, "account": instance.name }, "summary": format!("Started {} on the task as session {id}", instance.name) })),
+        _ => format!("Started {} on the task, unattended, as session {id} — follow it with `gruntas sync attach {id}`", instance.name),
+    };
+    ctx.emit(&rendered)
+}
+
+#[cfg(not(unix))]
+fn codex_unattended(_: &mut Ctx, _: &str, _: &Plan, _: &Resolved, _: &Registry) -> Result<(), Error> {
+    Err(fail("not_supported", "an unattended session runs in the host daemon, which needs a unix socket this platform's build does not have yet"))
+}
+
+/// Where the gruntas plugin is once Codex installed it in an account.
+const CODEX_PLUGIN: &str = "plugins/cache/gruntas/gruntas";
+
+/// Codex loads a plugin only once it is installed in the account, which a
+/// launch never does (D5): where it is not, how to install it is said,
+/// once per account (remembered in the gruntas home).
+fn plugin_hint(ctx: &mut Ctx, instance: &Resolved) -> Result<(), Error> {
+    let Some(b) = &instance.backend else { return Ok(()) };
+    if b.home.as_ref().is_none_or(|h| h.join(CODEX_PLUGIN).is_dir()) {
+        return Ok(());
+    }
+    let told = gruntas_api::home::dir(ctx.io.env)?.join("launcher").join("codex-plugin-told");
+    let said = std::fs::read_to_string(&told).unwrap_or_default();
+    if said.lines().any(|l| l == instance.name) {
+        return Ok(());
+    }
+    let on = match &b.config_dir {
+        Some(d) => format!("CODEX_HOME={} ", gruntas_harness::worktree::manage::quote(d)),
+        None => String::new(),
+    };
+    ctx.warn(&format!("the gruntas plugin is not installed in {}, and Codex loads a plugin only once it is — install it once with `{on}codex plugin marketplace add gruntas/gruntas && {on}codex plugin add gruntas@gruntas`", instance.name));
+    // Said, or not remembered: a hint is no reason not to start.
+    if let Some(dir) = told.parent() {
+        let _ = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&told, format!("{said}{}\n", instance.name)));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

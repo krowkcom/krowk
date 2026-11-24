@@ -205,7 +205,7 @@ mod tests {
             parent_id: None,
             session_id: id.into(),
             time_ms: 1,
-            body: LogBody::SessionStarted { cwd: "/r".into(), gruntas_version: "t".into(), protocol_version: 1, parent_session_id: subagent.map(String::from), agent: None, attendance, started_by_session_id: parent.map(String::from) },
+            body: LogBody::SessionStarted { cwd: "/r".into(), gruntas_version: "t".into(), protocol_version: 1, parent_session_id: subagent.map(String::from), agent: None, attendance, started_by_session_id: parent.map(String::from), fenced: false },
         };
         std::fs::write(dir.join(crate::log::EVENTS_FILE), format!("{}\n", serde_json::to_string(&e).unwrap())).unwrap();
     }
@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn r_sec_4_only_commands_on_another_session_are_steering() {
         let o = Some(Box::new(agent(Some(PARENT))));
-        let prompt = |id: Option<&str>| Command::Prompt { session_id: id.map(String::from), text: "t".into(), images: Vec::new(), model: None, permission_mode: Default::default(), toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: o.clone() };
+        let prompt = |id: Option<&str>| Command::Prompt { session_id: id.map(String::from), text: "t".into(), images: Vec::new(), model: None, permission_mode: Default::default(), toolset: None, effort: None, rollover: None, budget: None, attendance: None, fenced: false, origin: o.clone() };
         assert_eq!(steers(&prompt(Some(TARGET))).map(|(s, _)| s), Some(TARGET));
         assert!(steers(&prompt(None)).is_none(), "a prompt that starts a session steers nothing");
         let model = crate::protocol::ModelRef { instance: "i".into(), model: "m".into() };

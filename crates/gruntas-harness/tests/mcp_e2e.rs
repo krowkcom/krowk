@@ -138,7 +138,7 @@ fn prompt(mode: PermissionMode) -> Command {
         permission_mode: mode,
         toolset: None,
         effort: None,
-        budget: None, attendance: None, origin: None,
+        budget: None, attendance: None, fenced: false, origin: None,
     }
 }
 
@@ -355,7 +355,7 @@ fn r_tool_3_a_streamable_http_server_from_the_persons_own_config_is_called() {
 /// shut down, so the session's MCP connections stay.
 fn turn(rt: &tokio::runtime::Runtime, host: &Host, session: Option<&str>) -> RunResult {
     let Command::Prompt { text, model, permission_mode, .. } = prompt(PermissionMode::BypassPermissions) else { unreachable!() };
-    let cmd = Command::Prompt { session_id: session.map(String::from), text, images: Vec::new(), model, permission_mode, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None };
+    let cmd = Command::Prompt { session_id: session.map(String::from), text, images: Vec::new(), model, permission_mode, toolset: None, effort: None, rollover: None, budget: None, attendance: None, fenced: false, origin: None };
     rt.block_on(execute(host, cmd)).1
 }
 

@@ -89,6 +89,10 @@
             }
           ]
         },
+        "fenced": {
+          "description": "For a prompt that starts a session: the session runs kept out of\nthe gruntas home (Launcher D3, `gruntas run codex --unattended`),\nrecorded in its start record and held for every turn. Codex only:\na fenced session's turn on another backend is refused. Ignored\nfor an existing session.",
+          "type": "boolean"
+        },
         "origin": {
           "description": "Where the prompt came from. For one that starts a session, an\nagent origin's `sessionId` is recorded as the new session's\nparent.",
           "anyOf": [

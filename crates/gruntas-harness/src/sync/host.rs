@@ -771,8 +771,9 @@ fn parent_here(sessions: &std::path::Path, child: &str, session: &str) -> bool {
 fn under_session_settings(c: Command, mode: PermissionMode) -> Command {
     let mode = if mode == PermissionMode::Plan { PermissionMode::Plan } else { PermissionMode::Default };
     match c {
-        // The origin is the sender's and stays; the rest of what the sender chose does not.
-        Command::Prompt { session_id, text, images, model, origin, .. } => Command::Prompt { session_id, text, images, model, permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin },
+        // The origin is the sender's and stays, and so does a fence, which
+        // only holds the session tighter; the rest of what the sender chose does not.
+        Command::Prompt { session_id, text, images, model, fenced, origin, .. } => Command::Prompt { session_id, text, images, model, permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None, attendance: None, fenced, origin },
         other => other,
     }
 }
@@ -1933,7 +1934,7 @@ mod tests {
     }
 
     fn prompt(mode: PermissionMode) -> Command {
-        Command::Prompt { session_id: Some("s".into()), text: "t".into(), images: Vec::new(), model: None, permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None }
+        Command::Prompt { session_id: Some("s".into()), text: "t".into(), images: Vec::new(), model: None, permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None, attendance: None, fenced: false, origin: None }
     }
 
     /// R-PERM-2: a remote prompt never runs looser than `default`, whatever
@@ -1955,7 +1956,7 @@ mod tests {
     #[test]
     fn r_switch_4_a_remote_prompt_keeps_its_model_and_nothing_else() {
         let model = crate::protocol::ModelRef { instance: "mock".into(), model: "m".into() };
-        let asked = Command::Prompt { session_id: Some("s".into()), text: "t".into(), images: Vec::new(), model: Some(model.clone()), permission_mode: PermissionMode::Unhinged, toolset: Some("all".into()), effort: Some(crate::protocol::Effort::Max), rollover: None, budget: Some(crate::protocol::BudgetLimits { max_usd: Some(100.0), max_tokens: None }), attendance: None, origin: None };
+        let asked = Command::Prompt { session_id: Some("s".into()), text: "t".into(), images: Vec::new(), model: Some(model.clone()), permission_mode: PermissionMode::Unhinged, toolset: Some("all".into()), effort: Some(crate::protocol::Effort::Max), rollover: None, budget: Some(crate::protocol::BudgetLimits { max_usd: Some(100.0), max_tokens: None }), attendance: None, fenced: false, origin: None };
         let Command::Prompt { model: kept, permission_mode, toolset, effort, budget, .. } = under_session_settings(asked, PermissionMode::Unhinged) else { unreachable!() };
         assert_eq!(kept, Some(model));
         assert_eq!(permission_mode, PermissionMode::Default);
@@ -1987,7 +1988,7 @@ mod tests {
         }
         let steer = Command::Steer { session_id: "kid".into(), text: "t".into(), images: Vec::new(), origin: None };
         let approve = Command::Approve { session_id: "kid".into(), request_id: "r".into(), decision: ApprovalDecision::Allow, answers: Vec::new(), origin: None };
-        let prompt = Command::Prompt { session_id: Some("kid".into()), text: "t".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None };
+        let prompt = Command::Prompt { session_id: Some("kid".into()), text: "t".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: None, fenced: false, origin: None };
         assert!(for_this_session(&approve, "s", is_child), "its own child's approval is the session's to answer");
         for refused in ["grandkid", "theirs", "other", "made-up"] {
             let approve = Command::Approve { session_id: refused.into(), request_id: "r".into(), decision: ApprovalDecision::Allow, answers: Vec::new(), origin: None };
@@ -2071,7 +2072,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&sessions);
         let (parent, kid, unrelated, orphan, absent) = ("01a0ec7b-0000-7000-8000-0000000000a1", "01a0ec7b-0000-7000-8000-0000000000a2", "01a0ec7b-0000-7000-8000-0000000000a3", "01a0ec7b-0000-7000-8000-0000000000a4", "01a0ec7b-0000-7000-8000-0000000000a5");
         let root = |id: &str, of: Option<&str>| {
-            let e = crate::protocol::LogEvent { id: id.into(), parent_id: None, session_id: id.into(), time_ms: 1, body: LogBody::SessionStarted { cwd: "/r".into(), gruntas_version: "t".into(), protocol_version: 1, parent_session_id: of.map(String::from), agent: None, attendance: None, started_by_session_id: None } };
+            let e = crate::protocol::LogEvent { id: id.into(), parent_id: None, session_id: id.into(), time_ms: 1, body: LogBody::SessionStarted { cwd: "/r".into(), gruntas_version: "t".into(), protocol_version: 1, parent_session_id: of.map(String::from), agent: None, attendance: None, started_by_session_id: None, fenced: false } };
             std::fs::create_dir_all(sessions.join(id)).unwrap();
             std::fs::write(sessions.join(id).join(crate::log::EVENTS_FILE), format!("{}\n", serde_json::to_string(&e).unwrap())).unwrap();
         };
