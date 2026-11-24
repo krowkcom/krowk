@@ -25,14 +25,20 @@ use gruntas_harness::ladder::Rung;
 use gruntas_harness::launch::Harness;
 use gruntas_harness::readiness::Report;
 
-/// `gruntas hook <harness> account <session> [<name> | --cancel]`: the
+/// `gruntas hook claude account <session> [<name> | --cancel]`: the
 /// output on stdout, and the exit code.
 pub fn hook(args: &[String]) -> i32 {
-    let env = |k: &str| std::env::var(k).unwrap_or_default();
+    let var = |k: &str| std::env::var(k).unwrap_or_default();
+    let pid = gruntas_harness::hook::harness_pid();
+    // In a session the Launcher started on a named account, the harness's
+    // CLAUDE_CONFIG_DIR is that account's: read as the environment's, it
+    // would make the default account (`claude`) look like it.
+    let launched = gruntas_harness::daemon::dir(&var).ok().zip(pid).is_some_and(|(d, p)| attended::launched(&d, p).is_some());
+    let env = |k: &str| if launched && k == "CLAUDE_CONFIG_DIR" { String::new() } else { var(k) };
     let (mut out, mut err) = (std::io::stdout(), std::io::stderr());
     let mut io = super::Io { stdout: &mut out, stderr: &mut err, env: &env, tty: false, err_tty: false, stdin_tty: false };
     let mut ctx = Ctx { io: &mut io, f: Default::default(), format: Format::Human, colour: false, filter: None };
-    let (said, code) = match run(&mut ctx, args, gruntas_harness::hook::harness_pid()) {
+    let (said, code) = match run(&mut ctx, args, pid, &var) {
         Ok(s) => (s, 0),
         Err(s) => (s, 1),
     };
@@ -41,11 +47,17 @@ pub fn hook(args: &[String]) -> i32 {
 }
 
 /// What the command says, or why it refused; `pid` is the harness's.
-fn run(ctx: &mut Ctx, args: &[String], pid: Option<u32>) -> Result<String, String> {
-    let (harness, session, rest) = match args {
-        [h, _, session, rest @ ..] => (Harness::parse(h)?, session.as_str(), rest),
+/// `var` is the harness's own environment.
+fn run(ctx: &mut Ctx, args: &[String], pid: Option<u32>, var: &dyn Fn(&str) -> String) -> Result<String, String> {
+    let (session, rest) = match args {
+        [h, _, session, rest @ ..] if h == "claude" => (session.as_str(), rest),
         _ => return Err("usage: gruntas hook claude account <session> [<account> | --cancel]".into()),
     };
+    let harness = Harness::Claude;
+    // It names the session `/exit` resumes (`--resume <session>`).
+    if !gruntas_harness::handoff::valid_session_id(session) || session.starts_with('-') {
+        return Err(format!("{session:?} is not a session id"));
+    }
     let (_, registry, reports) = status::reports(ctx).map_err(|e| e.to_string())?;
     let data = status::usage(ctx).map_err(|e| e.to_string())?;
     let now = gruntas_store::now_ms();
@@ -56,7 +68,7 @@ fn run(ctx: &mut Ctx, args: &[String], pid: Option<u32>) -> Result<String, Strin
     let launched = daemon.as_deref().zip(pid).and_then(|(d, p)| attended::launched(d, p));
     let current = match &launched {
         Some(l) => Some(registry.current(&l.account)),
-        None => here(ctx, &registry, &reports),
+        None => here(var, &registry, &reports),
     };
     let standings: Vec<Standing> = reports.iter().map(|r| status::standing(r, &reports, &data, now)).collect();
     let login = |name: &str| reports.iter().position(|r| r.instance == name).and_then(|i| standings[i].login.clone()).unwrap_or_else(|| name.to_string());
@@ -82,6 +94,10 @@ fn run(ctx: &mut Ctx, args: &[String], pid: Option<u32>) -> Result<String, Strin
             let (Some(d), Some(p), Some(l)) = (daemon.as_deref(), pid, launched) else {
                 return Err(format!("This session was not started by gruntas, so it cannot move to another account: start Claude Code with `gruntas run {}` to be able to.", harness.name()));
             };
+            // Only this harness's own session: the daemon knows which runs where.
+            if gruntas_harness::daemon::registry::Registry::read(d).get(session).is_some_and(|r| r.harness_pid != Some(p)) {
+                return Err(format!("Session {session} is not the one this Claude Code runs."));
+            }
             let to = registry.current(name);
             let Some(inst) = registry.instances.get(&to).filter(|i| i.backend.is_some()) else { return Err(format!("There is no account named {name}: {}.", valid())) };
             if inst.kind != harness.kind() {
@@ -132,10 +148,15 @@ fn list(reports: &[Report], standings: &[Standing], current: Option<&str>, queue
 
 /// The account whose home this harness runs in (`CLAUDE_CONFIG_DIR`, else
 /// `~/.claude`), for a session gruntas did not start.
-fn here(ctx: &Ctx, registry: &Registry, reports: &[Report]) -> Option<String> {
-    let home = gruntas_harness::hook::config_home(gruntas_harness::protocol::PluginHarness::Claude, ctx.io.env)?;
+fn here(var: &dyn Fn(&str) -> String, registry: &Registry, reports: &[Report]) -> Option<String> {
+    let home = gruntas_harness::hook::config_home(gruntas_harness::protocol::PluginHarness::Claude, var)?;
     let key = gruntas_harness::usage::home_key(&home);
-    reports.iter().map(|r| &r.instance).find(|n| registry.instances.get(*n).and_then(|i| i.backend.as_ref()).and_then(|b| b.home.as_ref()).is_some_and(|h| gruntas_harness::usage::home_key(&h.display().to_string()) == key)).cloned()
+    let at = |n: &&String| registry.instances.get(*n).and_then(|i| i.backend.as_ref()).and_then(|b| b.home.as_ref()).is_some_and(|h| gruntas_harness::usage::home_key(&h.display().to_string()) == key);
+    // A named account whose home it is, before the default, whose home is
+    // the environment's.
+    let mut names: Vec<&String> = reports.iter().map(|r| &r.instance).collect();
+    names.sort_by_key(|n| n.as_str() == "claude");
+    names.into_iter().find(at).cloned()
 }
 
 /// The session's transcript: where the daemon's registration says, else

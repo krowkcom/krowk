@@ -736,4 +736,9 @@ fn rl07_a_picked_account_continues_the_session_after_exit() {
     let o = b.command(&["hook", "claude", "account", session]).env("XDG_RUNTIME_DIR", b.root.join("run")).output().unwrap();
     let list = String::from_utf8_lossy(&o.stdout);
     assert!(o.status.success() && list.contains("* claude ") && list.contains("claude:spare"), "the session's home is ~/.claude: {list}");
+    let o = b.command(&["hook", "claude", "account", session]).env("XDG_RUNTIME_DIR", b.root.join("run")).env("CLAUDE_CONFIG_DIR", b.root.join("accounts/claude-spare")).output().unwrap();
+    let list = String::from_utf8_lossy(&o.stdout);
+    assert!(list.contains("* claude:spare ") && !list.contains("* claude "), "the named account whose home it is: {list}");
+    let o = b.command(&["hook", "claude", "account", "--dangerously-skip-permissions", "claude:spare"]).env("XDG_RUNTIME_DIR", b.root.join("run")).output().unwrap();
+    assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).into_owned()), (Some(1), "\"--dangerously-skip-permissions\" is not a session id\n".to_string()));
 }
