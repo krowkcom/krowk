@@ -130,9 +130,9 @@ fn pick_auto(ctx: &mut Ctx, registry: &Registry, harness: Harness) -> Result<Str
     let why = match top.standing {
         Some(s) => {
             let reset = s.reset_ms.map(|r| format!(", next reset {}", clock(r))).unwrap_or_default();
-            format!("the most headroom: {}% left as of {}{reset}", s.headroom.round(), clock(s.seen_at_ms))
+            format!("first by rollover's ranking: {}% left as of {}{reset}", s.headroom.round(), clock(s.seen_at_ms))
         }
-        None => format!("no {own} account with room has its usage known yet"),
+        None => format!("its usage is not known yet, and no {own} account whose usage is known has room to spare"),
     };
     let _ = writeln!(ctx.io.stderr, "--account auto: {}, {why}", top.model.instance);
     Ok(top.model.instance)

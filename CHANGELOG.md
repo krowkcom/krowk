@@ -50,7 +50,7 @@ breaking changes may affect it without notice.
   has ended, never mid-turn. The workspace must already be trusted on that
   account: open it once with `gruntas run claude --account <name>`.
 - **`gruntas run <harness> --account auto`** starts on that harness's
-  account with the most headroom, ranked as rollover ranks them, and says
+  account ranked first by rollover's headroom ranking, and says
   which it picked, how much was left and when it next resets. With no other
   account to spare it uses your own.
 
