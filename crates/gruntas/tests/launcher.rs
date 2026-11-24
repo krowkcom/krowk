@@ -390,9 +390,14 @@ fn account_auto_picks_the_account_with_the_most_headroom() {
     assert!(err.contains("--account auto: claude, your own account"), "{err}");
 }
 
-/// `name`'s fake replaced by `script`, a shell script's body.
+/// `name`'s fake replaced by `script`, a shell script's body. Runnable even
+/// where there was no fake before (`socat`): gruntas looks for an
+/// executable on PATH, and would otherwise find the machine's own.
 fn script(b: &Sandbox, name: &str, script: &str) {
-    std::fs::write(b.root.join("bin").join(name), format!("#!/bin/sh\n{script}")).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    let path = b.root.join("bin").join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{script}")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 /// RL03 (D5): an attended harness runs as gruntas's child. A SIGINT sent
