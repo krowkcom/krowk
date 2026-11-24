@@ -15,6 +15,11 @@
 //! - Its branch, HEAD, worktree and dirty flag are the daemon's own git run
 //!   in its directory (`git`), never the hook's.
 //! - Every event it is told of moves `lastActivity`.
+//! - A session stopped at the API-key spend cap (`capped`, Rollover for
+//!   launched sessions D3) is input-required with the reason as its
+//!   message, until it registers again after it ended: no activity,
+//!   report, compaction, end or exit clears it, and a background one is
+//!   stopped once its turn has ended.
 //!
 //! An agent's own state (`agent_state`) is what its reports set
 //! (`Activity::Report`, SL03's `gruntas_report`). A Task
@@ -76,6 +81,9 @@ struct Entry {
     /// Where its turn stands (`turn_end`).
     #[serde(default, skip_serializing_if = "Turn::going")]
     turn: Turn,
+    /// Stopped at the API-key spend cap (`capped`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    capped: bool,
 }
 
 /// Where a session's turn stands, by its hooks.
@@ -180,11 +188,17 @@ impl Tasks {
             Activity::Register(r) if r.session_id.len() > MOST_NAME => false,
             Activity::Register(r) => {
                 self.make_room(&r.session_id);
-                let e = self.tasks.entry(r.session_id.clone()).or_insert_with(|| Entry { task: blank(&r.session_id, now), agent_state: None, turn: Turn::Going });
+                let e = self.tasks.entry(r.session_id.clone()).or_insert_with(|| Entry { task: blank(&r.session_id, now), agent_state: None, turn: Turn::Going, capped: false });
                 let before = e.clone();
                 // A session resumed is at work again, whatever its agent said
                 // as it ended.
                 e.agent_state = e.agent_state.filter(|s| !s.is_terminal());
+                // A session that ended and came back was moved on; one
+                // registering while it serves (a compaction) was not.
+                if e.capped && e.task.metadata.gruntas.health.as_ref().is_some_and(|h| h.value == Health::NotServing) {
+                    e.capped = false;
+                    e.task.status.message = None;
+                }
                 let (state, source) = e.last_state();
                 set_state(&mut e.task, state, source, now);
                 registered(&mut e.task, r);
@@ -193,6 +207,7 @@ impl Tasks {
             }
             Activity::Deregister { session_id } => self.change(session_id, now, |e| {
                 let (state, source) = match e.agent_state {
+                    _ if e.capped => (TaskState::InputRequired, Provenance::Harness),
                     Some(s) if s.is_terminal() => (s, Provenance::Agent),
                     _ => (TaskState::Completed, Provenance::Harness),
                 };
@@ -209,10 +224,12 @@ impl Tasks {
             Activity::Report { session_id, report, .. } => self.change(session_id, now, |e| {
                 let state = report.state.filter(|s| *s != TaskState::Unspecified).or(e.agent_state).unwrap_or(TaskState::Working);
                 e.agent_state = Some(state);
-                set_state(&mut e.task, state, Provenance::Agent, now);
+                if !e.capped {
+                    set_state(&mut e.task, state, Provenance::Agent, now);
+                }
             }),
             Activity::Active { session_id } | Activity::ToolEnd { session_id } | Activity::HeavyStart { session_id, .. } | Activity::HeavyEnd { session_id, .. } | Activity::TurnEnd { session_id } => self.change(session_id, now, |e| {
-                if e.task.status.state == TaskState::InputRequired && e.task.metadata.gruntas.state_source == Some(Provenance::Harness) {
+                if e.task.status.state == TaskState::InputRequired && e.task.metadata.gruntas.state_source == Some(Provenance::Harness) && !e.capped {
                     let (state, source) = e.last_state();
                     set_state(&mut e.task, state, source, now);
                 }
@@ -257,7 +274,7 @@ impl Tasks {
         self.launched.retain(|id, l| {
             let Some(e) = launched_entry(tasks, id) else { return true };
             let serving = e.task.metadata.gruntas.health.as_ref().is_none_or(|h| h.value == Health::Serving);
-            let done = serving && e.task.status.state.is_terminal() && e.turn == Turn::Ended;
+            let done = serving && (e.task.status.state.is_terminal() || e.capped) && e.turn == Turn::Ended;
             if done {
                 due.push((id.clone(), l.clone()));
             }
@@ -276,6 +293,21 @@ impl Tasks {
         })
     }
 
+    /// `session_id` stopped at the API-key spend cap (D3): input-required,
+    /// `reason` its message (`ladder::KeySpend::capped`). Whether it changed.
+    pub fn capped(&mut self, session_id: &str, reason: &str, now: &str) -> bool {
+        self.change(session_id, now, |e| {
+            e.capped = true;
+            set_state(&mut e.task, TaskState::InputRequired, Provenance::Harness, now);
+            e.task.status.message = Some(gruntas_client::status::Message::text(format!("capped-{now}"), reason));
+        })
+    }
+
+    /// Whether `session_id` was stopped at the spend cap.
+    pub fn is_capped(&self, session_id: &str) -> bool {
+        self.tasks.get(session_id).is_some_and(|e| e.capped)
+    }
+
     /// Every Task still `SERVING` whose session `live` says is gone (its
     /// harness process exited without `SessionEnd`) made `NOT_SERVING`, and
     /// canceled unless its agent reported a terminal state; whether any was.
@@ -286,7 +318,7 @@ impl Tasks {
                 continue;
             }
             e.task.metadata.gruntas.health = Some(Field::harness(Health::NotServing));
-            if !e.task.status.state.is_terminal() {
+            if !e.task.status.state.is_terminal() && !e.capped {
                 set_state(&mut e.task, TaskState::Canceled, Provenance::Harness, now);
             }
             changed = true;
@@ -302,7 +334,9 @@ impl Tasks {
         let Some(e) = self.tasks.get_mut(&reported.id) else { return false };
         let before = e.clone();
         let (t, g) = (&mut e.task, &reported.metadata.gruntas);
-        t.status.message.clone_from(&reported.status.message);
+        if !e.capped {
+            t.status.message.clone_from(&reported.status.message);
+        }
         t.history.clone_from(&reported.history);
         t.metadata.gruntas.phase.clone_from(&g.phase);
         t.metadata.gruntas.pr.clone_from(&g.pr);
@@ -408,8 +442,11 @@ const STOP_WAIT: Duration = Duration::from_secs(30);
 
 impl Entry {
     /// The agent's last state: what it reported, else working as far as
-    /// the harness can tell.
+    /// the harness can tell; input-required while stopped at the cap.
     fn last_state(&self) -> (TaskState, Provenance) {
+        if self.capped {
+            return (TaskState::InputRequired, Provenance::Harness);
+        }
         match self.agent_state {
             Some(s) => (s, Provenance::Agent),
             None => (TaskState::Working, Provenance::Harness),
@@ -805,5 +842,48 @@ mod tests {
         std::fs::write(dir.join(FILE), b"{nope").unwrap();
         assert_eq!(Tasks::load(&dir), Tasks::default());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rl05_a_session_at_the_key_cap_stops_input_required_with_the_reason() {
+        let id = "cccc0001-1111";
+        let mut t = Tasks::default();
+        t.apply(&launched(&id[..8]), T0);
+        t.apply(&reg(id), T0);
+        let k = crate::ladder::KeySpend { account: "claude:key".into(), baseline_usd: 4.0, cap_usd: 10.0 };
+        assert_eq!(k.capped(13.9), None);
+        let reason = k.capped(14.0).unwrap();
+        assert!(t.capped(id, &reason, T1));
+        assert_eq!(state(&t, id), (TaskState::InputRequired, Some(Provenance::Harness)));
+        assert_eq!(t.get(id).unwrap().status.message.as_ref().unwrap().summary(), reason);
+        assert!(t.is_capped(id));
+        // Nor does its agent's report, a compaction, or the report's summary.
+        t.apply(&report(id, TaskState::Completed), T1);
+        t.apply(&reg(id), T1);
+        let mut said = t.get(id).unwrap().clone();
+        said.status.message = Some(gruntas_client::status::Message::text("m", "all done"));
+        t.take_reported(&said);
+        assert_eq!((state(&t, id).0, t.get(id).unwrap().status.message.as_ref().unwrap().summary()), (TaskState::InputRequired, reason.clone()));
+        // No activity clears it, and once its turn ends its background
+        // session is stopped.
+        t.apply(&Activity::ToolEnd { session_id: id.into() }, T1);
+        assert!(t.to_stop().0.is_empty(), "mid-turn");
+        turn_end(&mut t, id, false);
+        assert_eq!(state(&t, id).0, TaskState::InputRequired);
+        assert_eq!(t.to_stop().0.into_iter().map(|(i, _)| i).collect::<Vec<_>>(), ["cccc0001"]);
+        // Its end, or its process gone, leaves it input-required.
+        t.apply(&Activity::Deregister { session_id: id.into() }, T2);
+        assert_eq!((state(&t, id).0, health(&t, id)), (TaskState::InputRequired, Health::NotServing));
+        let mut gone = Tasks::default();
+        gone.apply(&reg("g"), T0);
+        gone.capped("g", &reason, T1);
+        gone.vanished(|_| false, T2);
+        assert_eq!(state(&gone, "g").0, TaskState::InputRequired);
+        // Resumed (moved on by the person): at work again.
+        gone.apply(&reg("g"), T2);
+        assert_eq!(state(&gone, "g").0, TaskState::Working);
+        assert_eq!(gone.get("g").unwrap().status.message, None, "the cap's reason goes with it");
+        let back: Tasks = serde_json::from_slice(&t.to_json()).unwrap();
+        assert_eq!(back, t, "kept across a restart");
     }
 }
