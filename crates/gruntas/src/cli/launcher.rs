@@ -77,12 +77,13 @@ pub(super) fn run(io: &mut Io, words: &[String]) -> i32 {
     let err_colour = output::colour_for(io.err_tty, io.env);
     let mut ctx = Ctx { io, f: Flags::default(), format, colour, filter: None };
     match launch_from(&mut ctx, words) {
-        Ok(()) => super::exit::OK,
+        Ok(code) => code,
         Err(e) => report(ctx.io, &e, format, false, err_colour, None),
     }
 }
 
-fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<(), Error> {
+/// Its exit code: an attended harness's own, else OK.
+fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<i32, Error> {
     let bad = |why: String| fail("bad_flag", format!("{why}; run `gruntas help run`"));
     let asked = parse(words).map_err(bad)?;
     let harness = Harness::parse(&asked.harness).map_err(bad)?;
@@ -106,13 +107,183 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<(), Error> {
     {
         let _ = writeln!(ctx.io.stderr, "gruntas: the gruntas plugin could not be written to {}: {e}", plugin_dir.display());
     }
+    let model = model_of(&asked.rest).unwrap_or_else(|| registry.model_on(instance, None, &|_| Vec::new()).unwrap_or_default());
     let req = launch::Request { harness, mode, instance, hidden: launch::hidden(&home, ctx.io.env), plugin_dir, gruntas, sandbox: !asked.no_sandbox, args: asked.rest };
     let plan = launch::plan(&req, &|p| std::fs::read_to_string(p)).map_err(bad)?;
+    let ok = |()| super::exit::OK;
     match (plan.harness, &plan.mode) {
-        (Harness::Claude, Mode::Attended) => claude_attended(ctx, plan),
-        (Harness::Claude, Mode::Unattended { .. }) => claude_unattended(ctx, plan),
-        (Harness::Codex, _) => codex(ctx, plan, instance, &registry),
+        (Harness::Claude, Mode::Unattended { .. }) => claude_unattended(ctx, plan, None).map(|_| super::exit::OK),
+        (Harness::Codex, Mode::Unattended { task }) => {
+            plugin_hint(ctx, instance)?;
+            codex_unattended(ctx, task, &plan, instance, &registry).map(ok)
+        }
+        (_, Mode::Attended) => {
+            if harness == Harness::Codex {
+                plugin_hint(ctx, instance)?;
+            }
+            attended(ctx, &req, plan, model)
+        }
     }
+}
+
+/// Continues session `from` on the other harness (Rollover for launched
+/// sessions D6, R-RL-6), on the account and at the equivalent-tier model
+/// the ladder's `other-harness` rung picked (`step`): a new unattended
+/// session in `from`'s worktree, started on the handoff prompt
+/// (`crossover::prompt`: its status Task and, for Claude Code, its
+/// transcript's recent turns), and the daemon told to cancel `from`'s Task
+/// "continued on" the new one and link the new one back. The new session's
+/// id. The relaunch after an attended session's `/exit`, and the daemon's
+/// move of an unattended one, call it for an `other-harness` step.
+#[cfg(unix)]
+pub(super) fn continue_on(ctx: &mut Ctx, step: &gruntas_harness::ladder::Step, from: &str) -> Result<String, Error> {
+    continue_in(ctx, step, from, None)
+}
+
+/// `continue_on`, in `workdir` when its Task names no worktree (a session
+/// outside a repository): the daemon's own directory is not the session's.
+#[cfg(unix)]
+pub(super) fn continue_in(ctx: &mut Ctx, step: &gruntas_harness::ladder::Step, from: &str, workdir: Option<&std::path::Path>) -> Result<String, Error> {
+    use gruntas_harness::daemon::{registry::Registry as Sessions, tasks::Tasks};
+    let registry = Registry::resolve(&super::prompt::load_instances()?, ctx.io.env);
+    let kind = registry.instances.get(&registry.current(&step.to.instance)).map(|i| i.kind);
+    let harness = [Harness::Claude, Harness::Codex].into_iter().find(|h| Some(h.kind()) == kind).ok_or_else(|| fail("no_account", format!("{} is not a Claude Code or Codex account", step.to.instance)))?;
+    let instance = launch::account(&registry, harness, &step.to.instance).map_err(|e| fail("no_account", e))?;
+    let socket = gruntas_harness::daemon::socket(ctx.io.env).map_err(|e| fail("no_daemon", e))?;
+    let dir = socket.parent().unwrap_or(std::path::Path::new("/"));
+    let task = Tasks::read(dir).get(from).cloned().ok_or_else(|| fail("no_session", format!("the gruntas daemon has no status for session {from}, which a continuation starts from")))?;
+    let g = &task.metadata.gruntas;
+    let cwd = match &g.worktree {
+        Some(w) => std::path::PathBuf::from(&w.value),
+        None => match workdir {
+            Some(d) => d.to_path_buf(),
+            None => std::env::current_dir().map_err(|e| fail("no_directory", format!("the working directory cannot be read: {e}")))?,
+        },
+    };
+    // Claude Code's transcript (Codex's is not read): where its
+    // registration said, while it stands, else where Claude Code keeps it
+    // under the account's home.
+    let claude = g.harness.as_ref().is_some_and(|h| h.value == Harness::Claude.name());
+    let transcript = Sessions::read(dir).get(from).and_then(|r| r.transcript_path.clone()).map(std::path::PathBuf::from).or_else(|| {
+        let env = |k: &str| Some((ctx.io.env)(k)).filter(|v| !v.is_empty());
+        let home = g.account.as_ref().map(|a| a.value.clone()).or_else(|| env("CLAUDE_CONFIG_DIR")).or_else(|| env("HOME").map(|h| format!("{h}/.claude")))?;
+        Some(gruntas_harness::claude::transcript_path(std::path::Path::new(&home), &cwd.display().to_string(), from))
+    });
+    let transcript = transcript.filter(|_| claude);
+    let prompt = gruntas_harness::crossover::prompt(&task, transcript.as_deref());
+    let home = gruntas_api::home::dir(ctx.io.env)?;
+    let plugin_dir = launch::plugin_dir(ctx.io.env).ok_or_else(|| fail("no_home", "there is no home directory to keep the gruntas plugin in — set HOME"))?;
+    let gruntas = std::env::current_exe().map_err(|e| fail("no_binary", format!("this gruntas's own path cannot be read, which the worktree hooks run: {e}")))?;
+    if harness == Harness::Claude
+        && let Err(e) = install_plugin(&plugin_dir, &gruntas)
+    {
+        let _ = writeln!(ctx.io.stderr, "gruntas: the gruntas plugin could not be written to {}: {e}", plugin_dir.display());
+    }
+    let args = match harness {
+        Harness::Claude => vec!["--model".to_string(), step.to.model.clone()],
+        Harness::Codex => Vec::new(),
+    };
+    let req = launch::Request { harness, mode: Mode::Unattended { task: prompt.clone() }, instance, hidden: launch::hidden(&home, ctx.io.env), plugin_dir, gruntas, sandbox: true, args };
+    let plan = launch::plan(&req, &|p| std::fs::read_to_string(p)).map_err(|e| fail("launch_failed", e))?;
+    let id = match harness {
+        Harness::Claude => claude_unattended(ctx, plan, Some(&cwd))?,
+        Harness::Codex => {
+            let id = codex_start(ctx, &prompt, &plan, instance, &registry, &cwd, Some(&step.to.model))?;
+            codex_thread(ctx.io.env, &id).unwrap_or(id)
+        }
+    };
+    let continued = gruntas_harness::protocol::Activity::Continued { from: from.to_string(), to: id.clone() };
+    gruntas_harness::hook::tell(ctx.io.env, &cwd.display().to_string(), super::VERSION, continued).map_err(|e| fail("no_daemon", format!("session {from} continued as {id}, but the gruntas daemon could not be told to link the two ({e})")))?;
+    Ok(id)
+}
+
+/// The model the person passed the harness (`--model x`, `--model=x`, `-m x`).
+fn model_of(args: &[String]) -> Option<String> {
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if let Some(m) = a.strip_prefix("--model=") {
+            return Some(m.into());
+        }
+        if a == "--model" || a == "-m" {
+            return it.next().cloned();
+        }
+    }
+    None
+}
+
+/// D5 (Rollover for launched sessions): the harness run as gruntas's child,
+/// in this terminal, with its signals and exit code passed through. Its pid
+/// is marked for the daemon (`attended`), which queues the next account
+/// once this one runs low and tells the session; when the harness exits
+/// after that, the same session is resumed on the next account here, or
+/// handed to the other harness (`other_harness`). Exiting with nothing
+/// queued ends the run with the harness's own code.
+fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: String) -> Result<i32, Error> {
+    use gruntas_harness::attended;
+    let daemon = gruntas_harness::daemon::dir(ctx.io.env).ok();
+    if let Some(d) = &daemon {
+        attended::sweep(d);
+    }
+    let mut account = req.instance.name.clone();
+    loop {
+        if plan.harness == Harness::Claude {
+            claude_ready(ctx, &mut plan)?;
+        }
+        let _ = ctx.io.stdout.flush();
+        let _ = ctx.io.stderr.flush();
+        let launched = attended::Launched { account: account.clone(), model: model.clone() };
+        let mark = |pid: u32| {
+            if let Some(d) = &daemon {
+                let _ = attended::mark(d, pid, &launched);
+            }
+        };
+        let code = child::run(&plan, mark).map_err(|e| fail("no_binary", format!("{} could not be started: {e}. Is it installed? `gruntas providers list --check` checks", plan.program.display())))?;
+        let next = daemon.as_ref().and_then(|d| attended::take(d, code.pid));
+        // Told to end (a closed terminal, a kill): no harness starts again.
+        let Some(next) = next.filter(|_| !code.ending) else { return Ok(code.code) };
+        // The accounts as they are now: the daemon picked from those.
+        let registry = Registry::resolve(&super::prompt::load_instances()?, ctx.io.env);
+        let Ok(to) = launch::account(&registry, plan.harness, &next.account) else { return other_harness(ctx, &next, code.code) };
+        let from = launch::account(&registry, plan.harness, &account).map_err(|e| fail("no_account", e))?;
+        if let Some(t) = &next.transcript
+            && let Err(e) = carry(from, to, plan.harness, t, &next.session)
+        {
+            ctx.warn(&format!("session {} was not continued on {}: {e}", next.session, to.name));
+            return Ok(code.code);
+        }
+        let mut args = match plan.harness {
+            Harness::Claude => vec!["--resume".to_string(), next.session.clone()],
+            Harness::Codex => vec!["resume".to_string(), next.session.clone()],
+        };
+        if !next.model.is_empty() {
+            args.extend(["--model".to_string(), next.model.clone()]);
+        }
+        let _ = writeln!(ctx.io.stderr, "gruntas: continuing session {} on {}", next.session, to.name);
+        let r = launch::Request { harness: req.harness, mode: Mode::Attended, instance: to, hidden: req.hidden.clone(), plugin_dir: req.plugin_dir.clone(), gruntas: req.gruntas.clone(), sandbox: req.sandbox, args };
+        plan = launch::plan(&r, &|p| std::fs::read_to_string(p)).map_err(|e| fail("bad_flag", e))?;
+        account = next.account;
+        model = next.model;
+    }
+}
+
+/// The session's transcript copied from `from`'s home to `to`'s, where its
+/// harness finds it to resume.
+fn carry(from: &Resolved, to: &Resolved, harness: Harness, transcript: &str, session: &str) -> Result<(), String> {
+    use gruntas_harness::handoff::{self, Vendor};
+    let home = |i: &Resolved| i.backend.as_ref().and_then(|b| b.home.clone()).ok_or_else(|| format!("{} has no home to keep the session in", i.name));
+    let vendor = if harness == Harness::Claude { Vendor::ClaudeCode } else { Vendor::Codex };
+    handoff::carry(std::path::Path::new(transcript), &home(from)?, &home(to)?, vendor, session).map(drop)
+}
+
+/// The continuation on the other harness, from a handoff (D6): where the
+/// queued account is not one of this harness's, `continue_on` starts the
+/// session there in the background, in the same worktree; the run ends
+/// with the harness's code, saying where the work went on.
+fn other_harness(ctx: &mut Ctx, next: &gruntas_harness::attended::Next, code: i32) -> Result<i32, Error> {
+    let step = gruntas_harness::ladder::Step { rung: next.rung, to: gruntas_harness::protocol::ModelRef { instance: next.account.clone(), model: next.model.clone() } };
+    let id = continue_on(ctx, &step, &next.session)?;
+    let _ = writeln!(ctx.io.stderr, "gruntas: session {} continues on {} as session {id}, in the background — follow it with `gruntas status`", next.session, next.account);
+    Ok(code)
 }
 
 /// The gruntas plugin for Claude Code, as this binary was built with it:
@@ -121,6 +292,7 @@ const PLUGIN: &[(&str, &str)] = &[
     (".claude-plugin/plugin.json", include_str!("../../../../.claude-plugin/plugin.json")),
     ("hooks/hooks.json", include_str!("../../../../hooks/hooks.json")),
     ("hooks/usage.ts", include_str!("../../../../hooks/usage.ts")),
+    ("commands/account.md", include_str!("../../../../commands/account.md")),
     ("skills/gruntas/SKILL.md", include_str!("../../../../skills/gruntas/SKILL.md")),
 ];
 
@@ -180,11 +352,11 @@ fn pick_auto(ctx: &mut Ctx, registry: &Registry, harness: Harness) -> Result<Str
     Ok(top.model.instance)
 }
 
-/// LN02: replace gruntas with `claude` per the plan; where the sandbox
-/// cannot run, say so, and start only with `--no-sandbox`. A plugin
-/// directory that could not be written is left out with a note, where
-/// Claude Code would pass over it without a word.
-fn claude_attended(ctx: &mut Ctx, mut plan: Plan) -> Result<(), Error> {
+/// LN02: `claude` per the plan, but where the sandbox cannot run, say so,
+/// and start only with `--no-sandbox`. A plugin directory that could not be
+/// written is left out with a note, where Claude Code would pass over it
+/// without a word.
+fn claude_ready(ctx: &mut Ctx, plan: &mut Plan) -> Result<(), Error> {
     if plan.sandboxed
         && let Err(why) = claude_sandbox_runs(ctx.io.env)
     {
@@ -197,36 +369,183 @@ fn claude_attended(ctx: &mut Ctx, mut plan: Plan) -> Result<(), Error> {
             plan.args.drain(i..i + 2);
         }
     }
-    let _ = ctx.io.stdout.flush();
-    let _ = ctx.io.stderr.flush();
-    let mut cmd = std::process::Command::new(&plan.program);
-    cmd.args(&plan.args);
-    for k in &plan.env_remove {
-        cmd.env_remove(k);
+    Ok(())
+}
+
+/// The harness as a child of gruntas, its terminal its own.
+mod child {
+    use gruntas_harness::launch::Plan;
+
+    /// How a harness ended: its pid, its exit code (128 + the signal that
+    /// ended it), and whether gruntas was told to end (SIGTERM, SIGHUP).
+    pub(super) struct Ended {
+        pub pid: u32,
+        pub code: i32,
+        pub ending: bool,
     }
-    cmd.envs(plan.env_set.iter().map(|(k, v)| (k, v)));
-    let cant = |e: std::io::Error| fail("no_binary", format!("{} could not be started: {e}. Is Claude Code installed? `gruntas providers list --check` checks", plan.program.display()));
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        Err(cant(cmd.exec()))
+
+    /// Runs the plan's program to its end, `started` told its pid. Ctrl-C
+    /// and Ctrl-\ reach it from the terminal, gruntas ignoring them; a
+    /// SIGTERM or SIGHUP sent to gruntas is passed on to it.
+    pub(super) fn run(plan: &Plan, started: impl FnOnce(u32)) -> std::io::Result<Ended> {
+        use std::os::unix::process::{CommandExt, ExitStatusExt};
+        let blocked = relay::start();
+        let mut cmd = command(plan);
+        // SAFETY: between fork and exec only pthread_sigmask runs, which is
+        // async-signal-safe: the harness starts with gruntas's signals
+        // unblocked, which a spawned child would otherwise inherit.
+        unsafe {
+            cmd.pre_exec(move || {
+                libc::pthread_sigmask(libc::SIG_UNBLOCK, &blocked, std::ptr::null_mut());
+                Ok(())
+            });
+        }
+        use std::sync::atomic::Ordering::SeqCst;
+        // Launching: a SIGTERM or SIGHUP now waits for the harness.
+        relay::CHILD.store(relay::LAUNCHING, SeqCst);
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                relay::CHILD.store(0, SeqCst);
+                relay::end_if_told();
+                return Err(e);
+            }
+        };
+        relay::CHILD.store(child.id() as i32, SeqCst);
+        relay::pass_on_if_told(child.id() as i32);
+        started(child.id());
+        let status = child.wait();
+        relay::CHILD.store(0, SeqCst);
+        let status = status?;
+        Ok(Ended { pid: child.id(), code: status.code().or_else(|| status.signal().map(|s| 128 + s)).unwrap_or(1), ending: relay::TOLD.load(SeqCst) != 0 })
     }
-    #[cfg(not(unix))]
-    {
-        let status = cmd.status().map_err(cant)?;
-        std::process::exit(status.code().unwrap_or(1));
+
+    fn command(plan: &Plan) -> std::process::Command {
+        let mut cmd = std::process::Command::new(&plan.program);
+        cmd.args(&plan.args);
+        for k in &plan.env_remove {
+            cmd.env_remove(k);
+        }
+        cmd.envs(plan.env_set.iter().map(|(k, v)| (k, v)));
+        cmd
+    }
+
+    /// gruntas's signals while a harness runs: SIGINT, SIGQUIT, SIGTERM and
+    /// SIGHUP blocked (unblocked again in the child) and waited for on
+    /// a thread of their own, which passes SIGTERM and SIGHUP on. The
+    /// terminal sends Ctrl-C to the harness itself, so passing SIGINT on
+    /// too would send it twice. With no harness running, SIGTERM or SIGHUP
+    /// ends gruntas as it would have.
+    mod relay {
+        use std::sync::atomic::{AtomicI32, Ordering};
+
+        /// The harness's pid; 0 with none, `LAUNCHING` while one starts.
+        pub(super) static CHILD: AtomicI32 = AtomicI32::new(0);
+        pub(super) const LAUNCHING: i32 = -1;
+        /// The SIGTERM or SIGHUP gruntas was sent, once it was; 0 before.
+        pub(super) static TOLD: AtomicI32 = AtomicI32::new(0);
+
+        /// The signal gruntas was told to end by, passed on to the harness
+        /// `pid` that started as it came.
+        pub(super) fn pass_on_if_told(pid: i32) {
+            match TOLD.load(Ordering::SeqCst) {
+                0 => {}
+                // SAFETY: kill takes any pid and signal.
+                sig => unsafe {
+                    libc::kill(pid, sig);
+                },
+            }
+        }
+
+        /// gruntas ended, as it was told to, with no harness to pass it on to.
+        pub(super) fn end_if_told() {
+            match TOLD.load(Ordering::SeqCst) {
+                0 => {}
+                sig => std::process::exit(128 + sig),
+            }
+        }
+        static STARTED: std::sync::Once = std::sync::Once::new();
+
+        /// The signals gruntas holds while a harness runs, held from the
+        /// first call on.
+        pub(super) fn start() -> libc::sigset_t {
+            STARTED.call_once(|| {
+                let set = set();
+                // SAFETY: a valid set, and no old mask asked for.
+                unsafe { libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) };
+                std::thread::spawn(move || loop {
+                    let mut sig = 0;
+                    // SAFETY: `set` lives in this thread; `sig` is written.
+                    if unsafe { libc::sigwait(&set, &mut sig) } != 0 || !matches!(sig, libc::SIGTERM | libc::SIGHUP) {
+                        continue;
+                    }
+                    TOLD.store(sig, Ordering::SeqCst);
+                    match CHILD.load(Ordering::SeqCst) {
+                        // SAFETY: kill takes any pid and signal.
+                        pid if pid > 0 => unsafe {
+                            libc::kill(pid, sig);
+                        },
+                        // Passed on once it has started (`pass_on_if_told`).
+                        LAUNCHING => {}
+                        _ => std::process::exit(128 + sig),
+                    }
+                });
+            });
+            set()
+        }
+
+        fn set() -> libc::sigset_t {
+            // SAFETY: a sigset_t is plain data, emptied before use; the
+            // calls take a valid pointer to it.
+            unsafe {
+                let mut set: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut set);
+                for s in [libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGHUP] {
+                    libc::sigaddset(&mut set, s);
+                }
+                set
+            }
+        }
     }
 }
 
-/// LN03: start the `--bg` session, record it with the daemon as a launched
-/// unattended session (stopped once its Task is done and its turn over),
-/// print its id; refused where the sandbox cannot run (D4).
-fn claude_unattended(ctx: &mut Ctx, plan: Plan) -> Result<(), Error> {
+/// The Codex thread behind the engine's session `id`, once its log names
+/// it: the id Codex's own hooks register the session by, and so its Task's.
+/// None when it is not named within `THREAD_WAIT`.
+#[cfg(unix)]
+fn codex_thread(env: &dyn Fn(&str) -> String, id: &str) -> Option<String> {
+    use gruntas_harness::{log, protocol::LogBody};
+    let events = log::sessions_dir(env).ok()?.join(id).join(log::EVENTS_FILE);
+    let deadline = std::time::Instant::now() + THREAD_WAIT;
+    loop {
+        let named = log::read_events(&events).ok().into_iter().flatten().find_map(|e| match e.body {
+            LogBody::BackendSession { vendor_session_id, .. } => Some(vendor_session_id),
+            _ => None,
+        });
+        if named.is_some() || std::time::Instant::now() >= deadline {
+            return named;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+/// How long `codex_thread` waits for the thread to be named.
+#[cfg(unix)]
+const THREAD_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// LN03: start the `--bg` session, in `cwd` (none: this one), record it
+/// with the daemon as a launched unattended session (stopped once its Task
+/// is done and its turn over), print its id and return it; refused where
+/// the sandbox cannot run (D4).
+fn claude_unattended(ctx: &mut Ctx, plan: Plan, cwd: Option<&std::path::Path>) -> Result<String, Error> {
     if let Err(why) = claude_sandbox_runs(ctx.io.env) {
         return Err(fail("no_sandbox", format!("an unattended session runs only inside Claude Code's sandbox, which cannot run here: {why}")));
     }
     let mut cmd = std::process::Command::new(&plan.program);
     cmd.args(&plan.args).stdin(std::process::Stdio::null());
+    if let Some(d) = cwd {
+        cmd.current_dir(d);
+    }
     for k in &plan.env_remove {
         cmd.env_remove(k);
     }
@@ -252,12 +571,14 @@ fn claude_unattended(ctx: &mut Ctx, plan: Plan) -> Result<(), Error> {
     // has, which the daemon, started without one, must be told.
     let inherited = Some((ctx.io.env)("CLAUDE_CONFIG_DIR")).filter(|d| !d.is_empty());
     let config_home = config_home.or(inherited);
-    let launched = gruntas_harness::protocol::Activity::Launched { id: id.clone(), program: plan.program.display().to_string(), config_home };
-    let cwd = std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_else(|_| "/".into());
+    // Its arguments, the task (the last) left out: what rollover resumes it with.
+    let args = plan.args[..plan.args.len().saturating_sub(1)].to_vec();
+    let launched = gruntas_harness::protocol::Activity::Launched { id: id.clone(), program: plan.program.display().to_string(), config_home, args };
+    let cwd = cwd.map(std::path::Path::to_path_buf).or_else(|| std::env::current_dir().ok()).map_or_else(|| "/".into(), |d| d.display().to_string());
     gruntas_harness::hook::tell(ctx.io.env, &cwd, super::VERSION, launched).map_err(|e| fail("no_daemon", format!("session {id} started, but the gruntas daemon could not be told to stop it when it is done ({e}); stop it yourself with `{stop}`")))?;
     let _ = writeln!(ctx.io.stdout, "{id}");
     let _ = writeln!(ctx.io.stderr, "Started {id} in the background, unattended and sandboxed; the gruntas daemon stops it once its task is done. Stop it sooner with `{stop}`.");
-    Ok(())
+    Ok(id)
 }
 
 /// The id `claude --bg` says it backgrounded the session as
@@ -287,50 +608,34 @@ fn claude_sandbox_runs(env: &dyn Fn(&str) -> String) -> Result<(), String> {
     }
 }
 
-/// Attended, gruntas replaced with `codex` per the plan; unattended, the
-/// task started as a new session of the host daemon's Codex engine, fenced
-/// off the gruntas home by the plan's profile (D3), and its id printed.
-fn codex(ctx: &mut Ctx, plan: Plan, instance: &Resolved, registry: &Registry) -> Result<(), Error> {
-    plugin_hint(ctx, instance)?;
-    match &plan.mode {
-        Mode::Attended => exec(&plan),
-        Mode::Unattended { task } => codex_unattended(ctx, task, &plan, instance, registry),
-    }
-}
-
-/// Replaces gruntas with the plan's program, its environment and arguments.
-#[cfg(unix)]
-fn exec(plan: &Plan) -> Result<(), Error> {
-    use std::os::unix::process::CommandExt;
-    let mut cmd = std::process::Command::new(&plan.program);
-    for k in &plan.env_remove {
-        cmd.env_remove(k);
-    }
-    let e = cmd.envs(plan.env_set.iter().map(|(k, v)| (k, v))).args(&plan.args).exec();
-    Err(fail("no_binary", format!("{} could not be started: {e}", plan.program.display())))
-}
-
-#[cfg(not(unix))]
-fn exec(_plan: &Plan) -> Result<(), Error> {
-    Err(fail("not_supported", "`gruntas run` replaces itself with the harness, which this platform's build cannot do yet"))
-}
-
+/// Unattended Codex: the task started as a new session of the host
+/// daemon's Codex engine, fenced off the gruntas home by the plan's profile
+/// (D3), and its id printed.
 #[cfg(unix)]
 fn codex_unattended(ctx: &mut Ctx, task: &str, plan: &Plan, instance: &Resolved, registry: &Registry) -> Result<(), Error> {
-    use gruntas_harness::protocol::{Attendance, Command, ModelRef, PermissionMode};
-    let model = registry.model_on(instance, None, &|_| Vec::new()).map_err(|e| fail("no_model", e))?;
     let cwd = std::env::current_dir().map_err(|e| fail("no_directory", format!("the working directory cannot be read: {e}")))?;
+    codex_start(ctx, task, plan, instance, registry, &cwd, None).map(drop)
+}
+
+/// The task started in `cwd` as a new session of the host daemon's Codex
+/// engine, on `model` (none: the account's default), and its id said and
+/// returned.
+#[cfg(unix)]
+fn codex_start(ctx: &mut Ctx, task: &str, plan: &Plan, instance: &Resolved, registry: &Registry, cwd: &std::path::Path, model: Option<&str>) -> Result<String, Error> {
+    use gruntas_harness::protocol::{Attendance, Command, ModelRef, PermissionMode};
+    let model = registry.model_on(instance, model, &|_| Vec::new()).map_err(|e| fail("no_model", e))?;
     // The engine defines and chooses the profile itself, from the fence. A
     // worker edits the project: in acceptEdits its profile writes it, and
     // what would still be asked is refused, nobody being there to answer.
     let prompt = Command::Prompt { session_id: None, text: task.to_string(), images: Vec::new(), model: Some(ModelRef { instance: instance.name.clone(), model }), permission_mode: PermissionMode::AcceptEdits, toolset: None, effort: None, rollover: None, budget: None, attendance: Some(Attendance::Unattended), fenced: plan.sandboxed, origin: None };
     let spawn = super::host::spawner(ctx)?;
-    let id = gruntas_harness::headless::start_on_daemon(ctx.io.env, &cwd, super::VERSION, &spawn, prompt).map_err(|e| super::prompt::engine_error(&e.code, &e.message, e.status))?;
+    let id = gruntas_harness::headless::start_on_daemon(ctx.io.env, cwd, super::VERSION, &spawn, prompt).map_err(|e| super::prompt::engine_error(&e.code, &e.message, e.status))?;
     let rendered = match ctx.format {
         Format::Json => output::encode(&serde_json::json!({ "ok": true, "data": { "sessionId": id, "account": instance.name }, "summary": format!("Started {} on the task as session {id}", instance.name) })),
         _ => format!("Started {} on the task, unattended, as session {id} — follow it with `gruntas sync attach {id}`", instance.name),
     };
-    ctx.emit(&rendered)
+    ctx.emit(&rendered)?;
+    Ok(id)
 }
 
 #[cfg(not(unix))]

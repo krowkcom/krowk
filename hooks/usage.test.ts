@@ -132,3 +132,75 @@ test('an interrupt aborts the tracked turn, or reports nothing running', async (
   expect(aborted).toEqual(['t1'])
   expect(acks(files).at(-1)).toEqual({ id: 'i2', outcome: 'delivered' })
 })
+
+test('a notice of the next account shows as a toast and in the status line, once', async ($, on) => {
+  const text = 'This account has hit its usage limit. Next: claude:b on opus (another subscription) — type /exit to continue this session there.'
+  const { files, poll } = inbox(on, [{ type: 'notice', id: 'n1', text, at: new Date(NOW).toISOString() }])
+  const toasts: string[] = []
+  const statuses: string[] = []
+  on('ui.toast', (_, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.status', (_, e) => {
+    statuses.push(e.text)
+    return { value: undefined }
+  })
+  await start($)
+  await poll()
+  await poll()
+  expect(toasts).toEqual([text])
+  expect(statuses).toEqual([text])
+  expect(acks(files)).toEqual([{ id: 'n1', outcome: 'delivered' }])
+})
+
+const LIST = '  claude        ready  a@x.io (max) · 5h 60% left, resets Tue 17:48\n* claude:trip1  ready  t@x.io (max) · usage unknown\n'
+
+test('/gruntas:account lists the accounts from gruntas, the current one marked, with no model turn', async ($, on) => {
+  const ran: (readonly string[])[] = []
+  const turns: string[] = []
+  on('session.id', () => ({ value: 's1' }))
+  on('process.run', (_, e) => {
+    ran.push(e.argv)
+    return { value: { exitCode: 0, stdout: LIST, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('prompt.submit', (_, e) => {
+    turns.push(e.text)
+    return { text: e.text }
+  })
+  on('turn.start', (_, e) => {
+    turns.push(e.text)
+    return { turnId: e.turnId }
+  })
+  const r = await $.command.run({ command: 'gruntas:account', args: '' })
+  expect(ran).toEqual([['gruntas', 'hook', 'claude', 'account', 's1']])
+  expect(r.text).toBe(LIST.trimEnd())
+  expect(r.text).toContain('* claude:trip1')
+  expect(r.isTextDisplayOnly).toBe(true)
+  expect(turns).toEqual([])
+})
+
+test('/gruntas:account <name> queues it and keeps the notice in the status line; a refusal does not', async ($, on) => {
+  const statuses: (string | undefined)[] = []
+  let answer = { exitCode: 0, stdout: 'Type /exit to continue on claude:trip1.\n' }
+  on('session.id', () => ({ value: 's1' }))
+  on('process.run', (_, e) => ({ value: { ...answer, stdout: e.argv.at(-1) === '--cancel' ? 'claude:trip1 is no longer queued: /exit ends this session as usual.\n' : answer.stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('ui.status', (_, e) => {
+    statuses.push(e.text)
+    return { value: undefined }
+  })
+  expect((await $.command.run({ command: 'gruntas:account', args: ' claude:trip1 ' })).text).toBe('Type /exit to continue on claude:trip1.')
+  expect((await $.command.run({ command: 'gruntas:account', args: '--cancel' })).text).toBe('claude:trip1 is no longer queued: /exit ends this session as usual.')
+  answer = { exitCode: 1, stdout: 'There is no account named nope: choose one of claude:trip1.\n' }
+  expect((await $.command.run({ command: 'gruntas:account', args: 'nope' })).text).toBe('There is no account named nope: choose one of claude:trip1.')
+  for (let i = 0; i < 20; i++) await Promise.resolve()
+  expect(statuses).toEqual(['Type /exit to continue on claude:trip1.', undefined])
+})
+
+test('/gruntas:account without gruntas says how to install it', async ($, on) => {
+  on('session.id', () => ({ value: 's1' }))
+  on('process.run', () => {
+    throw new Error('spawn gruntas ENOENT')
+  })
+  expect((await $.command.run({ command: 'gruntas:account', args: '' })).text).toContain('curl -fsSL https://gruntas.com/install | bash')
+})

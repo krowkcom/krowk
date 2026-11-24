@@ -15,6 +15,11 @@
 //! - Its branch, HEAD, worktree and dirty flag are the daemon's own git run
 //!   in its directory (`git`), never the hook's.
 //! - Every event it is told of moves `lastActivity`.
+//! - A session stopped at the API-key spend cap (`capped`, Rollover for
+//!   launched sessions D3) is input-required with the reason as its
+//!   message, until it registers again after it ended: no activity,
+//!   report, compaction, end or exit clears it, and a background one is
+//!   stopped once its turn has ended.
 //!
 //! An agent's own state (`agent_state`) is what its reports set
 //! (`Activity::Report`, SL03's `gruntas_report`). A Task
@@ -26,7 +31,7 @@
 //! (`registry::write_private`); one that cannot be read is started over.
 
 use crate::protocol::{Activity, PluginHarness, Registration};
-use gruntas_client::status::{Field, Health, Provenance, Task, TaskMetadata, TaskState, TaskStatus, MAX_TASKS};
+use gruntas_client::status::{Field, Health, Message, Provenance, Task, TaskMetadata, TaskState, TaskStatus, MAX_TASKS};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -51,6 +56,11 @@ pub struct Tasks {
     /// or end by themselves.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     launched: BTreeMap<String, Launch>,
+    /// The sessions continued on the other harness that have not
+    /// registered yet: the session they continue, by their id (or its
+    /// first part, as `claude --bg` printed it).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    continued: BTreeMap<String, String>,
 }
 
 /// A background session to stop once it is done: `program stop <id>`
@@ -61,6 +71,20 @@ pub struct Launch {
     pub program: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_home: Option<String>,
+    /// What it was started with, its task left out (`Activity::Launched`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+}
+
+/// A launched session as rollover sees it (`launched`): the id `claude
+/// --bg` printed, how it runs, its whole session id once its Task is
+/// known, and whether its turn was under way.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Worker {
+    pub id: String,
+    pub launch: Launch,
+    pub session_id: String,
+    pub mid_turn: bool,
 }
 
 /// The most launched sessions kept: past it, the first by id goes.
@@ -76,6 +100,13 @@ struct Entry {
     /// Where its turn stands (`turn_end`).
     #[serde(default, skip_serializing_if = "Turn::going")]
     turn: Turn,
+    /// Stopped at the API-key spend cap (`capped`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    capped: bool,
+    /// The session it continued on, on the other harness: its Task stays
+    /// canceled when it ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    continued_on: Option<String>,
 }
 
 /// Where a session's turn stands, by its hooks.
@@ -158,6 +189,12 @@ impl Tasks {
         self.tasks.get(session_id).map(|e| &e.task)
     }
 
+    /// Whether session `id` continued on the other harness: its summary
+    /// says where, whatever it last reported.
+    pub fn continued(&self, id: &str) -> bool {
+        self.tasks.get(id).is_some_and(|e| e.continued_on.is_some())
+    }
+
     pub fn tasks(&self) -> impl Iterator<Item = &Task> {
         self.tasks.values().map(|e| &e.task)
     }
@@ -180,11 +217,22 @@ impl Tasks {
             Activity::Register(r) if r.session_id.len() > MOST_NAME => false,
             Activity::Register(r) => {
                 self.make_room(&r.session_id);
-                let e = self.tasks.entry(r.session_id.clone()).or_insert_with(|| Entry { task: blank(&r.session_id, now), agent_state: None, turn: Turn::Going });
+                let e = self.tasks.entry(r.session_id.clone()).or_insert_with(|| Entry { task: blank(&r.session_id, now), agent_state: None, turn: Turn::Going, capped: false, continued_on: None });
                 let before = e.clone();
+                e.continued_on = None;
+                if let Some(k) = self.continued.keys().find(|k| names(&r.session_id, k)).cloned() {
+                    let from = self.continued.remove(&k).unwrap_or_default();
+                    e.task.metadata.gruntas.continued_from = Some(Field::harness(from));
+                }
                 // A session resumed is at work again, whatever its agent said
                 // as it ended.
                 e.agent_state = e.agent_state.filter(|s| !s.is_terminal());
+                // A session that ended and came back was moved on; one
+                // registering while it serves (a compaction) was not.
+                if e.capped && e.task.metadata.gruntas.health.as_ref().is_some_and(|h| h.value == Health::NotServing) {
+                    e.capped = false;
+                    e.task.status.message = None;
+                }
                 let (state, source) = e.last_state();
                 set_state(&mut e.task, state, source, now);
                 registered(&mut e.task, r);
@@ -192,12 +240,16 @@ impl Tasks {
                 *e != before
             }
             Activity::Deregister { session_id } => self.change(session_id, now, |e| {
+                e.task.metadata.gruntas.health = Some(Field::harness(Health::NotServing));
+                if e.continued_on.is_some() {
+                    return;
+                }
                 let (state, source) = match e.agent_state {
+                    _ if e.capped => (TaskState::InputRequired, Provenance::Harness),
                     Some(s) if s.is_terminal() => (s, Provenance::Agent),
                     _ => (TaskState::Completed, Provenance::Harness),
                 };
                 set_state(&mut e.task, state, source, now);
-                e.task.metadata.gruntas.health = Some(Field::harness(Health::NotServing));
             }),
             Activity::PermissionRequest { session_id } => self.change(session_id, now, |e| {
                 if !e.task.status.state.is_terminal() {
@@ -209,24 +261,50 @@ impl Tasks {
             Activity::Report { session_id, report, .. } => self.change(session_id, now, |e| {
                 let state = report.state.filter(|s| *s != TaskState::Unspecified).or(e.agent_state).unwrap_or(TaskState::Working);
                 e.agent_state = Some(state);
-                set_state(&mut e.task, state, Provenance::Agent, now);
+                if !e.capped {
+                    set_state(&mut e.task, state, Provenance::Agent, now);
+                }
             }),
             Activity::Active { session_id } | Activity::ToolEnd { session_id } | Activity::HeavyStart { session_id, .. } | Activity::HeavyEnd { session_id, .. } | Activity::TurnEnd { session_id } => self.change(session_id, now, |e| {
-                if e.task.status.state == TaskState::InputRequired && e.task.metadata.gruntas.state_source == Some(Provenance::Harness) {
+                if e.task.status.state == TaskState::InputRequired && e.task.metadata.gruntas.state_source == Some(Provenance::Harness) && !e.capped {
                     let (state, source) = e.last_state();
                     set_state(&mut e.task, state, source, now);
                 }
             }),
             Activity::Launched { id, .. } if id.is_empty() || id.len() > MOST_NAME => false,
-            Activity::Launched { id, program, config_home } => {
+            Activity::Launched { id, program, config_home, args } => {
                 if self.launched.len() >= MOST_LAUNCHED && !self.launched.contains_key(id) {
                     let first = self.launched.keys().next().cloned();
                     if let Some(k) = first {
                         self.launched.remove(&k);
                     }
                 }
-                let l = Launch { program: program.clone(), config_home: config_home.clone() };
+                let l = Launch { program: program.clone(), config_home: config_home.clone(), args: args.clone() };
                 self.launched.insert(id.clone(), l.clone()) != Some(l)
+            }
+            Activity::Continued { from, to } if to.is_empty() || to.len() > MOST_NAME || from.len() > MOST_NAME => false,
+            Activity::Continued { from, to } => {
+                let old = self.change(from, now, |e| {
+                    e.continued_on = Some(to.clone());
+                    set_state(&mut e.task, TaskState::Canceled, Provenance::Harness, now);
+                    e.task.status.message = Some(Message::text("continued", format!("continued on {to}")));
+                });
+                let new = match self.tasks.iter_mut().find(|(id, _)| names(id, to)) {
+                    Some((_, e)) => {
+                        let link = Some(Field::harness(from.clone()));
+                        std::mem::replace(&mut e.task.metadata.gruntas.continued_from, link.clone()) != link
+                    }
+                    None => {
+                        if self.continued.len() >= MOST_LAUNCHED && !self.continued.contains_key(to) {
+                            let first = self.continued.keys().next().cloned();
+                            if let Some(k) = first {
+                                self.continued.remove(&k);
+                            }
+                        }
+                        self.continued.insert(to.clone(), from.clone()) != Some(from.clone())
+                    }
+                };
+                old | new
             }
             Activity::Usage { .. } => false,
         }
@@ -250,21 +328,61 @@ impl Tasks {
     /// never stopped mid-turn. One that ended by itself (no longer
     /// serving) is forgotten, with nothing to stop. Whether anything was
     /// taken or forgotten is whether the Tasks changed.
-    pub fn to_stop(&mut self) -> (Vec<(String, Launch)>, bool) {
+    /// One rollover is moving (`moving` says whether the move is still
+    /// under way) is never forgotten: it ends on the old account and goes
+    /// on, registered again, on the new; nor stopped until it is there.
+    pub fn to_stop(&mut self, moving: impl Fn(&str) -> Option<bool>) -> (Vec<(String, Launch)>, bool) {
         let mut due = Vec::new();
         let mut changed = false;
         let tasks = &self.tasks;
         self.launched.retain(|id, l| {
             let Some(e) = launched_entry(tasks, id) else { return true };
+            let under_way = moving(id);
+            if under_way == Some(true) {
+                return true;
+            }
+            let moving = under_way.is_some();
             let serving = e.task.metadata.gruntas.health.as_ref().is_none_or(|h| h.value == Health::Serving);
-            let done = serving && e.task.status.state.is_terminal() && e.turn == Turn::Ended;
+            let done = serving && (e.task.status.state.is_terminal() || e.capped) && e.turn == Turn::Ended;
             if done {
                 due.push((id.clone(), l.clone()));
             }
-            changed |= done || !serving;
-            serving && !done
+            changed |= done || (!serving && !moving);
+            (serving || moving) && !done
         });
         (due, changed)
+    }
+
+    /// The launched sessions still at work that rollover may move: Task
+    /// known, not terminal, not already waiting on the person.
+    pub fn launched(&self) -> Vec<Worker> {
+        self.launched
+            .iter()
+            .filter_map(|(id, l)| {
+                let (session_id, e) = launched_key(&self.tasks, id)?;
+                let s = e.task.status.state;
+                (!s.is_terminal() && s != TaskState::InputRequired).then(|| Worker { id: id.clone(), launch: l.clone(), session_id: session_id.clone(), mid_turn: e.turn != Turn::Ended })
+            })
+            .collect()
+    }
+
+    /// A launched session rollover moved: it runs as `l` now.
+    pub fn moved(&mut self, id: &str, l: Launch) -> bool {
+        self.launched.insert(id.to_string(), l.clone()) != Some(l)
+    }
+
+    /// A launched session rollover stopped and continued elsewhere: no
+    /// longer this daemon's to stop.
+    pub fn unlaunch(&mut self, id: &str) -> bool {
+        self.launched.remove(id).is_some()
+    }
+
+    /// A session rollover could not move (D4): input-required, saying why.
+    pub fn held(&mut self, session_id: &str, why: &str, now: &str) -> bool {
+        self.change(session_id, now, |e| {
+            set_state(&mut e.task, TaskState::InputRequired, Provenance::Harness, now);
+            e.task.status.message = Some(gruntas_client::status::Message::text("rollover", why));
+        })
     }
 
     /// What an agent's report sets: its own state, with agent provenance,
@@ -274,6 +392,21 @@ impl Tasks {
             e.agent_state = Some(state);
             set_state(&mut e.task, state, Provenance::Agent, now);
         })
+    }
+
+    /// `session_id` stopped at the API-key spend cap (D3): input-required,
+    /// `reason` its message (`ladder::KeySpend::capped`). Whether it changed.
+    pub fn capped(&mut self, session_id: &str, reason: &str, now: &str) -> bool {
+        self.change(session_id, now, |e| {
+            e.capped = true;
+            set_state(&mut e.task, TaskState::InputRequired, Provenance::Harness, now);
+            e.task.status.message = Some(gruntas_client::status::Message::text(format!("capped-{now}"), reason));
+        })
+    }
+
+    /// Whether `session_id` was stopped at the spend cap.
+    pub fn is_capped(&self, session_id: &str) -> bool {
+        self.tasks.get(session_id).is_some_and(|e| e.capped)
     }
 
     /// Every Task still `SERVING` whose session `live` says is gone (its
@@ -286,7 +419,7 @@ impl Tasks {
                 continue;
             }
             e.task.metadata.gruntas.health = Some(Field::harness(Health::NotServing));
-            if !e.task.status.state.is_terminal() {
+            if !e.task.status.state.is_terminal() && !e.capped {
                 set_state(&mut e.task, TaskState::Canceled, Provenance::Harness, now);
             }
             changed = true;
@@ -302,7 +435,10 @@ impl Tasks {
         let Some(e) = self.tasks.get_mut(&reported.id) else { return false };
         let before = e.clone();
         let (t, g) = (&mut e.task, &reported.metadata.gruntas);
-        t.status.message.clone_from(&reported.status.message);
+        // Capped or continued elsewhere, its summary says why or where.
+        if !e.capped && e.continued_on.is_none() {
+            t.status.message.clone_from(&reported.status.message);
+        }
         t.history.clone_from(&reported.history);
         t.metadata.gruntas.phase.clone_from(&g.phase);
         t.metadata.gruntas.pr.clone_from(&g.pr);
@@ -350,7 +486,17 @@ impl Tasks {
 /// The Task of the session `claude --bg` printed `id` for: the first part
 /// of its session id, or the whole of it.
 fn launched_entry<'t>(tasks: &'t BTreeMap<String, Entry>, id: &str) -> Option<&'t Entry> {
-    tasks.get(id).or_else(|| tasks.range(id.to_string()..).take_while(|(k, _)| k.starts_with(id)).find(|(k, _)| k.as_bytes().get(id.len()) == Some(&b'-')).map(|(_, e)| e))
+    launched_key(tasks, id).map(|(_, e)| e)
+}
+
+fn launched_key<'t>(tasks: &'t BTreeMap<String, Entry>, id: &str) -> Option<(&'t String, &'t Entry)> {
+    tasks.get_key_value(id).or_else(|| tasks.range(id.to_string()..).take_while(|(k, _)| k.starts_with(id)).find(|(k, _)| k.as_bytes().get(id.len()) == Some(&b'-')))
+}
+
+/// Whether session `id` is the one `short` names: the whole id, or its
+/// first part, as `claude --bg` prints it.
+fn names(id: &str, short: &str) -> bool {
+    id == short || (id.starts_with(short) && id.as_bytes().get(short.len()) == Some(&b'-'))
 }
 
 /// The session an activity is of, if it is of one.
@@ -365,7 +511,7 @@ pub fn activity_session(a: &Activity) -> Option<&str> {
         | Activity::Report { session_id, .. }
         | Activity::PermissionRequest { session_id }
         | Activity::Active { session_id } => Some(session_id),
-        Activity::Launched { .. } | Activity::Usage { .. } => None,
+        Activity::Launched { .. } | Activity::Continued { .. } | Activity::Usage { .. } => None,
     }
 }
 
@@ -408,8 +554,11 @@ const STOP_WAIT: Duration = Duration::from_secs(30);
 
 impl Entry {
     /// The agent's last state: what it reported, else working as far as
-    /// the harness can tell.
+    /// the harness can tell; input-required while stopped at the cap.
     fn last_state(&self) -> (TaskState, Provenance) {
+        if self.capped {
+            return (TaskState::InputRequired, Provenance::Harness);
+        }
         match self.agent_state {
             Some(s) => (s, Provenance::Agent),
             None => (TaskState::Working, Provenance::Harness),
@@ -624,7 +773,7 @@ mod tests {
     }
 
     fn launched(id: &str) -> Activity {
-        Activity::Launched { id: id.into(), program: "/bin/claude".into(), config_home: Some("/h/work".into()) }
+        Activity::Launched { id: id.into(), program: "/bin/claude".into(), config_home: Some("/h/work".into()), args: Vec::new() }
     }
 
     /// A turn's end as the daemon takes it: the activity, then its answer.
@@ -654,19 +803,19 @@ mod tests {
         t.apply(&Activity::Active { session_id: mid_turn.into() }, T1);
         // Work after its report: its Stop hook blocks the end to remind it.
         turn_end(&mut t, reminded, true);
-        let launch = Launch { program: "/bin/claude".into(), config_home: Some("/h/work".into()) };
-        assert_eq!(t.to_stop(), (vec![("aaaa0001".to_string(), launch)], true), "only the finished one, its turn over");
-        assert_eq!(t.to_stop(), (vec![], false), "taken once");
+        let launch = Launch { program: "/bin/claude".into(), config_home: Some("/h/work".into()), args: Vec::new() };
+        assert_eq!(t.to_stop(|_| None), (vec![("aaaa0001".to_string(), launch)], true), "only the finished one, its turn over");
+        assert_eq!(t.to_stop(|_| None), (vec![], false), "taken once");
         // The working one stays until its agent says it is done.
         t.apply(&report(working, TaskState::Failed), T2);
-        assert!(t.to_stop().0.is_empty(), "its turn is under way again");
+        assert!(t.to_stop(|_| None).0.is_empty(), "its turn is under way again");
         turn_end(&mut t, working, false);
         turn_end(&mut t, mid_turn, false);
         // The reminded turn's next end is its end, after more work and
         // reminded again or not.
         t.apply(&Activity::ToolEnd { session_id: reminded.into() }, T2);
         turn_end(&mut t, reminded, true);
-        let stopped: Vec<String> = t.to_stop().0.into_iter().map(|(id, _)| id).collect();
+        let stopped: Vec<String> = t.to_stop(|_| None).0.into_iter().map(|(id, _)| id).collect();
         assert_eq!(stopped, ["aaaa0002", "aaaa0003", "aaaa0005"]);
         assert!(t.launched.is_empty(), "the one that ended by itself is forgotten");
         // Kept across a restart: in the status file.
@@ -805,5 +954,72 @@ mod tests {
         std::fs::write(dir.join(FILE), b"{nope").unwrap();
         assert_eq!(Tasks::load(&dir), Tasks::default());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rl05_a_session_at_the_key_cap_stops_input_required_with_the_reason() {
+        let id = "cccc0001-1111";
+        let mut t = Tasks::default();
+        t.apply(&launched(&id[..8]), T0);
+        t.apply(&reg(id), T0);
+        let k = crate::ladder::KeySpend { account: "claude:key".into(), baseline_usd: 4.0, cap_usd: 10.0 };
+        assert_eq!(k.capped(13.9), None);
+        let reason = k.capped(14.0).unwrap();
+        assert!(t.capped(id, &reason, T1));
+        assert_eq!(state(&t, id), (TaskState::InputRequired, Some(Provenance::Harness)));
+        assert_eq!(t.get(id).unwrap().status.message.as_ref().unwrap().summary(), reason);
+        assert!(t.is_capped(id));
+        // Nor does its agent's report, a compaction, or the report's summary.
+        t.apply(&report(id, TaskState::Completed), T1);
+        t.apply(&reg(id), T1);
+        let mut said = t.get(id).unwrap().clone();
+        said.status.message = Some(gruntas_client::status::Message::text("m", "all done"));
+        t.take_reported(&said);
+        assert_eq!((state(&t, id).0, t.get(id).unwrap().status.message.as_ref().unwrap().summary()), (TaskState::InputRequired, reason.clone()));
+        // No activity clears it, and once its turn ends its background
+        // session is stopped.
+        t.apply(&Activity::ToolEnd { session_id: id.into() }, T1);
+        assert!(t.to_stop(|_| None).0.is_empty(), "mid-turn");
+        turn_end(&mut t, id, false);
+        assert_eq!(state(&t, id).0, TaskState::InputRequired);
+        assert_eq!(t.to_stop(|_| None).0.into_iter().map(|(i, _)| i).collect::<Vec<_>>(), ["cccc0001"]);
+        // Its end, or its process gone, leaves it input-required.
+        t.apply(&Activity::Deregister { session_id: id.into() }, T2);
+        assert_eq!((state(&t, id).0, health(&t, id)), (TaskState::InputRequired, Health::NotServing));
+        let mut gone = Tasks::default();
+        gone.apply(&reg("g"), T0);
+        gone.capped("g", &reason, T1);
+        gone.vanished(|_| false, T2);
+        assert_eq!(state(&gone, "g").0, TaskState::InputRequired);
+        // Resumed (moved on by the person): at work again.
+        gone.apply(&reg("g"), T2);
+        assert_eq!(state(&gone, "g").0, TaskState::Working);
+        assert_eq!(gone.get("g").unwrap().status.message, None, "the cap's reason goes with it");
+        let back: Tasks = serde_json::from_slice(&t.to_json()).unwrap();
+        assert_eq!(back, t, "kept across a restart");
+    }
+
+    /// RL04 (D6): a session continued on the other harness cancels the old
+    /// Task, "continued on" the new one, which stays so as its harness
+    /// ends; the new Task carries `continuedFrom` once it registers by its
+    /// full id, or at once when it already has.
+    #[test]
+    fn rl04_a_continued_session_cancels_the_old_task_and_links_the_new() {
+        let mut t = Tasks::default();
+        t.apply(&reg("old"), T0);
+        let continued = Activity::Continued { from: "old".into(), to: "075bf2a9".into() };
+        assert!(t.apply(&continued, T1));
+        let old = t.get("old").unwrap();
+        assert_eq!((old.status.state, old.status.message.as_ref().map(Message::summary)), (TaskState::Canceled, Some("continued on 075bf2a9".into())));
+        t.apply(&Activity::Deregister { session_id: "old".into() }, T2);
+        assert_eq!((state(&t, "old").0, health(&t, "old")), (TaskState::Canceled, Health::NotServing), "its end leaves it canceled");
+        t.apply(&reg("075bf2a9-1111-4222-8333-444455556666"), T2);
+        let new = t.get("075bf2a9-1111-4222-8333-444455556666").unwrap();
+        assert_eq!(new.metadata.gruntas.continued_from, Some(Field::harness("old".into())));
+        assert!(t.continued.is_empty(), "the link is taken once");
+
+        t.apply(&reg("already"), T0);
+        t.apply(&Activity::Continued { from: "old".into(), to: "already".into() }, T1);
+        assert_eq!(t.get("already").unwrap().metadata.gruntas.continued_from, Some(Field::harness("old".into())));
     }
 }

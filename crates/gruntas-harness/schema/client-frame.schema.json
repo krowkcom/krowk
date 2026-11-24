@@ -1161,6 +1161,13 @@
                 "null"
               ]
             },
+            "args": {
+              "description": "The arguments it was started with, its task left out: what\nresumes it on another account (`--resume <id>` after them).",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
             "type": {
               "type": "string",
               "const": "launched"
@@ -1170,6 +1177,28 @@
             "type",
             "id",
             "program"
+          ]
+        },
+        {
+          "description": "A session continued on the other harness (Rollover for launched\nsessions D6): `from`'s Task is canceled, \"continued on `to`\", and\n`to`'s, once it registers, carries `continuedFrom`.",
+          "type": "object",
+          "properties": {
+            "from": {
+              "type": "string"
+            },
+            "to": {
+              "description": "The new session: its id, or the first part of it `claude --bg`\nprinted.",
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "continued"
+            }
+          },
+          "required": [
+            "type",
+            "from",
+            "to"
           ]
         },
         {

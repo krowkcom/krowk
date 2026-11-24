@@ -15,6 +15,12 @@ fn main() {
     // the CLI around it, never a failure, done inside 2 s. A build without
     // the daemon does nothing, as a hook with no gruntas would.
     if args.first().map(String::as_str) == Some("hook") {
+        // `/gruntas:account`, the mod's command (D8): a person's, so it
+        // says what it did, and reads the accounts as the CLI does.
+        #[cfg(all(feature = "harness", unix))]
+        if args.get(2).map(String::as_str) == Some("account") {
+            std::process::exit(gruntas::cli::account::hook(&args[1..]));
+        }
         #[cfg(all(feature = "harness", unix))]
         std::process::exit(gruntas_harness::hook::main(&args[1..], gruntas::cli::VERSION));
         // Except a worktree Claude Code waits on: none is made, and it says why.

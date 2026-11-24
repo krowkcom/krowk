@@ -132,7 +132,7 @@ impl Registry {
             Activity::ToolEnd { session_id } | Activity::HeavyEnd { session_id, .. } => self.sessions.contains_key(session_id) && self.unreported.insert(session_id.clone()),
             Activity::TurnEnd { session_id } => self.unreported.remove(session_id),
             Activity::Report { session_id, summary, report } => self.report(session_id, summary, report, jiff::Timestamp::now()),
-            Activity::HeavyStart { .. } | Activity::PermissionRequest { .. } | Activity::Active { .. } | Activity::Launched { .. } | Activity::Usage { .. } => false,
+            Activity::HeavyStart { .. } | Activity::PermissionRequest { .. } | Activity::Active { .. } | Activity::Launched { .. } | Activity::Continued { .. } | Activity::Usage { .. } => false,
         }
     }
 

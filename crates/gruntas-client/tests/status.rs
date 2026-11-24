@@ -37,6 +37,7 @@ fn full_task() -> Task {
         harness: Some(Field::harness("claude".into())),
         account: Some(Field::harness("anthropic".into())),
         parent_session_id: Some(Field::harness("fedcba9876543210fedcba9876543210".into())),
+        continued_from: None,
         branch: Some(Field::harness("feature/x".into())),
         head: Some(Field::harness("38aaabd8".into())),
         worktree: Some(Field::harness("/home/someone/app".into())),

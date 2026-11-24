@@ -13,6 +13,17 @@
 // interrupt aborts the running turn, tracked from turn.start, or is answered
 // "nothing running". Each is acked in the acks file beside the inbox, which
 // the daemon waits on to answer the command.
+//
+// The daemon's own notices come the same way (Rollover for launched
+// sessions D5): when this account runs low in a session `gruntas run`
+// started, which account comes next and that `/exit` continues there,
+// shown as a toast and kept in the status line.
+//
+// It answers `/gruntas:account` itself (D8), so the command costs no turn and
+// leaves nothing to the model: the plugin's `commands/account.md` gives the
+// name, and this module's `command.run` hook runs `gruntas hook claude
+// account` with the session and the arguments, and shows what it says. With a
+// name that it queued, the line stays in the status line until `/exit`.
 import type { EngineInterface, Register, SessionRateLimit } from 'claude-code'
 
 /** One window as `gruntas hook claude usage` takes it. */
@@ -80,7 +91,7 @@ export const STALE_MS = 8_000
 const ACKS_KEPT = 64
 
 /** One line of the inbox, as the daemon writes it (`sync::god::inbox::Steer`). */
-export type Steer = { type: 'message'; id: string; text: string; at: string } | { type: 'interrupt'; id: string; at: string }
+export type Steer = { type: 'message' | 'notice'; id: string; text: string; at: string } | { type: 'interrupt'; id: string; at: string }
 
 /** What came of a steer, as the daemon reads it (`inbox::Ack`). */
 export type Ack = { id: string; outcome: 'delivered' | 'nothingRunning' | 'refused'; message?: string }
@@ -98,7 +109,7 @@ function due(inbox: string, done: ReadonlySet<string>, now: number): Steer[] {
     if (typeof s?.id !== 'string' || typeof s.at !== 'string' || done.has(s.id)) continue
     const age = now - Date.parse(s.at)
     if (!(age >= -STALE_MS && age < STALE_MS)) continue
-    if (s.type === 'message' && typeof (s as { text?: unknown }).text === 'string') out.push(s as Steer)
+    if ((s.type === 'message' || s.type === 'notice') && typeof (s as { text?: unknown }).text === 'string') out.push(s as Steer)
     else if (s.type === 'interrupt') out.push(s as Steer)
   }
   return out
@@ -142,6 +153,12 @@ async function act($: EngineInterface, s: Steer): Promise<Ack> {
     } catch {
       return { id: s.id, outcome: 'nothingRunning' }
     }
+  }
+  if (s.type === 'notice') {
+    // Not awaited, as a prompt is not: a UI that cannot show it loses nothing.
+    void Promise.resolve($.ui.toast(s.text)).catch(() => undefined)
+    void Promise.resolve($.ui.status(s.text)).catch(() => undefined)
+    return { id: s.id, outcome: 'delivered' }
   }
   // The daemon framed it; a message that is not is not the daemon's.
   if (!s.text.startsWith('<steer from ')) return { id: s.id, outcome: 'refused', message: 'the message came without its origin' }
@@ -192,7 +209,26 @@ async function inboxDir($: EngineInterface): Promise<string | undefined> {
   }
 }
 
+/** How long `/gruntas:account` waits on gruntas: it asks every account's vendor whether it is signed in. */
+export const ACCOUNT_MS = 20_000
+
+/** `/gruntas:account [args]`: what gruntas says of it. */
+async function account($: EngineInterface, args: string): Promise<string> {
+  const words = (args ?? '').trim().split(/\s+/).filter(w => w !== '')
+  let r
+  try {
+    r = await $.process.run(['gruntas', 'hook', 'claude', 'account', await $.session.id(), ...words], { timeoutMs: ACCOUNT_MS })
+  } catch {
+    return 'gruntas is not on the PATH, or did not answer: install it with curl -fsSL https://gruntas.com/install | bash'
+  }
+  const said = r.stdout.trimEnd() || r.stderr.trim() || 'gruntas said nothing'
+  if (r.exitCode === 0 && words.length === 1) void Promise.resolve($.ui.status(words[0] === '--cancel' ? undefined : said)).catch(() => undefined)
+  return said
+}
+
 export const register: Register = on => {
+  on('command.run', { command: 'gruntas:account' }, async ($, e) => ({ text: await account($, e.args), isTextDisplayOnly: true }))
+
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     void report($)

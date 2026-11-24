@@ -68,6 +68,8 @@
 
 pub mod agents;
 pub mod ask;
+#[cfg(unix)]
+pub mod attended;
 pub mod bridge;
 pub mod budget;
 pub mod builds;
@@ -77,6 +79,8 @@ pub mod claude;
 pub mod codex;
 pub mod compat;
 pub mod connect;
+#[cfg(unix)]
+pub mod crossover;
 #[cfg(unix)]
 pub mod daemon;
 pub mod effort;
@@ -95,6 +99,7 @@ pub mod upload;
 pub mod usage;
 pub mod instances;
 pub mod keys;
+pub mod ladder;
 pub mod launch;
 pub mod log;
 pub mod mcp;

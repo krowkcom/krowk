@@ -32,6 +32,64 @@ breaking changes may affect it without notice.
 
 ### Added
 
+- **A rollover ladder for sessions `gruntas run` starts.** When an account
+  runs out, the next one comes from a ladder at the session's model tier:
+  another subscription of the same harness, then a subscription of the
+  other harness (Claude Code ↔ Codex), then API-key accounts, the same
+  harness first; within each rung, the account with the most room first.
+  A session never drops to a cheaper tier. `ladder` in
+  `~/.gruntas/config.json` sets the tier table (`tiers`: `frontier`,
+  `standard`, `fast`, each with its Claude Code and Codex model ids, `*`
+  matching any run of characters) and which rungs are tried in what order
+  (`rungs`: `same-harness`, `other-harness`, `api-key`).
+- **A spend cap on API-key rungs.** A launched session that climbs onto
+  an API-key account spends at most `ladder.keyCapUsd` (US dollars, $10
+  unless set) from the moment it got there; at the cap it stops,
+  input-required, with the reason on its status. The switch notice names
+  the account, its rung and the cap. Attended Codex sessions, whose spend
+  cannot be read, never move onto an API-key account.
+- **A session can continue on the other harness without losing its
+  place.** When the ladder moves a launched session from Claude Code to
+  Codex or back, the new session starts in the same worktree at the
+  equivalent model, its first message a handoff: what the old session last
+  reported (summary, phase, plan, next step, recent reports) and, from a
+  Claude Code session, a summary of its recent turns. `gruntas status`
+  shows the two as one chain (`old → new`); the old session reads
+  `canceled`, "continued on" the new one, and `--json` names it under
+  `continuedFrom`.
+- **An attended `gruntas run` session continues on the next account after
+  `/exit`.** `gruntas run claude` and `gruntas run codex` now stay the
+  harness's parent in your terminal, passing Ctrl-C, signals and the exit
+  code through. When the account runs low, a Claude Code session shows which
+  account comes next as a toast and in its status line; type `/exit` and the
+  same session resumes there in the same terminal. Exiting without such a
+  notice ends the run as before. A resumed session gets `--resume` and the
+  model only, not the flags the first run was started with. When the next
+  account is on the other harness, the work continues there in the
+  background, from a handoff, and `gruntas status` shows it.
+- **Unattended Claude Code workers keep going when their account runs
+  out.** When the account of a session `gruntas run claude --unattended`
+  started hits its usage limit and the ladder's next account is another
+  Claude Code subscription, the gruntas daemon stops the background
+  session, copies its conversation into that account and resumes it there
+  in the background, sending the prompt the limit cut off again; when the
+  next account is on Codex, it stops the session and continues it there
+  from a handoff — with `gruntas config set rollover auto`. A worker
+  that runs out again on the account it moved to moves on, down the
+  ladder, however soon after the last move. Without `auto`, the
+  session's status turns input-required and names the account it would
+  move to.
+- **See your accounts and move a session to one with `/gruntas:account`.**
+  `gruntas providers list --check` (and `--json`) now says, for each Claude
+  Code or Codex account, the login it is signed in as, its plan where the
+  vendor names it, how much of each usage window is left and when it
+  resets, and which accounts share one login. Inside Claude Code,
+  `/gruntas:account` lists the same for the session's harness, marking the
+  account it runs on, and answers locally, without a model turn. In a
+  session `gruntas run claude` started, `/gruntas:account <name>` queues that
+  account: type `/exit` and the same session resumes there on the same
+  model; `/gruntas:account --cancel` drops it. It moves only to a ready
+  account of the same harness on another login, and says why otherwise.
 - **The god agent: ask any agent what your swarm is doing.** The plugin's
   MCP server offers `gruntas_status`, `gruntas_changes`, `gruntas_read` and
   `gruntas_ping` to every agent, and `gruntas_message` and

@@ -85,7 +85,7 @@ pub async fn deliver_on(socket: &Path, version: &str, session: &str, s: &Steer) 
         Err(ConnectError::Absent) => return HostAnswer::refused("host_unavailable", "the host daemon is not running — it starts again with the next gruntas there"),
     };
     let delivered = || HostAnswer::Delivered { session: session.to_string() };
-    let origin = Some(Box::new(s.origin().clone()));
+    let origin = s.origin().cloned().map(Box::new);
     match s {
         Steer::Interrupt { .. } => match d.execute(Command::Interrupt { session_id: session.to_string(), origin }, tokio::sync::mpsc::channel(1).0).await {
             Ok(_) => delivered(),
@@ -104,6 +104,7 @@ pub async fn deliver_on(socket: &Path, version: &str, session: &str, s: &Steer) 
                 Err(e) => refused(e),
             }
         }
+        Steer::Notice { .. } => HostAnswer::refused(refusal::CANT_STEER, "a notice is shown in a Claude Code session, not sent to a gruntas-run one"),
     }
 }
 

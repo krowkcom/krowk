@@ -15,7 +15,11 @@ stderr:
           "source": "Claude Code's own login in <scratch>/home/.claude",
           "fix": "install Claude Code (https://claude.com/claude-code), or name the binary with `gruntas connect anthropic --method subscription --binary <path>`",
           "var": null,
-          "reason": null
+          "reason": null,
+          "login": null,
+          "plan": null,
+          "usage": [],
+          "sharedWith": []
         },
         {
           "instance": "codex",
@@ -26,7 +30,11 @@ stderr:
           "source": "Codex's own login in <scratch>/home/.codex",
           "fix": "install Codex (https://developers.openai.com/codex), or name the binary with `gruntas connect openai --method subscription --binary <path>`",
           "var": null,
-          "reason": null
+          "reason": null,
+          "login": null,
+          "plan": null,
+          "usage": [],
+          "sharedWith": []
         }
       ]
     },
@@ -54,7 +62,11 @@ stderr:
           "source": "Claude Code's own login in <scratch>/home/.claude",
           "fix": "install Claude Code (https://claude.com/claude-code), or name the binary with `gruntas connect anthropic --method subscription --binary <path>`",
           "var": null,
-          "reason": null
+          "reason": null,
+          "login": null,
+          "plan": null,
+          "usage": [],
+          "sharedWith": []
         },
         {
           "instance": "codex",
@@ -65,7 +77,11 @@ stderr:
           "source": "Codex's own login in <scratch>/home/.codex",
           "fix": "install Codex (https://developers.openai.com/codex), or name the binary with `gruntas connect openai --method subscription --binary <path>`",
           "var": null,
-          "reason": null
+          "reason": null,
+          "login": null,
+          "plan": null,
+          "usage": [],
+          "sharedWith": []
         }
       ]
     },
@@ -93,7 +109,11 @@ stderr:
           "source": "Claude Code's own login in <scratch>/home/.claude",
           "fix": "install Claude Code (https://claude.com/claude-code), or name the binary with `gruntas connect anthropic --method subscription --binary <path>`",
           "var": null,
-          "reason": null
+          "reason": null,
+          "login": null,
+          "plan": null,
+          "usage": [],
+          "sharedWith": []
         },
         {
           "instance": "codex",
@@ -104,7 +124,11 @@ stderr:
           "source": "Codex's own login in <scratch>/home/.codex",
           "fix": "install Codex (https://developers.openai.com/codex), or name the binary with `gruntas connect openai --method subscription --binary <path>`",
           "var": null,
-          "reason": null
+          "reason": null,
+          "login": null,
+          "plan": null,
+          "usage": [],
+          "sharedWith": []
         }
       ]
     },
@@ -118,7 +142,9 @@ exit: 3
 $ gruntas providers list --check --format human
 stdout:
 claude  Claude subscription   not installed  Claude Code's own login in <scratch>/home/.claude  — install Claude Code (https://claude.com/claude-code), or name the binary with `gruntas connect anthropic --method subscription --binary <path>`
+        login unknown · usage unknown
 codex   ChatGPT subscription  not installed  Codex's own login in <scratch>/home/.codex  — install Codex (https://developers.openai.com/codex), or name the binary with `gruntas connect openai --method subscription --binary <path>`
+        login unknown · usage unknown
 stderr:
 ✗ None of the 2 instances can run a turn here.
   Each row's fix says what makes it ready.

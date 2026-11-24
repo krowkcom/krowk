@@ -139,7 +139,7 @@ fn status_with_no_config_lists_the_two_implicit_accounts_in_their_states() {
     // The documented shape: every key on every row, null when it has no value.
     for r in &rows {
         let keys: Vec<&String> = r.as_object().unwrap().keys().collect();
-        assert_eq!(keys, ["instance", "kind", "label", "state", "ready", "source", "fix", "var", "reason"], "{r}");
+        assert_eq!(keys, ["instance", "kind", "label", "state", "ready", "source", "fix", "var", "reason", "login", "plan", "usage", "sharedWith"], "{r}");
         assert_eq!(r["ready"].as_bool(), Some(r["state"] == "ready"));
         assert_eq!(r["fix"].is_null(), r["state"] == "ready", "a fix exactly when it is not ready: {r}");
     }
@@ -168,7 +168,8 @@ fn status_with_no_config_lists_the_two_implicit_accounts_in_their_states() {
     assert_eq!((details.len(), row(&details, "codex")["state"].as_str(), row(&details, "claude")["state"].as_str()), (2, Some("not_installed"), Some("not_signed_in")));
     let out = b.gruntas(&["providers", "list", "--check", "--format", "human"], &[]);
     assert_eq!(out.status.code(), Some(3));
-    assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 2, "the table, before the failure");
+    // Two lines an account: its readiness, then its login and usage (D8).
+    assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 4, "the table, before the failure");
 }
 
 /// SL06, SL08 (the owner's decision on D10): `providers list --check` is

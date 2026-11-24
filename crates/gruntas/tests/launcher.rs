@@ -389,3 +389,356 @@ fn account_auto_picks_the_account_with_the_most_headroom() {
     let err = String::from_utf8_lossy(&b.gruntas(&["run", "claude", "--account", "auto"]).stderr).into_owned();
     assert!(err.contains("--account auto: claude, your own account"), "{err}");
 }
+
+/// `name`'s fake replaced by `script`, a shell script's body.
+fn script(b: &Sandbox, name: &str, script: &str) {
+    std::fs::write(b.root.join("bin").join(name), format!("#!/bin/sh\n{script}")).unwrap();
+}
+
+/// RL03 (D5): an attended harness runs as gruntas's child. A SIGINT sent
+/// to gruntas alone is not passed on (the terminal sends Ctrl-C to the
+/// harness itself); a SIGTERM is, and the harness's exit code is gruntas's.
+#[test]
+fn rl03_attended_signals_and_exit_code_pass_through() {
+    let b = Sandbox::new("rl03-signals");
+    let ready = b.root.join("ready");
+    std::fs::create_dir_all(b.root.join("run")).unwrap();
+    // A next account queued, as after a notice: told to end, gruntas starts
+    // no harness again.
+    let queued = r#"{"session":"0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e5f","account":"claude:work","rung":"same-harness"}"#;
+    script(&b, "claude", &format!("echo run >> {0}.runs\ni=0\nuntil a=$(ls -d {1}/gruntas/*/attended 2>/dev/null) && [ -e \"$a/$$.json\" ]; do i=$((i+1)); [ $i -gt 500 ] && exit 9; sleep 0.01; done\necho '{2}' > $a/$$.next.json\ntrap 'echo int >> {0}.got' INT\ntrap 'exit 42' TERM\ntouch '{0}'\nwhile :; do sleep 0.05; done\n", ready.display(), b.root.join("run").display(), queued));
+    let mut run = b.command(&["run", "claude", "--account", "work", "--no-sandbox"]).env("XDG_RUNTIME_DIR", b.root.join("run")).stderr(Stdio::piped()).spawn().unwrap();
+    let pid = run.id().to_string();
+    let kill = |sig: &str| assert!(Command::new("kill").args([sig, &pid]).status().unwrap().success());
+    for _ in 0..200 {
+        if ready.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(ready.exists(), "the harness started");
+    kill("-INT");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(run.try_wait().unwrap().is_none(), "gruntas ignores a SIGINT of its own");
+    assert!(!b.root.join("ready.got").exists(), "and does not pass it on");
+    kill("-TERM");
+    assert_eq!(run.wait().unwrap().code(), Some(42), "SIGTERM passed on, the harness's code passed back");
+    assert_eq!(std::fs::read_to_string(b.root.join("ready.runs")).unwrap(), "run\n", "no harness started again after a SIGTERM");
+}
+
+/// RL03 (D5, R-RL-5): the Launcher marks the harness's pid for the daemon;
+/// exiting with nothing queued ends the run with the harness's code; with
+/// an account queued, the same session resumes there, its transcript
+/// copied into that account's home.
+#[test]
+fn rl03_exit_after_a_notice_resumes_the_session_on_the_next_account() {
+    let b = Sandbox::new("rl03-relaunch");
+    let mut config: serde_json::Value = serde_json::from_slice(&std::fs::read(b.home().join("config.json")).unwrap()).unwrap();
+    std::fs::create_dir_all(b.root.join("accounts/claude-spare")).unwrap();
+    config["instances"]["claude:spare"] = serde_json::json!({ "kind": "claude-code", "binary": b.root.join("bin/claude"), "configDir": b.root.join("accounts/claude-spare") });
+    std::fs::write(b.home().join("config.json"), config.to_string()).unwrap();
+    let (runs, queue) = (b.root.join("runs"), b.root.join("queue"));
+    std::fs::create_dir_all(b.root.join("run")).unwrap();
+    // Each run writes down its account, its arguments and the Launcher's
+    // mark; a first run with something to queue queues it, as the daemon
+    // would, and exits 0; a resumed run exits 3.
+    script(&b, "claude", &format!("i=0\nuntil a=$(ls -d {1}/gruntas/*/attended 2>/dev/null) && [ -e \"$a/$$.json\" ]; do i=$((i+1)); [ $i -gt 500 ] && exit 9; sleep 0.01; done\necho \"$CLAUDE_CONFIG_DIR | $* | $(cat $a/$$.json)\" >> '{0}'\ncase \"$*\" in *--resume*) exit 3;; esac\n[ -e '{2}' ] && cp '{2}' $a/$$.next.json\nexit 5\n", runs.display(), b.root.join("run").display(), queue.display()));
+    let run = || b.command(&["run", "claude", "--account", "work", "--no-sandbox", "--model", "opus"]).env("XDG_RUNTIME_DIR", b.root.join("run")).output().unwrap();
+    let lines = || std::fs::read_to_string(&runs).unwrap_or_default().lines().map(String::from).collect::<Vec<_>>();
+    let work = b.root.join("accounts/claude-work");
+
+    let o = run();
+    assert_eq!(o.status.code(), Some(5), "nothing queued: the harness's own code; {}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(lines().len(), 1);
+    assert!(lines()[0].ends_with(r#"| {"account":"claude:work","model":"opus"}"#), "the mark: {:?}", lines());
+
+    let session = "0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e5f";
+    let transcript = work.join(format!("projects/-r/{session}.jsonl"));
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    std::fs::write(&transcript, "{}\n").unwrap();
+    std::fs::write(&queue, serde_json::json!({ "session": session, "account": "claude:spare", "model": "opus", "rung": "same-harness", "transcript": transcript }).to_string()).unwrap();
+    std::fs::remove_file(&runs).unwrap();
+    let o = run();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(3), "the resumed run's code; {err}");
+    assert!(err.contains(&format!("continuing session {session} on claude:spare")), "{err}");
+    let l = lines();
+    assert_eq!(l.len(), 2, "{l:?}");
+    let spare = b.root.join("accounts/claude-spare");
+    assert!(l[0].starts_with(&format!("{} |", work.display())), "{l:?}");
+    assert!(l[1].starts_with(&format!("{} |", spare.display())) && l[1].contains(&format!("--resume {session} --model opus")), "{l:?}");
+    assert!(l[1].ends_with(r#"| {"account":"claude:spare","model":"opus"}"#), "{l:?}");
+    assert_eq!(std::fs::read_to_string(spare.join(format!("projects/-r/{session}.jsonl"))).unwrap(), "{}\n", "the transcript, where --resume finds it");
+    let daemon = std::fs::read_dir(b.root.join("run/gruntas")).unwrap().flatten().find(|e| e.path().join("attended").is_dir()).unwrap().path();
+    assert_eq!(std::fs::read_dir(daemon.join("attended")).unwrap().count(), 0, "the records gone with the run");
+}
+
+/// RL03 with RL04 (D5, D6): an attended Codex session whose queued next
+/// account is on Claude Code continues there after `/exit`, in the
+/// background from a handoff (`continue_on`), the run ending with Codex's
+/// own code and saying where the work went on.
+#[test]
+fn rl03_exit_after_a_notice_for_the_other_harness_continues_there() {
+    use gruntas_harness::protocol::{Activity, Attendance, PluginHarness, Registration};
+    let b = Sandbox::new("rl03-cross");
+    let run = PathBuf::from("/tmp").join(format!("gruntas-rl03x-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&run);
+    std::fs::create_dir_all(&run).unwrap();
+    let (home, run_dir) = (b.root.join("home").display().to_string(), run.display().to_string());
+    let env = move |k: &str| match k {
+        "HOME" => home.clone(),
+        "XDG_RUNTIME_DIR" => run_dir.clone(),
+        _ => String::new(),
+    };
+    let socket = gruntas_harness::daemon::socket(&env).unwrap();
+    let daemon = socket.parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(&daemon).unwrap();
+    let daemon_socket = socket.clone();
+    std::thread::spawn(move || {
+        use gruntas_harness::daemon::server;
+        let factory: server::Factory = Box::new(|_, _| Err(gruntas_harness::engine::EngineError::new("no_sessions", "this test runs none")));
+        server::run(server::Options { socket: daemon_socket, idle: None, gruntas_version: "test".into(), ..Default::default() }, factory)
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::os::unix::net::UnixStream::connect(&socket).is_err() {
+        assert!(std::time::Instant::now() < deadline, "the daemon never listened");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // The Codex session, registered and reported, so its status Task is
+    // there to hand off from.
+    let session = "0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e70";
+    let send = |a: Activity| gruntas_harness::hook::send(&socket, "/r", "test", a).unwrap();
+    send(Activity::Register(Registration { session_id: session.into(), harness: PluginHarness::Codex, harness_pid: Some(std::process::id()), config_home: None, cwd: Some(b.root.display().to_string()), repository: None, transcript_path: None, attendance: Some(Attendance::Attended) }));
+    let report = gruntas_client::status::Report { state: Some(gruntas_client::status::TaskState::Working), phase: Some("build".into()), blocked_on: None, pr: None, next: Some("wire the seam".into()), timestamp: "2026-11-24T00:00:00Z".into() };
+    send(Activity::Report { session_id: session.into(), summary: "half done".into(), report });
+    while !std::fs::read_to_string(daemon.join("status.json")).unwrap_or_default().contains(session) {
+        assert!(std::time::Instant::now() < deadline + std::time::Duration::from_secs(5), "the Task was never written");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    // Codex queues Claude Code next, as the daemon would, and exits 4;
+    // `claude --bg` says the id it backgrounded.
+    let next = format!(r#"{{"session":"{session}","account":"claude:work","model":"claude-opus-4-5","rung":"other-harness"}}"#);
+    script(&b, "codex", &format!("i=0\nuntil [ -e '{0}/attended/'$$.json ]; do i=$((i+1)); [ $i -gt 500 ] && exit 9; sleep 0.01; done\necho '{next}' > '{0}/attended/'$$.next.json\nexit 4\n", daemon.display()));
+    let out = b.root.display().to_string();
+    script(&b, "claude", &format!("for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{out}/claude.args'\necho 'backgrounded · 1234abcd'\n"));
+    for bin in ["bwrap", "socat"] {
+        script(&b, bin, "exit 0\n");
+    }
+    let o = b.command(&["run", "codex", "--account", "team", "--no-sandbox"]).env("XDG_RUNTIME_DIR", &run).output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    let _ = std::fs::remove_dir_all(&run);
+    assert_eq!(o.status.code(), Some(4), "Codex's own code; {err}");
+    assert!(err.contains(&format!("session {session} continues on claude:work as session 1234abcd")), "{err}");
+    let (args, _) = b.started("claude");
+    assert_eq!(args.first().map(String::as_str), Some("--bg"), "{args:?}");
+    assert!(args.windows(2).any(|w| w == ["--model", "claude-opus-4-5"]) && args.iter().any(|l| l.contains("Summary: half done")), "the handoff, at the tier's model: {args:?}");
+}
+
+/// RL06 (R-RL-7), an attended session end to end: the Launcher runs
+/// `claude:work` as its child; the mod's report that the account hit its
+/// limit reaches a daemon in this process, which queues `claude:spare` and
+/// writes the notice into the session's inbox (as the mod shows it); once
+/// the harness exits (`/exit`), the Launcher resumes the same session on
+/// `claude:spare`, its transcript carried over.
+#[test]
+fn rl06_an_attended_session_is_told_and_continues_after_exit() {
+    use gruntas_harness::protocol::{Activity, Attendance, PluginHarness, Registration, UsageWindow};
+    let b = Sandbox::new("rl06-attended");
+    let path = b.home().join("config.json");
+    let mut config: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    std::fs::create_dir_all(b.root.join("accounts/claude-spare")).unwrap();
+    config["instances"]["claude:spare"] = serde_json::json!({ "kind": "claude-code", "binary": b.root.join("bin/claude"), "configDir": b.root.join("accounts/claude-spare") });
+    std::fs::write(&path, config.to_string()).unwrap();
+    let (work, spare) = (b.root.join("accounts/claude-work"), b.root.join("accounts/claude-spare"));
+    // The usage records: the default accounts out of the way (Claude Code's
+    // shares work's login, Codex's are spent); spare has room.
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let spent = serde_json::json!({ "five_hour": { "status": "limited", "usedPercent": 100.0, "resetsAtMs": now + 3_600_000, "seenAtMs": now } });
+    let w = serde_json::json!({ "login": "w", "seenAtMs": 1, "configHome": gruntas_harness::usage::home_key(&work.display().to_string()) });
+    let usage = b.root.join("usage.json");
+    std::fs::write(&usage, serde_json::json!({ "instances": { "claude": { "login": "w", "seenAtMs": 1 }, "claude:work": w, "codex": { "login": "spent", "seenAtMs": 1 }, "codex:team": { "login": "spent", "seenAtMs": 1 } }, "logins": { "spent": spent } }).to_string()).unwrap();
+
+    let run = PathBuf::from("/tmp").join(format!("gruntas-rl06a-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&run);
+    std::fs::create_dir_all(&run).unwrap();
+    let (home, run_dir) = (b.root.join("home").display().to_string(), run.display().to_string());
+    let env = move |k: &str| match k {
+        "HOME" => home.clone(),
+        "XDG_RUNTIME_DIR" => run_dir.clone(),
+        _ => String::new(),
+    };
+    let registry = gruntas_harness::instances::Registry::resolve(&gruntas_harness::instances::from_config_json(&config).unwrap(), &env);
+    let socket = gruntas_harness::daemon::socket(&env).unwrap();
+    let daemon = socket.parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(&daemon).unwrap();
+    let opts = gruntas_harness::daemon::server::Options {
+        socket: socket.clone(),
+        idle: None,
+        gruntas_version: "test".into(),
+        usage: Some(gruntas_harness::usage::Usage::at(usage)),
+        accounts: Some(std::sync::Arc::new(move || Ok(registry.clone()))),
+        ..Default::default()
+    };
+    std::thread::spawn(move || {
+        use gruntas_harness::daemon::server;
+        let factory: server::Factory = Box::new(|_, _| Err(gruntas_harness::engine::EngineError::new("no_sessions", "this test runs none")));
+        server::run(opts, factory)
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let wait = |what: &str, done: &dyn Fn() -> bool| {
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "{what}");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    };
+    wait("the daemon never listened", &|| std::os::unix::net::UnixStream::connect(&socket).is_ok());
+
+    // The harness: the first run says its pid and stays until an account
+    // is queued for it, then exits as `/exit` would; the resumed run
+    // writes down its account and arguments and exits 3.
+    let (pid_file, resumed) = (b.root.join("pid"), b.root.join("resumed"));
+    script(&b, "claude", &format!("case \"$*\" in *--resume*) echo \"$CLAUDE_CONFIG_DIR | $*\" > '{1}'; exit 3;; esac\necho $$ > '{0}'\ni=0\nuntil [ -e '{2}/attended/'$$.next.json ]; do i=$((i+1)); [ $i -gt 1000 ] && exit 9; sleep 0.01; done\nexit 0\n", pid_file.display(), resumed.display(), daemon.display()));
+    let launcher = b.command(&["run", "claude", "--account", "work", "--no-sandbox", "--model", "opus"]).env("XDG_RUNTIME_DIR", &run).stderr(Stdio::piped()).spawn().unwrap();
+    wait("the harness never started", &|| std::fs::read_to_string(&pid_file).is_ok_and(|p| p.ends_with('\n')));
+    let pid: u32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+    wait("the Launcher never marked its harness", &|| daemon.join(format!("attended/{pid}.json")).exists());
+
+    // What the plugin's hooks and mod send: the session starts, then its
+    // account hits the limit.
+    let session = "0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e71";
+    let transcript = work.join(format!("projects/-r/{session}.jsonl"));
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    std::fs::write(&transcript, "{}\n").unwrap();
+    let send = |a: Activity| gruntas_harness::hook::send(&socket, "/r", "test", a).unwrap();
+    send(Activity::Register(Registration { session_id: session.into(), harness: PluginHarness::Claude, harness_pid: Some(pid), config_home: Some(work.display().to_string()), cwd: Some(b.root.display().to_string()), repository: None, transcript_path: Some(transcript.display().to_string()), attendance: Some(Attendance::Attended) }));
+    send(Activity::Usage { config_home: work.display().to_string(), windows: vec![UsageWindow { kind: "fiveHour".into(), used_percent: 100.0, resets_at_ms: None }] });
+
+    let o = launcher.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    let inbox = std::fs::read_to_string(gruntas_harness::sync::god::inbox::path(&daemon, session)).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&run);
+    assert!(inbox.contains(r#""type":"notice""#) && inbox.contains("This account has hit its usage limit. Next: claude:spare on opus (another subscription) — type /exit to continue this session there."), "the notice: {inbox}");
+    assert_eq!(o.status.code(), Some(3), "the resumed run's code; {err}");
+    assert!(err.contains(&format!("continuing session {session} on claude:spare")), "{err}");
+    let resumed = std::fs::read_to_string(&resumed).unwrap();
+    assert!(resumed.starts_with(&format!("{} |", spare.display())) && resumed.contains(&format!("--resume {session} --model opus")), "{resumed}");
+    assert_eq!(std::fs::read_to_string(spare.join(format!("projects/-r/{session}.jsonl"))).unwrap(), "{}\n", "the transcript, where --resume finds it");
+}
+
+/// RL07 fixtures: `claude:spare` on another login, `claude:same` on
+/// `claude:work`'s, `claude:out` signed out; the usage records say each
+/// one's login and `claude:work`'s windows. Every Claude Code fake answers
+/// `auth status` as a Max subscription, `claude:out`'s as signed out.
+fn rl07_accounts(b: &Sandbox, now_ms: i64) {
+    let mut config: serde_json::Value = serde_json::from_slice(&std::fs::read(b.home().join("config.json")).unwrap()).unwrap();
+    for name in ["spare", "same", "out"] {
+        std::fs::create_dir_all(b.root.join(format!("accounts/claude-{name}"))).unwrap();
+        let bin = if name == "out" { "claude-out" } else { "claude" };
+        config["instances"][format!("claude:{name}")] = serde_json::json!({ "kind": "claude-code", "binary": b.root.join("bin").join(bin), "configDir": b.root.join(format!("accounts/claude-{name}")) });
+    }
+    std::fs::write(b.home().join("config.json"), config.to_string()).unwrap();
+    script(b, "claude-out", "echo '{\"loggedIn\":false}'\nexit 1\n");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(b.root.join("bin/claude-out"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let seen = |login: &str| serde_json::json!({ "login": login, "seenAtMs": now_ms });
+    let usage = serde_json::json!({
+        "logins": { "w@x.io": {
+            "five_hour": { "status": "allowed", "usedPercent": 40.0, "resetsAtMs": now_ms + 3_600_000, "seenAtMs": now_ms },
+            "seven_day": { "status": "allowed", "usedPercent": 90.0, "resetsAtMs": now_ms + 86_400_000, "seenAtMs": now_ms },
+        } },
+        "instances": { "claude:work": seen("w@x.io"), "claude:same": seen("w@x.io"), "claude:spare": seen("s@x.io") },
+    });
+    std::fs::write(b.home().join("usage.json"), usage.to_string()).unwrap();
+}
+
+const RL07_AUTH: &str = "case \"$1 $2\" in \"auth status\") echo '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"subscriptionType\":\"max\"}'; exit 0;; esac\n";
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64
+}
+
+/// RL07 (D8, R-RL-8): each account's row says its login, plan, what each
+/// window has left and when it resets, and the accounts on the same login.
+#[test]
+fn rl07_providers_check_rows_carry_login_plan_usage_and_shared_logins() {
+    let b = Sandbox::new("rl07-rows");
+    let now = now_ms();
+    rl07_accounts(&b, now);
+    script(&b, "claude", RL07_AUTH);
+    let o = b.gruntas(&["providers", "list", "--check", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or_else(|_| panic!("{}", String::from_utf8_lossy(&o.stderr)));
+    let row = |n: &str| v["data"]["instances"].as_array().unwrap().iter().find(|r| r["instance"] == n).cloned().unwrap_or_else(|| panic!("{n} not in {v}"));
+    let work = row("claude:work");
+    assert_eq!((work["login"].as_str(), work["plan"].as_str(), &work["sharedWith"]), (Some("w@x.io"), Some("max"), &serde_json::json!(["claude:same"])), "{work}");
+    assert_eq!(work["usage"], serde_json::json!([
+        { "window": "five_hour", "left": 60.0, "resetsAtMs": now + 3_600_000 },
+        { "window": "seven_day", "left": 10.0, "resetsAtMs": now + 86_400_000 },
+    ]));
+    let spare = row("claude:spare");
+    assert_eq!((spare["login"].as_str(), &spare["usage"], &spare["sharedWith"]), (Some("s@x.io"), &serde_json::json!([]), &serde_json::json!([])), "{spare}");
+    let out = row("claude:out");
+    assert_eq!((out["ready"].as_bool(), &out["plan"]), (Some(false), &serde_json::Value::Null), "{out}");
+    assert_eq!(row("claude")["login"], serde_json::Value::Null, "never seen: unknown");
+    let human = String::from_utf8_lossy(&b.gruntas(&["providers", "list", "--check", "--format", "human"]).stdout).into_owned();
+    assert!(human.contains("w@x.io (max) · 5h 60% left, resets ") && human.contains("same login as claude:same"), "{human}");
+    assert!(human.contains("s@x.io (max) · usage unknown"), "{human}");
+}
+
+/// RL07 (D8, R-RL-8): inside a session `gruntas run` started,
+/// `gruntas hook claude account` (the mod's `/gruntas:account`) lists the
+/// accounts with the session's marked; refuses an unknown, other-harness,
+/// not-ready, same-login or current account with why and the valid
+/// choices; queues a good one, which `--cancel` drops; and after `/exit`
+/// the same session resumes on the account queued, on the same model.
+/// Outside such a session it says how to start one that can move.
+#[test]
+fn rl07_a_picked_account_continues_the_session_after_exit() {
+    let b = Sandbox::new("rl07-pick");
+    rl07_accounts(&b, now_ms());
+    std::fs::create_dir_all(b.root.join("run")).unwrap();
+    let (runs, said) = (b.root.join("runs"), b.root.join("said"));
+    let gruntas = env!("CARGO_BIN_EXE_gruntas");
+    let session = "0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e71";
+    // Where Claude Code keeps the session's transcript, for the directory it runs in.
+    let slug: String = b.root.display().to_string().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let transcript = b.root.join(format!("accounts/claude-work/projects/{slug}/{session}.jsonl"));
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    std::fs::write(&transcript, "{}\n").unwrap();
+    script(&b, "claude", &format!("{RL07_AUTH}i=0\nuntil a=$(ls -d {run}/gruntas/*/attended 2>/dev/null) && [ -e \"$a/$$.json\" ]; do i=$((i+1)); [ $i -gt 500 ] && exit 9; sleep 0.01; done\necho \"$CLAUDE_CONFIG_DIR | $*\" >> '{runs}'\ncase \"$*\" in *--resume*) exit 3;; esac\nfor w in . claude:nope codex:team claude:out claude:same claude:work claude:spare --cancel --cancel claude:spare; do [ \"$w\" = . ] && w=; echo \"> $w\" >> '{said}'; {gruntas} hook claude account {session} $w >> '{said}' 2>&1; echo \"= $? queued=$([ -e $a/$$.next.json ] && echo y || echo n)\" >> '{said}'; done\nexit 5\n", run = b.root.join("run").display(), runs = runs.display(), said = said.display()));
+    let o = b.command(&["run", "claude", "--account", "work", "--no-sandbox", "--model", "opus"]).env("XDG_RUNTIME_DIR", b.root.join("run")).output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    let said = std::fs::read_to_string(&said).unwrap_or_default();
+    assert_eq!(o.status.code(), Some(3), "the resumed run's code; {err}\n{said}");
+    let answers: Vec<&str> = said.split("> ").skip(1).collect();
+    assert_eq!(answers.len(), 10, "{said}");
+    let list = answers[0];
+    assert!(list.contains("* claude:work ") && list.contains("  claude:spare ") && !list.contains("codex:team") && list.ends_with("= 0 queued=n\n"), "the list, the session's account marked: {list}");
+    let refused = |i: usize, why: &str| assert!(answers[i].contains(why) && answers[i].contains("choose one of claude, claude:spare.") && answers[i].ends_with("= 1 queued=n\n"), "{}", answers[i]);
+    refused(1, "There is no account named claude:nope");
+    refused(2, "codex:team is not a claude account");
+    refused(3, "claude:out is not ready (not signed in");
+    refused(4, "claude:same is signed in as the same login as claude:work, so moving there gains nothing");
+    refused(5, "This session already runs on claude:work");
+    assert_eq!(answers[6], "claude:spare\nType /exit to continue on claude:spare.\n= 0 queued=y\n");
+    assert_eq!(answers[7], "--cancel\nclaude:spare is no longer queued: /exit ends this session as usual.\n= 0 queued=n\n");
+    assert_eq!(answers[8], "--cancel\nNothing is queued: /exit ends this session as usual.\n= 0 queued=n\n");
+    assert_eq!(answers[9], "claude:spare\nType /exit to continue on claude:spare.\n= 0 queued=y\n");
+    let l: Vec<String> = std::fs::read_to_string(&runs).unwrap().lines().map(String::from).collect();
+    assert_eq!(l.len(), 2, "{l:?}");
+    assert!(l[1].starts_with(&format!("{} |", b.root.join("accounts/claude-spare").display())) && l[1].contains(&format!("--resume {session} --model opus")), "{l:?}");
+    assert!(err.contains(&format!("continuing session {session} on claude:spare")), "{err}");
+    assert!(b.root.join(format!("accounts/claude-spare/projects/{slug}/{session}.jsonl")).exists(), "the transcript, where --resume finds it");
+
+    // Outside a session `gruntas run` started: the list, and no move.
+    let o = b.command(&["hook", "claude", "account", session, "claude:spare"]).env("XDG_RUNTIME_DIR", b.root.join("run")).output().unwrap();
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "This session was not started by gruntas, so it cannot move to another account: start Claude Code with `gruntas run claude` to be able to.\n");
+    let o = b.command(&["hook", "claude", "account", session]).env("XDG_RUNTIME_DIR", b.root.join("run")).output().unwrap();
+    let list = String::from_utf8_lossy(&o.stdout);
+    assert!(o.status.success() && list.contains("* claude ") && list.contains("claude:spare"), "the session's home is ~/.claude: {list}");
+    let o = b.command(&["hook", "claude", "account", session]).env("XDG_RUNTIME_DIR", b.root.join("run")).env("CLAUDE_CONFIG_DIR", b.root.join("accounts/claude-spare")).output().unwrap();
+    let list = String::from_utf8_lossy(&o.stdout);
+    assert!(list.contains("* claude:spare ") && !list.contains("* claude "), "the named account whose home it is: {list}");
+    let o = b.command(&["hook", "claude", "account", "--dangerously-skip-permissions", "claude:spare"]).env("XDG_RUNTIME_DIR", b.root.join("run")).output().unwrap();
+    assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).into_owned()), (Some(1), "\"--dangerously-skip-permissions\" is not a session id\n".to_string()));
+}

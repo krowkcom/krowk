@@ -118,7 +118,13 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     let auto = gruntas_harness::sync::auto::Supervisor::spawn(auto_sync(ctx, &socket, log::sessions_dir(ctx.io.env)?, bridged.clone(), announced_store, mode_for, introductions.clone()), turns_rx);
     // Where a plugin's usage windows go: the record rollover reads (R-KIT-7).
     let usage = gruntas_harness::usage::Usage::in_home(sessions_dir_home.parent().unwrap_or(&sessions_dir_home));
-    let served = server::run(server::Options { socket, idle, gruntas_version: super::VERSION.into(), websocket, turns: Some(turns_tx), bridged: Some(bridged), introductions: Some(introductions), usage: Some(usage), ..Default::default() }, factory).map_err(|e| fail("host_failed", e));
+    // The accounts and ladder an attended launched session moves on by (D5),
+    // and an unattended one is moved by (D4), read again each time.
+    let accounts: server::Accounts = Arc::new(|| super::prompt::load_instances().map(|c| gruntas_harness::instances::Registry::resolve(&c, &gruntas_api::home::process_env)).map_err(|e| e.to_string()));
+    // Its continuation on the other harness, as the launcher starts one.
+    let cross_flags = ctx.f.clone();
+    let cross: gruntas_harness::daemon::roll::Cross = Arc::new(move |step: &gruntas_harness::ladder::Step, from: &str, cwd: Option<&std::path::Path>| own_ctx(&cross_flags, |ctx| super::launcher::continue_in(ctx, step, from, cwd)).map_err(|e| gruntas_harness::sync::announce::words(&e)));
+    let served = server::run(server::Options { socket, idle, gruntas_version: super::VERSION.into(), websocket, turns: Some(turns_tx), bridged: Some(bridged), introductions: Some(introductions), usage: Some(usage), accounts: Some(accounts), cross: Some(cross), ..Default::default() }, factory).map_err(|e| fail("host_failed", e));
     // However the daemon ended — idle, `gruntas host stop`, a signal — each
     // bridge ends its stream and gives its lease back before the process
     // exits, rather than leaving it to lapse. The daemon's runtime is gone,

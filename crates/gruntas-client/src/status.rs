@@ -259,6 +259,11 @@ pub struct Extension {
     pub account: Option<Field<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<Field<String>>,
+    /// The session this one continues, on the other harness, when its
+    /// account ran out (Rollover for launched sessions D6): the two read as
+    /// one chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continued_from: Option<Field<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<Field<String>>,
     /// The HEAD commit.

@@ -48,7 +48,7 @@ pub(crate) fn answer(c: &Config, id: &str, command: HostCommand) -> HostAnswer {
 /// A steer of `session`: the `steer` setting first, then the path its kind
 /// takes.
 fn steer(c: &Config, session: &str, s: inbox::Steer) -> HostAnswer {
-    if let Err(why) = crate::steer::allow(crate::steer::read(&c.sessions), Some(s.origin()), session, &c.sessions) {
+    if let Err(why) = crate::steer::allow(crate::steer::read(&c.sessions), s.origin(), session, &c.sessions) {
         return HostAnswer::refused(refusal::STEER_REFUSED, why);
     }
     match run::target(c, session) {
