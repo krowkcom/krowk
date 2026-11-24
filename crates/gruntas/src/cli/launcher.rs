@@ -102,7 +102,7 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<(), Error> {
         None => Mode::Attended,
     };
     if harness == Harness::Claude
-        && let Err(e) = install_plugin(&plugin_dir)
+        && let Err(e) = install_plugin(&plugin_dir, &gruntas)
     {
         let _ = writeln!(ctx.io.stderr, "gruntas: the gruntas plugin could not be written to {}: {e}", plugin_dir.display());
     }
@@ -127,8 +127,9 @@ const PLUGIN: &[(&str, &str)] = &[
 /// The plugin `--plugin-dir` loads (D5), written into `dir`, gruntas's own
 /// and no account's (R-RUN-5): only the files whose content differs, so it
 /// follows this binary's version and an unchanged one is left alone.
-fn install_plugin(dir: &std::path::Path) -> std::io::Result<()> {
+fn install_plugin(dir: &std::path::Path, gruntas: &std::path::Path) -> std::io::Result<()> {
     for (path, content) in PLUGIN {
+        let content = if *path == ".claude-plugin/plugin.json" { plugin_json(content, gruntas) } else { (*content).to_string() };
         let file = dir.join(path);
         if std::fs::read(&file).is_ok_and(|had| had == content.as_bytes()) {
             continue;
@@ -139,6 +140,19 @@ fn install_plugin(dir: &std::path::Path) -> std::io::Result<()> {
         std::fs::write(&file, content)?;
     }
     Ok(())
+}
+
+/// The plugin's manifest with its MCP server the `gruntas-mcp` beside
+/// `gruntas`, so the worker reports to a daemon of its own version; none
+/// there → as shipped, `npx -y @gruntas/mcp`. The marketplace's stays npx.
+fn plugin_json(shipped: &str, gruntas: &std::path::Path) -> String {
+    let mcp = gruntas.with_file_name(format!("gruntas-mcp{}", std::env::consts::EXE_SUFFIX));
+    if !mcp.is_file() {
+        return shipped.into();
+    }
+    let Ok(mut json) = serde_json::from_str::<serde_json::Value>(shipped) else { return shipped.into() };
+    json["mcpServers"]["gruntas"] = serde_json::json!({ "command": mcp, "args": [] });
+    serde_json::to_string_pretty(&json).map_or_else(|_| shipped.into(), |s| s + "\n")
 }
 
 /// `--account auto` (R-RUN-2): `harness`'s accounts ranked as rollover
@@ -383,5 +397,24 @@ mod tests {
         assert_eq!(bg_id("backgrounded · ../x"), None);
         assert_eq!(bg_id("backgrounded"), None);
         assert_eq!(bg_id("Workspace not trusted."), None);
+    }
+
+    #[test]
+    fn the_written_plugin_names_the_gruntas_mcp_beside_gruntas_else_npx() {
+        let dir = std::env::temp_dir().join(format!("gruntas-plugin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (gruntas, mcp) = (dir.join("gruntas"), dir.join(format!("gruntas-mcp{}", std::env::consts::EXE_SUFFIX)));
+        let server = || {
+            install_plugin(&dir.join("plugin"), &gruntas).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("plugin/.claude-plugin/plugin.json")).unwrap()).unwrap();
+            json["mcpServers"]["gruntas"].clone()
+        };
+        assert_eq!(server(), serde_json::json!({ "command": "npx", "args": ["-y", "@gruntas/mcp"] }));
+        std::fs::write(&mcp, "").unwrap();
+        assert_eq!(server(), serde_json::json!({ "command": mcp, "args": [] }));
+        std::fs::remove_file(&mcp).unwrap();
+        assert_eq!(server()["command"], "npx");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
