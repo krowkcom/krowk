@@ -56,7 +56,8 @@
 //! - `instances` — the named accounts in gruntas's config; `readiness` —
 //!   whether each can run a turn here, and what fixes it; `connect` —
 //!   connecting one and signing it out, for the CLI and an interactive
-//!   client.
+//!   client; `launch` — the plans `gruntas run` starts the stock `claude` or
+//!   `codex` on an account by.
 //! - `headless` — `gruntas -p`.
 //! - `daemon` — the per-user host daemon a session outlives the terminal
 //!   in, its unix socket, and the service that keeps it up (R-HOST-1,
@@ -94,6 +95,7 @@ pub mod upload;
 pub mod usage;
 pub mod instances;
 pub mod keys;
+pub mod launch;
 pub mod log;
 pub mod mcp;
 pub mod mcp_oauth;
