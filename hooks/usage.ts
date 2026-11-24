@@ -18,6 +18,12 @@
 // sessions D5): when this account runs low in a session `gruntas run`
 // started, which account comes next and that `/exit` continues there,
 // shown as a toast and kept in the status line.
+//
+// It answers `/gruntas:account` itself (D8), so the command costs no turn and
+// leaves nothing to the model: the plugin's `commands/account.md` gives the
+// name, and this module's `command.run` hook runs `gruntas hook claude
+// account` with the session and the arguments, and shows what it says. With a
+// name that it queued, the line stays in the status line until `/exit`.
 import type { EngineInterface, Register, SessionRateLimit } from 'claude-code'
 
 /** One window as `gruntas hook claude usage` takes it. */
@@ -203,7 +209,26 @@ async function inboxDir($: EngineInterface): Promise<string | undefined> {
   }
 }
 
+/** How long `/gruntas:account` waits on gruntas: it asks every account's vendor whether it is signed in. */
+export const ACCOUNT_MS = 20_000
+
+/** `/gruntas:account [args]`: what gruntas says of it. */
+async function account($: EngineInterface, args: string): Promise<string> {
+  const words = (args ?? '').trim().split(/\s+/).filter(w => w !== '')
+  let r
+  try {
+    r = await $.process.run(['gruntas', 'hook', 'claude', 'account', await $.session.id(), ...words], { timeoutMs: ACCOUNT_MS })
+  } catch {
+    return 'gruntas is not on the PATH, or did not answer: install it with curl -fsSL https://gruntas.com/install | bash'
+  }
+  const said = r.stdout.trimEnd() || r.stderr.trim() || 'gruntas said nothing'
+  if (r.exitCode === 0 && words.length === 1) void Promise.resolve($.ui.status(words[0] === '--cancel' ? undefined : said)).catch(() => undefined)
+  return said
+}
+
 export const register: Register = on => {
+  on('command.run', { command: 'gruntas:account' }, async ($, e) => ({ text: await account($, e.args), isTextDisplayOnly: true }))
+
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     void report($)

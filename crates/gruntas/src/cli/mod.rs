@@ -37,6 +37,8 @@ mod mcp;
 mod own_worktree;
 #[cfg(all(feature = "harness", unix))]
 mod launcher;
+#[cfg(all(feature = "harness", unix))]
+pub mod account;
 #[cfg(feature = "harness")]
 mod pairing;
 #[cfg(feature = "harness")]

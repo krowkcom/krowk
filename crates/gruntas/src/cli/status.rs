@@ -16,6 +16,13 @@
 //!   "fix": null, "var": null, "reason": null}, …]}
 //! ```
 //!
+//! Each row also says what the account is signed in as and has left
+//! (Rollover for launched sessions D8): `login` (null until gruntas has
+//! seen it), `plan` (the subscription, where the vendor names it), `usage`
+//! (each window's percent `left` and `resetsAtMs`, from the usage records
+//! rollover keeps; empty when none) and `sharedWith` (the other accounts
+//! signed in as the same login, between which a move gains nothing).
+//!
 //! `state` is one of `ready`, `key_not_set`, `not_signed_in`, `expired`,
 //! `not_installed`, `unknown`; `var` is set for `key_not_set`, `reason` for
 //! `unknown`, `fix` whenever the instance is not ready. Every key is on
@@ -27,6 +34,7 @@ use crate::output::Format;
 use gruntas_api::{fail, Error};
 use gruntas_harness::instances::{InstancesConfig, Registry};
 use gruntas_harness::readiness::{self, Report};
+use gruntas_harness::usage::Data;
 use serde_json::{json, Value};
 
 /// Every Claude Code or Codex account this host has, checked — the vendors
@@ -48,10 +56,82 @@ pub(super) fn neutral_probe(ctx: &Ctx) -> Result<readiness::Probe, Error> {
     readiness::neutral_dir(&home).map(readiness::Probe::at).map_err(|e| fail("data_dir_unwritable", e))
 }
 
+/// The usage records rollover keeps (`usage.json`): every account's login
+/// and each login's windows.
+pub(super) fn usage(ctx: &Ctx) -> Result<Data, Error> {
+    Ok(gruntas_harness::usage::Usage::in_home(&gruntas_api::home::dir(ctx.io.env)?).read())
+}
+
+/// What `r`'s account is signed in as and has left (D8), as of `now_ms`.
+pub(super) struct Standing {
+    pub login: Option<String>,
+    pub plan: Option<String>,
+    /// Each window's name, percent left and reset.
+    pub windows: Vec<(String, Option<f64>, Option<i64>)>,
+    /// The other accounts of `all` on the same login.
+    pub shared: Vec<String>,
+}
+
+pub(super) fn standing(r: &Report, all: &[Report], data: &Data, now_ms: i64) -> Standing {
+    let login = |name: &str| data.instance(name).map(|i| i.login.clone());
+    let me = login(&r.instance);
+    let windows = me.as_deref().map(|l| data.readings(l, now_ms)).unwrap_or_default().into_iter().map(|w| (w.window, w.used_percent.map(|u| (100.0 - u).max(0.0)), w.resets_at_ms)).collect();
+    let shared = all.iter().filter(|o| o.instance != r.instance && o.kind == r.kind && me.is_some() && login(&o.instance) == me).map(|o| o.instance.clone()).collect();
+    // The vendor's own words, as readiness keeps them: "… a Claude max subscription".
+    let plan = match &r.readiness {
+        readiness::Readiness::Ready { source } => source.split_once("with a Claude ").and_then(|(_, p)| p.split_once(" subscription")).map(|(p, _)| p.to_string()),
+        _ => None,
+    };
+    Standing { login: me, plan, windows, shared }
+}
+
+impl Standing {
+    pub fn json(&self) -> Value {
+        let usage: Vec<Value> = self.windows.iter().map(|(w, left, at)| json!({ "window": w, "left": left, "resetsAtMs": at })).collect();
+        json!({ "login": self.login, "plan": self.plan, "usage": usage, "sharedWith": self.shared })
+    }
+
+    /// One line for a person: the login and plan, what each window has
+    /// left and when it resets, and the accounts sharing the login.
+    pub fn line(&self) -> String {
+        let mut out = match (&self.login, &self.plan) {
+            (Some(l), Some(p)) => format!("{l} ({p})"),
+            (Some(l), None) => l.clone(),
+            (None, _) => "login unknown".into(),
+        };
+        if self.windows.is_empty() {
+            out.push_str(" · usage unknown");
+        }
+        for (w, left, at) in &self.windows {
+            let name = match w.as_str() {
+                "five_hour" => "5h",
+                "seven_day" => "7d",
+                w => w,
+            };
+            let left = left.map_or("?".into(), |l| format!("{l:.0}%"));
+            let at = at.and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok()).map(|t| format!(", resets {}", t.to_zoned(jiff::tz::TimeZone::system()).strftime("%a %H:%M"))).unwrap_or_default();
+            out.push_str(&format!(" · {name} {left} left{at}"));
+        }
+        if !self.shared.is_empty() {
+            out.push_str(&format!(" · same login as {}", self.shared.join(", ")));
+        }
+        out
+    }
+}
+
 pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
     let (_, _, reports) = reports(ctx)?;
     let ready = reports.iter().filter(|r| r.readiness.is_ready()).count();
-    let data = json!({ "ready": ready, "instances": reports.iter().map(Report::json).collect::<Vec<Value>>() });
+    let (data, now) = (usage(ctx)?, gruntas_store::now_ms());
+    let standings: Vec<Standing> = reports.iter().map(|r| standing(r, &reports, &data, now)).collect();
+    let rows = reports.iter().zip(&standings).map(|(r, s)| {
+        let mut row = r.json();
+        if let (Some(row), Value::Object(more)) = (row.as_object_mut(), s.json()) {
+            row.extend(more);
+        }
+        row
+    });
+    let data = json!({ "ready": ready, "instances": rows.collect::<Vec<Value>>() });
     let none = || fail("none_ready", format!("none of the {} instances can run a turn here — each row's fix says what makes it ready", reports.len()));
     if ctx.format != Format::Human {
         // The rows ride on the failure, so a script reads them either way;
@@ -68,7 +148,7 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
     let label = |r: &Report| r.label;
     let (wn, wk, ws) = (width(&|r| r.instance.len()), width(&|r| label(r).len()), width(&|r| r.readiness.label().len()));
     let out = &mut *ctx.io.stdout;
-    for r in &reports {
+    for (r, s) in reports.iter().zip(&standings) {
         // What failed, for a check that could not tell; else the fix.
         let why = match &r.readiness {
             readiness::Readiness::Unknown { reason } => Some(reason),
@@ -76,6 +156,7 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
         };
         let fix = why.map(|f| format!("  — {f}")).unwrap_or_default();
         let _ = writeln!(out, "{:<wn$}  {:<wk$}  {:<ws$}  {}{fix}", r.instance, label(r), r.readiness.label(), r.source);
+        let _ = writeln!(out, "{:<wn$}  {}", "", s.line());
     }
     if ready == 0 {
         return Err(none());
