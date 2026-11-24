@@ -123,7 +123,7 @@ fn pick_auto(ctx: &mut Ctx, registry: &Registry, harness: Harness) -> Result<Str
     let (credentials, probe) = (super::providers::credentials_path()?, super::status::neutral_probe(ctx)?);
     let signed_in = |name: &str| launch::account(registry, harness, name).is_ok_and(|i| readiness::check(i, &credentials, &probe).refusal(i).is_none());
     let Some(top) = data.rank(data.login_of(own), &candidates, gruntas_store::now_ms()).into_iter().find(|r| signed_in(&r.model.instance)) else {
-        let _ = writeln!(ctx.io.stderr, "--account auto: {own}, your own account — no other {own} account has room to spare");
+        let _ = writeln!(ctx.io.stderr, "--account auto: {own}, your own account — no other signed-in {own} account has room to spare");
         return Ok(own.into());
     };
     let why = match top.standing {
