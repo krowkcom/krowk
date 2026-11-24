@@ -213,8 +213,35 @@ fn codex_attended_execs_codex_with_the_account_and_profile() {
     let _b = Sandbox::new("ln04");
 }
 
+/// R-RUN-2: `--account auto` ranks the harness's own accounts from the
+/// usage record, as rollover does, measured from the default account's
+/// login, and says which it picked and why.
 #[test]
-#[ignore = "LN05: --account auto picks by rollover's headroom ranking and says why"]
 fn account_auto_picks_the_account_with_the_most_headroom() {
-    let _b = Sandbox::new("ln05");
+    let b = Sandbox::new("ln05");
+    let mut config: serde_json::Value = serde_json::from_slice(&std::fs::read(b.home().join("config.json")).unwrap()).unwrap();
+    for name in ["claude:apart", "claude:spare"] {
+        config["instances"][name] = serde_json::json!({ "kind": "claude-code", "binary": b.root.join("bin/claude"), "configDir": b.root.join("accounts/claude-work") });
+    }
+    std::fs::write(b.home().join("config.json"), config.to_string()).unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let window = |used: f64| serde_json::json!({ "five_hour": { "status": "allowed", "usedPercent": used, "resetsAtMs": now + 3_600_000, "seenAtMs": now } });
+    let login = |login: &str| serde_json::json!({ "login": login, "seenAtMs": now });
+    // The default and claude:work share a login, so work is never a move;
+    // claude:apart, first by name, has less room than claude:spare;
+    // codex:team has the most of all, but is no claude account.
+    let usage = serde_json::json!({
+        "instances": { "claude": login("me"), "claude:work": login("me"), "claude:apart": login("apart"), "claude:spare": login("spare"), "codex:team": login("team") },
+        "logins": { "me": window(5.0), "apart": window(60.0), "spare": window(30.0), "team": window(0.0) },
+    });
+    std::fs::write(b.home().join("usage.json"), usage.to_string()).unwrap();
+    let o = b.gruntas(&["run", "claude", "--account", "auto"]);
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("--account auto: claude:spare, first by rollover's ranking: 70% left as of") && err.contains("next reset"), "{err}");
+
+    // Nothing else with room: the default account, saying so.
+    let usage = serde_json::json!({ "instances": { "claude": login("me"), "claude:apart": login("apart"), "claude:spare": login("spare"), "claude:work": login("me") }, "logins": { "apart": window(92.0), "spare": window(95.0) } });
+    std::fs::write(b.home().join("usage.json"), usage.to_string()).unwrap();
+    let err = String::from_utf8_lossy(&b.gruntas(&["run", "claude", "--account", "auto"]).stderr).into_owned();
+    assert!(err.contains("--account auto: claude, your own account"), "{err}");
 }

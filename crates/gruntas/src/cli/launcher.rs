@@ -114,10 +114,28 @@ fn not_yet(what: &str, ticket: &str) -> Error {
     fail("not_yet", format!("{what} is not in this build yet ({ticket})"))
 }
 
-/// LN05: `--account auto`, the account of `harness` with the most headroom
-/// by rollover's ranking, said which and why.
-fn pick_auto(_ctx: &mut Ctx, _registry: &Registry, _harness: Harness) -> Result<String, Error> {
-    Err(not_yet("`--account auto`", "LN05"))
+/// `--account auto` (R-RUN-2): `harness`'s accounts ranked as rollover
+/// ranks them, measured from the default account's login, and the top one
+/// said, with why. None ranks (each limited, low on room, or on the
+/// default's own login) → the default account, saying so.
+fn pick_auto(ctx: &mut Ctx, registry: &Registry, harness: Harness) -> Result<String, Error> {
+    use gruntas_harness::{host::clock, protocol::ModelRef, usage::Usage};
+    let data = Usage::in_home(&gruntas_api::home::dir(ctx.io.env)?).read();
+    let own = harness.name();
+    let candidates: Vec<ModelRef> = registry.instances.keys().filter(|n| launch::account(registry, harness, n).is_ok()).map(|n| ModelRef { instance: n.clone(), model: String::new() }).collect();
+    let Some(top) = data.rank(data.login_of(own), &candidates, gruntas_store::now_ms()).into_iter().next() else {
+        let _ = writeln!(ctx.io.stderr, "--account auto: {own}, your own account — no other {own} account has room to spare");
+        return Ok(own.into());
+    };
+    let why = match top.standing {
+        Some(s) => {
+            let reset = s.reset_ms.map(|r| format!(", next reset {}", clock(r))).unwrap_or_default();
+            format!("first by rollover's ranking: {}% left as of {}{reset}", s.headroom.round(), clock(s.seen_at_ms))
+        }
+        None => format!("its usage is not known yet, and no {own} account whose usage is known has room to spare"),
+    };
+    let _ = writeln!(ctx.io.stderr, "--account auto: {}, {why}", top.model.instance);
+    Ok(top.model.instance)
 }
 
 /// LN02: replace gruntas with `claude` per the plan; where the sandbox

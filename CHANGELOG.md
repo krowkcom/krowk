@@ -49,6 +49,18 @@ breaking changes may affect it without notice.
   stops the session once its agent reports the task finished and its turn
   has ended, never mid-turn. The workspace must already be trusted on that
   account: open it once with `gruntas run claude --account <name>`.
+- **`gruntas run <harness> --account auto`** starts on that harness's
+  account ranked first by rollover's headroom ranking, and says
+  which it picked, how much was left and when it next resets. With no other
+  account to spare it uses your own.
+
+### Changed
+
+- **The first `gruntas config set rollover auto` asks you to accept** that
+  you are responsible for how your accounts are used under each vendor's
+  terms. It needs a yes at a terminal and is refused without one; the date
+  you accepted is kept in `~/.gruntas/config.json` as `rolloverAcknowledged`,
+  and later sets don't ask again.
 
 ## [2026.11.1] - 2026-11-23
 
