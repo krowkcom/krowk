@@ -74,9 +74,11 @@ breaking changes may affect it without notice.
   session, copies its conversation into that account and resumes it there
   in the background, sending the prompt the limit cut off again; when the
   next account is on Codex, it stops the session and continues it there
-  from a handoff — with `gruntas config set rollover auto`. Without it,
-  the session's status turns input-required and names the account it
-  would move to.
+  from a handoff — with `gruntas config set rollover auto`. A worker
+  that runs out again on the account it moved to moves on, down the
+  ladder, however soon after the last move. Without `auto`, the
+  session's status turns input-required and names the account it would
+  move to.
 - **The god agent: ask any agent what your swarm is doing.** The plugin's
   MCP server offers `gruntas_status`, `gruntas_changes`, `gruntas_read` and
   `gruntas_ping` to every agent, and `gruntas_message` and

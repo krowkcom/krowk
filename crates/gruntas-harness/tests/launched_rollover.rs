@@ -3,6 +3,9 @@
 //! process and a fake `claude` that writes down what it was asked to stop
 //! and resume, and under which account. This test process plays the
 //! session's harness, sending what its plugin's hooks and mod would.
+//! RL06 (R-RL-7) runs the ladder end to end here: one worker across two
+//! Claude Code accounts and on to Codex, and a key rung stopping at a
+//! small cap.
 
 #![cfg(unix)]
 
@@ -240,4 +243,54 @@ fn rl06_a_worker_crosses_claude_code_accounts_then_to_codex() {
     rig.wait_for("the worker never continued on Codex", || rig.root.join("continued").exists());
     assert_eq!(rig.read("continued"), format!("codex:c gpt-5.6-terra {SESSION} {}", rig.root.join("work").display()));
     assert_eq!(rig.read("stopped"), format!("{ID} {}\n{ID} {}\n", rig.home("a"), rig.home("b")), "stopped on a, then on b");
+}
+
+/// RL06 (R-RL-7), a key rung stopping at a small cap: every subscription
+/// spent (in the usage records), the ladder offers the API-key account,
+/// its notice naming account, rung and the $0.50 cap; spend readings fed
+/// as the mod's session cost would be (none reaches the daemon yet), the
+/// session stops at the cap with its Task input-required and the reason,
+/// and the key rung is closed to it.
+#[test]
+fn rl06_a_key_rung_stops_at_a_small_cap() {
+    use gruntas_harness::ladder::{keys_open, notice, KeySpend, Rung};
+    use gruntas_harness::launch::Harness;
+    use gruntas_harness::protocol::ModelRef;
+    let config = serde_json::json!({
+        "instances": {
+            "claude:b": { "kind": "claude-code", "configDir": "/h/b" },
+            "claude:key": { "kind": "claude-code", "configDir": "/h/k", "apiKeyEnv": "ANTHROPIC_API_KEY" },
+        },
+        "ladder": { "keyCapUsd": 0.5 },
+    });
+    let registry = gruntas_harness::instances::Registry::resolve(&gruntas_harness::instances::from_config_json(&config).unwrap(), &|k| if k == "HOME" { "/h".into() } else { String::new() });
+    let spent = serde_json::json!({ "five_hour": { "status": "limited", "usedPercent": 100.0, "seenAtMs": 1_000 } });
+    let rec = |login: &str| serde_json::json!({ "login": login, "seenAtMs": 1_000 });
+    let data: gruntas_harness::usage::Data = serde_json::from_value(serde_json::json!({
+        "instances": { "claude": rec("me"), "claude:b": rec("b"), "codex": rec("cx") },
+        "logins": { "me": spent, "b": spent, "cx": spent },
+    }))
+    .unwrap();
+    let from = ModelRef { instance: "claude".into(), model: "sonnet".into() };
+    // $3.20 spent on subscriptions before the move: the cap counts from it.
+    let reading = 3.2;
+    assert_eq!(registry.ladder.next(&registry, &data, &from, keys_open(Harness::Claude, false, None, None), 2_000), None, "no spend reading: no key rung");
+    let step = registry.ladder.next(&registry, &data, &from, keys_open(Harness::Claude, false, Some(reading), None), 2_000).expect("the key rung");
+    assert_eq!((step.rung, step.to.instance.as_str()), (Rung::ApiKey, "claude:key"));
+    assert_eq!(notice(&step, registry.ladder.key_cap_usd), format!("Continuing on claude:key ({}): an API-key account, billed per use, up to $0.50 this session.", step.to.model));
+
+    let on_key = KeySpend::enter(&step, reading, registry.ladder.key_cap_usd);
+    let mut tasks = Tasks::default();
+    tasks.apply(&Activity::Register(Registration { session_id: SESSION.into(), harness: PluginHarness::Claude, harness_pid: None, config_home: Some("/h/k".into()), cwd: None, repository: None, transcript_path: None, attendance: None }), "2026-11-24T00:00:00Z");
+    for r in [3.2, 3.45, 3.69] {
+        assert_eq!(on_key.capped(r), None, "under the cap at ${r}");
+        assert!(keys_open(Harness::Claude, false, Some(r), Some(&on_key)));
+    }
+    let reason = on_key.capped(3.7).expect("at the cap");
+    assert!(reason.contains("$0.50 spent on claude:key") && reason.contains("cap $0.50"), "{reason}");
+    assert!(tasks.capped(SESSION, &reason, "2026-11-24T00:01:00Z"));
+    let t = tasks.get(SESSION).unwrap();
+    assert_eq!(t.status.state, TaskState::InputRequired);
+    assert_eq!(t.status.message.as_ref().map(|m| m.summary()), Some(reason));
+    assert!(!keys_open(Harness::Claude, false, Some(3.7), Some(&on_key)), "the key rung closed to it");
 }
