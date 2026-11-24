@@ -117,6 +117,9 @@ fn r_cut_7_rollover_source_is_repo_when_trusted_else_global_else_default() {
     let b = Sandbox::new("rollover");
     assert_eq!(b.get("rollover"), ("offer".into(), "default".into()));
 
+    // Accepted once already, so it sets without a terminal.
+    std::fs::create_dir_all(b.global().parent().unwrap()).unwrap();
+    std::fs::write(b.global(), json!({"rolloverAcknowledged": "2026-11-01"}).to_string()).unwrap();
     b.ok(&["config", "set", "rollover", "auto"]);
     assert_eq!(b.read_global()["rollover"], "auto");
     assert_eq!(b.get("rollover"), ("auto".into(), "global".into()));
@@ -235,4 +238,36 @@ fn r_sec_5_config_set_steer_on_a_terminal_asks_and_a_yes_writes() {
     let mut t = pty::Pty::spawn(b.command(&["config", "set", "steer", "everyone"]), 120, 40);
     assert!(t.wait(Duration::from_secs(20)).is_some_and(|s| !s.success()), "{:?}", t.text());
     assert!(t.text().contains("children, attended, any") && !t.text().contains("[y/N]"), "{:?}", t.text());
+}
+
+/// R-RUN-6, D6: the first `config set rollover auto` shows the liability
+/// text and needs a yes at a terminal, refused without one; the yes is
+/// recorded with its date, and the text is not shown again.
+#[test]
+fn r_run_6_auto_rollover_is_acknowledged_once_at_a_terminal_with_its_date() {
+    let b = Sandbox::new("rollover-ack");
+    let out = b.gruntas(&["config", "set", "rollover", "auto"]);
+    assert!(!out.status.success() && said(&out).contains("terminal"), "{}", said(&out));
+    assert!(!b.global().exists(), "nothing was written");
+
+    let terms = "responsible for how your accounts are used under each vendor's terms";
+    let mut t = pty::Pty::spawn(b.command(&["config", "set", "rollover", "auto"]), 120, 40);
+    assert!(t.wait_for("set rollover to auto? [y/N]", Duration::from_secs(20)).is_some(), "{:?}", t.text());
+    assert!(t.text().contains(terms), "{:?}", t.text());
+    t.write(b"n\r");
+    assert!(t.wait(Duration::from_secs(20)).is_some_and(|s| !s.success()), "{:?}", t.text());
+    assert!(!b.global().exists(), "a no changes nothing");
+
+    let mut t = pty::Pty::spawn(b.command(&["config", "set", "rollover", "auto"]), 120, 40);
+    assert!(t.wait_for("set rollover to auto? [y/N]", Duration::from_secs(20)).is_some(), "{:?}", t.text());
+    t.write(b"y\r");
+    assert!(t.wait(Duration::from_secs(20)).is_some_and(|s| s.success()), "{:?}", t.text());
+    let today = jiff::Zoned::now().date().to_string();
+    assert_eq!(b.read_global(), json!({"rollover": "auto", "rolloverAcknowledged": today}));
+
+    // Once: later sets never ask, on a terminal or off one.
+    b.ok(&["config", "set", "rollover", "off"]);
+    let out = b.gruntas(&["config", "set", "rollover", "auto"]);
+    assert!(out.status.success() && !said(&out).contains(terms), "{}", said(&out));
+    assert_eq!(b.read_global(), json!({"rollover": "auto", "rolloverAcknowledged": today}));
 }

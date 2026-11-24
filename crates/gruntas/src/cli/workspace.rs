@@ -107,6 +107,9 @@ fn config_set_global(ctx: &mut Ctx, key: &str, value: Option<&str>) -> Result<()
     let write_failed = |e: String| fail("config_unwritable", format!("could not write {}: {e}", path.display()));
     let value = if key == "rollover" {
         let r = Rollover::parse(value).map_err(|e| fail("bad_config_value", e))?;
+        if r == Rollover::Auto {
+            acknowledge_auto_rollover(ctx, &path)?;
+        }
         settings::set_rollover(&path, r).map_err(write_failed)?;
         settings::rollover_name(r)
     } else {
@@ -116,6 +119,35 @@ fn config_set_global(ctx: &mut Ctx, key: &str, value: Option<&str>) -> Result<()
     };
     let rendered = render::config_wrote(key, value, &path.display().to_string(), ctx.format, ctx.f.quiet, ctx.colour);
     ctx.emit(&rendered)
+}
+
+/// The key in the global config.json that records, with its date, the
+/// person's yes to the liability text `config set rollover auto` shows.
+#[cfg(feature = "harness")]
+const ROLLOVER_ACKNOWLEDGED: &str = "rolloverAcknowledged";
+
+/// `config set rollover auto`, the first time (D6, R-RUN-6): the liability
+/// text, and a yes typed at a terminal, recorded with its date so it is
+/// asked once. Off a terminal it is refused, as `config set steer` is.
+#[cfg(feature = "harness")]
+fn acknowledge_auto_rollover(ctx: &mut Ctx, path: &std::path::Path) -> Result<(), Error> {
+    let raw = gruntas_harness::connect::read_config(path).map_err(|e| fail("bad_config", e))?;
+    if raw.get(ROLLOVER_ACKNOWLEDGED).is_some_and(|v| v.is_string()) {
+        return Ok(());
+    }
+    super::chain::need_person(ctx, "`gruntas config set rollover auto` first asks you to accept how your accounts are used", false)?;
+    let _ = writeln!(
+        ctx.io.stderr,
+        "rollover auto moves a session to another of your accounts when one runs out, and `gruntas run --account auto` starts on the one with the most room.\nYou are responsible for how your accounts are used under each vendor's terms."
+    );
+    if !matches!(super::chain::ask_key(ctx, "Accept, and set rollover to auto? [y/N]", &[]).as_str(), "y" | "yes") {
+        return Err(fail("selection_cancelled", "not accepted, so nothing was changed"));
+    }
+    let today = jiff::Zoned::now().date().to_string();
+    config::edit(path, |raw| {
+        raw.insert(ROLLOVER_ACKNOWLEDGED.into(), serde_json::Value::String(today));
+    })
+    .map_err(|e| fail("config_unwritable", format!("could not write {}: {e}", path.display())))
 }
 
 /// `config set steer`: how far an agent's steering of other sessions reaches
