@@ -42,26 +42,31 @@ pub enum Steer {
     Message { id: String, text: String, origin: Origin, at: String },
     /// The running turn aborted.
     Interrupt { id: String, origin: Origin, at: String },
+    /// `text` shown to the person, as a toast and in the status line: the
+    /// daemon's own word, the account `/exit` continues on (`attended`).
+    Notice { id: String, text: String, at: String },
 }
 
 impl Steer {
     /// The host command's id: what the mod delivers once, and acks by.
     pub fn id(&self) -> &str {
         match self {
-            Steer::Message { id, .. } | Steer::Interrupt { id, .. } => id,
+            Steer::Message { id, .. } | Steer::Interrupt { id, .. } | Steer::Notice { id, .. } => id,
         }
     }
 
-    pub fn origin(&self) -> &Origin {
+    /// Who sent it; a notice is the daemon's own.
+    pub fn origin(&self) -> Option<&Origin> {
         match self {
-            Steer::Message { origin, .. } | Steer::Interrupt { origin, .. } => origin,
+            Steer::Message { origin, .. } | Steer::Interrupt { origin, .. } => Some(origin),
+            Steer::Notice { .. } => None,
         }
     }
 
     /// When the daemon wrote it, RFC 3339.
     pub fn at(&self) -> &str {
         match self {
-            Steer::Message { at, .. } | Steer::Interrupt { at, .. } => at,
+            Steer::Message { at, .. } | Steer::Interrupt { at, .. } | Steer::Notice { at, .. } => at,
         }
     }
 }
@@ -143,6 +148,15 @@ pub(crate) fn deliver_in(daemon: &Path, session: &str, s: &Steer, wait: Duration
         }
         std::thread::sleep(ACK_EVERY);
     }
+}
+
+/// `text` written to `session`'s inbox as a notice, not waited on: the
+/// mod shows it on its next read.
+pub fn notify(daemon: &Path, session: &str, text: &str) -> std::io::Result<()> {
+    if !host_command::session_id_shaped(session) {
+        return Err(std::io::Error::other(format!("{session:?} is not a session id")));
+    }
+    write(daemon, session, &Steer::Notice { id: gruntas_store::new_id(), text: text.to_string(), at: jiff::Timestamp::now().to_string() })
 }
 
 /// `s` appended to `session`'s inbox, a message's text framed with its

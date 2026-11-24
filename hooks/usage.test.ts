@@ -132,3 +132,24 @@ test('an interrupt aborts the tracked turn, or reports nothing running', async (
   expect(aborted).toEqual(['t1'])
   expect(acks(files).at(-1)).toEqual({ id: 'i2', outcome: 'delivered' })
 })
+
+test('a notice of the next account shows as a toast and in the status line, once', async ($, on) => {
+  const text = 'This account has hit its usage limit. Next: claude:b on opus (another subscription) — type /exit to continue this session there.'
+  const { files, poll } = inbox(on, [{ type: 'notice', id: 'n1', text, at: new Date(NOW).toISOString() }])
+  const toasts: string[] = []
+  const statuses: string[] = []
+  on('ui.toast', (_, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.status', (_, e) => {
+    statuses.push(e.text)
+    return { value: undefined }
+  })
+  await start($)
+  await poll()
+  await poll()
+  expect(toasts).toEqual([text])
+  expect(statuses).toEqual([text])
+  expect(acks(files)).toEqual([{ id: 'n1', outcome: 'delivered' }])
+})

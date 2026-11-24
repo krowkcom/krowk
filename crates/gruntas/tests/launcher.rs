@@ -389,3 +389,147 @@ fn account_auto_picks_the_account_with_the_most_headroom() {
     let err = String::from_utf8_lossy(&b.gruntas(&["run", "claude", "--account", "auto"]).stderr).into_owned();
     assert!(err.contains("--account auto: claude, your own account"), "{err}");
 }
+
+/// `name`'s fake replaced by `script`, a shell script's body.
+fn script(b: &Sandbox, name: &str, script: &str) {
+    std::fs::write(b.root.join("bin").join(name), format!("#!/bin/sh\n{script}")).unwrap();
+}
+
+/// RL03 (D5): an attended harness runs as gruntas's child. A SIGINT sent
+/// to gruntas alone is not passed on (the terminal sends Ctrl-C to the
+/// harness itself); a SIGTERM is, and the harness's exit code is gruntas's.
+#[test]
+fn rl03_attended_signals_and_exit_code_pass_through() {
+    let b = Sandbox::new("rl03-signals");
+    let ready = b.root.join("ready");
+    std::fs::create_dir_all(b.root.join("run")).unwrap();
+    // A next account queued, as after a notice: told to end, gruntas starts
+    // no harness again.
+    let queued = r#"{"session":"0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e5f","account":"claude:work","rung":"same-harness"}"#;
+    script(&b, "claude", &format!("echo run >> {0}.runs\ni=0\nuntil a=$(ls -d {1}/gruntas/*/attended 2>/dev/null) && [ -e \"$a/$$.json\" ]; do i=$((i+1)); [ $i -gt 500 ] && exit 9; sleep 0.01; done\necho '{2}' > $a/$$.next.json\ntrap 'echo int >> {0}.got' INT\ntrap 'exit 42' TERM\ntouch '{0}'\nwhile :; do sleep 0.05; done\n", ready.display(), b.root.join("run").display(), queued));
+    let mut run = b.command(&["run", "claude", "--account", "work", "--no-sandbox"]).env("XDG_RUNTIME_DIR", b.root.join("run")).stderr(Stdio::piped()).spawn().unwrap();
+    let pid = run.id().to_string();
+    let kill = |sig: &str| assert!(Command::new("kill").args([sig, &pid]).status().unwrap().success());
+    for _ in 0..200 {
+        if ready.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(ready.exists(), "the harness started");
+    kill("-INT");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(run.try_wait().unwrap().is_none(), "gruntas ignores a SIGINT of its own");
+    assert!(!b.root.join("ready.got").exists(), "and does not pass it on");
+    kill("-TERM");
+    assert_eq!(run.wait().unwrap().code(), Some(42), "SIGTERM passed on, the harness's code passed back");
+    assert_eq!(std::fs::read_to_string(b.root.join("ready.runs")).unwrap(), "run\n", "no harness started again after a SIGTERM");
+}
+
+/// RL03 (D5, R-RL-5): the Launcher marks the harness's pid for the daemon;
+/// exiting with nothing queued ends the run with the harness's code; with
+/// an account queued, the same session resumes there, its transcript
+/// copied into that account's home.
+#[test]
+fn rl03_exit_after_a_notice_resumes_the_session_on_the_next_account() {
+    let b = Sandbox::new("rl03-relaunch");
+    let mut config: serde_json::Value = serde_json::from_slice(&std::fs::read(b.home().join("config.json")).unwrap()).unwrap();
+    std::fs::create_dir_all(b.root.join("accounts/claude-spare")).unwrap();
+    config["instances"]["claude:spare"] = serde_json::json!({ "kind": "claude-code", "binary": b.root.join("bin/claude"), "configDir": b.root.join("accounts/claude-spare") });
+    std::fs::write(b.home().join("config.json"), config.to_string()).unwrap();
+    let (runs, queue) = (b.root.join("runs"), b.root.join("queue"));
+    std::fs::create_dir_all(b.root.join("run")).unwrap();
+    // Each run writes down its account, its arguments and the Launcher's
+    // mark; a first run with something to queue queues it, as the daemon
+    // would, and exits 0; a resumed run exits 3.
+    script(&b, "claude", &format!("i=0\nuntil a=$(ls -d {1}/gruntas/*/attended 2>/dev/null) && [ -e \"$a/$$.json\" ]; do i=$((i+1)); [ $i -gt 500 ] && exit 9; sleep 0.01; done\necho \"$CLAUDE_CONFIG_DIR | $* | $(cat $a/$$.json)\" >> '{0}'\ncase \"$*\" in *--resume*) exit 3;; esac\n[ -e '{2}' ] && cp '{2}' $a/$$.next.json\nexit 5\n", runs.display(), b.root.join("run").display(), queue.display()));
+    let run = || b.command(&["run", "claude", "--account", "work", "--no-sandbox", "--model", "opus"]).env("XDG_RUNTIME_DIR", b.root.join("run")).output().unwrap();
+    let lines = || std::fs::read_to_string(&runs).unwrap_or_default().lines().map(String::from).collect::<Vec<_>>();
+    let work = b.root.join("accounts/claude-work");
+
+    let o = run();
+    assert_eq!(o.status.code(), Some(5), "nothing queued: the harness's own code; {}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(lines().len(), 1);
+    assert!(lines()[0].ends_with(r#"| {"account":"claude:work","model":"opus"}"#), "the mark: {:?}", lines());
+
+    let session = "0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e5f";
+    let transcript = work.join(format!("projects/-r/{session}.jsonl"));
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    std::fs::write(&transcript, "{}\n").unwrap();
+    std::fs::write(&queue, serde_json::json!({ "session": session, "account": "claude:spare", "model": "opus", "rung": "same-harness", "transcript": transcript }).to_string()).unwrap();
+    std::fs::remove_file(&runs).unwrap();
+    let o = run();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(3), "the resumed run's code; {err}");
+    assert!(err.contains(&format!("continuing session {session} on claude:spare")), "{err}");
+    let l = lines();
+    assert_eq!(l.len(), 2, "{l:?}");
+    let spare = b.root.join("accounts/claude-spare");
+    assert!(l[0].starts_with(&format!("{} |", work.display())), "{l:?}");
+    assert!(l[1].starts_with(&format!("{} |", spare.display())) && l[1].contains(&format!("--resume {session} --model opus")), "{l:?}");
+    assert!(l[1].ends_with(r#"| {"account":"claude:spare","model":"opus"}"#), "{l:?}");
+    assert_eq!(std::fs::read_to_string(spare.join(format!("projects/-r/{session}.jsonl"))).unwrap(), "{}\n", "the transcript, where --resume finds it");
+    let daemon = std::fs::read_dir(b.root.join("run/gruntas")).unwrap().flatten().find(|e| e.path().join("attended").is_dir()).unwrap().path();
+    assert_eq!(std::fs::read_dir(daemon.join("attended")).unwrap().count(), 0, "the records gone with the run");
+}
+
+/// RL03 with RL04 (D5, D6): an attended Codex session whose queued next
+/// account is on Claude Code continues there after `/exit`, in the
+/// background from a handoff (`continue_on`), the run ending with Codex's
+/// own code and saying where the work went on.
+#[test]
+fn rl03_exit_after_a_notice_for_the_other_harness_continues_there() {
+    use gruntas_harness::protocol::{Activity, Attendance, PluginHarness, Registration};
+    let b = Sandbox::new("rl03-cross");
+    let run = PathBuf::from("/tmp").join(format!("gruntas-rl03x-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&run);
+    std::fs::create_dir_all(&run).unwrap();
+    let (home, run_dir) = (b.root.join("home").display().to_string(), run.display().to_string());
+    let env = move |k: &str| match k {
+        "HOME" => home.clone(),
+        "XDG_RUNTIME_DIR" => run_dir.clone(),
+        _ => String::new(),
+    };
+    let socket = gruntas_harness::daemon::socket(&env).unwrap();
+    let daemon = socket.parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(&daemon).unwrap();
+    let daemon_socket = socket.clone();
+    std::thread::spawn(move || {
+        use gruntas_harness::daemon::server;
+        let factory: server::Factory = Box::new(|_, _| Err(gruntas_harness::engine::EngineError::new("no_sessions", "this test runs none")));
+        server::run(server::Options { socket: daemon_socket, idle: None, gruntas_version: "test".into(), ..Default::default() }, factory)
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::os::unix::net::UnixStream::connect(&socket).is_err() {
+        assert!(std::time::Instant::now() < deadline, "the daemon never listened");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // The Codex session, registered and reported, so its status Task is
+    // there to hand off from.
+    let session = "0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e70";
+    let send = |a: Activity| gruntas_harness::hook::send(&socket, "/r", "test", a).unwrap();
+    send(Activity::Register(Registration { session_id: session.into(), harness: PluginHarness::Codex, harness_pid: Some(std::process::id()), config_home: None, cwd: Some(b.root.display().to_string()), repository: None, transcript_path: None, attendance: Some(Attendance::Attended) }));
+    let report = gruntas_client::status::Report { state: Some(gruntas_client::status::TaskState::Working), phase: Some("build".into()), blocked_on: None, pr: None, next: Some("wire the seam".into()), timestamp: "2026-11-24T00:00:00Z".into() };
+    send(Activity::Report { session_id: session.into(), summary: "half done".into(), report });
+    while !std::fs::read_to_string(daemon.join("status.json")).unwrap_or_default().contains(session) {
+        assert!(std::time::Instant::now() < deadline + std::time::Duration::from_secs(5), "the Task was never written");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    // Codex queues Claude Code next, as the daemon would, and exits 4;
+    // `claude --bg` says the id it backgrounded.
+    let next = format!(r#"{{"session":"{session}","account":"claude:work","model":"claude-opus-4-5","rung":"other-harness"}}"#);
+    script(&b, "codex", &format!("i=0\nuntil [ -e '{0}/attended/'$$.json ]; do i=$((i+1)); [ $i -gt 500 ] && exit 9; sleep 0.01; done\necho '{next}' > '{0}/attended/'$$.next.json\nexit 4\n", daemon.display()));
+    let out = b.root.display().to_string();
+    script(&b, "claude", &format!("for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{out}/claude.args'\necho 'backgrounded · 1234abcd'\n"));
+    for bin in ["bwrap", "socat"] {
+        script(&b, bin, "exit 0\n");
+    }
+    let o = b.command(&["run", "codex", "--account", "team", "--no-sandbox"]).env("XDG_RUNTIME_DIR", &run).output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    let _ = std::fs::remove_dir_all(&run);
+    assert_eq!(o.status.code(), Some(4), "Codex's own code; {err}");
+    assert!(err.contains(&format!("session {session} continues on claude:work as session 1234abcd")), "{err}");
+    let (args, _) = b.started("claude");
+    assert_eq!(args.first().map(String::as_str), Some("--bg"), "{args:?}");
+    assert!(args.windows(2).any(|w| w == ["--model", "claude-opus-4-5"]) && args.iter().any(|l| l.contains("Summary: half done")), "the handoff, at the tier's model: {args:?}");
+}

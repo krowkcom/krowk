@@ -118,7 +118,9 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     let auto = gruntas_harness::sync::auto::Supervisor::spawn(auto_sync(ctx, &socket, log::sessions_dir(ctx.io.env)?, bridged.clone(), announced_store, mode_for, introductions.clone()), turns_rx);
     // Where a plugin's usage windows go: the record rollover reads (R-KIT-7).
     let usage = gruntas_harness::usage::Usage::in_home(sessions_dir_home.parent().unwrap_or(&sessions_dir_home));
-    let served = server::run(server::Options { socket, idle, gruntas_version: super::VERSION.into(), websocket, turns: Some(turns_tx), bridged: Some(bridged), introductions: Some(introductions), usage: Some(usage), ..Default::default() }, factory).map_err(|e| fail("host_failed", e));
+    // The accounts and ladder an attended launched session moves on by (D5).
+    let accounts: server::Accounts = Arc::new(|| super::prompt::load_instances().map(|c| gruntas_harness::instances::Registry::resolve(&c, &gruntas_api::home::process_env)).map_err(|e| e.to_string()));
+    let served = server::run(server::Options { socket, idle, gruntas_version: super::VERSION.into(), websocket, turns: Some(turns_tx), bridged: Some(bridged), introductions: Some(introductions), usage: Some(usage), accounts: Some(accounts), ..Default::default() }, factory).map_err(|e| fail("host_failed", e));
     // However the daemon ended — idle, `gruntas host stop`, a signal — each
     // bridge ends its stream and gives its lease back before the process
     // exits, rather than leaving it to lapse. The daemon's runtime is gone,

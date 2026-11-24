@@ -57,6 +57,16 @@ breaking changes may affect it without notice.
   shows the two as one chain (`old → new`); the old session reads
   `canceled`, "continued on" the new one, and `--json` names it under
   `continuedFrom`.
+- **An attended `gruntas run` session continues on the next account after
+  `/exit`.** `gruntas run claude` and `gruntas run codex` now stay the
+  harness's parent in your terminal, passing Ctrl-C, signals and the exit
+  code through. When the account runs low, a Claude Code session shows which
+  account comes next as a toast and in its status line; type `/exit` and the
+  same session resumes there in the same terminal. Exiting without such a
+  notice ends the run as before. A resumed session gets `--resume` and the
+  model only, not the flags the first run was started with. When the next
+  account is on the other harness, the work continues there in the
+  background, from a handoff, and `gruntas status` shows it.
 - **The god agent: ask any agent what your swarm is doing.** The plugin's
   MCP server offers `gruntas_status`, `gruntas_changes`, `gruntas_read` and
   `gruntas_ping` to every agent, and `gruntas_message` and

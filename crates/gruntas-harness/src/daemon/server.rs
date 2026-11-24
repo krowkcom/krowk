@@ -91,6 +91,31 @@ pub struct Options {
     /// The usage record rollover reads (`usage.json` in gruntas's home),
     /// where a plugin's usage windows go (R-KIT-7); none drops them.
     pub usage: Option<crate::usage::Usage>,
+    /// The person's accounts and ladder, read when an account's usage runs
+    /// low: where an attended launched session goes next (`attended`).
+    /// None tells no session.
+    pub accounts: Option<Accounts>,
+}
+
+/// Reads the person's accounts, with their ladder, as they are now.
+pub type Accounts = std::sync::Arc<dyn Fn() -> Result<crate::instances::Registry, String> + Send + Sync>;
+
+/// Each attended launched session in `sessions` whose account now runs
+/// low (`attended::due`): its next account queued, and the session told
+/// through its inbox. Blocking: file reads and writes.
+#[allow(clippy::too_many_arguments)]
+fn tell_next(daemon: &Path, accounts: &Accounts, before: &crate::usage::Data, after: &crate::usage::Data, login: &str, windows: &[crate::protocol::UsageWindow], sessions: &[crate::protocol::Registration], now: i64) {
+    let registry = match accounts() {
+        Ok(r) => r,
+        Err(e) => return eprintln!("the accounts could not be read to pick the next one: {e}"),
+    };
+    for (pid, next, limited) in crate::attended::due(daemon, before, after, login, windows, sessions, &registry, now) {
+        let told = crate::attended::offer(daemon, pid, &next).and_then(|new| if new { crate::sync::god::inbox::notify(daemon, &next.session, &crate::attended::notice(&next, limited, registry.ladder.key_cap_usd)) } else { Ok(()) });
+        match told {
+            Ok(()) => eprintln!("session {} runs low: /exit continues it on {}", next.session, next.account),
+            Err(e) => eprintln!("session {} runs low, but its next account could not be queued: {e}", next.session),
+        }
+    }
 }
 
 /// A session's own turn started (`running`) or ended (`Options::turns`).
@@ -102,7 +127,7 @@ pub struct TurnEvent {
 
 impl Default for Options {
     fn default() -> Options {
-        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), gruntas_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP, lateness: None, kick: None, turns: None, bridged: None, introductions: None, usage: None }
+        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), gruntas_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP, lateness: None, kick: None, turns: None, bridged: None, introductions: None, usage: None, accounts: None }
     }
 }
 
@@ -1265,13 +1290,38 @@ impl State {
             // Seen now, as it arrived: writes on the blocking pool may run
             // out of order, and the later report must still win.
             let (usage, config_home, windows, now) = (usage.clone(), config_home.clone(), windows.clone(), gruntas_store::now_ms());
+            // The attended sessions the Launcher started on this account,
+            // to tell where `/exit` continues should it run low (D5).
+            let home = crate::usage::home_key(&config_home);
+            let on_it: Vec<_> = self.registry.sessions().filter(|r| r.config_home.as_deref().is_some_and(|h| crate::usage::home_key(h) == home)).cloned().collect();
+            let tell = self.opts.accounts.clone().zip(self.opts.socket.parent().map(Path::to_path_buf)).filter(|_| !on_it.is_empty());
             if !windows.is_empty() {
                 tokio::task::spawn_blocking(move || {
-                    if let Err(e) = usage.record_windows(&config_home, &windows, now) {
-                        eprintln!("usage windows for {config_home} not recorded: {e}");
+                    let before = tell.as_ref().map(|_| usage.read());
+                    match usage.record_windows(&config_home, &windows, now) {
+                        Ok(login) => {
+                            if let (Some((accounts, daemon)), Some(before)) = (tell, before) {
+                                tell_next(&daemon, &accounts, &before, &usage.read(), &login, &windows, &on_it, now);
+                            }
+                        }
+                        Err(e) => eprintln!("usage windows for {config_home} not recorded: {e}"),
                     }
                 });
             }
+        }
+        // A launched harness on a new session id: its queued account
+        // continues that one (`attended::follow`).
+        if let Activity::Register(r) = a
+            && let Some(pid) = r.harness_pid
+            && let Some(daemon) = self.opts.socket.parent().map(Path::to_path_buf)
+            && self.opts.accounts.is_some()
+        {
+            let (session, transcript) = (r.session_id.clone(), r.transcript_path.clone());
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = crate::attended::follow(&daemon, pid, &session, transcript.as_deref()) {
+                    eprintln!("session {session}'s queued account was not moved onto it: {e}");
+                }
+            });
         }
         let applied = self.registry.apply(a);
         let now = super::tasks::now();
