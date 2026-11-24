@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 pub(super) const ROWS: usize = 200;
 
 #[derive(Deserialize, Default)]
-#[serde(default)]
+#[serde(deny_unknown_fields, default)]
 struct StatusArgs {
     project: Option<String>,
     page: Option<usize>,
@@ -57,9 +57,10 @@ fn told_status(machines: &[Machine], only: Option<&str>, page: usize, now: jiff:
     }
     let pages = rows.len().div_ceil(ROWS).max(1);
     let page = page.clamp(1, pages);
+    let shown: Vec<&Row> = rows.iter().skip((page - 1) * ROWS).take(ROWS).collect();
     let mut lines = Vec::new();
     let mut under: Option<(&str, &str)> = None;
-    for (project, machine, line) in rows.iter().skip((page - 1) * ROWS).take(ROWS) {
+    for (project, machine, line) in shown.iter().copied() {
         if under.is_none_or(|u| u.0 != project) {
             lines.push(project.clone());
             under = None;
@@ -81,7 +82,8 @@ fn told_status(machines: &[Machine], only: Option<&str>, page: usize, now: jiff:
     }
     let since = token(machines.iter().map(|m| (m.device.as_str(), m.board.published_at.as_str())));
     lines.push(format!("since: {since}"));
-    (lines.join("\n"), json!({ "projects": tree, "page": page, "pages": pages, "since": since }))
+    let shown: Vec<Value> = shown.iter().map(|(p, m, l)| json!({ "project": p, "machine": m.trim(), "line": l.trim() })).collect();
+    (lines.join("\n"), json!({ "rows": shown, "page": page, "pages": pages, "sessions": rows.len(), "since": since }))
 }
 
 /// `s` and its children, depth first, one line each: id, state, health,
@@ -126,7 +128,7 @@ fn since_for(since: &str) -> Result<(BTreeMap<String, String>, String), String> 
 }
 
 #[derive(Deserialize, Default)]
-#[serde(default)]
+#[serde(deny_unknown_fields, default)]
 struct ChangesArgs {
     since: String,
 }
@@ -179,7 +181,7 @@ fn change_line(c: &Change) -> String {
 }
 
 #[derive(Deserialize, Default)]
-#[serde(default)]
+#[serde(deny_unknown_fields, default)]
 struct PingArgs {
     target: String,
 }
@@ -232,9 +234,9 @@ mod tests {
         let now = "2026-11-24T10:03:00Z".parse().unwrap();
         let (text, data) = told_status(&machines, Some("github.com/acme/site"), 1, now);
         assert_eq!(text.lines().collect::<Vec<_>>(), ["github.com/acme/site", "  desk  SERVING", "    site-1  working  SERVING  quiet 3m  building", "since: laptop-device=2026-11-24T10:00:00Z,desk-device=2026-11-24T10:00:00Z"]);
-        assert_eq!(data["pages"], 1);
+        assert_eq!((data["pages"].as_u64(), data["rows"][0]["line"].as_str()), (Some(1), Some("site-1  working  SERVING  quiet 3m  building")));
         let (first, data) = told_status(&machines, None, 1, now);
-        assert_eq!((data["pages"].as_u64(), first.lines().filter(|l| l.starts_with("    ")).count()), (Some(2), ROWS));
+        assert_eq!((data["pages"].as_u64(), data["rows"].as_array().map(Vec::len), first.lines().filter(|l| l.starts_with("    ")).count()), (Some(2), Some(ROWS), ROWS));
         assert!(first.contains("Page 1 of 2 (251 sessions); pass page 2 for more."), "{first}");
         let (second, _) = told_status(&machines, None, 2, now);
         let second: Vec<&str> = second.lines().collect();

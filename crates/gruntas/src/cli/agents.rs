@@ -410,7 +410,7 @@ pub(crate) fn ask_every(command: impl Fn(&str) -> HostCommand + Sync) -> Result<
                     })
                 })
                 .collect();
-            threads.into_iter().filter_map(|t| t.join().ok()).collect()
+            threads.into_iter().zip(&machines).map(|(t, m)| t.join().unwrap_or_else(|_| (m.name.clone(), m.device.clone(), Err(("machine_unknown".into(), format!("asking {} failed here", m.name)))))).collect()
         });
         asked.extend(unopened.into_iter().map(|(d, n, e)| (n.clone(), d, unknown(format!("{n}'s status board does not open here: {e}")))));
         Ok(asked)
