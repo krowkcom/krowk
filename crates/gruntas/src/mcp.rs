@@ -888,6 +888,16 @@ mod session {
         (found, line)
     }
 
+    /// The registration of the session this server runs in, when exactly
+    /// one names its harness process: what a steer says it came from.
+    pub fn this_session(env: &dyn Fn(&str) -> String) -> Option<gruntas_harness::protocol::Registration> {
+        let registry = Registry::load(&gruntas_harness::daemon::dir(env).ok()?);
+        match mine(&registry).0[..] {
+            [one] => Some(one.clone()),
+            _ => None,
+        }
+    }
+
     pub fn session_info(env: &dyn Fn(&str) -> String) -> Outcome {
         let dir = gruntas_harness::daemon::dir(env).map_err(|why| fail("no_daemon_dir", why))?;
         let registry = Registry::load(&dir);
@@ -1083,7 +1093,7 @@ mod session {
 }
 
 #[cfg(all(feature = "harness", unix))]
-use session::{report, session_info};
+use session::{report, session_info, this_session};
 
 fn tool_schemas() -> Value {
     let slug = "Artifact slug, e.g. art_9f3c2e1a7b04d6c8e5f1a2b3 — or any link carrying it, like https://gruntas.com/a/art_9f3c2e1a7b04d6c8e5f1a2b3.";

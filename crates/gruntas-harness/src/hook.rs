@@ -441,6 +441,14 @@ pub fn run(args: &[String], stdin: impl Read, env: &dyn Fn(&str) -> String, vers
     let (Some(h), Some(event)) = (args.first().and_then(|w| harness(w)), args.get(1)) else {
         return (None, Some(format!("`gruntas hook {}`: say a harness (claude, codex) and an event", args.join(" "))));
     };
+    // The mod asks once where its steer inbox is (god agent D5), then reads
+    // it with no process spawned.
+    if event == "inbox" {
+        return match crate::daemon::dir(env) {
+            Ok(dir) => (Some(dir.join(crate::sync::god::inbox::DIR).display().to_string()), None),
+            Err(e) => (None, Some(format!("inbox: {e}"))),
+        };
+    }
     let mut raw = Vec::new();
     if let Err(e) = stdin.take(MOST_STDIN).read_to_end(&mut raw) {
         return (None, Some(format!("{event}: stdin could not be read: {e}")));
