@@ -45,6 +45,11 @@ breaking changes may affect it without notice.
   Claude Code sessions (their transcript's last 2 MB) and sessions gruntas
   runs can be read; a Codex session answers that it can't be read yet.
   Nothing is copied off the machine except the page asked for.
+- **The god agent messages and interrupts gruntas-run sessions.** A message
+  to an idle session is its next prompt, run in the `default` permission
+  mode and framed with who sent it; to a running one it is a steer into the
+  turn. Codex and headless sessions answer "can't steer this session yet"
+  with the reason.
 
 - **`gruntas run claude|codex` starts the stock harness on one of your
   accounts** (`--account work` is `claude:work`; none is the account plain
