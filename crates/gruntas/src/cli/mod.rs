@@ -142,6 +142,9 @@ pub use delegate::{machines, placer};
 /// gruntas-mcp's god agent tools: a question for the machine holding a session.
 #[cfg(all(feature = "harness", unix))]
 pub use agents::ask_holder;
+/// gruntas-mcp's gruntas_status, gruntas_changes and gruntas_ping (GA03).
+#[cfg(all(feature = "harness", unix))]
+pub(crate) use agents::{ask_every, boards, ping_data, span, state_word, tree, Asked, Machine};
 
 pub fn run(args: &[String], io: &mut Io) -> i32 {
     // `gruntas run <harness> …`: the words after the harness are the
