@@ -132,7 +132,7 @@ pub fn put_record(app: &App, req: &mut Req, id: &str, by: &str) -> Resp {
         let now = s.now();
         let id = id.to_ascii_lowercase();
         let command = s.sync.host_commands.get_mut(&id).filter(|c| c.target == by && c.expires_at > now).ok_or_else(|| no_command(&id))?;
-        let v = crate::json::parse(&body).ok_or_else(crate::errors::bad_request)?;
+        let v = crate::json::parse(&body).ok_or_else(|| invalid("answer_record", "must be JSON"))?;
         let sealed = match v.get("answer_record").map(|m| m.value.clone()).and_then(|r| r.fields().get_value("sealed").cloned()) {
             Some(Value::Str(h)) => blob("sealed", &h, None, None)?,
             _ => return Err(invalid("sealed", "must be hex")),
