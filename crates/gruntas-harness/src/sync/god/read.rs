@@ -244,6 +244,13 @@ mod tests {
     }
 
     #[test]
+    fn a_secret_across_a_tool_inputs_cut_is_still_redacted() {
+        let input = json!({ "content": format!("{} {}", "x".repeat(TOOL_BYTES - 60), secret()) });
+        let shown = call("Write", &input);
+        assert!(!shown.contains("ghp_") && shown.contains("[redacted: github token]"), "{shown}");
+    }
+
+    #[test]
     fn ga04_a_codex_session_cant_be_read_yet() {
         let d = scratch("codex");
         registered(&d, PluginHarness::Codex, &d.join("rollout.jsonl"));
