@@ -233,8 +233,9 @@ pub(super) struct State {
     /// The launched sessions rollover is moving, by the id `claude --bg`
     /// printed: their session id, and when the move started or, once it
     /// is done, was done. Kept until
-    /// `MOVE_SETTLE` after, so the session is neither forgotten nor moved
-    /// again meanwhile, and the old one's late `SessionEnd` ends nothing.
+    /// `MOVE_SETTLE` after, so the session is not forgotten meanwhile and
+    /// the old one's late `SessionEnd` ends nothing; only a move under way
+    /// keeps it from being moved again.
     moving: HashMap<String, (String, Instant, bool)>,
 }
 
@@ -584,11 +585,14 @@ fn roll(state: &Shared, s: &mut State, config_home: &str) {
         // One on another account is not this one's to move; one on the
         // default account (no config home) is matched off the thread.
         let elsewhere = w.launch.config_home.as_deref().is_some_and(|h| crate::usage::home_key(h) != crate::usage::home_key(config_home));
-        if elsewhere || s.moving.contains_key(&w.id) {
+        // One moved already, out of usage on the account it moved to, moves
+        // on: only a move under way holds it.
+        if elsewhere || s.moving.get(&w.id).is_some_and(|(_, _, done)| !done) {
             continue;
         }
         let place = s.registry.get(&w.session_id).map(|r| super::roll::Place { cwd: r.cwd.clone(), transcript: r.transcript_path.clone() }).unwrap_or_default();
-        s.moving.insert(w.id.clone(), (w.session_id.clone(), Instant::now(), false));
+        // A move done before keeps its settling, should this one not move it.
+        let settled = s.moving.insert(w.id.clone(), (w.session_id.clone(), Instant::now(), false)).filter(|(_, _, done)| *done);
         let (state, home, accounts, usage, cross) = (state.clone(), config_home.to_string(), accounts.clone(), usage.clone(), cross.clone());
         tokio::task::spawn_local(async move {
             let job = w.clone();
@@ -603,9 +607,13 @@ fn roll(state: &Shared, s: &mut State, config_home: &str) {
                 return;
             }
             let now = super::tasks::now();
+            let unmoved = |s: &mut State| match settled {
+                Some(e) => drop(s.moving.insert(w.id.clone(), e)),
+                None => drop(s.moving.remove(&w.id)),
+            };
             let changed = match out {
                 Ok(None) => {
-                    s.moving.remove(&w.id);
+                    unmoved(&mut s);
                     false
                 }
                 Ok(Some(super::roll::Outcome::Moved { account, launch, notice })) => {
@@ -620,7 +628,7 @@ fn roll(state: &Shared, s: &mut State, config_home: &str) {
                 }
                 Ok(Some(super::roll::Outcome::Held(why))) | Err(why) => {
                     eprintln!("background session {}: {why}", w.id);
-                    s.moving.remove(&w.id);
+                    unmoved(&mut s);
                     s.tasks.held(&w.session_id, &why, &now)
                 }
             };
