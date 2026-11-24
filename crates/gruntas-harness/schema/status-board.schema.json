@@ -306,6 +306,17 @@
             }
           ]
         },
+        "continuedFrom": {
+          "description": "The session this one continues, on the other harness, when its\naccount ran out (Rollover for launched sessions D6): the two read as\none chain.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Field2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "branch": {
           "anyOf": [
             {
