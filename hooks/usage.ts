@@ -118,7 +118,11 @@ function acked(acks: string): Set<string> {
   return ids
 }
 
-/** The main loop's running turn, from its `turn.start` to its `turn.complete`. */
+/**
+ * The main loop's running turn, from its `turn.start` to its `turn.complete`.
+ * A reload of the mod mid-turn forgets it until the next turn: an interrupt
+ * then says nothing is running.
+ */
 let turn: string | undefined
 
 /** The steers this module acted on, so each is delivered once. */
@@ -162,12 +166,14 @@ async function poll($: EngineInterface, dir: string): Promise<void> {
     const before = acked(acks)
     steers = steers.filter(s => !before.has(s.id))
     if (steers.length === 0) return
-    const lines = acks.split('\n').filter(l => l.trim() !== '')
+    let lines = acks.split('\n').filter(l => l.trim() !== '')
+    // Each acked as soon as it is acted on, so a reload in between never
+    // delivers one again.
     for (const s of steers) {
       done.add(s.id)
-      lines.push(JSON.stringify(await act($, s)))
+      lines = [...lines, JSON.stringify(await act($, s))].slice(-ACKS_KEPT)
+      await $.fs.write(acksPath, lines.join('\n') + '\n')
     }
-    await $.fs.write(acksPath, lines.slice(-ACKS_KEPT).join('\n') + '\n')
   } catch {
     // No inbox yet, or a read that failed: the next poll tries again.
   } finally {
