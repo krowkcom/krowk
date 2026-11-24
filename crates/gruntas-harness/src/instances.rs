@@ -92,6 +92,10 @@ pub struct InstancesConfig {
     /// kind.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rollover_order: Vec<String>,
+    /// The rollover ladder a launched session climbs (`ladder`): its tier
+    /// table and its rungs in order.
+    #[serde(default, skip_serializing_if = "crate::ladder::Ladder::is_default")]
+    pub ladder: crate::ladder::Ladder,
     /// Names instances were renamed from, and the name each is now
     /// (`gruntas providers rename`): a session that ran on the old name
     /// resumes on the new one, and `--model <old>/<model>` still runs.
@@ -615,6 +619,8 @@ pub struct Registry {
     pub rollover: Rollover,
     /// Config's `rolloverOrder`, as written.
     pub rollover_order: Vec<String>,
+    /// Config's `ladder`, else the default one.
+    pub ladder: crate::ladder::Ladder,
     /// Config's `renamed`: an old name, and the one it became.
     pub renamed: BTreeMap<String, String>,
     /// The names config.json defines an instance under: an account the
@@ -646,6 +652,7 @@ impl Registry {
             agents: Some(crate::slots::Pool::new(crate::slots::runtime_dir(env), crate::children::AGENT_SLOTS, cfg.subagents.max_host())),
             rollover: cfg.rollover.unwrap_or_default(),
             rollover_order: cfg.rollover_order.clone(),
+            ladder: cfg.ladder.clone(),
             renamed: cfg.renamed.clone(),
             configured: cfg.instances.keys().cloned().collect(),
         }
@@ -1163,6 +1170,9 @@ pub fn from_config_json(raw: &serde_json::Value) -> Result<InstancesConfig, Stri
     }
     if let Some(v) = raw.get("rolloverOrder") {
         cfg.rollover_order = serde_json::from_value(v.clone()).map_err(|e| format!("\"rolloverOrder\": {e} — a list of instance names"))?;
+    }
+    if let Some(v) = raw.get("ladder") {
+        cfg.ladder = serde_json::from_value(v.clone()).map_err(|e| format!("\"ladder\": {e}"))?;
     }
     if let Some(v) = raw.get("subagents") {
         cfg.subagents = serde_json::from_value(v.clone()).map_err(|e| format!("\"subagents\": {e}"))?;

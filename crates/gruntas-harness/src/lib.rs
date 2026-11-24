@@ -95,6 +95,7 @@ pub mod upload;
 pub mod usage;
 pub mod instances;
 pub mod keys;
+pub mod ladder;
 pub mod launch;
 pub mod log;
 pub mod mcp;

@@ -42,7 +42,7 @@ impl Harness {
     }
 
     /// The instance kind its accounts are.
-    fn kind(self) -> &'static str {
+    pub fn kind(self) -> &'static str {
         match self {
             Harness::Claude => "claude-code",
             Harness::Codex => "codex-app-server",
