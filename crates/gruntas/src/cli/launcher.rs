@@ -30,7 +30,7 @@ pub(super) fn words(args: &[String]) -> Option<&[String]> {
 #[derive(Debug, Default, PartialEq)]
 struct Asked {
     harness: String,
-    account: String,
+    account: Option<String>,
     unattended: Option<String>,
     no_sandbox: bool,
     rest: Vec<String>,
@@ -50,9 +50,16 @@ fn parse(words: &[String]) -> Result<Asked, String> {
                 a.rest.extend(it.by_ref().cloned());
                 break;
             }
-            "--account" => a.account = value("--account")?,
+            "--account" => {
+                let v = value("--account")?;
+                if v.trim().is_empty() {
+                    return Err("--account needs an account's name, or auto".into());
+                }
+                a.account = Some(v);
+            }
             "--unattended" => a.unattended = Some(value("--unattended \"<task>\"")?),
             "--no-sandbox" if inline.is_none() => a.no_sandbox = true,
+            "--no-sandbox" => return Err("--no-sandbox takes no value".into()),
             _ => a.rest.push(w.clone()),
         }
     }
@@ -79,7 +86,7 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<(), Error> {
     let bad = |why: String| fail("bad_flag", format!("{why}; run `gruntas help run`"));
     let asked = parse(words).map_err(bad)?;
     let harness = Harness::parse(&asked.harness).map_err(bad)?;
-    let account = Account::parse(harness, &asked.account).map_err(bad)?;
+    let account = Account::parse(harness, asked.account.as_deref().unwrap_or_default()).map_err(bad)?;
     let registry = Registry::resolve(&super::prompt::load_instances()?, ctx.io.env);
     let name = match account.instance(harness) {
         Some(name) => name,
@@ -142,10 +149,12 @@ mod tests {
     #[test]
     fn gruntas_reads_its_own_flags_and_passes_the_rest() {
         let a = parse(&words("claude --model opus --account=work -c --no-sandbox --unattended fix")).unwrap();
-        assert_eq!(a, Asked { harness: "claude".into(), account: "work".into(), unattended: Some("fix".into()), no_sandbox: true, rest: words("--model opus -c") });
+        assert_eq!(a, Asked { harness: "claude".into(), account: Some("work".into()), unattended: Some("fix".into()), no_sandbox: true, rest: words("--model opus -c") });
         let a = parse(&words("codex resume -- --account x --no-sandbox")).unwrap();
-        assert_eq!((a.account.as_str(), a.no_sandbox, a.rest), ("", false, words("resume --account x --no-sandbox")));
-        assert!(parse(&words("claude --account")).is_err());
+        assert_eq!((a.account, a.no_sandbox, a.rest), (None, false, words("resume --account x --no-sandbox")));
+        for bad in ["claude --account", "claude --account=", "claude --no-sandbox=false"] {
+            assert!(parse(&words(bad)).is_err(), "{bad}");
+        }
         assert!(parse(&["claude".into(), "--unattended".into(), " ".into()]).is_err());
         assert_eq!(super::words(&words("run claude -c")), Some(&words("run claude -c")[1..]));
         assert_eq!(super::words(&words("run --help")), None);

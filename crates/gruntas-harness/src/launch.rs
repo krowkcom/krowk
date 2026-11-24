@@ -156,7 +156,9 @@ pub struct Plan {
     pub sandboxed: bool,
 }
 
-/// The plan for `req`. `read` reads a `--settings` the person gave as a
+/// The plan for `req`. An unattended Claude session's task is its prompt,
+/// after the person's arguments, so they carry no prompt of their own.
+/// `read` reads a `--settings` the person gave as a
 /// file. Refused: an unattended session without the sandbox (D4), and a
 /// `--settings` that is not a JSON object.
 pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> Result<Plan, String> {
@@ -181,7 +183,11 @@ pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> R
     };
     match req.harness {
         Harness::Claude => {
-            let (theirs, rest) = take_settings(&req.args, read)?;
+            // The instance's own arguments' `--settings` too: a second one
+            // after gruntas's would replace it, sandbox and all.
+            let (mut theirs, configured) = take_settings(&b.args, read)?;
+            let (typed, rest) = take_settings(&req.args, read)?;
+            theirs.extend(typed);
             let mut ours = worktree_hooks(&req.gruntas);
             if req.sandbox {
                 ours = merge(ours, claude_sandbox(&req.home));
@@ -192,7 +198,7 @@ pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> R
                 plan.args.push("--bg".into());
             }
             plan.args.extend(["--plugin-dir".into(), req.plugin_dir.display().to_string(), "--settings".into(), settings.to_string()]);
-            plan.args.extend(b.args.iter().cloned());
+            plan.args.extend(configured);
             plan.args.extend(rest);
             if let Mode::Unattended { task } = &req.mode {
                 plan.args.push(task.clone());
@@ -200,10 +206,12 @@ pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> R
             plan.settings = Some(settings);
         }
         Harness::Codex => {
+            // After the instance's own `-c`s, so none of them picks another
+            // profile; before the person's, which may name a subcommand.
+            plan.args.extend(b.args.iter().cloned());
             if req.sandbox {
                 plan.args.extend(codex_profile(&req.home));
             }
-            plan.args.extend(b.args.iter().cloned());
             if let Mode::Attended = req.mode {
                 plan.args.extend(req.args.iter().cloned());
             }
@@ -345,7 +353,8 @@ mod tests {
         let mut cfg = InstancesConfig::default();
         let extra = BTreeMap::from([("ANTHROPIC_BASE_URL".to_string(), "https://router".to_string())]);
         cfg.instances.insert("claude:work".into(), InstanceKind::ClaudeCode { binary: Some("/opt/claude".into()), config_dir: Some("/h/.gruntas/accounts/claude-work".into()), env: extra, args: vec!["--verbose".into()], api_key_env: None, effort: None });
-        cfg.instances.insert("codex:team".into(), InstanceKind::CodexAppServer { binary: None, codex_home: Some("/h/.gruntas/accounts/codex-team".into()), env: BTreeMap::new(), args: vec![], api_key_env: None, effort: None });
+        cfg.instances.insert("codex:team".into(), InstanceKind::CodexAppServer { binary: None, codex_home: Some("/h/.gruntas/accounts/codex-team".into()), env: BTreeMap::new(), args: vec!["-c".into(), "model_provider=\"x\"".into()], api_key_env: None, effort: None });
+        cfg.instances.insert("claude:own".into(), InstanceKind::ClaudeCode { binary: None, config_dir: None, env: BTreeMap::new(), args: vec!["--settings".into(), r#"{"sandbox":{"enabled":false},"model":"opus"}"#.into()], api_key_env: None, effort: None });
         Registry::resolve(&cfg, &env)
     }
 
@@ -432,6 +441,18 @@ mod tests {
         assert!(p.args.ends_with(&["--".into(), "--settings".into(), "x".into()]));
     }
 
+    /// An instance's configured `--settings` is merged too, never a second
+    /// one that would replace gruntas's.
+    #[test]
+    fn an_instances_own_settings_cannot_replace_the_sandbox() {
+        let r = registry();
+        let inst = account(&r, Harness::Claude, "claude:own").unwrap();
+        let p = plan(&request(Harness::Claude, Mode::Attended, inst, &[]), &no_file).unwrap();
+        assert_eq!(p.args.iter().filter(|a| *a == "--settings").count(), 1, "{:?}", p.args);
+        let s = p.settings.unwrap();
+        assert_eq!((&s["sandbox"]["enabled"], &s["model"]), (&json!(true), &json!("opus")));
+    }
+
     #[test]
     fn no_sandbox_drops_the_sandbox_parts_and_keeps_the_hooks() {
         let r = registry();
@@ -471,13 +492,13 @@ mod tests {
         assert_eq!(set(&p, "CODEX_HOME"), Some("/h/.gruntas/accounts/codex-team"));
         assert!(p.env_remove.contains(&"OPENAI_API_KEY"));
         assert_eq!(p.program, PathBuf::from("codex"), "not on PATH: its name");
-        let want = ["-c", "default_permissions=\"gruntas\"", "-c", r#"permissions.gruntas.filesystem={":root"="read",":project_roots"="write","/h/.gruntas"="none"}"#, "--model", "gpt-5.5"];
-        assert_eq!(p.args, want);
+        let want = ["-c", "model_provider=\"x\"", "-c", "default_permissions=\"gruntas\"", "-c", r#"permissions.gruntas.filesystem={":root"="read",":project_roots"="write","/h/.gruntas"="none"}"#, "--model", "gpt-5.5"];
+        assert_eq!(p.args, want, "the profile after the instance's own -c, before the person's");
         assert!(p.settings.is_none());
         // Unattended: the overrides the engine adds after `app-server`;
         // the task is the engine's first turn, not an argument.
         let p = plan(&request(Harness::Codex, Mode::Unattended { task: "t".into() }, inst, &[]), &no_file).unwrap();
-        assert_eq!(p.args, want[..4]);
+        assert_eq!(p.args, want[..6]);
         assert_eq!(toml_string("/a \"b\"\\c"), r#""/a \"b\"\\c""#);
     }
 
