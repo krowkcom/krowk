@@ -142,7 +142,13 @@ fn claude_unattended(ctx: &mut Ctx, plan: Plan) -> Result<(), Error> {
     let out = cmd.output().map_err(|e| fail("no_binary", format!("{} could not be run: {e}", plan.program.display())))?;
     let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     if !out.status.success() {
-        return Err(fail("launch_failed", format!("`claude --bg` did not start the session ({}): {}", out.status, said.trim())));
+        // `claude --bg` asks no questions: a workspace this account has not
+        // trusted is trusted at its prompt, attended, on the same account.
+        let trust = match said.contains("not trusted") {
+            true => " — on this account, that is `gruntas run claude --account <name>` there; plain `claude` is your default account",
+            false => "",
+        };
+        return Err(fail("launch_failed", format!("`claude --bg` did not start the session ({}): {}{trust}", out.status, said.trim())));
     }
     let id = bg_id(&said).ok_or_else(|| fail("launch_failed", format!("`claude --bg` started, but did not say its session's id: {}", said.trim())))?;
     let config_home = plan.config_home.as_ref().map(|h| h.display().to_string());
@@ -211,5 +217,13 @@ mod tests {
         assert!(parse(&["claude".into(), "--unattended".into(), " ".into()]).is_err());
         assert_eq!(super::words(&words("run claude -c")), Some(&words("run claude -c")[1..]));
         assert_eq!(super::words(&words("run --help")), None);
+    }
+
+    #[test]
+    fn the_bg_id_is_read_from_what_claude_says() {
+        let said = "Starting background service…\nbackgrounded · 075bf2a9\n  claude agents             list sessions\n";
+        assert_eq!(bg_id(said).as_deref(), Some("075bf2a9"));
+        assert_eq!(bg_id("backgrounded · ../x"), None);
+        assert_eq!(bg_id("Workspace not trusted."), None);
     }
 }

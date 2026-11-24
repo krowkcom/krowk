@@ -42,6 +42,13 @@ breaking changes may affect it without notice.
   "<task>"` starts a background session, and nothing is written into the
   account. Arguments gruntas doesn't own pass through to the harness as
   typed. Linux and macOS.
+- **Unattended Claude Code workers stop themselves when done.** `gruntas
+  run claude --unattended "<task>"` starts a `claude --bg` session inside
+  Claude Code's full sandbox and prints its id; it refuses where that
+  sandbox can't run (bubblewrap and socat on Linux). The gruntas daemon
+  stops the session once its agent reports the task finished and its turn
+  has ended, never mid-turn. The workspace must already be trusted on that
+  account: open it once with `gruntas run claude --account <name>`.
 
 ## [2026.11.1] - 2026-11-23
 
