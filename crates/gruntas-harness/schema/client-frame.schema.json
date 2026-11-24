@@ -1161,6 +1161,13 @@
                 "null"
               ]
             },
+            "args": {
+              "description": "The arguments it was started with, its task left out: what\nresumes it on another account (`--resume <id>` after them).",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
             "type": {
               "type": "string",
               "const": "launched"

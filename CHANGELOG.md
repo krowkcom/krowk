@@ -67,6 +67,16 @@ breaking changes may affect it without notice.
   model only, not the flags the first run was started with. When the next
   account is on the other harness, the work continues there in the
   background, from a handoff, and `gruntas status` shows it.
+- **Unattended Claude Code workers keep going when their account runs
+  out.** When the account of a session `gruntas run claude --unattended`
+  started hits its usage limit and the ladder's next account is another
+  Claude Code subscription, the gruntas daemon stops the background
+  session, copies its conversation into that account and resumes it there
+  in the background, sending the prompt the limit cut off again; when the
+  next account is on Codex, it stops the session and continues it there
+  from a handoff — with `gruntas config set rollover auto`. Without it,
+  the session's status turns input-required and names the account it
+  would move to.
 - **The god agent: ask any agent what your swarm is doing.** The plugin's
   MCP server offers `gruntas_status`, `gruntas_changes`, `gruntas_read` and
   `gruntas_ping` to every agent, and `gruntas_message` and

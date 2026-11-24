@@ -71,6 +71,20 @@ pub struct Launch {
     pub program: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_home: Option<String>,
+    /// What it was started with, its task left out (`Activity::Launched`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+}
+
+/// A launched session as rollover sees it (`launched`): the id `claude
+/// --bg` printed, how it runs, its whole session id once its Task is
+/// known, and whether its turn was under way.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Worker {
+    pub id: String,
+    pub launch: Launch,
+    pub session_id: String,
+    pub mid_turn: bool,
 }
 
 /// The most launched sessions kept: past it, the first by id goes.
@@ -258,14 +272,14 @@ impl Tasks {
                 }
             }),
             Activity::Launched { id, .. } if id.is_empty() || id.len() > MOST_NAME => false,
-            Activity::Launched { id, program, config_home } => {
+            Activity::Launched { id, program, config_home, args } => {
                 if self.launched.len() >= MOST_LAUNCHED && !self.launched.contains_key(id) {
                     let first = self.launched.keys().next().cloned();
                     if let Some(k) = first {
                         self.launched.remove(&k);
                     }
                 }
-                let l = Launch { program: program.clone(), config_home: config_home.clone() };
+                let l = Launch { program: program.clone(), config_home: config_home.clone(), args: args.clone() };
                 self.launched.insert(id.clone(), l.clone()) != Some(l)
             }
             Activity::Continued { from, to } if to.is_empty() || to.len() > MOST_NAME || from.len() > MOST_NAME => false,
@@ -314,21 +328,61 @@ impl Tasks {
     /// never stopped mid-turn. One that ended by itself (no longer
     /// serving) is forgotten, with nothing to stop. Whether anything was
     /// taken or forgotten is whether the Tasks changed.
-    pub fn to_stop(&mut self) -> (Vec<(String, Launch)>, bool) {
+    /// One rollover is moving (`moving` says whether the move is still
+    /// under way) is never forgotten: it ends on the old account and goes
+    /// on, registered again, on the new; nor stopped until it is there.
+    pub fn to_stop(&mut self, moving: impl Fn(&str) -> Option<bool>) -> (Vec<(String, Launch)>, bool) {
         let mut due = Vec::new();
         let mut changed = false;
         let tasks = &self.tasks;
         self.launched.retain(|id, l| {
             let Some(e) = launched_entry(tasks, id) else { return true };
+            let under_way = moving(id);
+            if under_way == Some(true) {
+                return true;
+            }
+            let moving = under_way.is_some();
             let serving = e.task.metadata.gruntas.health.as_ref().is_none_or(|h| h.value == Health::Serving);
             let done = serving && (e.task.status.state.is_terminal() || e.capped) && e.turn == Turn::Ended;
             if done {
                 due.push((id.clone(), l.clone()));
             }
-            changed |= done || !serving;
-            serving && !done
+            changed |= done || (!serving && !moving);
+            (serving || moving) && !done
         });
         (due, changed)
+    }
+
+    /// The launched sessions still at work that rollover may move: Task
+    /// known, not terminal, not already waiting on the person.
+    pub fn launched(&self) -> Vec<Worker> {
+        self.launched
+            .iter()
+            .filter_map(|(id, l)| {
+                let (session_id, e) = launched_key(&self.tasks, id)?;
+                let s = e.task.status.state;
+                (!s.is_terminal() && s != TaskState::InputRequired).then(|| Worker { id: id.clone(), launch: l.clone(), session_id: session_id.clone(), mid_turn: e.turn != Turn::Ended })
+            })
+            .collect()
+    }
+
+    /// A launched session rollover moved: it runs as `l` now.
+    pub fn moved(&mut self, id: &str, l: Launch) -> bool {
+        self.launched.insert(id.to_string(), l.clone()) != Some(l)
+    }
+
+    /// A launched session rollover stopped and continued elsewhere: no
+    /// longer this daemon's to stop.
+    pub fn unlaunch(&mut self, id: &str) -> bool {
+        self.launched.remove(id).is_some()
+    }
+
+    /// A session rollover could not move (D4): input-required, saying why.
+    pub fn held(&mut self, session_id: &str, why: &str, now: &str) -> bool {
+        self.change(session_id, now, |e| {
+            set_state(&mut e.task, TaskState::InputRequired, Provenance::Harness, now);
+            e.task.status.message = Some(gruntas_client::status::Message::text("rollover", why));
+        })
     }
 
     /// What an agent's report sets: its own state, with agent provenance,
@@ -432,7 +486,11 @@ impl Tasks {
 /// The Task of the session `claude --bg` printed `id` for: the first part
 /// of its session id, or the whole of it.
 fn launched_entry<'t>(tasks: &'t BTreeMap<String, Entry>, id: &str) -> Option<&'t Entry> {
-    tasks.get(id).or_else(|| tasks.range(id.to_string()..).take_while(|(k, _)| k.starts_with(id)).find(|(k, _)| k.as_bytes().get(id.len()) == Some(&b'-')).map(|(_, e)| e))
+    launched_key(tasks, id).map(|(_, e)| e)
+}
+
+fn launched_key<'t>(tasks: &'t BTreeMap<String, Entry>, id: &str) -> Option<(&'t String, &'t Entry)> {
+    tasks.get_key_value(id).or_else(|| tasks.range(id.to_string()..).take_while(|(k, _)| k.starts_with(id)).find(|(k, _)| k.as_bytes().get(id.len()) == Some(&b'-')))
 }
 
 /// Whether session `id` is the one `short` names: the whole id, or its
@@ -715,7 +773,7 @@ mod tests {
     }
 
     fn launched(id: &str) -> Activity {
-        Activity::Launched { id: id.into(), program: "/bin/claude".into(), config_home: Some("/h/work".into()) }
+        Activity::Launched { id: id.into(), program: "/bin/claude".into(), config_home: Some("/h/work".into()), args: Vec::new() }
     }
 
     /// A turn's end as the daemon takes it: the activity, then its answer.
@@ -745,19 +803,19 @@ mod tests {
         t.apply(&Activity::Active { session_id: mid_turn.into() }, T1);
         // Work after its report: its Stop hook blocks the end to remind it.
         turn_end(&mut t, reminded, true);
-        let launch = Launch { program: "/bin/claude".into(), config_home: Some("/h/work".into()) };
-        assert_eq!(t.to_stop(), (vec![("aaaa0001".to_string(), launch)], true), "only the finished one, its turn over");
-        assert_eq!(t.to_stop(), (vec![], false), "taken once");
+        let launch = Launch { program: "/bin/claude".into(), config_home: Some("/h/work".into()), args: Vec::new() };
+        assert_eq!(t.to_stop(|_| None), (vec![("aaaa0001".to_string(), launch)], true), "only the finished one, its turn over");
+        assert_eq!(t.to_stop(|_| None), (vec![], false), "taken once");
         // The working one stays until its agent says it is done.
         t.apply(&report(working, TaskState::Failed), T2);
-        assert!(t.to_stop().0.is_empty(), "its turn is under way again");
+        assert!(t.to_stop(|_| None).0.is_empty(), "its turn is under way again");
         turn_end(&mut t, working, false);
         turn_end(&mut t, mid_turn, false);
         // The reminded turn's next end is its end, after more work and
         // reminded again or not.
         t.apply(&Activity::ToolEnd { session_id: reminded.into() }, T2);
         turn_end(&mut t, reminded, true);
-        let stopped: Vec<String> = t.to_stop().0.into_iter().map(|(id, _)| id).collect();
+        let stopped: Vec<String> = t.to_stop(|_| None).0.into_iter().map(|(id, _)| id).collect();
         assert_eq!(stopped, ["aaaa0002", "aaaa0003", "aaaa0005"]);
         assert!(t.launched.is_empty(), "the one that ended by itself is forgotten");
         // Kept across a restart: in the status file.
@@ -921,10 +979,10 @@ mod tests {
         // No activity clears it, and once its turn ends its background
         // session is stopped.
         t.apply(&Activity::ToolEnd { session_id: id.into() }, T1);
-        assert!(t.to_stop().0.is_empty(), "mid-turn");
+        assert!(t.to_stop(|_| None).0.is_empty(), "mid-turn");
         turn_end(&mut t, id, false);
         assert_eq!(state(&t, id).0, TaskState::InputRequired);
-        assert_eq!(t.to_stop().0.into_iter().map(|(i, _)| i).collect::<Vec<_>>(), ["cccc0001"]);
+        assert_eq!(t.to_stop(|_| None).0.into_iter().map(|(i, _)| i).collect::<Vec<_>>(), ["cccc0001"]);
         // Its end, or its process gone, leaves it input-required.
         t.apply(&Activity::Deregister { session_id: id.into() }, T2);
         assert_eq!((state(&t, id).0, health(&t, id)), (TaskState::InputRequired, Health::NotServing));
