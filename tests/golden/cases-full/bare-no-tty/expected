@@ -1450,6 +1450,45 @@ stdout:
       "hidden": true
     },
     {
+      "name": "run",
+      "usage": "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [args...]",
+      "summary": "Start Claude Code or Codex on one of your accounts",
+      "args": [
+        {
+          "name": "harness",
+          "summary": "claude or codex",
+          "required": true
+        },
+        {
+          "name": "args",
+          "summary": "The harness's own arguments, passed through as typed; any after a -- too",
+          "required": false,
+          "repeated": true
+        }
+      ],
+      "flags": [
+        {
+          "name": "account",
+          "type": "string",
+          "default": "",
+          "usage": "The account: its name (work for claude:work), or auto for the one with the most headroom (default: your own ~/.claude or ~/.codex)"
+        },
+        {
+          "name": "unattended",
+          "type": "string",
+          "default": "",
+          "usage": "Start a background session on this task instead of taking the terminal"
+        },
+        {
+          "name": "no-sandbox",
+          "type": "bool",
+          "default": "false",
+          "usage": "Run without the sandbox that keeps the session out of the gruntas home, this once; attended only"
+        }
+      ],
+      "hidden": true
+    },
+    {
       "name": "status",
       "usage": "gruntas status [project]",
       "summary": "Every agent on your machines, by project and machine",
@@ -3564,6 +3603,45 @@ tty:
       "name": "hosts",
       "usage": "gruntas hosts",
       "summary": "The same as gruntas machines",
+      "hidden": true
+    },
+    {
+      "name": "run",
+      "usage": "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [args...]",
+      "summary": "Start Claude Code or Codex on one of your accounts",
+      "args": [
+        {
+          "name": "harness",
+          "summary": "claude or codex",
+          "required": true
+        },
+        {
+          "name": "args",
+          "summary": "The harness's own arguments, passed through as typed; any after a -- too",
+          "required": false,
+          "repeated": true
+        }
+      ],
+      "flags": [
+        {
+          "name": "account",
+          "type": "string",
+          "default": "",
+          "usage": "The account: its name (work for claude:work), or auto for the one with the most headroom (default: your own ~/.claude or ~/.codex)"
+        },
+        {
+          "name": "unattended",
+          "type": "string",
+          "default": "",
+          "usage": "Start a background session on this task instead of taking the terminal"
+        },
+        {
+          "name": "no-sandbox",
+          "type": "bool",
+          "default": "false",
+          "usage": "Run without the sandbox that keeps the session out of the gruntas home, this once; attended only"
+        }
+      ],
       "hidden": true
     },
     {
