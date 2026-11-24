@@ -315,7 +315,7 @@ mod tests {
 
     #[test]
     fn r_log_2_a_turn_that_failed_mid_response_projects_the_same_incrementally_and_on_rebuild() {
-        let mut bodies = vec![LogBody::SessionStarted { cwd: "/nowhere".into(), gruntas_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None, attendance: None, started_by_session_id: None }];
+        let mut bodies = vec![LogBody::SessionStarted { cwd: "/nowhere".into(), gruntas_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None, attendance: None, started_by_session_id: None, fenced: false }];
         bodies.extend(turn("t1", "first"));
         // The response streamed a text item, then failed: no response.completed.
         bodies.push(LogBody::ItemCompleted { turn_id: "t1".into(), item_id: "t1-a".into(), item: Item::AssistantText { text: "half an answer".into() } });

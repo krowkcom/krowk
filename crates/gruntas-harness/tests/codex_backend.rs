@@ -155,7 +155,7 @@ fn rt() -> tokio::runtime::Runtime {
 
 fn prompt(session_id: Option<&str>, text: &str, model: &str, mode: PermissionMode) -> Command {
     let (instance, model) = model.split_once('/').unwrap();
-    Command::Prompt { session_id: session_id.map(String::from), text: text.into(), images: Vec::new(), model: Some(ModelRef { instance: instance.into(), model: model.into() }), permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None }
+    Command::Prompt { session_id: session_id.map(String::from), text: text.into(), images: Vec::new(), model: Some(ModelRef { instance: instance.into(), model: model.into() }), permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None, attendance: None, fenced: false, origin: None }
 }
 
 type Outcome = Result<Option<RunResult>, gruntas_harness::engine::EngineError>;
@@ -357,7 +357,7 @@ fn r_back_5_a_new_host_resumes_the_codex_thread_the_log_names() {
     // A new gruntas: a new process, on the thread the log holds.
     rt().block_on(async {
         let host = h.host(vec![("codex:team", h.instance(&home, Some("tool_use.jsonl"), &[]))], trust::allow_all());
-        let (_, r) = run(&host, Command::Prompt { session_id: Some(session.clone()), text: "and now?".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None }).await;
+        let (_, r) = run(&host, Command::Prompt { session_id: Some(session.clone()), text: "and now?".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: None, fenced: false, origin: None }).await;
         let r = r.unwrap().unwrap();
         assert_eq!((r.status, r.result.as_str(), r.model.instance.as_str()), (TurnStatus::Completed, "Still one file.", "codex:team"), "the session's model, on the same instance");
         host.shutdown().await;
@@ -367,6 +367,65 @@ fn r_back_5_a_new_host_resumes_the_codex_thread_the_log_names() {
     assert!(log.contains(&format!("resume {THREAD}")), "{log}");
     let resume = lines_of(&log, "in ").into_iter().find(|l| l.contains("thread/resume")).unwrap();
     assert!(resume.contains(r#""sandbox":"read-only""#) && resume.contains(r#""approvalsReviewer":"user""#), "a resumed thread is put back in gruntas's mode: {resume}");
+}
+
+/// Launcher D3: a session kept out of the gruntas home runs Codex in
+/// gruntas's permissions profile, defined on the command line and named on
+/// the thread in place of a sandbox, and its sandbox check accepts it; a
+/// thread Codex opens in another profile or an unknown sandbox still ends.
+#[test]
+fn a_fenced_session_runs_codex_in_the_gruntas_profile_and_is_held_to_it() {
+    let h = Home::new("fence");
+    let home = h.signed_in("codex-team", "chatgpt team@example.com");
+    let gruntas = h.root.join("home/.gruntas");
+    let fenced = |p: Command| match p {
+        Command::Prompt { session_id, text, images, model, permission_mode, toolset, effort, rollover, budget, attendance, origin, .. } => Command::Prompt { session_id, text, images, model, permission_mode, toolset, effort, rollover, budget, attendance, fenced: true, origin },
+        other => other,
+    };
+    let host_on = |extra: &[(&str, &str)]| {
+        let mut cfg = h.config(vec![("codex:team", h.instance(&home, Some("tool_use.jsonl"), extra))], trust::allow_all());
+        cfg.permissions.gruntas_dir = Some(gruntas.clone());
+        Host::new(cfg)
+    };
+    rt().block_on(async {
+        let host = host_on(&[]);
+        let (_, r) = run(&host, fenced(prompt(None, "what is here?", "codex:team/gpt-5.5", PermissionMode::Default))).await;
+        let r = r.unwrap().unwrap();
+        assert_eq!(r.status, TurnStatus::Completed, "{r:?}");
+        let log = h.fake_log();
+        let argv = lines_of(&log, "argv app-server").pop().unwrap();
+        let profile = format!(r#"-c default_permissions="gruntas" -c permissions.gruntas.filesystem={{":root"="read",":project_roots"="write","{}"="none"}}"#, gruntas.display());
+        assert!(argv.contains(&profile), "the profile is defined and chosen: {argv}");
+        let start = lines_of(&log, "in ").into_iter().find(|l| l.contains("thread/start")).unwrap();
+        assert!(start.contains(r#""permissions":"gruntas""#) && !start.contains(r#""sandbox""#) && start.contains(r#""approvalsReviewer":"user""#), "{start}");
+        let events = h.events(&r.session_id);
+        assert!(matches!(&events[0].body, LogBody::SessionStarted { fenced: true, .. }), "the start record keeps the fence");
+        host.shutdown().await;
+        // The next turn, on a new host, is fenced by the record alone.
+        let host = host_on(&[]);
+        let (_, r2) = run(&host, prompt(Some(&r.session_id), "and now?", "codex:team/gpt-5.5", PermissionMode::Default)).await;
+        assert_eq!(r2.unwrap().unwrap().status, TurnStatus::Completed);
+        let resume = lines_of(&h.fake_log(), "in ").into_iter().find(|l| l.contains("thread/resume")).unwrap();
+        assert!(resume.contains(r#""permissions":"gruntas""#) && !resume.contains(r#""sandbox""#), "{resume}");
+        host.shutdown().await;
+        // Another profile, or a sandbox this build does not know, ends the
+        // thread before a turn runs.
+        for (k, v) in [("FAKE_CODEX_PROFILE", ":workspace"), ("FAKE_CODEX_SANDBOX", "somethingNew"), ("FAKE_CODEX_SANDBOX", "dangerFullAccess")] {
+            let _ = std::fs::remove_file(h.log_file());
+            let host = host_on(&[(k, v)]);
+            let (_, r) = run(&host, fenced(prompt(None, "hi", "codex:team/gpt-5.5", PermissionMode::Default))).await;
+            let r = r.unwrap().unwrap();
+            let e = r.error.as_ref().unwrap();
+            assert_eq!(e.code, "backend_permission_mode", "{k}={v}: {r:?}");
+            assert!(e.message.contains("keeps it out of the gruntas home"), "{}", e.message);
+            assert!(!lines_of(&h.fake_log(), "in ").iter().any(|l| l.contains("turn/start")), "{k}={v}: no turn ran");
+        }
+        // Unfenced, an unknown sandbox ends the thread as it always has.
+        let _ = std::fs::remove_file(h.log_file());
+        let host = host_on(&[("FAKE_CODEX_SANDBOX", "somethingNew")]);
+        let (_, r) = run(&host, prompt(None, "hi", "codex:team/gpt-5.5", PermissionMode::Default)).await;
+        assert_eq!(r.unwrap().unwrap().error.map(|e| e.code), Some("backend_permission_mode".to_string()));
+    });
 }
 
 /// An MCP server the person's config names, as `config/read` reports one.

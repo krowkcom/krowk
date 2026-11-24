@@ -277,10 +277,30 @@ fn claude_unattended_starts_in_the_background_and_prints_the_session() {
     assert_eq!(std::fs::read_to_string(&stopped).unwrap(), format!("1234abcd {config_home}\n"), "stopped once, under its account's config home");
 }
 
+/// LN04: `codex` replaces gruntas on the account's CODEX_HOME, in the
+/// profile that hides the gruntas home, the person's arguments after it;
+/// how to install the plugin is said once per account.
 #[test]
-#[ignore = "LN04: gruntas run codex attended execs codex in the permissions profile"]
 fn codex_attended_execs_codex_with_the_account_and_profile() {
-    let _b = Sandbox::new("ln04");
+    let b = Sandbox::new("ln04");
+    let o = b.gruntas(&["run", "codex", "--account", "team", "--model", "gpt-5.5", "resume"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (args, env) = b.started("codex");
+    let profile = format!(r#"permissions.gruntas.filesystem={{":root"="read",":project_roots"="write","{}"="none"}}"#, b.home().display());
+    assert_eq!(args, ["-c", r#"default_permissions="gruntas""#, "-c", &profile, "--model", "gpt-5.5", "resume"]);
+    assert!(env.contains(&format!("CODEX_HOME={}", b.root.join("accounts/codex-team").display())), "{env:?}");
+    let hint = "codex plugin add gruntas@gruntas";
+    assert!(String::from_utf8_lossy(&o.stderr).contains(hint), "the plugin hint, the first time");
+    let o = b.gruntas(&["run", "codex", "--account", "codex:team", "--no-sandbox"]);
+    assert!(o.status.success() && !String::from_utf8_lossy(&o.stderr).contains(hint), "said once per account");
+    assert!(b.started("codex").0.is_empty(), "--no-sandbox: no profile");
+    // Installed in the account: nothing to say.
+    std::fs::create_dir_all(b.root.join("home/.codex/plugins/cache/gruntas/gruntas")).unwrap();
+    let o = b.gruntas(&["run", "codex"]);
+    assert!(o.status.success() && !String::from_utf8_lossy(&o.stderr).contains(hint), "{}", String::from_utf8_lossy(&o.stderr));
+    let (args, env) = b.started("codex");
+    assert_eq!(args[..2], ["-c", r#"default_permissions="gruntas""#]);
+    assert!(!env.iter().any(|v| v.starts_with("CODEX_HOME=")), "the default account keeps Codex's own home");
 }
 
 /// R-RUN-2: `--account auto` ranks the harness's own accounts from the

@@ -218,7 +218,7 @@ fn rt() -> tokio::runtime::Runtime {
 }
 
 fn prompt(session: Option<&str>, text: &str, model: Option<ModelRef>) -> Command {
-    Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model, permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None }
+    Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model, permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: None, fenced: false, origin: None }
 }
 
 async fn run(host: &Host, cmd: Command) -> (RunResult, Vec<StreamLine>) {

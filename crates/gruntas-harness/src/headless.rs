@@ -116,6 +116,32 @@ pub fn run_on_daemon(env: &dyn Fn(&str) -> String, cwd: &std::path::Path, versio
     })
 }
 
+/// `gruntas run codex --unattended` (Launcher D3): `prompt` started as a
+/// new session in the host daemon — started first when none is up — and its
+/// id returned once the daemon names it, the turn left to the daemon. A
+/// daemon of another gruntas is refused: an older one would drop a fence it
+/// does not know.
+#[cfg(unix)]
+pub fn start_on_daemon(env: &dyn Fn(&str) -> String, cwd: &std::path::Path, version: &str, spawn: &crate::daemon::Spawn<'_>, prompt: Command) -> Result<String, EngineError> {
+    runtime()?.block_on(async {
+        let client = crate::daemon::ensure(env, cwd, version, false, spawn).await?;
+        if client.gruntas_version != version {
+            return Err(EngineError::new("daemon_outdated", format!("the host daemon (pid {}) runs gruntas {}, and this is {version}, which an unattended session has to run on — `kill {}` once its sessions are done, then run this again", client.pid, client.gruntas_version, client.pid)));
+        }
+        let (tx, mut rx) = mpsc::channel(1024);
+        let exec = client.execute(prompt, tx);
+        tokio::pin!(exec);
+        tokio::select! {
+            biased;
+            Some(line) = rx.recv() => Ok(line.session_id().to_string()),
+            r = &mut exec => match rx.try_recv() {
+                Ok(line) => Ok(line.session_id().to_string()),
+                Err(_) => Err(r.err().unwrap_or_else(|| EngineError::new("no_session", "the host daemon started no session"))),
+            },
+        }
+    })
+}
+
 /// What a headless run sends its commands to: the in-process `Host`, or the
 /// daemon's socket (`daemon::client::Client`). The same two calls either
 /// way, which is the point of the protocol.
@@ -163,7 +189,7 @@ async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> 
     // A resumed session's id is known up front; a new one's arrives with
     // its root event.
     let mut session_id: Option<String> = opts.resume.clone();
-    let cmd = Command::Prompt { session_id: opts.resume, text: opts.prompt, images: opts.images, model: opts.model, permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, rollover: opts.rollover, budget: opts.budget, attendance: Some(opts.attendance), origin: None };
+    let cmd = Command::Prompt { session_id: opts.resume, text: opts.prompt, images: opts.images, model: opts.model, permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, rollover: opts.rollover, budget: opts.budget, attendance: Some(opts.attendance), fenced: false, origin: None };
     let remote = host.remote();
     let sink = tx.clone();
     let exec = async {

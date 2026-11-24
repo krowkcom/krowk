@@ -80,7 +80,7 @@ fn prompt(text: &str, mode: PermissionMode) -> Command {
         permission_mode: mode,
         toolset: None,
         effort: None,
-        budget: None, attendance: None, origin: None,
+        budget: None, attendance: None, fenced: false, origin: None,
     }
 }
 

@@ -668,7 +668,7 @@ impl Host {
                 tokio::task::spawn_blocking(move || images::put(&dir, session_id.as_deref(), &sha256, &media_type, &data)).await.map_err(|e| EngineError::new("log_failed", e.to_string()))??;
                 Ok(None)
             }
-            Command::Prompt { session_id, text, images, model, permission_mode, toolset, effort, rollover, budget, attendance, origin } => {
+            Command::Prompt { session_id, text, images, model, permission_mode, toolset, effort, rollover, budget, attendance, fenced, origin } => {
                 // Images named by hash are the ones `putImage` kept: a missing
                 // one refuses the prompt before anything is logged.
                 let (dir, id) = (shared.cfg.sessions_dir.clone(), session_id.clone());
@@ -680,7 +680,7 @@ impl Host {
                 // What a new session's start record says of how it started: the
                 // sender's word for attendance, and the sending session, if an
                 // agent, as the session that started it.
-                let begin = Begin { attendance, started_by: origin.and_then(|o| o.session_id.filter(|_| o.kind == crate::protocol::OriginKind::Agent)) };
+                let begin = Begin { attendance, started_by: origin.and_then(|o| o.session_id.filter(|_| o.kind == crate::protocol::OriginKind::Agent)), fenced };
                 shared.prompt(session_id.as_deref(), (text, images), model, permission_mode, toolset.as_deref(), effort, rollover, budget.unwrap_or_default(), &begin, out).await.map(Some)
             }
             // A subagent's session is a running turn like any other, so it
@@ -761,6 +761,8 @@ struct Begin {
     /// The session that sent the prompt, when an agent did: the new
     /// session's steering parent (`startedBySessionId`), not a subagent's.
     started_by: Option<String>,
+    /// Kept out of the gruntas home (Launcher D3).
+    fenced: bool,
 }
 
 /// One turn, settled: the log it appends to, what the branch so far says,
@@ -784,6 +786,8 @@ struct TurnPlan {
     /// What the turn's commands get in their environment beyond gruntas's
     /// own: a worktree's `GRUNTAS_PORT_BASE`.
     env: Vec<(String, String)>,
+    /// The gruntas home a fenced session is kept out of.
+    fence: Option<PathBuf>,
     backend_session: Option<String>,
     budget: Budget,
     evidence: Option<Evidence>,
@@ -1356,6 +1360,13 @@ impl Shared {
         let wire = instance.wire_for(info.as_ref().and_then(|i| i.wire_api));
         // D4: gruntas runs a turn only in Claude Code or Codex.
         let Some(backend) = &instance.backend else { return Err(crate::connect::no_direct_models()) };
+        // Launcher D3: a session kept out of the gruntas home is held to it
+        // on Codex, by its permissions profile, and runs nowhere it would not be.
+        let fence = match past.fenced || (session_id.is_none() && begin.fenced) {
+            false => None,
+            true if wire != WireApi::CodexAppServer => return Err(staying(EngineError::new("fence_unsupported", format!("this session is kept out of the gruntas home, which gruntas holds on Codex only, and {} is not a Codex account", instance.name)))),
+            true => Some(self.cfg.permissions.gruntas_dir.clone().ok_or_else(|| EngineError::new("fence_unsupported", "this session is kept out of the gruntas home, and this host does not know where that is"))?),
+        };
         // A backend runs the repository's own hooks and MCP servers, so it
         // is not started in one nobody trusted; and a binary that is not
         // there, or a login that is not, is named before a session exists
@@ -1393,7 +1404,7 @@ impl Shared {
                 };
                 #[cfg(feature = "test-hooks")]
                 held(HoldAt::Open).await;
-                let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &id, &self.cfg.cwd, &self.cfg.gruntas_version, None, None, begin.attendance, begin.started_by.as_deref()).await.map_err(log_failure)?;
+                let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &id, &self.cfg.cwd, &self.cfg.gruntas_version, None, None, begin.attendance, begin.started_by.as_deref(), begin.fenced).await.map_err(log_failure)?;
                 // WT9: what kept worktrees left behind, cleared at most
                 // once a day, on a thread of its own the session never
                 // waits for.
@@ -1440,6 +1451,7 @@ impl Shared {
             effort,
             cwd,
             env: self.cfg.session.env.clone(),
+            fence,
             backend_session,
             budget,
             evidence,
@@ -1544,6 +1556,7 @@ impl Shared {
             history,
             cwd: plan.cwd.clone(),
             env: plan.env.clone(),
+            fence: plan.fence.clone(),
             session_dir,
             permission_mode: plan.permission_mode,
             effort: plan.effort,
@@ -1926,6 +1939,8 @@ struct Past {
     run: Option<String>,
     /// For a subagent: the session that started it.
     parent: Option<String>,
+    /// The session runs kept out of the gruntas home (Launcher D3).
+    fenced: bool,
     /// Each instance's last turn: its model, mode and effort, which a turn
     /// a backend on it began runs with.
     last_on: Vec<(ModelRef, PermissionMode, Option<Effort>)>,
@@ -1965,9 +1980,10 @@ fn replay(branch: &[&LogEvent], registry: &Registry) -> Past {
     let mut answered = false;
     for ev in branch {
         match &ev.body {
-            LogBody::SessionStarted { cwd, parent_session_id, .. } => {
+            LogBody::SessionStarted { cwd, parent_session_id, fenced, .. } => {
                 past.cwd = Some(PathBuf::from(cwd));
                 past.parent = parent_session_id.clone();
+                past.fenced = *fenced;
             }
             LogBody::TurnStarted { model, permission_mode, effort, rollover, .. } => {
                 past.rollover = rollover.or(past.rollover);
@@ -2335,7 +2351,7 @@ impl Writer<'_> {
     async fn child_started(&mut self, session_id: &str, task_id: String, call_id: String, description: String, agent: Option<String>, model: &ModelRef) -> Result<(), EngineError> {
         let Some(k) = &self.kids else { return Ok(()) };
         let child = gruntas_store::new_id();
-        let (mut log, root) = match SessionLog::create_child_off(&k.sessions_dir, &child, &k.cwd, &k.gruntas_version, Some(session_id), agent.as_deref(), None, None).await {
+        let (mut log, root) = match SessionLog::create_child_off(&k.sessions_dir, &child, &k.cwd, &k.gruntas_version, Some(session_id), agent.as_deref(), None, None, false).await {
             Ok(made) => made,
             Err(e) => {
                 self.child_lost(session_id, &description, e, None).await;

@@ -57,6 +57,15 @@ breaking changes may affect it without notice.
   you pick. Where Claude Code's sandbox can't run (Linux without bubblewrap
   or socat), it says so and starts only with `--no-sandbox`. Until the
   gruntas plugin is installed, it starts without it and says so.
+- **`gruntas run codex` works attended and unattended.** Attended, gruntas
+  becomes `codex` on the account's `CODEX_HOME`, in a permissions profile
+  that reads everything and writes the project but can't read the gruntas
+  home or reach the gruntas daemon.
+  `--unattended "<task>"` starts the task as a session of the host daemon's
+  Codex engine, held to the same profile on every turn, and prints its id;
+  a thread Codex opens outside the profile is stopped before it runs
+  anything. Codex can't load a plugin it hasn't installed, so the first run
+  on an account without the gruntas plugin says how to install it.
 
 ### Changed
 

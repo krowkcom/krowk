@@ -242,7 +242,7 @@ fn r_cred_1_a_stored_keys_command_never_blocks_the_hosts_runtime() {
             }
         });
         let started = std::time::Instant::now();
-        let cmd = gruntas_harness::protocol::Command::Prompt { session_id: None, text: "hi".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None };
+        let cmd = gruntas_harness::protocol::Command::Prompt { session_id: None, text: "hi".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: None, fenced: false, origin: None };
         let r = host.execute(cmd, tx).await;
         ticker.abort();
         let took = started.elapsed();
@@ -269,7 +269,7 @@ fn an_image_sent_with_a_prompt_is_kept_beside_the_log_and_reaches_the_model() {
     let model = ModelRef { instance: "claude".into(), model: "sonnet".into() };
     let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x02\0\0\0";
     let data = base64::engine::general_purpose::STANDARD.encode(png);
-    let prompt = |images: Vec<ImageInput>| Command::Prompt { session_id: None, text: "what is in [Image #1]?".into(), images, model: Some(model.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: None, origin: None };
+    let prompt = |images: Vec<ImageInput>| Command::Prompt { session_id: None, text: "what is in [Image #1]?".into(), images, model: Some(model.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None, attendance: None, fenced: false, origin: None };
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let sessions = log::sessions_dir(&home.env()).unwrap();
     // A file that is not the image it says is refused before any session is made.
