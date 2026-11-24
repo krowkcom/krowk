@@ -51,6 +51,13 @@ breaking changes may affect it without notice.
   turn. Codex and headless sessions answer "can't steer this session yet"
   with the reason.
 
+- **The god agent's status, changes and ping.** `gruntas_status` lists one
+  line per session (state, health, quiet for, summary) from every machine's
+  board, for one project when asked, 200 rows a page. `gruntas_changes`
+  lists what each machine's sessions did since a time, from a 24-hour log
+  each host now keeps, with machines that don't answer listed as unknown.
+  `gruntas_ping` is `gruntas ping`.
+
 - **`gruntas run claude|codex` starts the stock harness on one of your
   accounts** (`--account work` is `claude:work`; none is the account plain
   `claude` or `codex` in your shell uses), with the gruntas plugin and a sandbox that

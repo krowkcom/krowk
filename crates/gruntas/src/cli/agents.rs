@@ -35,16 +35,16 @@ const NO_PROJECT: &str = "(no project)";
 
 /// One machine's board as read: the machine's name on the device list, its
 /// health, and the board with when it was received.
-struct Machine {
-    device: String,
-    name: String,
-    health: Health,
-    board: Board,
-    received_at: jiff::Timestamp,
+pub(crate) struct Machine {
+    pub(crate) device: String,
+    pub(crate) name: String,
+    pub(crate) health: Health,
+    pub(crate) board: Board,
+    pub(crate) received_at: jiff::Timestamp,
 }
 
 /// A device whose board did not open: its id, its name and why.
-type Unopened = (String, String, String);
+pub(crate) type Unopened = (String, String, String);
 
 /// The boards, read and opened; the devices whose board did not open.
 fn read(ctx: &Ctx, k: &Keys, what: &str) -> Result<(Client, Vec<Machine>, Vec<Unopened>), Error> {
@@ -69,7 +69,7 @@ fn name_of(k: &Keys, device: &str) -> String {
 
 /// A2A's state as a person reads it: `TASK_STATE_INPUT_REQUIRED` is
 /// `input-required`.
-fn state_word(s: TaskState) -> String {
+pub(crate) fn state_word(s: TaskState) -> String {
     let v = serde_json::to_value(s).ok();
     let wire = v.as_ref().and_then(Value::as_str).unwrap_or("TASK_STATE_UNSPECIFIED");
     wire.trim_start_matches("TASK_STATE_").to_ascii_lowercase().replace('_', "-")
@@ -84,7 +84,7 @@ fn health_word(h: Health) -> &'static str {
 }
 
 /// A span as "42s", "3m", "2h" or "1d".
-fn span(d: jiff::SignedDuration) -> String {
+pub(crate) fn span(d: jiff::SignedDuration) -> String {
     let s = d.as_secs().max(0);
     match s {
         0..60 => format!("{s}s"),
@@ -107,13 +107,43 @@ pub(super) fn agents(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     };
     let k = keys(ctx)?;
     let (_, machines, unopened) = read(ctx, &k, "gruntas status")?;
-    let now = jiff::Timestamp::now();
+    let (tree, n) = tree(&machines, only.as_deref(), jiff::Timestamp::now());
+    let unopened_json: Vec<Value> = unopened.iter().map(|(d, n, e)| json!({"device": d, "name": n, "error": e})).collect();
+    if ctx.format != Format::Human {
+        return super::sessions::emit_data(ctx, json!({"projects": tree, "unopened": unopened_json}), format!("{n} agents"));
+    }
+    let out = &mut *ctx.io.stdout;
+    for p in &tree {
+        let _ = writeln!(out, "{}", printable(p["project"].as_str().unwrap_or_default()));
+        for m in p["machines"].as_array().into_iter().flatten() {
+            let _ = writeln!(out, "  {}  {}", printable(m["name"].as_str().unwrap_or_default()), m["health"].as_str().unwrap_or_default());
+            for s in m["sessions"].as_array().into_iter().flatten() {
+                print_session(out, s, 2);
+            }
+        }
+    }
+    if tree.is_empty() {
+        let _ = match &only {
+            Some(p) => writeln!(out, "no agents on {} on any of your machines", printable(p)),
+            None => writeln!(out, "no agents on any of your machines yet — sessions show here once the gruntas plugin registers them"),
+        };
+    }
+    for (_, name, e) in &unopened {
+        let _ = writeln!(out, "{}'s status board does not open here: {}", printable(name), printable(e));
+    }
+    Ok(())
+}
+
+/// `machines`' sessions as `gruntas status --json` gives them: by project,
+/// `only` that one when given, then machine, then parent session; and how
+/// many sessions that is. "Quiet for" is as of `now`.
+pub(crate) fn tree(machines: &[Machine], only: Option<&str>, now: jiff::Timestamp) -> (Vec<Value>, usize) {
     // Project → machine (by its place in `machines`) → its Tasks.
     let mut projects: BTreeMap<String, BTreeMap<usize, Vec<&Task>>> = BTreeMap::new();
     for (i, m) in machines.iter().enumerate() {
         for t in &m.board.tasks {
             let p = project_of(t);
-            if only.as_ref().is_none_or(|o| *o == p) {
+            if only.is_none_or(|o| o == p) {
                 projects.entry(p).or_default().entry(i).or_default().push(t);
             }
         }
@@ -144,31 +174,8 @@ pub(super) fn agents(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
             json!({"project": p, "machines": ms})
         })
         .collect();
-    let unopened_json: Vec<Value> = unopened.iter().map(|(d, n, e)| json!({"device": d, "name": n, "error": e})).collect();
-    if ctx.format != Format::Human {
-        let n: usize = projects.values().flat_map(|m| m.values()).map(Vec::len).sum();
-        return super::sessions::emit_data(ctx, json!({"projects": tree, "unopened": unopened_json}), format!("{n} agents"));
-    }
-    let out = &mut *ctx.io.stdout;
-    for p in &tree {
-        let _ = writeln!(out, "{}", printable(p["project"].as_str().unwrap_or_default()));
-        for m in p["machines"].as_array().into_iter().flatten() {
-            let _ = writeln!(out, "  {}  {}", printable(m["name"].as_str().unwrap_or_default()), m["health"].as_str().unwrap_or_default());
-            for s in m["sessions"].as_array().into_iter().flatten() {
-                print_session(out, s, 2);
-            }
-        }
-    }
-    if tree.is_empty() {
-        let _ = match &only {
-            Some(p) => writeln!(out, "no agents on {} on any of your machines", printable(p)),
-            None => writeln!(out, "no agents on any of your machines yet — sessions show here once the gruntas plugin registers them"),
-        };
-    }
-    for (_, name, e) in &unopened {
-        let _ = writeln!(out, "{}'s status board does not open here: {}", printable(name), printable(e));
-    }
-    Ok(())
+    let n: usize = projects.values().flat_map(|m| m.values()).map(Vec::len).sum();
+    (tree, n)
 }
 
 /// The Tasks with no parent among `tasks`, in the board's order; then, so
@@ -361,4 +368,66 @@ pub(super) fn ping(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+/// gruntas-mcp's gruntas_status (GA03): every machine's board, read and
+/// opened as `gruntas status` reads them, and the devices whose board did
+/// not open.
+pub(crate) fn boards() -> Result<(Vec<Machine>, Vec<Unopened>), Error> {
+    super::host::own_ctx(&super::flags::Flags::default(), |ctx| {
+        let k = keys(ctx)?;
+        let (_, machines, unopened) = read(ctx, &k, "the god agent")?;
+        Ok((machines, unopened))
+    })
+}
+
+/// A machine asked by the god agent: its name, its device and its answer.
+pub(crate) type Asked = (String, String, Result<HostAnswer, (String, String)>);
+
+/// gruntas-mcp's gruntas_changes (GA03): `command`, made for each machine
+/// with a board by its device id, asked of them all at once through
+/// `god::ask`. A machine whose presence lapsed, or whose board does not
+/// open here, is answered `machine_unknown` at once, with nothing sent.
+pub(crate) fn ask_every(command: impl Fn(&str) -> HostCommand + Sync) -> Result<Vec<Asked>, Error> {
+    use gruntas_harness::sync::god;
+    super::host::own_ctx(&super::flags::Flags::default(), |ctx| {
+        let k = keys(ctx)?;
+        let (_, machines, unopened) = read(ctx, &k, "the god agent")?;
+        let a = super::synced::announcer(ctx, false)?;
+        let unknown = |why: String| Err(("machine_unknown".to_string(), why));
+        let mut asked: Vec<Asked> = std::thread::scope(|s| {
+            let threads: Vec<_> = machines
+                .iter()
+                .map(|m| {
+                    let (a, command) = (&a, &command);
+                    s.spawn(move || {
+                        let answer = match gruntas_client::e2e::DeviceId::parse(&m.device) {
+                            _ if m.health != Health::Serving => unknown(format!("{} is UNKNOWN: its presence lapsed, so it was not asked", m.name)),
+                            None => unknown(format!("{}'s board names no device id", m.name)),
+                            Some(d) => god::ask(a, &d, &m.name, &command(&m.device), god::ASK_WAIT),
+                        };
+                        (m.name.clone(), m.device.clone(), answer)
+                    })
+                })
+                .collect();
+            threads.into_iter().zip(&machines).map(|(t, m)| t.join().unwrap_or_else(|_| (m.name.clone(), m.device.clone(), Err(("machine_unknown".into(), format!("asking {} failed here", m.name)))))).collect()
+        });
+        asked.extend(unopened.into_iter().map(|(d, n, e)| (n.clone(), d, unknown(format!("{n}'s status board does not open here: {e}")))));
+        Ok(asked)
+    })
+}
+
+/// gruntas-mcp's gruntas_ping (GA03): `gruntas ping <target> --json`'s data,
+/// run in this process.
+pub(crate) fn ping_data(target: &str) -> Result<Value, Error> {
+    let (mut out, mut err) = (Vec::new(), std::io::sink());
+    let env = |k: &str| std::env::var(k).unwrap_or_default();
+    {
+        let mut io = super::Io { stdout: &mut out, stderr: &mut err, env: &env, tty: false, err_tty: false, stdin_tty: false };
+        let mut f = super::flags::Flags::default();
+        f.quiet = true;
+        let mut ctx = Ctx { io: &mut io, f, format: Format::Json, colour: false, filter: None };
+        ping(&mut ctx, &[target.to_string()])?;
+    }
+    serde_json::from_slice(&out).map_err(|e| fail("bad_answer", format!("gruntas ping did not print JSON: {e}")))
 }
