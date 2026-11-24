@@ -139,6 +139,9 @@ fn after_the_command_ran(err: &Error) -> Error {
 /// placed by, and `gruntas machines --json`.
 #[cfg(all(feature = "harness", unix))]
 pub use delegate::{machines, placer};
+/// gruntas-mcp's god agent tools: a question for the machine holding a session.
+#[cfg(all(feature = "harness", unix))]
+pub use agents::ask_holder;
 
 pub fn run(args: &[String], io: &mut Io) -> i32 {
     // `gruntas run <harness> …`: the words after the harness are the

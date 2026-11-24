@@ -156,6 +156,17 @@ impl Source for Claude {
     }
 }
 
+/// The messages of a transcript from byte `from` on, parsed as `read` parses
+/// them, oldest first: for a reader of a session's recent part (the god
+/// agent's `read`), never an import. `from` is where a line starts; one
+/// that is not is rewound to its line's start.
+pub fn messages_from(file: &mut std::fs::File, from: u64) -> Result<Vec<Message>, ImportError> {
+    let mut b = Builder::default();
+    let size = file.metadata()?.len();
+    read_jsonl(file, JsonlCursor { offset: from, size }, |n, raw| b.line(n, raw)).map_err(|e| context(e, "claude"))?;
+    Ok(b.messages)
+}
+
 /// The same error kind with its message prefixed, so the CLI can still tell a
 /// home-sandbox refusal from an I/O failure.
 fn context(e: ImportError, prefix: &str) -> ImportError {
