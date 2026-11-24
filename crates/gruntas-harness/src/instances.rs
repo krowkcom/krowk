@@ -1173,6 +1173,9 @@ pub fn from_config_json(raw: &serde_json::Value) -> Result<InstancesConfig, Stri
     }
     if let Some(v) = raw.get("ladder") {
         cfg.ladder = serde_json::from_value(v.clone()).map_err(|e| format!("\"ladder\": {e}"))?;
+        if cfg.ladder.key_cap_usd < 0.0 {
+            return Err("\"ladder\": \"keyCapUsd\" is a spend cap in US dollars, 0 or more".into());
+        }
     }
     if let Some(v) = raw.get("subagents") {
         cfg.subagents = serde_json::from_value(v.clone()).map_err(|e| format!("\"subagents\": {e}"))?;

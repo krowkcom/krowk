@@ -11,6 +11,13 @@
 //! place never crosses harnesses, and nothing ever drops a tier. The table
 //! and the rungs are config.json's `ladder`; the defaults stand without it.
 //!
+//! The API-key rungs spend money, so a session climbs onto them within a
+//! spend cap (D3; R-RL-3): `keyCapUsd`, $10 unless set, counted from its
+//! spend as it entered the key rung (`KeySpend`). At the cap it stops,
+//! input-required, with `KeySpend::capped`'s reason; `keys_open` is what
+//! `steps` is told. Attended Codex has no spend reading, so it never climbs
+//! onto a key rung.
+//!
 //! Pure: it reads the registry and the usage records it is given, and
 //! decides nothing about whether an account is signed in — the caller
 //! passes over one that is not, as `--account auto` does.
@@ -66,12 +73,21 @@ pub struct Ladder {
     pub tiers: Vec<TierModels>,
     #[serde(default = "default_rungs")]
     pub rungs: Vec<Rung>,
+    /// The most a session spends on API-key rungs, in US dollars, from
+    /// when it entered one (D3).
+    #[serde(default = "default_key_cap")]
+    pub key_cap_usd: f64,
 }
 
 impl Default for Ladder {
     fn default() -> Ladder {
-        Ladder { tiers: default_tiers(), rungs: default_rungs() }
+        Ladder { tiers: default_tiers(), rungs: default_rungs(), key_cap_usd: default_key_cap() }
     }
+}
+
+/// D3's default cap.
+fn default_key_cap() -> f64 {
+    10.0
 }
 
 fn default_rungs() -> Vec<Rung> {
@@ -169,6 +185,64 @@ impl Ladder {
     /// The ladder's pick: the first of `steps`, none when none is left.
     pub fn next(&self, registry: &Registry, data: &Data, from: &ModelRef, keys: bool, now_ms: i64) -> Option<Step> {
         self.steps(registry, data, from, keys, now_ms).into_iter().next()
+    }
+}
+
+/// A session on an API-key rung: the account it entered on, and its spend
+/// reading then, from which the cap counts (D3). The spend reading is the
+/// mod's session cost (Claude Code) or the Codex engine's usage
+/// (unattended Codex), in US dollars.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeySpend {
+    pub account: String,
+    pub baseline_usd: f64,
+    pub cap_usd: f64,
+}
+
+impl KeySpend {
+    /// A session entering the key rung on `step`'s account, its spend
+    /// reading `reading_usd` as it does.
+    pub fn enter(step: &Step, reading_usd: f64, cap_usd: f64) -> KeySpend {
+        KeySpend { account: step.to.instance.clone(), baseline_usd: reading_usd, cap_usd }
+    }
+
+    /// What it has spent on the key rung, at spend reading `reading_usd`.
+    pub fn spent(&self, reading_usd: f64) -> f64 {
+        (reading_usd - self.baseline_usd).max(0.0)
+    }
+
+    /// Why the session stops, once its spend since the baseline reached
+    /// the cap; none while it is under.
+    pub fn capped(&self, reading_usd: f64) -> Option<String> {
+        let spent = self.spent(reading_usd);
+        (spent >= self.cap_usd).then(|| format!("Stopped at the API-key spend cap: ${spent:.2} spent on {} since it moved onto the API-key rung, cap ${:.2} (ladder.keyCapUsd in ~/.gruntas/config.json). Raise the cap, or continue once a subscription has room.", self.account, self.cap_usd))
+    }
+}
+
+/// Whether the API-key rung is open to a session (`steps`' `keys`): never
+/// for attended Codex, which has no spend reading, nor for any session
+/// whose spend cannot be read (`reading_usd` none); on the key rung
+/// already (`on_key`), while it is under the cap.
+pub fn keys_open(harness: Harness, attended: bool, reading_usd: Option<f64>, on_key: Option<&KeySpend>) -> bool {
+    if attended && harness == Harness::Codex {
+        return false;
+    }
+    match (reading_usd, on_key) {
+        (None, _) => false,
+        (Some(r), Some(k)) => k.capped(r).is_none(),
+        (Some(_), None) => true,
+    }
+}
+
+/// The switch notice for `step`: the account, its model, its rung, and on
+/// the API-key rung the cap (D3).
+pub fn notice(step: &Step, cap_usd: f64) -> String {
+    let (account, model) = (&step.to.instance, &step.to.model);
+    match step.rung {
+        Rung::SameHarness => format!("Continuing on {account} ({model}): another subscription of the same harness."),
+        Rung::OtherHarness => format!("Continuing on {account} ({model}): a subscription of the other harness."),
+        Rung::ApiKey => format!("Continuing on {account} ({model}): an API-key account, billed per use, up to ${cap_usd:.2} this session."),
     }
 }
 
@@ -315,5 +389,39 @@ mod tests {
         // A session logged under its account's old name.
         reg.renamed.insert("claude:old".into(), "claude".into());
         assert_eq!(steps(&reg, &d, on("claude:old", "claude-opus-5-5"), false), [row(Rung::SameHarness, "claude:b", "claude-opus-5-5")]);
+    }
+
+    #[test]
+    fn rl05_the_cap_counts_from_the_baseline_and_closes_the_key_rung() {
+        assert_eq!(registry(json!(null)).ladder.key_cap_usd, 10.0, "D3's default");
+        let reg = registry(json!({"keyCapUsd": 2.5}));
+        assert_eq!(reg.ladder.key_cap_usd, 2.5);
+        let step = Step { rung: Rung::ApiKey, to: on("claude:key", "opus") };
+        // $40 spent on subscriptions before: only what follows counts.
+        let k = KeySpend::enter(&step, 40.0, reg.ladder.key_cap_usd);
+        assert_eq!((k.spent(40.0), k.spent(41.5)), (0.0, 1.5));
+        assert_eq!(k.capped(42.49), None, "under the cap");
+        assert!(keys_open(Harness::Claude, false, Some(42.49), Some(&k)));
+        let reason = k.capped(42.5).expect("at the cap");
+        assert!(reason.contains("$2.50 spent on claude:key") && reason.contains("cap $2.50"), "{reason}");
+        assert!(!keys_open(Harness::Claude, false, Some(42.5), Some(&k)), "at the cap the key rung closes");
+        assert!(!keys_open(Harness::Claude, true, None, None), "a spend that cannot be read opens no key rung");
+        // The notice names the account, its rung and the cap.
+        assert_eq!(notice(&step, 2.5), "Continuing on claude:key (opus): an API-key account, billed per use, up to $2.50 this session.");
+        assert_eq!(notice(&Step { rung: Rung::SameHarness, to: on("claude:b", "opus") }, 2.5), "Continuing on claude:b (opus): another subscription of the same harness.");
+    }
+
+    #[test]
+    fn rl05_attended_codex_never_gets_a_key_rung() {
+        let reg = registry(json!(null));
+        let spent = usage(&[("claude", None), ("claude:b", None), ("codex", None), ("codex:t", None)]);
+        let from = on("codex", "gpt-5.4");
+        assert!(!keys_open(Harness::Codex, true, Some(0.0), None), "even with a reading");
+        assert_eq!(reg.ladder.next(&reg, &spent, &from, keys_open(Harness::Codex, true, None, None), 2_000), None);
+        // Unattended Codex reads its spend from the engine: it climbs on.
+        let keys = keys_open(Harness::Codex, false, Some(3.0), None);
+        assert_eq!(reg.ladder.next(&reg, &spent, &from, keys, 2_000).map(|s| (s.rung, s.to.instance)), Some((Rung::ApiKey, "codex:key".into())));
+        // Attended Claude Code reads it from the mod.
+        assert!(keys_open(Harness::Claude, true, Some(3.0), None));
     }
 }

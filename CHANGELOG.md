@@ -42,6 +42,12 @@ breaking changes may affect it without notice.
   `standard`, `fast`, each with its Claude Code and Codex model ids, `*`
   matching any run of characters) and which rungs are tried in what order
   (`rungs`: `same-harness`, `other-harness`, `api-key`).
+- **A spend cap on API-key rungs.** A launched session that climbs onto
+  an API-key account spends at most `ladder.keyCapUsd` (US dollars, $10
+  unless set) from the moment it got there; at the cap it stops,
+  input-required, with the reason on its status. The switch notice names
+  the account, its rung and the cap. Attended Codex sessions, whose spend
+  cannot be read, never move onto an API-key account.
 - **The god agent: ask any agent what your swarm is doing.** The plugin's
   MCP server offers `gruntas_status`, `gruntas_changes`, `gruntas_read` and
   `gruntas_ping` to every agent, and `gruntas_message` and
