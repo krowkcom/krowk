@@ -147,11 +147,9 @@ fn install_plugin(dir: &std::path::Path, gruntas: &std::path::Path) -> std::io::
 /// there → as shipped, `npx -y @gruntas/mcp`. The marketplace's stays npx.
 fn plugin_json(shipped: &str, gruntas: &std::path::Path) -> String {
     let mcp = gruntas.with_file_name(format!("gruntas-mcp{}", std::env::consts::EXE_SUFFIX));
-    if !mcp.is_file() {
-        return shipped.into();
-    }
+    let (Some(command), true) = (mcp.to_str(), mcp.is_file()) else { return shipped.into() };
     let Ok(mut json) = serde_json::from_str::<serde_json::Value>(shipped) else { return shipped.into() };
-    json["mcpServers"]["gruntas"] = serde_json::json!({ "command": mcp, "args": [] });
+    json["mcpServers"]["gruntas"] = serde_json::json!({ "command": command, "args": [] });
     serde_json::to_string_pretty(&json).map_or_else(|_| shipped.into(), |s| s + "\n")
 }
 
