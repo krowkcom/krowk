@@ -1,6 +1,7 @@
 //! The launcher's plans (Launcher D1–D5): how `gruntas run <harness>` starts
-//! the stock `claude` or `codex` on one account, attended (the harness
-//! replaces gruntas at the terminal) or unattended (a background session).
+//! the stock `claude` or `codex` on one account, attended (the harness a
+//! child of gruntas at the terminal, `crate::attended`) or unattended (a
+//! background session).
 //! A plan is the whole launch as data: the program, the environment (the
 //! account's config home), the arguments with the gruntas plugin and, for
 //! Claude Code, one `--settings` JSON carrying the sandbox parts that keep

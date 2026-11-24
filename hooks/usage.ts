@@ -13,6 +13,11 @@
 // interrupt aborts the running turn, tracked from turn.start, or is answered
 // "nothing running". Each is acked in the acks file beside the inbox, which
 // the daemon waits on to answer the command.
+//
+// The daemon's own notices come the same way (Rollover for launched
+// sessions D5): when this account runs low in a session `gruntas run`
+// started, which account comes next and that `/exit` continues there,
+// shown as a toast and kept in the status line.
 import type { EngineInterface, Register, SessionRateLimit } from 'claude-code'
 
 /** One window as `gruntas hook claude usage` takes it. */
@@ -80,7 +85,7 @@ export const STALE_MS = 8_000
 const ACKS_KEPT = 64
 
 /** One line of the inbox, as the daemon writes it (`sync::god::inbox::Steer`). */
-export type Steer = { type: 'message'; id: string; text: string; at: string } | { type: 'interrupt'; id: string; at: string }
+export type Steer = { type: 'message' | 'notice'; id: string; text: string; at: string } | { type: 'interrupt'; id: string; at: string }
 
 /** What came of a steer, as the daemon reads it (`inbox::Ack`). */
 export type Ack = { id: string; outcome: 'delivered' | 'nothingRunning' | 'refused'; message?: string }
@@ -98,7 +103,7 @@ function due(inbox: string, done: ReadonlySet<string>, now: number): Steer[] {
     if (typeof s?.id !== 'string' || typeof s.at !== 'string' || done.has(s.id)) continue
     const age = now - Date.parse(s.at)
     if (!(age >= -STALE_MS && age < STALE_MS)) continue
-    if (s.type === 'message' && typeof (s as { text?: unknown }).text === 'string') out.push(s as Steer)
+    if ((s.type === 'message' || s.type === 'notice') && typeof (s as { text?: unknown }).text === 'string') out.push(s as Steer)
     else if (s.type === 'interrupt') out.push(s as Steer)
   }
   return out
@@ -142,6 +147,12 @@ async function act($: EngineInterface, s: Steer): Promise<Ack> {
     } catch {
       return { id: s.id, outcome: 'nothingRunning' }
     }
+  }
+  if (s.type === 'notice') {
+    // Not awaited, as a prompt is not: a UI that cannot show it loses nothing.
+    void Promise.resolve($.ui.toast(s.text)).catch(() => undefined)
+    void Promise.resolve($.ui.status(s.text)).catch(() => undefined)
+    return { id: s.id, outcome: 'delivered' }
   }
   // The daemon framed it; a message that is not is not the daemon's.
   if (!s.text.startsWith('<steer from ')) return { id: s.id, outcome: 'refused', message: 'the message came without its origin' }

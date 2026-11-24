@@ -68,6 +68,8 @@
 
 pub mod agents;
 pub mod ask;
+#[cfg(unix)]
+pub mod attended;
 pub mod bridge;
 pub mod budget;
 pub mod builds;
