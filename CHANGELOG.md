@@ -39,6 +39,12 @@ breaking changes may affect it without notice.
   device. Answers from other machines take a few seconds: a machine that
   was just asked something refreshes every 2 seconds for the next 2
   minutes. A machine on an older gruntas is reported as needing an update.
+- **`gruntas_read` reads a session's transcript from the machine it runs
+  on**, newest first, about 12 KB a page with a cursor for the page before,
+  secrets redacted and the text marked as the session's own. Interactive
+  Claude Code sessions (their transcript's last 2 MB) and sessions gruntas
+  runs can be read; a Codex session answers that it can't be read yet.
+  Nothing is copied off the machine except the page asked for.
 
 - **`gruntas run claude|codex` starts the stock harness on one of your
   accounts** (`--account work` is `claude:work`; none is the account plain

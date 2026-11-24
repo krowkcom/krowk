@@ -230,6 +230,50 @@ fn print_session(out: &mut dyn std::io::Write, s: &Value, depth: usize) {
     }
 }
 
+/// The machine whose board lists the session `target`, its id in full or 8
+/// or more characters it starts with: the machine, the session's full id
+/// and its device. `none` says what was looked for when nothing is found.
+fn holder<'a>(machines: &'a [Machine], target: &str, none: &str) -> Result<(&'a Machine, &'a String, gruntas_client::e2e::DeviceId), Error> {
+    let on = |exact: bool| -> Vec<(&Machine, &String)> { machines.iter().flat_map(|m| m.board.sessions.iter().filter(move |s| if exact { *s == target } else { target.len() >= 8 && s.starts_with(target) }).map(move |s| (m, s))).collect() };
+    let mut found = on(true);
+    if found.is_empty() {
+        found = on(false);
+    }
+    // One session on two boards (moved, its old machine's board not yet
+    // replaced): the machine that is up, then the newest board.
+    let first = found.first().map(|(_, s)| s.as_str());
+    if found.iter().all(|(_, s)| Some(s.as_str()) == first) {
+        found.sort_by_key(|(m, _)| (m.health == Health::Serving, m.board.published_at.parse::<jiff::Timestamp>().ok()));
+        found.drain(..found.len().saturating_sub(1));
+    }
+    let (m, s) = match found[..] {
+        [one] => one,
+        [] => return Err(fail("no_agent", format!("{none} '{}' — gruntas machines and gruntas status list them", printable(target)))),
+        _ => return Err(fail("ambiguous_session", format!("'{}' names more than one session — give more of its id", printable(target)))),
+    };
+    let d = gruntas_client::e2e::DeviceId::parse(&m.device).ok_or_else(|| fail("bad_board", "a board names no device id"))?;
+    Ok((m, s, d))
+}
+
+/// The god agent's question `command` (made with the session's full id) of
+/// the machine whose board lists `session`, through `god::ask`: the
+/// machine's name and its answer (gruntas-mcp's gruntas_read). A machine
+/// whose presence lapsed is said at once, with nothing sent.
+pub fn ask_holder(session: &str, command: impl FnOnce(String) -> HostCommand) -> Result<(String, HostAnswer), Error> {
+    use gruntas_harness::sync::god;
+    super::host::own_ctx(&super::flags::Flags::default(), |ctx| {
+        let k = keys(ctx)?;
+        let (_, machines, _) = read(ctx, &k, "the god agent")?;
+        let (m, s, device) = holder(&machines, session, "no session")?;
+        if m.health != Health::Serving {
+            return Err(fail("machine_unknown", format!("{} is UNKNOWN: its presence lapsed, so it was not asked — start gruntas's host service there", m.name)));
+        }
+        let a = super::synced::announcer(ctx, false)?;
+        let answer = god::ask(&a, &device, &m.name, &command(s.clone()), god::ASK_WAIT).map_err(|(code, why)| fail(&code, why))?;
+        Ok((m.name.clone(), answer))
+    })
+}
+
 /// `gruntas ping <machine|session>`.
 pub(super) fn ping(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let [target] = args else {
@@ -241,25 +285,7 @@ pub(super) fn ping(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         Ok(Some(d)) => (signed(ctx, &k, "gruntas ping")?, d.id(), None),
         Ok(None) => {
             let (api, machines, _) = read(ctx, &k, "gruntas ping")?;
-            // The id in full, else 8 or more characters it starts with.
-            let on = |exact: bool| -> Vec<(&Machine, &String)> { machines.iter().flat_map(|m| m.board.sessions.iter().filter(move |s| if exact { *s == target } else { target.len() >= 8 && s.starts_with(target.as_str()) }).map(move |s| (m, s))).collect() };
-            let mut found = on(true);
-            if found.is_empty() {
-                found = on(false);
-            }
-            // One session on two boards (moved, its old machine's board not
-            // yet replaced): the machine that is up, then the newest board.
-            let first = found.first().map(|(_, s)| s.as_str());
-            if found.iter().all(|(_, s)| Some(s.as_str()) == first) {
-                found.sort_by_key(|(m, _)| (m.health == Health::Serving, m.board.published_at.parse::<jiff::Timestamp>().ok()));
-                found.drain(..found.len().saturating_sub(1));
-            }
-            let (m, s) = match found[..] {
-                [one] => one,
-                [] => return Err(fail("no_agent", format!("no machine or session '{}' — gruntas machines and gruntas status list them", printable(target)))),
-                _ => return Err(fail("ambiguous_session", format!("'{}' names more than one session — give more of its id", printable(target)))),
-            };
-            let Some(d) = gruntas_client::e2e::DeviceId::parse(&m.device) else { return Err(fail("bad_board", "a board names no device id")) };
+            let (_, s, d) = holder(&machines, target, "no machine or session")?;
             (api, d, Some(s.clone()))
         }
         Err(e) => return Err(e),
