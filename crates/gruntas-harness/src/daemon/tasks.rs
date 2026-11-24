@@ -86,7 +86,9 @@ enum Turn {
     #[default]
     Going,
     /// Its end was answered with `reportDue`, which the plugin's Stop hook
-    /// turns into a block: the turn goes on, and its next end is the end.
+    /// turns into a block: the turn goes on, and its next end is the end,
+    /// whatever was done between. As answered, not as the hook acted: a
+    /// hook that died before reading the answer blocked nothing.
     Reminded,
     /// Over: the session waits.
     Ended,
@@ -165,10 +167,12 @@ impl Tasks {
     /// daemon has none for changes nothing.
     pub fn apply(&mut self, a: &Activity, now: &str) -> bool {
         // Any activity of a session but its turn's end (`turn_end`) is its
-        // turn under way.
+        // turn under way: an ended one going again, a reminded one still
+        // reminded until its next end, unless the session started anew.
         let mut going = false;
         if !matches!(a, Activity::TurnEnd { .. })
             && let Some(e) = activity_session(a).and_then(|id| self.tasks.get_mut(id))
+            && (e.turn == Turn::Ended || matches!(a, Activity::Register(_)))
         {
             going = !std::mem::take(&mut e.turn).going();
         }
@@ -658,7 +662,9 @@ mod tests {
         assert!(t.to_stop().0.is_empty(), "its turn is under way again");
         turn_end(&mut t, working, false);
         turn_end(&mut t, mid_turn, false);
-        // The reminded turn's next end is its end, reminded again or not.
+        // The reminded turn's next end is its end, after more work and
+        // reminded again or not.
+        t.apply(&Activity::ToolEnd { session_id: reminded.into() }, T2);
         turn_end(&mut t, reminded, true);
         let stopped: Vec<String> = t.to_stop().0.into_iter().map(|(id, _)| id).collect();
         assert_eq!(stopped, ["aaaa0002", "aaaa0003", "aaaa0005"]);
