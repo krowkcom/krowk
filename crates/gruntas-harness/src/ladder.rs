@@ -82,9 +82,9 @@ fn default_rungs() -> Vec<Rung> {
 fn default_tiers() -> Vec<TierModels> {
     let t = |tier, claude: &[&str], codex: &[&str]| TierModels { tier, claude: claude.iter().map(|s| s.to_string()).collect(), codex: codex.iter().map(|s| s.to_string()).collect() };
     vec![
-        t(Tier::Frontier, &["opus", "claude-opus-*", "opus[*"], &["gpt-5.5", "gpt-5.5-codex"]),
-        t(Tier::Standard, &["sonnet", "claude-sonnet-*", "sonnet[*"], &["gpt-5.4", "gpt-5.3-codex"]),
-        t(Tier::Fast, &["haiku", "claude-haiku-*"], &["gpt-5.4-mini", "gpt-5.5-mini"]),
+        t(Tier::Frontier, &["opus", "claude-opus-*", "opus[*"], &["gpt-6-astra", "gpt-5.6-sol", "gpt-5.5"]),
+        t(Tier::Standard, &["sonnet", "claude-sonnet-*", "sonnet[*"], &["gpt-5.6-terra", "gpt-5.4"]),
+        t(Tier::Fast, &["haiku", "claude-haiku-*"], &["gpt-5.6-luna", "gpt-5.4-mini"]),
     ]
 }
 
@@ -122,7 +122,9 @@ impl Ladder {
     /// spend cannot be read, and the API-key rung is passed over. Empty →
     /// none left.
     pub fn steps(&self, registry: &Registry, data: &Data, from: &ModelRef, keys: bool, now_ms: i64) -> Vec<Step> {
-        let Some(own) = registry.instances.get(&from.instance).and_then(|i| harness_of(i.kind)) else { return Vec::new() };
+        // A session logged under a name its account has since lost.
+        let from_name = registry.current(&from.instance);
+        let Some(own) = registry.instances.get(&from_name).and_then(|i| harness_of(i.kind)) else { return Vec::new() };
         let other = match own {
             Harness::Claude => Harness::Codex,
             Harness::Codex => Harness::Claude,
@@ -130,20 +132,27 @@ impl Ladder {
         // The other harness's model at this session's tier; none → no rung
         // crosses, as nothing there is known to be the same tier.
         let across = self.tier_of(own, &from.model).and_then(|t| self.model_at(other, t));
-        let login = data.login_of(&from.instance);
+        let login = data.login_of(&from_name);
+        // An account that listed its models has this one when it lists it
+        // or another id of its tier: Claude Code lists `opus`, not
+        // `claude-opus-5-5`.
         let rank = |rung, harness: Harness, keyed: bool, model: Option<&str>| -> Vec<Step> {
             let Some(model) = model else { return Vec::new() };
+            let tier = self.tier_of(harness, model);
             let candidates: Vec<ModelRef> = registry
                 .instances
                 .iter()
-                .filter(|(n, i)| i.kind == harness.kind() && i.backend.is_some() && i.api_key_env.is_empty() != keyed && **n != from.instance)
-                .filter(|(n, _)| data.instance(n).is_none_or(|r| r.models.is_empty() || r.models.iter().any(|m| m == model)))
+                .filter(|(n, i)| i.kind == harness.kind() && i.backend.is_some() && i.api_key_env.is_empty() != keyed && **n != from_name)
+                .filter(|(n, _)| data.instance(n).is_none_or(|r| r.models.is_empty() || r.models.iter().any(|m| m == model || self.tier_of(harness, m).is_some_and(|t| Some(t) == tier))))
                 .map(|(n, _)| ModelRef { instance: n.clone(), model: model.to_string() })
                 .collect();
             data.rank(login, &candidates, now_ms).into_iter().map(|r| Step { rung, to: r.model }).collect()
         };
         let mut out = Vec::new();
-        for rung in &self.rungs {
+        for (i, rung) in self.rungs.iter().enumerate() {
+            if self.rungs[..i].contains(rung) {
+                continue;
+            }
             match rung {
                 Rung::SameHarness => out.extend(rank(*rung, own, false, Some(&from.model))),
                 Rung::OtherHarness => out.extend(rank(*rung, other, false, across)),
@@ -229,7 +238,7 @@ mod tests {
         // (codex:t has more left), then keys: Claude Code's before Codex's.
         assert_eq!(
             steps(&reg, &d, on("claude", "claude-opus-5-5"), true),
-            [row(Rung::SameHarness, "claude:b", "claude-opus-5-5"), row(Rung::OtherHarness, "codex:t", "gpt-5.5"), row(Rung::OtherHarness, "codex", "gpt-5.5"), row(Rung::ApiKey, "claude:key", "claude-opus-5-5"), row(Rung::ApiKey, "codex:key", "gpt-5.5")]
+            [row(Rung::SameHarness, "claude:b", "claude-opus-5-5"), row(Rung::OtherHarness, "codex:t", "gpt-6-astra"), row(Rung::OtherHarness, "codex", "gpt-6-astra"), row(Rung::ApiKey, "claude:key", "claude-opus-5-5"), row(Rung::ApiKey, "codex:key", "gpt-6-astra")]
         );
         // From Codex's mid model: Claude Code at Sonnet.
         assert_eq!(steps(&reg, &d, on("codex:t", "gpt-5.4"), false), [row(Rung::SameHarness, "codex", "gpt-5.4"), row(Rung::OtherHarness, "claude:b", "sonnet")]);
@@ -242,7 +251,7 @@ mod tests {
     fn the_cap_closes_the_key_rung_and_nothing_left_is_none() {
         let reg = registry(json!(null));
         let spent = usage(&[("claude", None), ("claude:b", None), ("codex", None), ("codex:t", Some(95.0))]);
-        assert_eq!(steps(&reg, &spent, on("claude", "claude-haiku-4-5"), true), [row(Rung::ApiKey, "claude:key", "claude-haiku-4-5"), row(Rung::ApiKey, "codex:key", "gpt-5.4-mini")]);
+        assert_eq!(steps(&reg, &spent, on("claude", "claude-haiku-4-5"), true), [row(Rung::ApiKey, "claude:key", "claude-haiku-4-5"), row(Rung::ApiKey, "codex:key", "gpt-5.6-luna")]);
         assert_eq!(reg.ladder.next(&reg, &spent, &on("claude", "claude-haiku-4-5"), false, 2_000), None, "at the cap, no subscription left: none");
         // An account that is no harness account has no ladder.
         assert!(steps(&reg, &spent, on("anthropic", "claude-opus-5-5"), true).is_empty());
@@ -251,21 +260,20 @@ mod tests {
     #[test]
     fn a_setting_reorders_and_drops_rungs() {
         let d = usage(&[("claude", Some(99.0)), ("claude:b", Some(20.0)), ("codex", Some(50.0)), ("codex:t", Some(10.0))]);
-        let reg = registry(json!({"rungs": ["api-key", "same-harness"]}));
-        assert_eq!(steps(&reg, &d, on("claude", "opus"), true), [row(Rung::ApiKey, "claude:key", "opus"), row(Rung::ApiKey, "codex:key", "gpt-5.5"), row(Rung::SameHarness, "claude:b", "opus")]);
+        let reg = registry(json!({"rungs": ["api-key", "same-harness", "api-key"]}));
+        assert_eq!(steps(&reg, &d, on("claude", "opus"), true), [row(Rung::ApiKey, "claude:key", "opus"), row(Rung::ApiKey, "codex:key", "gpt-6-astra"), row(Rung::SameHarness, "claude:b", "opus")]);
         let reg = registry(json!({"rungs": ["other-harness"]}));
-        assert_eq!(steps(&reg, &d, on("claude", "opus"), true), [row(Rung::OtherHarness, "codex:t", "gpt-5.5"), row(Rung::OtherHarness, "codex", "gpt-5.5")]);
+        assert_eq!(steps(&reg, &d, on("claude", "opus"), true), [row(Rung::OtherHarness, "codex:t", "gpt-6-astra"), row(Rung::OtherHarness, "codex", "gpt-6-astra")]);
     }
 
     #[test]
     fn tiers_match_by_pattern_and_a_session_never_drops_one() {
         let l = Ladder::default();
-        for (h, model, tier) in [(Harness::Claude, "opus", Tier::Frontier), (Harness::Claude, "Claude-Opus-5-5", Tier::Frontier), (Harness::Claude, "opus[1m]", Tier::Frontier), (Harness::Claude, "claude-sonnet-5", Tier::Standard), (Harness::Claude, "haiku", Tier::Fast), (Harness::Codex, "gpt-5.5", Tier::Frontier), (Harness::Codex, "gpt-5.4", Tier::Standard), (Harness::Codex, "gpt-5.4-mini", Tier::Fast)] {
+        for (h, model, tier) in [(Harness::Claude, "opus", Tier::Frontier), (Harness::Claude, "Claude-Opus-5-5", Tier::Frontier), (Harness::Claude, "opus[1m]", Tier::Frontier), (Harness::Claude, "claude-sonnet-5", Tier::Standard), (Harness::Claude, "haiku", Tier::Fast), (Harness::Codex, "gpt-6-astra", Tier::Frontier), (Harness::Codex, "gpt-5.5", Tier::Frontier), (Harness::Codex, "gpt-5.6-terra", Tier::Standard), (Harness::Codex, "gpt-5.6-luna", Tier::Fast), (Harness::Codex, "gpt-5.4-mini", Tier::Fast)] {
             assert_eq!(l.tier_of(h, model), Some(tier), "{model}");
         }
-        assert_eq!(l.tier_of(Harness::Codex, "gpt-5.5-mini"), Some(Tier::Fast), "no frontier pattern reaches the small model");
-        assert_eq!(l.tier_of(Harness::Claude, "gpt-5.5"), None, "another harness's id is no tier here");
-        assert_eq!((l.model_at(Harness::Claude, Tier::Frontier), l.model_at(Harness::Codex, Tier::Fast)), (Some("opus"), Some("gpt-5.4-mini")));
+        assert_eq!(l.tier_of(Harness::Claude, "gpt-6-astra"), None, "another harness's id is no tier here");
+        assert_eq!((l.model_at(Harness::Claude, Tier::Frontier), l.model_at(Harness::Codex, Tier::Fast)), (Some("opus"), Some("gpt-5.6-luna")));
         // A model in no tier stays on its own harness; a tier the other
         // harness has no model for is never stepped down to another.
         let d = usage(&[("claude", Some(99.0)), ("claude:b", Some(20.0)), ("codex", Some(50.0))]);
@@ -282,6 +290,21 @@ mod tests {
         let mut d = usage(&[("claude", Some(99.0)), ("claude:b", Some(20.0)), ("codex", Some(50.0))]);
         d.instances.get_mut("codex").unwrap().models = vec!["gpt-5.4".into()];
         d.instances.get_mut("claude:b").unwrap().login = "claude".into();
-        assert_eq!(steps(&reg, &d, on("claude", "opus"), false), [row(Rung::OtherHarness, "codex:t", "gpt-5.5")]);
+        assert_eq!(steps(&reg, &d, on("claude", "opus"), false), [row(Rung::OtherHarness, "codex:t", "gpt-6-astra")]);
+    }
+
+    #[test]
+    fn claude_codes_aliases_cover_the_full_ids_of_their_tier_and_a_renamed_account_climbs() {
+        let mut reg = registry(json!(null));
+        let mut d = usage(&[("claude", Some(99.0)), ("claude:b", Some(20.0)), ("claude:c", Some(30.0)), ("codex", None), ("codex:t", None)]);
+        // As Claude Code lists its models: aliases, not the account default's id.
+        d.instances.get_mut("claude:b").unwrap().models = ["default", "opus", "claude-fable-5-1[1m]", "sonnet", "haiku"].map(String::from).to_vec();
+        d.instances.get_mut("claude:c").unwrap().models = vec!["sonnet".into()];
+        let c = reg.instances["claude:b"].clone();
+        reg.instances.insert("claude:c".into(), c);
+        assert_eq!(steps(&reg, &d, on("claude", "claude-opus-5-5"), false), [row(Rung::SameHarness, "claude:b", "claude-opus-5-5")]);
+        // A session logged under its account's old name.
+        reg.renamed.insert("claude:old".into(), "claude".into());
+        assert_eq!(steps(&reg, &d, on("claude:old", "claude-opus-5-5"), false), [row(Rung::SameHarness, "claude:b", "claude-opus-5-5")]);
     }
 }
