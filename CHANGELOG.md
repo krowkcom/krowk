@@ -64,7 +64,8 @@ breaking changes may affect it without notice.
   `--unattended "<task>"` starts the task as a session of the host daemon's
   Codex engine, held to the same profile on every turn, and prints its id;
   a thread Codex opens outside the profile is stopped before it runs
-  anything. Codex can't load a plugin it hasn't installed, so the first run
+  anything. Such a session stays on Codex accounts, and needs the host
+  daemon on the same gruntas version. Codex can't load a plugin it hasn't installed, so the first run
   on an account without the gruntas plugin says how to install it.
 
 ### Changed
