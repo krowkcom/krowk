@@ -126,10 +126,69 @@ fn claude_attended(_ctx: &mut Ctx, _plan: Plan) -> Result<(), Error> {
     Err(not_yet("`gruntas run claude`", "LN02"))
 }
 
-/// LN03: start the `--bg` session, record it as unattended, print its id;
-/// refused where the sandbox cannot run.
-fn claude_unattended(_ctx: &mut Ctx, _plan: Plan) -> Result<(), Error> {
-    Err(not_yet("`gruntas run claude --unattended`", "LN03"))
+/// LN03: start the `--bg` session, record it with the daemon as a launched
+/// unattended session (stopped once its Task is done and its turn over),
+/// print its id; refused where the sandbox cannot run (D4).
+fn claude_unattended(ctx: &mut Ctx, plan: Plan) -> Result<(), Error> {
+    if let Err(why) = claude_sandbox_runs(ctx.io.env) {
+        return Err(fail("no_sandbox", format!("an unattended session runs only inside Claude Code's sandbox, which cannot run here: {why}")));
+    }
+    let mut cmd = std::process::Command::new(&plan.program);
+    cmd.args(&plan.args).stdin(std::process::Stdio::null());
+    for k in &plan.env_remove {
+        cmd.env_remove(k);
+    }
+    cmd.envs(plan.env_set.iter().map(|(k, v)| (k, v)));
+    let out = cmd.output().map_err(|e| fail("no_binary", format!("{} could not be run: {e}", plan.program.display())))?;
+    let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    if !out.status.success() {
+        // `claude --bg` asks no questions: a workspace this account has not
+        // trusted is trusted at its prompt, attended, on the same account.
+        let trust = match said.contains("not trusted") {
+            true => " — on this account, that is `gruntas run claude --account <name>` there; plain `claude` is your default account",
+            false => "",
+        };
+        return Err(fail("launch_failed", format!("`claude --bg` did not start the session ({}): {}{trust}", out.status, said.trim())));
+    }
+    let id = bg_id(&said).ok_or_else(|| fail("launch_failed", format!("`claude --bg` started, but did not say its session's id: {}", said.trim())))?;
+    let config_home = plan.config_home.as_ref().map(|h| h.display().to_string());
+    let stop = match &config_home {
+        Some(h) => format!("CLAUDE_CONFIG_DIR={} claude stop {id}", gruntas_harness::worktree::manage::quote(std::path::Path::new(h))),
+        None => format!("claude stop {id}"),
+    };
+    let launched = gruntas_harness::protocol::Activity::Launched { id: id.clone(), program: plan.program.display().to_string(), config_home };
+    let cwd = std::env::current_dir().map(|d| d.display().to_string()).unwrap_or_else(|_| "/".into());
+    gruntas_harness::hook::tell(ctx.io.env, &cwd, super::VERSION, launched).map_err(|e| fail("no_daemon", format!("session {id} started, but the gruntas daemon could not be told to stop it when it is done ({e}); stop it yourself with `{stop}`")))?;
+    let _ = writeln!(ctx.io.stdout, "{id}");
+    let _ = writeln!(ctx.io.stderr, "Started {id} in the background, unattended and sandboxed; the gruntas daemon stops it once its task is done. Stop it sooner with `{stop}`.");
+    Ok(())
+}
+
+/// The id `claude --bg` says it backgrounded the session as
+/// (`backgrounded · 075bf2a9`).
+fn bg_id(said: &str) -> Option<String> {
+    let line = said.lines().find(|l| l.trim_start().starts_with("backgrounded"))?;
+    let id = line.split_once('·')?.1.trim();
+    (!id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')).then(|| id.to_string())
+}
+
+/// Whether Claude Code's sandbox can run here, or why not: bubblewrap that
+/// makes a sandbox and socat on Linux, Seatbelt on macOS.
+fn claude_sandbox_runs(env: &dyn Fn(&str) -> String) -> Result<(), String> {
+    if cfg!(target_os = "macos") {
+        return match std::path::Path::new("/usr/bin/sandbox-exec").exists() {
+            true => Ok(()),
+            false => Err("macOS's sandbox-exec is missing".into()),
+        };
+    }
+    if !cfg!(target_os = "linux") {
+        return Err("Claude Code's sandbox runs on Linux and macOS only".into());
+    }
+    gruntas_harness::sandbox::enforcer().map_err(|e| e.split(", or run without --sandbox").next().unwrap_or_default().to_string())?;
+    match gruntas_harness::instances::find_binary("socat", &env("PATH")) {
+        Some(_) => Ok(()),
+        None => Err("it needs socat, which is not installed — install it (`apt install socat`, `dnf install socat`, `pacman -S socat`)".into()),
+    }
 }
 
 /// LN04: attended, replace gruntas with `codex` per the plan; unattended,
@@ -158,5 +217,14 @@ mod tests {
         assert!(parse(&["claude".into(), "--unattended".into(), " ".into()]).is_err());
         assert_eq!(super::words(&words("run claude -c")), Some(&words("run claude -c")[1..]));
         assert_eq!(super::words(&words("run --help")), None);
+    }
+
+    #[test]
+    fn the_bg_id_is_read_from_what_claude_says() {
+        let said = "Starting background service…\nbackgrounded · 075bf2a9\n  claude agents             list sessions\n";
+        assert_eq!(bg_id(said).as_deref(), Some("075bf2a9"));
+        assert_eq!(bg_id("backgrounded · ../x"), None);
+        assert_eq!(bg_id("backgrounded"), None);
+        assert_eq!(bg_id("Workspace not trusted."), None);
     }
 }
