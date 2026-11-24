@@ -31,7 +31,7 @@
 //! (`registry::write_private`); one that cannot be read is started over.
 
 use crate::protocol::{Activity, PluginHarness, Registration};
-use gruntas_client::status::{Field, Health, Provenance, Task, TaskMetadata, TaskState, TaskStatus, MAX_TASKS};
+use gruntas_client::status::{Field, Health, Message, Provenance, Task, TaskMetadata, TaskState, TaskStatus, MAX_TASKS};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -56,6 +56,11 @@ pub struct Tasks {
     /// or end by themselves.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     launched: BTreeMap<String, Launch>,
+    /// The sessions continued on the other harness that have not
+    /// registered yet: the session they continue, by their id (or its
+    /// first part, as `claude --bg` printed it).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    continued: BTreeMap<String, String>,
 }
 
 /// A background session to stop once it is done: `program stop <id>`
@@ -84,6 +89,10 @@ struct Entry {
     /// Stopped at the API-key spend cap (`capped`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     capped: bool,
+    /// The session it continued on, on the other harness: its Task stays
+    /// canceled when it ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    continued_on: Option<String>,
 }
 
 /// Where a session's turn stands, by its hooks.
@@ -188,8 +197,13 @@ impl Tasks {
             Activity::Register(r) if r.session_id.len() > MOST_NAME => false,
             Activity::Register(r) => {
                 self.make_room(&r.session_id);
-                let e = self.tasks.entry(r.session_id.clone()).or_insert_with(|| Entry { task: blank(&r.session_id, now), agent_state: None, turn: Turn::Going, capped: false });
+                let e = self.tasks.entry(r.session_id.clone()).or_insert_with(|| Entry { task: blank(&r.session_id, now), agent_state: None, turn: Turn::Going, capped: false, continued_on: None });
                 let before = e.clone();
+                e.continued_on = None;
+                if let Some(k) = self.continued.keys().find(|k| names(&r.session_id, k)).cloned() {
+                    let from = self.continued.remove(&k).unwrap_or_default();
+                    e.task.metadata.gruntas.continued_from = Some(Field::harness(from));
+                }
                 // A session resumed is at work again, whatever its agent said
                 // as it ended.
                 e.agent_state = e.agent_state.filter(|s| !s.is_terminal());
@@ -206,13 +220,16 @@ impl Tasks {
                 *e != before
             }
             Activity::Deregister { session_id } => self.change(session_id, now, |e| {
+                e.task.metadata.gruntas.health = Some(Field::harness(Health::NotServing));
+                if e.continued_on.is_some() {
+                    return;
+                }
                 let (state, source) = match e.agent_state {
                     _ if e.capped => (TaskState::InputRequired, Provenance::Harness),
                     Some(s) if s.is_terminal() => (s, Provenance::Agent),
                     _ => (TaskState::Completed, Provenance::Harness),
                 };
                 set_state(&mut e.task, state, source, now);
-                e.task.metadata.gruntas.health = Some(Field::harness(Health::NotServing));
             }),
             Activity::PermissionRequest { session_id } => self.change(session_id, now, |e| {
                 if !e.task.status.state.is_terminal() {
@@ -244,6 +261,30 @@ impl Tasks {
                 }
                 let l = Launch { program: program.clone(), config_home: config_home.clone() };
                 self.launched.insert(id.clone(), l.clone()) != Some(l)
+            }
+            Activity::Continued { from, to } if to.is_empty() || to.len() > MOST_NAME || from.len() > MOST_NAME => false,
+            Activity::Continued { from, to } => {
+                let old = self.change(from, now, |e| {
+                    e.continued_on = Some(to.clone());
+                    set_state(&mut e.task, TaskState::Canceled, Provenance::Harness, now);
+                    e.task.status.message = Some(Message::text("continued", format!("continued on {to}")));
+                });
+                let new = match self.tasks.iter_mut().find(|(id, _)| names(id, to)) {
+                    Some((_, e)) => {
+                        let link = Some(Field::harness(from.clone()));
+                        std::mem::replace(&mut e.task.metadata.gruntas.continued_from, link.clone()) != link
+                    }
+                    None => {
+                        if self.continued.len() >= MOST_LAUNCHED && !self.continued.contains_key(to) {
+                            let first = self.continued.keys().next().cloned();
+                            if let Some(k) = first {
+                                self.continued.remove(&k);
+                            }
+                        }
+                        self.continued.insert(to.clone(), from.clone()) != Some(from.clone())
+                    }
+                };
+                old | new
             }
             Activity::Usage { .. } => false,
         }
@@ -387,6 +428,12 @@ fn launched_entry<'t>(tasks: &'t BTreeMap<String, Entry>, id: &str) -> Option<&'
     tasks.get(id).or_else(|| tasks.range(id.to_string()..).take_while(|(k, _)| k.starts_with(id)).find(|(k, _)| k.as_bytes().get(id.len()) == Some(&b'-')).map(|(_, e)| e))
 }
 
+/// Whether session `id` is the one `short` names: the whole id, or its
+/// first part, as `claude --bg` prints it.
+fn names(id: &str, short: &str) -> bool {
+    id == short || (id.starts_with(short) && id.as_bytes().get(short.len()) == Some(&b'-'))
+}
+
 /// The session an activity is of, if it is of one.
 pub fn activity_session(a: &Activity) -> Option<&str> {
     match a {
@@ -399,7 +446,7 @@ pub fn activity_session(a: &Activity) -> Option<&str> {
         | Activity::Report { session_id, .. }
         | Activity::PermissionRequest { session_id }
         | Activity::Active { session_id } => Some(session_id),
-        Activity::Launched { .. } | Activity::Usage { .. } => None,
+        Activity::Launched { .. } | Activity::Continued { .. } | Activity::Usage { .. } => None,
     }
 }
 
@@ -885,5 +932,29 @@ mod tests {
         assert_eq!(gone.get("g").unwrap().status.message, None, "the cap's reason goes with it");
         let back: Tasks = serde_json::from_slice(&t.to_json()).unwrap();
         assert_eq!(back, t, "kept across a restart");
+    }
+
+    /// RL04 (D6): a session continued on the other harness cancels the old
+    /// Task, "continued on" the new one, which stays so as its harness
+    /// ends; the new Task carries `continuedFrom` once it registers by its
+    /// full id, or at once when it already has.
+    #[test]
+    fn rl04_a_continued_session_cancels_the_old_task_and_links_the_new() {
+        let mut t = Tasks::default();
+        t.apply(&reg("old"), T0);
+        let continued = Activity::Continued { from: "old".into(), to: "075bf2a9".into() };
+        assert!(t.apply(&continued, T1));
+        let old = t.get("old").unwrap();
+        assert_eq!((old.status.state, old.status.message.as_ref().map(Message::summary)), (TaskState::Canceled, Some("continued on 075bf2a9".into())));
+        t.apply(&Activity::Deregister { session_id: "old".into() }, T2);
+        assert_eq!((state(&t, "old").0, health(&t, "old")), (TaskState::Canceled, Health::NotServing), "its end leaves it canceled");
+        t.apply(&reg("075bf2a9-1111-4222-8333-444455556666"), T2);
+        let new = t.get("075bf2a9-1111-4222-8333-444455556666").unwrap();
+        assert_eq!(new.metadata.gruntas.continued_from, Some(Field::harness("old".into())));
+        assert!(t.continued.is_empty(), "the link is taken once");
+
+        t.apply(&reg("already"), T0);
+        t.apply(&Activity::Continued { from: "old".into(), to: "already".into() }, T1);
+        assert_eq!(t.get("already").unwrap().metadata.gruntas.continued_from, Some(Field::harness("old".into())));
     }
 }

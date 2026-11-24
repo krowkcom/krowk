@@ -516,7 +516,7 @@ pub fn run(args: &[String], stdin: impl Read, env: &dyn Fn(&str) -> String, vers
     // tool call or permission prompt is not held up for a daemon to start
     // (its session's start started one). Only the rest start one.
     let stream = match &activity {
-        Activity::Register(_) | Activity::Usage { .. } | Activity::Launched { .. } => connect_or_start(env, &socket),
+        Activity::Register(_) | Activity::Usage { .. } | Activity::Launched { .. } | Activity::Continued { .. } => connect_or_start(env, &socket),
         Activity::Deregister { .. } | Activity::HeavyStart { .. } | Activity::HeavyEnd { .. } | Activity::TurnEnd { .. } | Activity::ToolEnd { .. } | Activity::Report { .. } | Activity::PermissionRequest { .. } | Activity::Active { .. } => std::os::unix::net::UnixStream::connect(&socket).map_err(|e| format!("no daemon on {}: {e}", socket.display())),
     };
     let active = matches!(ev, HookEvent::Stop { active: true, .. });
