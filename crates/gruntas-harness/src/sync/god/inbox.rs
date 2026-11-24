@@ -139,7 +139,7 @@ pub(crate) fn deliver_in(daemon: &Path, session: &str, s: &Steer, wait: Duration
             };
         }
         if Instant::now() >= deadline {
-            return HostAnswer::refused(refusal::CANT_STEER, format!("can't steer session {session} yet: no gruntas plugin read its inbox within {} s, so it is not an interactive Claude Code session with the plugin's mod loaded", wait.as_secs()));
+            return super::run::cant_steer(super::run::NO_MOD);
         }
         std::thread::sleep(ACK_EVERY);
     }
