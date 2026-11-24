@@ -881,7 +881,7 @@ impl Placer {
                 Ok(Some(HostAnswer::Started { session_id })) => refused.push((name, "bad_answer".into(), format!("it answered with {session_id:?}, which is no session id"))),
                 Ok(Some(HostAnswer::Refused { code, message })) => refused.push((name, code, message)),
                 Ok(Some(HostAnswer::Taken { .. })) => refused.push((name, "bad_answer".into(), "it answered the task as a move".into())),
-                Ok(Some(HostAnswer::Pong { .. })) => refused.push((name, "bad_answer".into(), "it answered the task as a ping".into())),
+                Ok(Some(HostAnswer::Pong { .. } | HostAnswer::Recorded | HostAnswer::Page(_) | HostAnswer::Changes(_) | HostAnswer::Delivered { .. })) => refused.push((name, "bad_answer".into(), "it answered the task as another command".into())),
                 Ok(None) => {
                     // It may still start it, so it counts as a slot taken.
                     self.placed_on(&to.device);

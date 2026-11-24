@@ -299,3 +299,47 @@ fn r_sync_14_a_service_key_is_refused_commands() {
     }
 }
 
+
+/// GA01 (D3), the registry's answer record as the stand-in has it: the
+/// target writes it (the same bytes again are fine, others refused), the
+/// sender alone reads it, at most 64 KB, ten minutes from the first write.
+#[test]
+fn ga01_an_answer_record_is_written_by_the_target_and_read_by_the_sender() {
+    let p = person();
+    let (host, phone, laptop) = (p.host.client(&p.url), p.phone.client(&p.url), p.laptop.client(&p.url));
+    phone.send_host_command(&p.host.id(), ID, b"read").unwrap();
+    assert_eq!(phone.answer_record(&p.host.id(), ID).unwrap(), None, "not written yet");
+
+    let page = vec![7u8; 64 * 1024];
+    let written = host.put_answer_record(ID, &page).unwrap();
+    assert_eq!(written.command, ID);
+    let expires_at: Timestamp = written.expires_at.parse().unwrap();
+    assert_eq!(expires_at.duration_since(*p.clock.lock().unwrap()), SignedDuration::from_mins(10));
+    host.put_answer_record(ID, &page).unwrap();
+    let e = host.put_answer_record(ID, b"other").unwrap_err();
+    assert_eq!((e.code().as_str(), e.status), ("answer_record_written", 409), "{e:?}");
+
+    let read = phone.answer_record(&p.host.id(), ID).unwrap().unwrap();
+    assert_eq!((read.command.as_str(), read.sealed.as_slice(), read.expires_at.as_str()), (ID, page.as_slice(), written.expires_at.as_str()));
+    for e in [laptop.answer_record(&p.host.id(), ID).unwrap_err(), host.answer_record(&p.host.id(), ID).unwrap_err(), laptop.put_answer_record(ID, b"x").unwrap_err()] {
+        assert_eq!((e.code().as_str(), e.status), ("no_command", 404), "{e:?}");
+    }
+    p.advance(10 * 60);
+    assert_eq!(phone.answer_record(&p.host.id(), ID).unwrap(), None, "expired");
+}
+
+/// GA01: a record past 64 KB is `answer_record_too_large`, none at all is
+/// invalid, and one for a lapsed command is `no_command`.
+#[test]
+fn ga01_an_answer_record_is_held_to_its_size_and_its_commands_life() {
+    let p = person();
+    let (host, phone) = (p.host.client(&p.url), p.phone.client(&p.url));
+    phone.send_host_command(&p.host.id(), ID, b"read").unwrap();
+    let e = host.put_answer_record(ID, &vec![0u8; 64 * 1024 + 1]).unwrap_err();
+    assert_eq!((e.code().as_str(), e.status), ("answer_record_too_large", 413), "{e:?}");
+    let e = host.put_answer_record(ID, b"").unwrap_err();
+    assert_eq!((e.code().as_str(), e.status), ("invalid", 422), "{e:?}");
+    p.advance(10 * 60);
+    let e = host.put_answer_record(ID, b"late").unwrap_err();
+    assert_eq!((e.code().as_str(), e.status), ("no_command", 404), "{e:?}");
+}

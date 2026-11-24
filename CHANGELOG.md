@@ -32,6 +32,38 @@ breaking changes may affect it without notice.
 
 ### Added
 
+- **The god agent: ask any agent what your swarm is doing.** The plugin's
+  MCP server offers `gruntas_status`, `gruntas_changes`, `gruntas_read` and
+  `gruntas_ping` to every agent, and `gruntas_message` and
+  `gruntas_interrupt` within each machine's `steer` setting, on any paired
+  device. Answers from other machines take a few seconds: a machine that
+  was just asked something refreshes every 2 seconds for the next 2
+  minutes. A machine on an older gruntas is reported as needing an update.
+- **`gruntas_read` reads a session's transcript from the machine it runs
+  on**, newest first, about 12 KB a page with a cursor for the page before,
+  secrets redacted and the text marked as the session's own. Interactive
+  Claude Code sessions (their transcript's last 2 MB) and sessions gruntas
+  runs can be read; a Codex session answers that it can't be read yet.
+  Nothing is copied off the machine except the page asked for.
+- **The god agent messages and interrupts gruntas-run sessions.** A message
+  to an idle session is its next prompt, run in the `default` permission
+  mode and framed with who sent it; to a running one it is a steer into the
+  turn. Codex and headless sessions answer "can't steer this session yet"
+  with the reason.
+- **The god agent messages and interrupts interactive Claude Code
+  sessions.** In a session with the gruntas plugin, a message arrives as a
+  prompt marked with who sent it, and an interrupt stops the running turn or
+  says nothing is running. The target machine's `steer` setting decides
+  first. The plugin's mod checks for steers every 2 seconds without starting
+  a process.
+
+- **The god agent's status, changes and ping.** `gruntas_status` lists one
+  line per session (state, health, quiet for, summary) from every machine's
+  board, for one project when asked, 200 rows a page. `gruntas_changes`
+  lists what each machine's sessions did since a time, from a 24-hour log
+  each host now keeps, with machines that don't answer listed as unknown.
+  `gruntas_ping` is `gruntas ping`.
+
 - **`gruntas run claude|codex` starts the stock harness on one of your
   accounts** (`--account work` is `claude:work`; none is the account plain
   `claude` or `codex` in your shell uses), with the gruntas plugin and a sandbox that
@@ -79,6 +111,14 @@ breaking changes may affect it without notice.
   terms. It needs a yes at a terminal and is refused without one; the date
   you accepted is kept in `~/.gruntas/config.json` as `rolloverAcknowledged`,
   and later sets don't ask again.
+
+### Fixed
+
+- **An interactive Claude Code session counts as attended.** Claude Code
+  runs its hooks without a terminal, so every Claude Code session with the
+  plugin was registered as unattended, and under the default `steer`
+  setting (`attended`) its god agent could message or interrupt only the
+  sessions it had started. The session's own terminal now decides.
 
 ## [2026.11.1] - 2026-11-23
 

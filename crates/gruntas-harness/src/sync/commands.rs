@@ -42,6 +42,11 @@
 //! `busy`. A take still running after `TAKE_WAIT` is answered
 //! `take_unfinished` and left to finish: it may hold the lease by then.
 //!
+//! **The god agent's** `read`, `changes`, `message` and `interrupt` are
+//! answered by `super::god`, on a thread as a start is. An answer too big
+//! for the registry's 4 KB goes in the command's answer record, written
+//! before the answer that points at it (`host_command::seal_answer_or_record`).
+//!
 //! **Run** (R-ALLOC-3, R-ALLOC-5): a task a supervisor hands this machine.
 //! A job named in no shape a stored job has is refused `bad_job` as the
 //! command opens (`host_command::open_command`). Then it is admitted
@@ -111,9 +116,22 @@ pub fn moved_line(session: &str) -> String {
 enum Kept {
     /// Answered, not yet sealed: the keys were not to hand.
     Answer { from: DeviceId, answer: HostAnswer },
-    /// The sealed answer given, sent again as it is whenever the command is
-    /// delivered again: the registry takes the same bytes as a repeat.
-    Sealed(Vec<u8>),
+    /// The sealed answer given, and its answer record when it did not fit,
+    /// sent again as they are whenever the command is delivered again: the
+    /// registry takes the same bytes as a repeat.
+    Sealed(Sealed),
+}
+
+/// A sealed answer, and the answer record it points at, if any.
+type Sealed = (Vec<u8>, Option<Record>);
+
+/// An answer record, and the `host_failed` answer sent instead when the
+/// registry refuses it for good (too big, the command gone, a registry
+/// without answer records), so the asker is told rather than left waiting.
+#[derive(Clone)]
+struct Record {
+    sealed: Vec<u8>,
+    failed: Vec<u8>,
 }
 
 /// The commands this host has taken, across its publisher's runs.
@@ -156,19 +174,40 @@ impl State {
     }
 
     /// The answer to `id` sealed by `a`, if it is not yet, and kept so.
-    fn sealed(&mut self, id: &str, a: &Announcer) -> Option<Vec<u8>> {
+    fn sealed(&mut self, id: &str, a: &Announcer) -> Option<Sealed> {
         let sealed = match self.kept.get(id)? {
             Kept::Sealed(b) => return Some(b.clone()),
-            Kept::Answer { from, answer } => match host_command::seal_answer(answer, id, &a.device, from, &a.keys, a.chain.generation()) {
-                Ok(b) => b,
-                Err(e) => {
-                    eprintln!("gruntas: the answer to command {id} could not be sealed: {e}; it is tried again at the next refresh");
-                    return None;
+            Kept::Answer { from, answer } => match host_command::seal_answer_or_record(answer, id, &a.device, from, &a.keys, a.chain.generation()) {
+                Ok((answer, None)) => (answer, None),
+                Ok((answer, Some(record))) => {
+                    let refused = HostAnswer::refused("host_failed", "the answer was too big for the answer and its record could not be stored — see host.log there");
+                    let failed = host_command::seal_answer(&refused, id, &a.device, from, &a.keys, a.chain.generation()).ok()?;
+                    (answer, Some(Record { sealed: record, failed }))
                 }
+                // Too big even for an answer record: sealing it again won't
+                // help, so the asker is told, in a refusal, which fits.
+                Err(e) => match host_command::seal_answer(&HostAnswer::refused("host_failed", format!("the answer could not be sent: {e}")), id, &a.device, from, &a.keys, a.chain.generation()) {
+                    Ok(b) => {
+                        eprintln!("gruntas: the answer to command {id} could not be sealed: {e}; it is answered host_failed");
+                        (b, None)
+                    }
+                    Err(e) => {
+                        eprintln!("gruntas: the answer to command {id} could not be sealed: {e}; it is tried again at the next refresh");
+                        return None;
+                    }
+                },
             },
         };
         self.keep(id, Kept::Sealed(sealed.clone()));
         Some(sealed)
+    }
+
+    /// The answer to `id` landed: its record's bytes, up to 64 KB, are not
+    /// kept for a resend that won't come.
+    fn landed(&mut self, id: &str) {
+        if let Some(Kept::Sealed((_, record))) = self.kept.get_mut(id) {
+            *record = None;
+        }
     }
 }
 
@@ -240,7 +279,7 @@ impl Commands {
                             told.set(true);
                             finish(&me2, &c2, &id2, from, answer);
                         };
-                        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&me2, &c2, &host, command, &tell)));
+                        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&me2, &c2, &host, &id2, command, &tell)));
                         if ran.is_err() && !told.get() {
                             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tell(HostAnswer::refused("host_failed", "the host's command panicked — see host.log on it, and send it again"))));
                         }
@@ -278,7 +317,8 @@ fn finish(me: &Arc<Commands>, c: &Config, id: &str, from: DeviceId, answer: Host
         HostAnswer::Started { session_id } => eprintln!("gruntas: device {from} started session {session_id} on this machine"),
         HostAnswer::Taken { session_id } => eprintln!("gruntas: device {from} moved session {session_id} to this machine"),
         HostAnswer::Refused { code, message } => eprintln!("gruntas: device {from} asked something of this machine, refused: {} ({})", message.escape_debug(), code.escape_debug()),
-        HostAnswer::Pong { .. } => {}
+        HostAnswer::Delivered { session } => eprintln!("gruntas: device {from} steered session {session} on this machine"),
+        HostAnswer::Pong { .. } | HostAnswer::Recorded | HostAnswer::Page(_) | HostAnswer::Changes(_) => {}
     }
     let a = c.announce.as_ref().and_then(|o| (o.keys)(false).ok());
     let sealed = {
@@ -288,22 +328,46 @@ fn finish(me: &Arc<Commands>, c: &Config, id: &str, from: DeviceId, answer: Host
     };
     // On a thread of its own already: sent from here, the id still worked on.
     if let (Some(sealed), Some(a)) = (sealed, a) {
-        let _ = a.api.answer_host_command(id, &sealed);
+        deliver(me, &a.api, id, &sealed);
     }
     me.lock().working.remove(id);
 }
 
 /// `sealed`, the answer to `id`, sent from a thread of its own, the id
 /// skipped meanwhile. Not landed, it is sent again at the next delivery.
-fn send(me: &Arc<Commands>, id: &str, sealed: Vec<u8>, api: Arc<gruntas_api::Client>) {
+fn send(me: &Arc<Commands>, id: &str, sealed: Sealed, api: Arc<gruntas_api::Client>) {
     me.lock().working.insert(id.to_string());
     let (me2, id2) = (me.clone(), id.to_string());
     let spawned = std::thread::Builder::new().name("gruntas-host-answer".into()).spawn(move || {
-        let _ = api.answer_host_command(&id2, &sealed);
+        deliver(&me2, &api, &id2, &sealed);
         me2.lock().working.remove(&id2);
     });
     if spawned.is_err() {
         me.lock().working.remove(id);
+    }
+}
+
+/// The answer record first, when there is one, then the answer that points
+/// at it: an answer whose record did not land is not sent, so it is sent
+/// again, both, at the next delivery. A record already written (by this
+/// host before a restart) is landed: the first is kept, bound to the same
+/// command and devices. One the registry refuses for good is answered
+/// `host_failed` instead.
+fn deliver(me: &Commands, api: &gruntas_api::Client, id: &str, (answer, record): &Sealed) {
+    let mut answer = answer;
+    if let Some(r) = record
+        && let Err(e) = api.put_answer_record(id, &r.sealed)
+        && e.code() != "answer_record_written"
+    {
+        let again = e.status == 0 || e.status == 429 || e.status >= 500;
+        eprintln!("gruntas: the answer record for command {} did not land: {}; {}", id.escape_debug(), e.code(), if again { "it is sent again at the next delivery" } else { "it is answered host_failed" });
+        if again {
+            return;
+        }
+        answer = &r.failed;
+    }
+    if api.answer_host_command(id, answer).is_ok() {
+        me.lock().landed(id);
     }
 }
 
@@ -337,11 +401,12 @@ fn not_gruntas_own(dir: &Path, worktrees: Option<&Path>) -> bool {
 
 /// A command, run: a start's answer told to `tell` once known, then held
 /// for the bridge (`hold`); a take's once it moved or was refused.
-fn run(me: &Arc<Commands>, c: &Config, host: &str, command: HostCommand, tell: &dyn Fn(HostAnswer)) {
+fn run(me: &Arc<Commands>, c: &Config, host: &str, id: &str, command: HostCommand, tell: &dyn Fn(HostAnswer)) {
     let Some(o) = c.announce.as_ref() else { return tell(HostAnswer::refused("host_failed", "this host takes no commands")) };
     let cwd = match command {
         HostCommand::Run(task) => return run_task(c, o, host, task, tell),
         HostCommand::Ping { session } => return tell(HostAnswer::Pong { session: session.map(|s| ping_session(&c.socket, &s)) }),
+        HostCommand::Read { .. } | HostCommand::Changes { .. } | HostCommand::Message { .. } | HostCommand::Interrupt { .. } => return tell(super::god::answer(c, id, command)),
         HostCommand::Start { ref cwd, .. } | HostCommand::Take { ref cwd, .. } => cwd.clone(),
     };
     let policy = match (c.policy)() {
@@ -365,7 +430,7 @@ fn run(me: &Arc<Commands>, c: &Config, host: &str, command: HostCommand, tell: &
             return take(me, c, o, host, &session_id, &cwd, tell);
         }
         HostCommand::Take { session_id, .. } => return tell(HostAnswer::refused("bad_command", format!("{:?} is not a session id", session_id.escape_debug().to_string()))),
-        HostCommand::Run(_) | HostCommand::Ping { .. } => unreachable!("run and ping are answered above"),
+        _ => unreachable!("only a start or a take gets here"),
     };
     // The host's own default for the directory, never what the command
     // carried, and never a mode that asks nobody.

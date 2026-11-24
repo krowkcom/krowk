@@ -272,6 +272,25 @@ pub struct HostCommandState {
     pub expires_at: String,
 }
 
+/// A command's answer record (the god agent's D3): the answer too big for
+/// the 4 KB answer, sealed by the host to the sender, up to 64 KB, kept ten
+/// minutes from its first write. `sealed` is empty as the host writes it.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct AnswerRecord {
+    #[serde(default, deserialize_with = "nullable")]
+    pub command: String,
+    #[serde(default, deserialize_with = "hex_bytes")]
+    pub sealed: Vec<u8>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct AnswerRecordAnswer {
+    #[serde(default, deserialize_with = "nullable")]
+    answer_record: AnswerRecord,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 struct PresencePutAnswer {
     #[serde(default, deserialize_with = "nullable")]
@@ -897,6 +916,31 @@ impl Client {
         let body = json!({ "command": { "answer": crate::client::hex(answer) } });
         let path = format!("/key/device/commands/{}", slug_path(id));
         self.call_as_device::<Value>("PUT", &path, Some(body), ATTEMPTS, None).map(|_| ())
+    }
+
+    /// This device's answer record for the command `id` it was delivered
+    /// (D3): `sealed`, 1 to 64 KB, written before the small answer that
+    /// points at it. The first is kept: the same bytes again are Ok, so it
+    /// is retried; others are `answer_record_written`. Too big is
+    /// `answer_record_too_large`; a command not addressed to this device,
+    /// or lapsed, is `no_command`.
+    pub fn put_answer_record(&self, id: &str, sealed: &[u8]) -> Result<AnswerRecord, Error> {
+        let body = json!({ "answer_record": { "sealed": crate::client::hex(sealed) } });
+        let path = format!("/key/device/commands/{}/answer_record", slug_path(id));
+        let (answer, _): (AnswerRecordAnswer, u16) = self.call_as_device("PUT", &path, Some(body), ATTEMPTS, None)?;
+        Ok(answer.answer_record)
+    }
+
+    /// The answer record of the command `id` this device sent `device`:
+    /// None when none is written yet, or it expired (`no_answer_record`).
+    /// Read by the sender alone; anyone else is `no_command`.
+    pub fn answer_record(&self, device: &str, id: &str) -> Result<Option<AnswerRecord>, Error> {
+        let path = format!("{}/devices/{}/commands/{}/answer_record", self.user_path()?, slug_path(device), slug_path(id));
+        match self.get_as_device::<AnswerRecordAnswer>(&path) {
+            Ok(a) => Ok(Some(a.answer_record)),
+            Err(e) if e.code() == "no_answer_record" => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     /// This device is going away on purpose: its presence is cleared. Ok

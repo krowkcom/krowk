@@ -39,6 +39,8 @@ pub struct Coalescer {
     sent: Option<Vec<Task>>,
     sent_at: Option<Instant>,
     owed: bool,
+    /// The log of the sessions' changes (GA03, D4), kept as they are read.
+    changes: super::god::changes::Watch,
 }
 
 impl Coalescer {
@@ -144,6 +146,7 @@ pub fn board(dir: &Path, device: &DeviceId) -> Board {
 /// counts under `statistics_id`. An error is `(code, message)`.
 pub fn tick(c: &mut Coalescer, dir: &Path, a: &Announcer, statistics_id: &str) -> Result<(), (String, String)> {
     let b = board(dir, &a.device);
+    c.changes.observe(dir, &b.tasks, jiff::Timestamp::now());
     let now = Instant::now();
     if !c.due(&b.tasks, now) {
         return Ok(());

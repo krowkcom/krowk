@@ -23,6 +23,8 @@ mod first_run;
 #[cfg(all(feature = "harness", unix))]
 mod delegate;
 #[cfg(all(feature = "harness", unix))]
+mod god;
+#[cfg(all(feature = "harness", unix))]
 mod host;
 #[cfg(all(feature = "harness", unix))]
 mod accept;
@@ -139,6 +141,15 @@ fn after_the_command_ran(err: &Error) -> Error {
 /// placed by, and `gruntas machines --json`.
 #[cfg(all(feature = "harness", unix))]
 pub use delegate::{machines, placer};
+/// gruntas-mcp's god agent tools: a question for the machine holding a session.
+#[cfg(all(feature = "harness", unix))]
+pub use agents::ask_holder;
+/// gruntas-mcp's gruntas_status, gruntas_changes and gruntas_ping (GA03).
+#[cfg(all(feature = "harness", unix))]
+pub(crate) use agents::{ask_every, boards, ping_data, span, state_word, tree, Asked, Machine};
+/// gruntas-mcp's steering tools: this machine's name, for a steer's origin.
+#[cfg(all(feature = "harness", unix))]
+pub use god::this_machine;
 
 pub fn run(args: &[String], io: &mut Io) -> i32 {
     // `gruntas run <harness> …`: the words after the harness are the

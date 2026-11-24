@@ -13,6 +13,7 @@ pub mod boards;
 pub mod commands;
 pub mod direct;
 pub mod fleet;
+pub mod god;
 pub mod handoff;
 pub mod host;
 pub mod hosts;

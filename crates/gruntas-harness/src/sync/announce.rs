@@ -52,6 +52,32 @@ pub const EVERY: Duration = Duration::from_secs(10);
 pub const TTL: u64 = 30;
 const _: () = assert!(TTL >= 2 * EVERY.as_secs(), "a refresh may be missed without going offline");
 
+/// How often a host that was just delivered a command refreshes, and for
+/// how long after (the god agent's D8): a conversation with the god agent
+/// asks again within seconds, and is answered at the next refresh.
+pub const RESPONSIVE_EVERY: Duration = Duration::from_secs(2);
+pub const RESPONSIVE_FOR: Duration = Duration::from_secs(120);
+
+/// Whether the refresh is quick now: until `RESPONSIVE_FOR` after the last
+/// refresh that delivered a command.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Responsive {
+    until: Option<Instant>,
+}
+
+impl Responsive {
+    /// A refresh at `now` delivered a command.
+    pub fn heard(&mut self, now: Instant) {
+        self.until = Some(now + RESPONSIVE_FOR);
+    }
+
+    /// How long until the next refresh at `now`: `every`, or
+    /// `RESPONSIVE_EVERY` while quick, whichever is sooner.
+    pub fn every(&self, every: Duration, now: Instant) -> Duration {
+        if self.until.is_some_and(|until| now < until) { every.min(RESPONSIVE_EVERY) } else { every }
+    }
+}
+
 /// How often the device list is brought up to date from the registry and
 /// the instances checked again: a vendor's login is not asked every tick.
 pub const FRESH_EVERY: Duration = super::host::LIST_EVERY;
@@ -410,6 +436,8 @@ struct Ticks {
     daemon: Option<Daemon>,
     /// Set as the publisher is told to end, so a tick under way puts nothing.
     stop: Arc<std::sync::atomic::AtomicBool>,
+    /// Quick refreshes after a delivered command (D8).
+    responsive: Responsive,
 }
 
 impl Ticks {
@@ -426,7 +454,7 @@ fn publish(c: &Arc<Config>, stop: &Receiver<End>, stopping: Arc<std::sync::atomi
         eprintln!("gruntas: this machine cannot announce itself to your other devices: no async runtime for it");
         return false;
     };
-    let mut t = Ticks { published: false, refreshes: 0, said: HashSet::new(), fresh_at: None, instances: Vec::new(), pools: None, paused: None, daemon: None, stop: stopping };
+    let mut t = Ticks { published: false, refreshes: 0, said: HashSet::new(), fresh_at: None, instances: Vec::new(), pools: None, paused: None, daemon: None, stop: stopping, responsive: Responsive::default() };
     let mut last: Option<Announcer> = None;
     // The status board (R-STA-5) is checked every `boards::POLL` between
     // refreshes, and owed with each.
@@ -527,6 +555,7 @@ fn tick(c: &Arc<Config>, o: &Options, rt: &tokio::runtime::Runtime, t: &mut Tick
     if let Ok(put) = &sent
         && !put.commands.is_empty()
     {
+        t.responsive.heard(Instant::now());
         Commands::take(commands, c, &a, &record.name, put.commands.clone());
     }
     if let (Ok(put), Some(i)) = (&sent, &o.introductions)
@@ -540,7 +569,7 @@ fn tick(c: &Arc<Config>, o: &Options, rt: &tokio::runtime::Runtime, t: &mut Tick
             t.published = true;
             t.refreshes += 1;
             t.said.clear();
-            Next::After(o.every)
+            Next::After(t.responsive.every(o.every, Instant::now()))
         }
         Err((code, message)) => refused(c, o, t, &code, &message),
     }
@@ -665,6 +694,22 @@ mod tests {
 
     fn instance(name: &str, models: usize) -> AnnouncedInstance {
         AnnouncedInstance { name: name.into(), kind: "anthropic-api".into(), ready: true, state: "ready".into(), fix: Some("a\u{202e}b".into()), models: (0..models).map(|i| format!("model-{i:03}")).collect(), limit: None }
+    }
+
+    /// GA01 (D8): a host that was delivered a command refreshes every 2 s
+    /// for the next 2 minutes.
+    #[test]
+    fn ga01_a_host_sent_a_command_refreshes_every_2_s_for_2_minutes() {
+        let (t0, every) = (Instant::now(), EVERY);
+        let mut r = Responsive::default();
+        assert_eq!(r.every(every, t0), every, "no command yet: the usual 10 s");
+        r.heard(t0);
+        assert_eq!(r.every(every, t0), Duration::from_secs(2));
+        assert_eq!(r.every(every, t0 + Duration::from_secs(119)), Duration::from_secs(2));
+        assert_eq!(r.every(every, t0 + Duration::from_secs(120)), every, "two minutes on: back to 10 s");
+        r.heard(t0 + Duration::from_secs(100));
+        assert_eq!(r.every(every, t0 + Duration::from_secs(200)), Duration::from_secs(2), "another command keeps it quick");
+        assert_eq!(r.every(Duration::from_millis(50), t0 + Duration::from_secs(200)), Duration::from_millis(50), "never slower than asked");
     }
 
     /// R-HOST-3: the record is brought within its bounds before it is

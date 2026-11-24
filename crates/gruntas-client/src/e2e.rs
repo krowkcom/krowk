@@ -88,6 +88,10 @@ pub const LABEL_HOST_ANSWER_V1_KEY: &[u8] = b"krowk/host-answer/v1-key";
 /// under gruntas's own name.
 pub const LABEL_STATUS_BOARD_V1: &[u8] = b"gruntas/status-board/v1";
 pub const LABEL_STATUS_BOARD_V1_KEY: &[u8] = b"gruntas/status-board/v1-key";
+/// A host's answer too big for the 4 KB answer (`host_command`, the god
+/// agent's D3): kept beside the command as its answer record.
+pub const LABEL_ANSWER_RECORD_V1: &[u8] = b"gruntas/answer-record/v1";
+pub const LABEL_ANSWER_RECORD_V1_KEY: &[u8] = b"gruntas/answer-record/v1-key";
 pub const LABEL_TRANSPORT_V1: &[u8] = b"krowk/transport/v1";
 pub const LABEL_IMAGE_NAME_V1: &[u8] = b"krowk/image-name/v1";
 pub const LABEL_IMAGE_V1: &[u8] = b"krowk/image/v1";
@@ -535,6 +539,9 @@ pub enum Label {
     HostAnswer,
     /// A machine's status board of its sessions' Tasks (`status`).
     StatusBoard,
+    /// A host's answer too big for the answer itself, kept as the
+    /// command's answer record (`host_command::seal_record`).
+    AnswerRecord,
 }
 
 impl Label {
@@ -544,6 +551,7 @@ impl Label {
             Label::HostCommand => LABEL_HOST_COMMAND_V1,
             Label::HostAnswer => LABEL_HOST_ANSWER_V1,
             Label::StatusBoard => LABEL_STATUS_BOARD_V1,
+            Label::AnswerRecord => LABEL_ANSWER_RECORD_V1,
         }
     }
 
@@ -553,6 +561,7 @@ impl Label {
             Label::HostCommand => LABEL_HOST_COMMAND_V1_KEY,
             Label::HostAnswer => LABEL_HOST_ANSWER_V1_KEY,
             Label::StatusBoard => LABEL_STATUS_BOARD_V1_KEY,
+            Label::AnswerRecord => LABEL_ANSWER_RECORD_V1_KEY,
         }
     }
 }

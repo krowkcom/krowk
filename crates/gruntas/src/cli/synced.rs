@@ -871,7 +871,7 @@ pub(super) fn new_session(ctx: &mut Ctx, args: &[String], form: &str) -> Result<
         HostAnswer::Started { session_id } if gruntas_harness::log::valid_id(&session_id) => session_id,
         HostAnswer::Started { session_id } => return Err(fail("bad_answer", format!("{name} started a session under {session_id:?}, which is not a session id"))),
         HostAnswer::Taken { .. } => return Err(fail("bad_answer", format!("{name} answered the start as a move"))),
-        HostAnswer::Pong { .. } => return Err(fail("bad_answer", format!("{name} answered the start as a ping"))),
+        HostAnswer::Pong { .. } | HostAnswer::Recorded | HostAnswer::Page(_) | HostAnswer::Changes(_) | HostAnswer::Delivered { .. } => return Err(fail("bad_answer", format!("{name} answered the start as another command"))),
         // The host's words, sealed under a key every device of the person's
         // holds: said as text, under a code only of its own shape.
         HostAnswer::Refused { code, message } => return Err(fail(refusal_code(&code), super::sync::printable(&message))),

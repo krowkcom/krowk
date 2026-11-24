@@ -240,6 +240,9 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         // The host's answer to a command it was delivered (R-HOST-4), signed
         // by it.
         ("PUT" | "PATCH", ["v1", "key", "device", "commands", id]) => sync::signed(a, req, |a, req, by| commands::answer(a, req, id, by)),
+        // Its answer record, when the answer is too big for the answer
+        // (god agent D3), signed by it.
+        ("PUT", ["v1", "key", "device", "commands", id, "answer_record"]) => sync::signed(a, req, |a, req, by| commands::put_record(a, req, id, by)),
         // The approval screen is served by this process and nothing else, so its
         // link names the request's own host, never --site.
         ("POST", ["v1", "cli", "authorizations"]) => {
@@ -341,6 +344,7 @@ fn users_route(a: &App, req: &mut Req, m: &str, user: &str, rest: &[&str]) -> Re
         // poll for its answer (R-HOST-4), signed by the sender.
         ("POST", ["devices", target, "commands"]) => sync::signed(a, req, |a, req, by| commands::send(a, req, target, by)),
         (_, ["devices", target, "commands", id]) if get => sync::signed(a, req, |a, req, by| commands::show(a, req, target, id, by)),
+        (_, ["devices", target, "commands", id, "answer_record"]) if get => sync::signed(a, req, |a, req, by| commands::show_record(a, req, target, id, by)),
         (_, ["presences"]) if get => devices::presences(a, req),
         // A device's sealed status board, and a machine's counts under its
         // random statistics id (R-STA-5, R-STA-6).
