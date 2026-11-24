@@ -30,6 +30,19 @@ breaking changes may affect it without notice.
   account is ready is `gruntas providers list --check`: the same table,
   JSON and exit 3.
 
+### Added
+
+- **`gruntas run claude|codex` starts the stock harness on one of your
+  accounts** (`--account work` is `claude:work`; none is your own
+  `~/.claude` or `~/.codex`), with the gruntas plugin and a sandbox that
+  keeps the session out of the gruntas home. Claude Code gets one
+  `--settings` that merges yours with the sandbox block and gruntas's
+  worktree hooks; Codex gets a permissions profile that can't read the home.
+  `--no-sandbox` drops the sandbox for one attended run, `--unattended
+  "<task>"` starts a background session, and nothing is written into the
+  account. Arguments gruntas doesn't own pass through to the harness as
+  typed. Linux and macOS.
+
 ## [2026.11.1] - 2026-11-23
 
 **Every agent on every machine of yours, in one place.** Agent sessions in

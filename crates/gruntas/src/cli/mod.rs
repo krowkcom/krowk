@@ -33,6 +33,8 @@ mod machine;
 mod mcp;
 #[cfg(feature = "harness")]
 mod own_worktree;
+#[cfg(all(feature = "harness", unix))]
+mod launcher;
 #[cfg(feature = "harness")]
 mod pairing;
 #[cfg(feature = "harness")]
@@ -139,6 +141,12 @@ fn after_the_command_ran(err: &Error) -> Error {
 pub use delegate::{machines, placer};
 
 pub fn run(args: &[String], io: &mut Io) -> i32 {
+    // `gruntas run <harness> …`: the words after the harness are the
+    // harness's, so they never reach gruntas's flag parser.
+    #[cfg(all(feature = "harness", unix))]
+    if let Some(words) = launcher::words(args) {
+        return launcher::run(io, words);
+    }
     let (f, positionals, parsed) = flags::parse(args);
     let typed = positionals;
     let positionals = command_words(&f, &typed);
@@ -473,6 +481,10 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         ["sessions", "take", ..] => synced::take(ctx, rest(2)),
         #[cfg(all(feature = "harness", unix))]
         ["sessions", "new", ..] => synced::new_session(ctx, rest(2), "sessions new"),
+        // `gruntas run <harness> …` was routed before the flags were read;
+        // here it is a flag before the harness, or no harness.
+        #[cfg(all(feature = "harness", unix))]
+        ["run", ..] => Err(fail("missing_argument", "name the harness right after `run`, before any flag: `gruntas run claude --account work`, or `gruntas run codex`")),
         #[cfg(feature = "harness")]
         ["worktrees"] | ["worktrees", "list", ..] => worktrees::list(ctx),
         #[cfg(feature = "harness")]
@@ -768,6 +780,11 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
         for name in ["env", "header"] {
             if f.given.contains(name) && !mcp_add {
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `gruntas mcp add`")));
+            }
+        }
+        for name in ["account", "unattended", "no-sandbox"] {
+            if f.given.contains(name) && words.first() != Some(&"run") {
+                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `gruntas run`, after the harness: `gruntas run claude --{name} …`")));
             }
         }
         let trusting = words.first() == Some(&"trust") && !f.print;

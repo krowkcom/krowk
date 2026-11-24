@@ -54,6 +54,9 @@ fn client(code: &str) -> Option<i32> {
         // WT13).
         #[cfg(feature = "harness")]
         "no_such_worktree" => NOT_FOUND,
+        // `gruntas run --account`: no such account of that harness.
+        #[cfg(feature = "harness")]
+        "no_account" => NOT_FOUND,
         #[cfg(feature = "harness")]
         "worktree_live" | "worktree_has_changes" | "worktree_conflicts" | "worktree_submodules" | "worktree_protected" => REFUSED,
         #[cfg(feature = "harness")]

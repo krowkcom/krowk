@@ -596,6 +596,8 @@ pub fn catalog(version: &str) -> Catalog {
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(cmd("hosts", "gruntas hosts", "The same as gruntas machines"));
     #[cfg(all(feature = "harness", unix))]
+    c.commands.push(run_command());
+    #[cfg(all(feature = "harness", unix))]
     c.commands.push(Command {
         args: vec![arg("project", "Only this project, e.g. github.com/acme/app", false)],
         ..cmd("status", "gruntas status [project]", "Every agent on your machines, by project and machine")
@@ -743,6 +745,22 @@ fn relay_command() -> Command {
             ..cmd("serve", "gruntas relay serve --ticket-keys FILE [--addr HOST:PORT] [--origin URL] [--state DIR]", "Carry sealed sessions between their host and viewers")
         }],
         ..cmd("relay", "", "The relay other devices reach a session through")
+    }
+}
+
+/// `gruntas run`: the stock Claude Code or Codex on one of your accounts
+/// (Launcher). Its other words are the harness's, read by `launcher.rs`
+/// rather than the flag parser.
+#[cfg(all(feature = "harness", unix))]
+fn run_command() -> Command {
+    Command {
+        args: vec![arg("harness", "claude or codex", true), Arg { repeated: true, ..arg("args", "The harness's own arguments, passed through as typed; any after a -- too", false) }],
+        flags: vec![
+            flag("account", STRING, "The account: its name (work for claude:work), or auto for the one with the most headroom (default: your own ~/.claude or ~/.codex)"),
+            flag("unattended", STRING, "Start a background session on this task instead of taking the terminal"),
+            flag("no-sandbox", BOOL, "Run without the sandbox that keeps the session out of the gruntas home, this once; attended only"),
+        ],
+        ..cmd("run", "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [args...]", "Start Claude Code or Codex on one of your accounts")
     }
 }
 
@@ -1222,6 +1240,14 @@ once; run `gruntas sync join` on the new machine and type it there. The code is
 checked by both machines, not by the registry, and this one asks you to
 confirm the new machine by name before anything is added. A wrong code ends
 it: run `add` again for a new one. Needs a Pro workspace.",
+        #[cfg(all(feature = "harness", unix))]
+        "run" => "\
+The harness starts with the account's config home (CLAUDE_CONFIG_DIR,
+CODEX_HOME), the gruntas plugin, and a sandbox that keeps it out of the gruntas
+home: for Claude Code one --settings, merged with any --settings you pass, that
+also carries gruntas's worktree hooks; for Codex a permissions profile. Nothing
+is written into the account. --account work is claude:work (or codex:work);
+none, or the harness's own name, is your own ~/.claude or ~/.codex.",
         #[cfg(feature = "harness")]
         "worktrees add" => "\
 The worktree is of the repository you are in, on a new branch gruntas/<hex>,
@@ -1324,6 +1350,8 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             #[cfg(all(feature = "harness", unix))]
             "hosts",
             #[cfg(all(feature = "harness", unix))]
+            "run",
+            #[cfg(all(feature = "harness", unix))]
             "relay",
             #[cfg(all(feature = "harness", unix))]
             "ping",
@@ -1358,6 +1386,8 @@ pub const ALL_ONLY: &[&str] = &[
     "host",
     #[cfg(all(feature = "harness", unix))]
     "hosts",
+    #[cfg(all(feature = "harness", unix))]
+    "run",
     #[cfg(all(feature = "harness", unix))]
     "relay",
     #[cfg(all(feature = "harness", unix))]

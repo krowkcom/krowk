@@ -387,8 +387,8 @@ pub fn command_help(cmd: &Command, globals: &[Flag], colour: bool) -> String {
 }
 
 fn arg_label(a: &super::catalog::Arg) -> String {
-    let label = if a.required { format!("<{}>", a.name) } else { format!("[{}]", a.name) };
-    if a.repeated { label.trim_end_matches('>').to_string() + "...>" } else { label }
+    let dots = if a.repeated { "..." } else { "" };
+    if a.required { format!("<{}{dots}>", a.name) } else { format!("[{}{dots}]", a.name) }
 }
 
 fn flag_label(f: &Flag) -> String {
