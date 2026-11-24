@@ -76,9 +76,12 @@ impl Watch {
                 changed = true;
             }
         }
-        // A session no longer on the board is forgotten.
+        // A session no longer on the board is forgotten; an empty board
+        // (`status.json` unread) forgets none, or each would log again.
         let before = log.seen.len();
-        log.seen.retain(|id, _| tasks.iter().any(|t| t.id == *id));
+        if !tasks.is_empty() {
+            log.seen.retain(|id, _| tasks.iter().any(|t| t.id == *id));
+        }
         if !changed && log.seen.len() == before {
             return;
         }
