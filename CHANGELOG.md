@@ -32,6 +32,16 @@ breaking changes may affect it without notice.
 
 ### Added
 
+- **A rollover ladder for sessions `gruntas run` starts.** When an account
+  runs out, the next one comes from a ladder at the session's model tier:
+  another subscription of the same harness, then a subscription of the
+  other harness (Claude Code ↔ Codex), then API-key accounts, the same
+  harness first; within each rung, the account with the most room first.
+  A session never drops to a cheaper tier. `ladder` in
+  `~/.gruntas/config.json` sets the tier table (`tiers`: `frontier`,
+  `standard`, `fast`, each with its Claude Code and Codex model ids, `*`
+  matching any run of characters) and which rungs are tried in what order
+  (`rungs`: `same-harness`, `other-harness`, `api-key`).
 - **The god agent: ask any agent what your swarm is doing.** The plugin's
   MCP server offers `gruntas_status`, `gruntas_changes`, `gruntas_read` and
   `gruntas_ping` to every agent, and `gruntas_message` and
