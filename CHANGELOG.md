@@ -112,6 +112,14 @@ breaking changes may affect it without notice.
   you accepted is kept in `~/.gruntas/config.json` as `rolloverAcknowledged`,
   and later sets don't ask again.
 
+### Fixed
+
+- **An interactive Claude Code session counts as attended.** Claude Code
+  runs its hooks without a terminal, so every Claude Code session with the
+  plugin was registered as unattended, and under the default `steer`
+  setting (`attended`) its god agent could message or interrupt only the
+  sessions it had started. The session's own terminal now decides.
+
 ## [2026.11.1] - 2026-11-23
 
 **Every agent on every machine of yours, in one place.** Agent sessions in
