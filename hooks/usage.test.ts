@@ -197,7 +197,9 @@ test('a picker that cannot open leaves the status line drawn again', async ($, o
   })
   on('ui.invalidate', (_, e) => (invalidated++, { value: undefined }) as never)
   on('session.measure', (_, e) => ({ changed: e.changed }))
-  await $.command.run({ command: 'gruntas:account', args: '' }).catch(() => undefined)
+  // The list, said by the mod, not a turn.
+  const r = await $.command.run({ command: 'gruntas:account', args: '' })
+  expect(r.isTextDisplayOnly).toBe(true)
   const before = invalidated
   await $.session.measure({ context: { size: 200_000 } as never, rateLimits: LIMITS, changed: ['rateLimits'] })
   for (let i = 0; i < 20; i++) await Promise.resolve()

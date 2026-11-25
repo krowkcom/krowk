@@ -312,17 +312,17 @@ async function picker($: EngineInterface): Promise<string | undefined> {
   picking = got
   // Open already (asked again): drawn afresh from these rows.
   $.ui.invalidate('ui.render')
-  // Not placed, or refused: no pane, so no close clears it, and the status
-  // line, held back while it is open, is drawn again.
-  let opened
+  // Refused, or open but drawn nowhere (closed, so no surface draws it
+  // later): the list instead, and the status line, held back while the
+  // picker is open, drawn again.
+  let placed = false
   try {
-    opened = await $.ui.open({ id: PICKER, title: 'Continue this session on', focus: true, closeOnEscape: true, rows: got.choices.length + 3, columns: 72 })
-  } catch (err) {
-    picking = undefined
-    redraw($)
-    throw err
+    placed = (await $.ui.open({ id: PICKER, title: 'Continue this session on', focus: true, closeOnEscape: true, rows: got.choices.length + 3, columns: 72 })).isPlaced
+    if (!placed) void $.ui.close({ id: PICKER }).catch(() => undefined)
+  } catch {
+    // Refused: no pane.
   }
-  if (opened.isPlaced) return undefined
+  if (placed) return undefined
   picking = undefined
   redraw($)
   return account($, '')
