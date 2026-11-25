@@ -19,6 +19,16 @@ breaking changes may affect it without notice.
 
 ## [Unreleased]
 
+### Added
+
+- **`gruntas run claude --account <name> --no-plugin` runs Claude Code on
+  an account for another program.** It starts Claude Code on that account,
+  its login or key kept in gruntas, without the gruntas plugin or hooks, so
+  the session never registers as an agent of its own, and passes its
+  arguments, stdin, stdout and exit code through untouched. A program that
+  drives Claude Code, such as one built on the Claude Agent SDK, can run it
+  as its Claude Code. Nothing in the account's settings or plugins changes.
+
 ## [2026.11.5] - 2026-11-25
 
 **See your account, machine and usage under the prompt.** In Claude Code,

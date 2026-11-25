@@ -1451,7 +1451,7 @@ stdout:
     },
     {
       "name": "run",
-      "usage": "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [args...]",
+      "usage": "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [--no-plugin] [args...]",
       "summary": "Start Claude Code or Codex on one of your accounts",
       "args": [
         {
@@ -1484,6 +1484,12 @@ stdout:
           "type": "bool",
           "default": "false",
           "usage": "Run without the sandbox that keeps the session out of the gruntas home, this once; attended only"
+        },
+        {
+          "name": "no-plugin",
+          "type": "bool",
+          "default": "false",
+          "usage": "Start Claude Code without the gruntas plugin and hooks, so it never registers as a session; its arguments, stdin and stdout pass through, so a program can run it as its Claude Code (the Agent SDK's executable). Attended claude only"
         }
       ],
       "hidden": true
@@ -3607,7 +3613,7 @@ tty:
     },
     {
       "name": "run",
-      "usage": "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [args...]",
+      "usage": "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [--no-plugin] [args...]",
       "summary": "Start Claude Code or Codex on one of your accounts",
       "args": [
         {
@@ -3640,6 +3646,12 @@ tty:
           "type": "bool",
           "default": "false",
           "usage": "Run without the sandbox that keeps the session out of the gruntas home, this once; attended only"
+        },
+        {
+          "name": "no-plugin",
+          "type": "bool",
+          "default": "false",
+          "usage": "Start Claude Code without the gruntas plugin and hooks, so it never registers as a session; its arguments, stdin and stdout pass through, so a program can run it as its Claude Code (the Agent SDK's executable). Attended claude only"
         }
       ],
       "hidden": true

@@ -1249,7 +1249,12 @@ home: for Claude Code one --settings, merged with any --settings you pass, that
 also carries gruntas's worktree hooks; for Codex a permissions profile. Nothing
 is written into the account. --account work is claude:work (or codex:work);
 none, or the harness's own name, is the account plain claude or codex in your
-shell uses.",
+shell uses.
+
+With --no-plugin, Claude Code starts without the gruntas plugin or hooks, so it
+never registers as a session, and runs once, its arguments, stdin, stdout and
+exit code passed through: a program that drives Claude Code (the Agent SDK) can
+run `gruntas run claude --account work --no-plugin` as its Claude Code.",
         #[cfg(feature = "harness")]
         "worktrees add" => "\
 The worktree is of the repository you are in, on a new branch gruntas/<hex>,
