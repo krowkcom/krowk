@@ -235,7 +235,7 @@ test('a limit in a turn records the usage under the account\'s home and rolls th
     const accounts = new Accounts(g, join(dir, 'account.json'))
     const handlers = new Map<string, (e: unknown, ctx: unknown) => void>()
     const registered: any[] = []
-    const fakePi = { registerProvider: (_n: string, config: any) => registered.push(config), on: (e: string, f: any) => handlers.set(e, f) }
+    const fakePi = { registerProvider: (_n: string, config: any) => registered.push(config), on: (e: string, f: any) => handlers.set(e, f), registerCommand: () => {} }
     const sent: string[] = []
     const script = [
       { type: 'rate_limit_event', rate_limit_info: REJECTED },

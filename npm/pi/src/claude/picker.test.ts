@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { Accounts, type Gruntas, type Listed } from './accounts.ts'
+import { listed } from './extension.ts'
 import { footer, installPicker, line, PICK_TIMEOUT_MS, STATUS_KEY } from './picker.ts'
 
 const ROWS: Listed[] = [
@@ -31,7 +32,7 @@ const ROWS: Listed[] = [
 /** A pi with one session: its /account command, its events, and what its UI was asked. */
 function setup(opts: { hasUI?: boolean; pick?: (title: string, options: string[], o: any) => string | undefined } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'gruntas-pi-picker-'))
-  const g: Gruntas = { list: async () => ROWS, auto: async () => 'claude' }
+  const g: Gruntas = { list: async () => ROWS, auto: async () => 'claude', next: async () => undefined }
   const accounts = new Accounts(g, join(dir, 'account.json'))
   const handlers: Record<string, (e: any, ctx: any) => unknown> = {}
   const commands: Record<string, any> = {}
@@ -149,4 +150,12 @@ test('completions offer the accounts pi can move to', async () => {
   } finally {
     s.cleanup()
   }
+})
+
+test('the listing is read with no account ready too, from the none_ready failure\'s details', () => {
+  const rows = [{ instance: 'claude', kind: 'claude-code', ready: false }]
+  assert.deepEqual(listed({ code: 0, out: JSON.stringify({ ok: true, data: { ready: 1, instances: ROWS } }), err: '' }), ROWS)
+  assert.deepEqual(listed({ code: 3, out: '', err: JSON.stringify({ ok: false, error: { error: 'none_ready', details: { ready: 0, instances: rows } } }) }), rows)
+  assert.equal(listed({ code: 1, out: '', err: JSON.stringify({ ok: false, error: { error: 'bad_flag' } }) }), undefined)
+  assert.equal(listed({ code: 0, out: 'not json', err: '' }), undefined)
 })

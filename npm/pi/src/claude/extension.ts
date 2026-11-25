@@ -115,12 +115,26 @@ async function providersNext(args: string[]): Promise<Next | undefined> {
   }
 }
 
+/**
+ * The rows of `gruntas providers list --check --json`: its data, or, when no account is ready
+ * (exit 3, `none_ready`), the same rows on the failure's details. None when it said neither.
+ */
+export function listed(r: { code: number | null; out: string; err: string }): Listed[] | undefined {
+  try {
+    const rows = r.code === 0 ? JSON.parse(r.out).data.instances : r.code === 3 ? JSON.parse(r.err).error.details.instances : undefined
+    return Array.isArray(rows) ? rows : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** The machine's gruntas, as the accounts read it. */
 export const systemGruntas: Gruntas = {
   async list(): Promise<Listed[]> {
     const r = await gruntas(['providers', 'list', '--check', '--json'], 15_000)
-    if (!r || r.code !== 0) throw new Error(`gruntas: \`gruntas providers list --check\` failed${r?.err ? `: ${r.err.trim()}` : ''}`)
-    return JSON.parse(r.out).data.instances
+    const rows = r && listed(r)
+    if (!rows) throw new Error(`gruntas: \`gruntas providers list --check\` failed${r?.err ? `: ${r.err.trim()}` : ''}`)
+    return rows
   },
   async auto(): Promise<string | undefined> {
     // None with room, or no answer: the default account, as `--account auto` falls back to it.

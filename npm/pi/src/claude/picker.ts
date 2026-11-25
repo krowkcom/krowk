@@ -12,7 +12,7 @@ export const STATUS_KEY = 'gruntas-account'
 /** How long the picker stays open before it closes by itself, so no host can hang on it. */
 export const PICK_TIMEOUT_MS = 60_000
 
-const WINDOWS: Record<string, string> = { five_hour: '5h', seven_day: '7d', seven_day_opus: '7d opus', seven_day_sonnet: '7d sonnet' }
+const WINDOWS: Record<string, string> = { five_hour: '5h', seven_day: '7d', seven_day_overage_included: '7d overage', seven_day_opus: '7d opus', seven_day_sonnet: '7d sonnet' }
 
 /** `5h 93% · 7d 61%`: each window's usage left, as the listing gives it. */
 function usageLeft(row: Listed): string {
@@ -54,22 +54,44 @@ function say(ctx: Ctx, message: string, level: 'info' | 'warning' | 'error' = 'i
 
 /** Registers /account on `pi` and keeps the footer on the session's account. */
 export function installPicker(pi: ExtensionAPI, accounts: Accounts, provider: string): void {
-  // The context of the session's latest event: where the footer is.
+  // The context of the session's latest event: where the footer is. Each follow counts, so an
+  // account settled for an earlier one does not land after a later one.
   let latest: Ctx | undefined
   let serving = false
-  const show = (ctx: Ctx | undefined, name: string | undefined) => ctx?.ui.setStatus(STATUS_KEY, name ? footer(name) : undefined)
+  let follows = 0
+  const show = (ctx: Ctx | undefined, name: string | undefined) => {
+    try {
+      ctx?.ui.setStatus(STATUS_KEY, name ? footer(name) : undefined)
+    } catch {
+      // A context pi has retired (a session replaced, reloaded or ended) has no footer to set.
+    }
+  }
 
   // The footer names the account only while a gruntas model serves the session; settling the
   // account here starts the session where its first request would (D8).
   const follow = (ctx: Ctx, onGruntas: boolean) => {
     latest = ctx
     serving = onGruntas
+    const n = ++follows
     if (!onGruntas) return show(ctx, undefined)
-    accounts.current().then(a => serving && latest === ctx && show(ctx, a.name), () => show(ctx, undefined))
+    const settled = (name: string | undefined) => n === follows && serving && show(latest, name)
+    accounts.current().then(a => settled(a.name), () => settled(accounts.name))
   }
   pi.on('session_start', (_e, ctx: any) => follow(ctx, ctx.model?.provider === provider))
   pi.on('model_select', (e, ctx: any) => follow(ctx, e.model?.provider === provider))
+  pi.on('session_shutdown', () => {
+    latest = undefined
+    serving = false
+    follows++
+  })
   accounts.onMove(to => serving && show(latest, to.name))
+
+  // Completions ask gruntas at most once in a few seconds, however fast the person types.
+  let recent: { at: number; rows: Promise<Listed[]> } | undefined
+  const listRecent = () => {
+    if (!recent || Date.now() - recent.at > 5_000) recent = { at: Date.now(), rows: accounts.list() }
+    return recent.rows
+  }
 
   const move = async (ctx: Ctx, row: Listed) => {
     const no = refusal(row)
@@ -82,7 +104,7 @@ export function installPicker(pi: ExtensionAPI, accounts: Accounts, provider: st
     description: 'Pick the gruntas account Claude turns run on (`/account <name>` moves directly)',
     getArgumentCompletions: async prefix => {
       try {
-        const rows = (await accounts.list()).filter(r => !refusal(r) && r.instance.startsWith(prefix))
+        const rows = (await listRecent()).filter(r => !refusal(r) && r.instance.startsWith(prefix))
         return rows.length ? rows.map(r => ({ value: r.instance, label: r.instance })) : null
       } catch {
         return null
