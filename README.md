@@ -34,6 +34,9 @@ Then add the plugin, which registers each session with gruntas. It needs the ful
 # Codex (then approve its hooks once in /hooks)
 codex plugin marketplace add gruntas/gruntas
 codex plugin add gruntas@gruntas
+
+# pi
+pi install npm:@gruntas/pi
 ```
 
 ## Get started

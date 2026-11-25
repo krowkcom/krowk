@@ -159,7 +159,7 @@ test('run hands the payload to the command and answers its stdout; a missing, fa
 
 // --- PI02: registration, the end of a run, no gruntas -------------------------
 
-test('PI02: session_start runs SessionStart and session_shutdown SessionEnd, neither awaited', { skip: 'PI02', timeout: 5000 }, async () => {
+test('PI02: session_start runs SessionStart and session_shutdown SessionEnd, neither awaited', { timeout: 5000 }, async () => {
   const pi = fakePi()
   let release = () => {}
   const held = new Promise<void>(r => (release = r))
@@ -173,7 +173,7 @@ test('PI02: session_start runs SessionStart and session_shutdown SessionEnd, nei
   assert.deepEqual(runs[1]?.stdin, fixture('SessionEnd'))
 })
 
-test('PI02: a reload keeps the session registered: no SessionEnd, whose late deregistration would undo the new start', { skip: 'PI02' }, async () => {
+test('PI02: a reload keeps the session registered: no SessionEnd, whose late deregistration would undo the new start', async () => {
   const pi = fakePi()
   const { host, runs } = fakeHost()
   install(pi.api, host)
@@ -183,7 +183,7 @@ test('PI02: a reload keeps the session registered: no SessionEnd, whose late der
   assert.deepEqual(runs.map(r => r.argv[3]), ['SessionStart'])
 })
 
-test('PI02: a tool call\'s end runs PostToolUse with its input, a failed one PostToolUseFailure', { skip: 'PI02' }, async () => {
+test('PI02: a tool call\'s end runs PostToolUse with its input, a failed one PostToolUseFailure', async () => {
   const pi = fakePi()
   const { host, runs } = fakeHost()
   install(pi.api, host)
@@ -198,7 +198,7 @@ test('PI02: a tool call\'s end runs PostToolUse with its input, a failed one Pos
   }
 })
 
-test('PI02: the end of a run awaits Stop and turns its block into one continuation with the reminder', { skip: 'PI02' }, async () => {
+test('PI02: the end of a run awaits Stop and turns its block into one continuation with the reminder', async () => {
   const pi = fakePi()
   const REMINDER = 'gruntas: you did work since your last status report.'
   const { host, runs } = fakeHost(e => (e === 'Stop' ? JSON.stringify({ decision: 'block', reason: REMINDER }) : ''))
@@ -226,7 +226,7 @@ test('PI02: the end of a run awaits Stop and turns its block into one continuati
   assert.equal(third?.continue, true)
 })
 
-test('PI02: a Stop that answers nothing, or never answers, leaves the run to end', { skip: 'PI02', timeout: 5000 }, async () => {
+test('PI02: a Stop that answers nothing, or never answers, leaves the run to end', { timeout: 5000 }, async () => {
   for (const hangs of [false, true]) {
     const pi = fakePi()
     const { host } = fakeHost(() => undefined)
@@ -239,7 +239,7 @@ test('PI02: a Stop that answers nothing, or never answers, leaves the run to end
   }
 })
 
-test('PI02: without gruntas on the PATH, a session\'s start shows the install hint and runs nothing', { skip: 'PI02' }, async () => {
+test('PI02: without gruntas on the PATH, a session\'s start shows the install hint and runs nothing', async () => {
   const pi = fakePi()
   const { host, runs } = fakeHost(undefined, { onPath: false })
   install(pi.api, host)

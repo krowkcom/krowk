@@ -8,6 +8,11 @@ plugins run, so a pi session is treated as theirs are.
 pi install npm:@gruntas/pi
 ```
 
+A pi session then registers with the gruntas daemon as it starts and shows in
+`gruntas agents` as harness `pi` until pi exits; its tool calls count as its
+activity, and a run that did work without a `gruntas_report` is reminded once
+to report.
+
 It needs `gruntas` on the PATH: without it, a session's start says how to
 install it and the extension does nothing else. On Windows it does nothing.
 
