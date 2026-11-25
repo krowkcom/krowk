@@ -1007,7 +1007,7 @@ fn providers_command() -> Command {
                     flag("from", STRING, "The Claude Code account the session is on; absent, the account a session starts on"),
                     flag("tried", STRING, "Accounts the session already tried, comma-separated: never answered"),
                 ],
-                ..cmd("next", "gruntas providers next [--from ACCOUNT] [--tried A,B] [--json]", "The Claude Code subscription account a session moves to next, and the rollover setting")
+                ..cmd("next", "gruntas providers next [--from ACCOUNT] [--tried A,B] [--json]", "Where a session goes when its account runs out")
             },
             Command {
                 args: vec![arg("instance", "The instance to remove, e.g. openai:work", true)],

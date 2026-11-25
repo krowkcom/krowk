@@ -128,8 +128,7 @@ More
   claim               Keep an anonymous upload past expiry
   providers add       Add an instance, or sign one in
   providers list      List every instance, and whether it is ready
-  providers next      The Claude Code subscription account a session moves to
-                      next, and the rollover setting
+  providers next      Where a session goes when its account runs out
   providers remove    Remove an instance's definition, and forget its login
   providers rename    Rename an instance; its login and sessions follow
   sync init           Set up sync: this device, your user key and a recovery kit

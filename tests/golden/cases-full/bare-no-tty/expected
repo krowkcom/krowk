@@ -1229,7 +1229,7 @@ stdout:
         {
           "name": "next",
           "usage": "gruntas providers next [--from ACCOUNT] [--tried A,B] [--json]",
-          "summary": "The Claude Code subscription account a session moves to next, and the rollover setting",
+          "summary": "Where a session goes when its account runs out",
           "flags": [
             {
               "name": "from",
@@ -3411,7 +3411,7 @@ tty:
         {
           "name": "next",
           "usage": "gruntas providers next [--from ACCOUNT] [--tried A,B] [--json]",
-          "summary": "The Claude Code subscription account a session moves to next, and the rollover setting",
+          "summary": "Where a session goes when its account runs out",
           "flags": [
             {
               "name": "from",
