@@ -1583,6 +1583,9 @@ pub enum ServerFrame {
 pub enum PluginHarness {
     Claude,
     Codex,
+    /// pi (pi.dev), through the `@gruntas/pi` extension, which sends
+    /// Claude-shaped payloads.
+    Pi,
 }
 
 /// What a session gruntas does not run did, one `activity` frame each:
