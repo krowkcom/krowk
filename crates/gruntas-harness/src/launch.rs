@@ -9,9 +9,10 @@
 //! any `--settings` the person passed; for Codex, a permissions profile
 //! that reads everything but the gruntas home.
 //!
-//! Pure: a plan resolves paths and reads a settings file the person named,
-//! and writes nothing, an account's settings, credentials and installed
-//! plugins least of all (R-RUN-5). Running it is the CLI's.
+//! Pure: a plan resolves paths and reads a settings file the person named
+//! and Claude Code's managed ones, and writes nothing, an account's
+//! settings, credentials and installed plugins least of all (R-RUN-5).
+//! Running it is the CLI's.
 
 use crate::instances::{Backend, Registry, Resolved};
 use serde_json::{json, Map, Value};
@@ -164,7 +165,7 @@ pub struct Plan {
 
 /// The plan for `req`. An unattended Claude session's task is its prompt,
 /// after the person's arguments, so they carry no prompt of their own.
-/// `read` reads a `--settings` the person gave as a file. Refused: an unattended session without the sandbox (D4), and a
+/// `read` reads a `--settings` the person gave as a file, and Claude Code's managed settings. Refused: an unattended session without the sandbox (D4), and a
 /// `--settings` that is not a JSON object.
 pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> Result<Plan, String> {
     if !req.sandbox && matches!(req.mode, Mode::Unattended { .. }) {
@@ -209,8 +210,10 @@ pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> R
                 if req.mode == Mode::Attended {
                     // A proxy or denied domains the person gave in a
                     // `--settings` stay theirs: no open proxy over them.
+                    // Nor over an organisation's managed settings that
+                    // say anything of the sandbox's network.
                     let n = &settings["sandbox"]["network"];
-                    let named = ["httpProxyPort", "socksProxyPort", "deniedDomains"].iter().any(|k| n.get(k).is_some());
+                    let named = ["httpProxyPort", "socksProxyPort", "deniedDomains"].iter().any(|k| n.get(k).is_some()) || managed_network(read);
                     ours = merge(ours, claude_attended(&req.hidden, req.egress.filter(|_| !named)));
                 }
             }
@@ -339,6 +342,15 @@ pub fn claude_sandbox(hidden: &[PathBuf]) -> Value {
         "sandbox": { "enabled": true, "failIfUnavailable": true, "allowUnsandboxedCommands": false, "filesystem": { "denyRead": paths } },
         "permissions": { "deny": deny },
     })
+}
+
+/// Claude Code's managed settings files, an organisation's policy.
+const MANAGED: [&str; 2] = ["/etc/claude-code/managed-settings.json", "/Library/Application Support/ClaudeCode/managed-settings.json"];
+
+/// Whether managed settings say anything of the sandbox's network, which an
+/// open proxy would silently set aside.
+fn managed_network(read: &dyn Fn(&Path) -> std::io::Result<String>) -> bool {
+    MANAGED.iter().filter_map(|p| read(Path::new(p)).ok()).filter_map(|t| serde_json::from_str::<Value>(&t).ok()).any(|v| v["sandbox"].get("network").is_some())
 }
 
 /// What an attended session's sandbox adds to `claude_sandbox`, so the
@@ -566,6 +578,9 @@ mod tests {
         let theirs = r#"{"sandbox":{"network":{"deniedDomains":["evil.example"]}}}"#;
         let p = plan(&request(Harness::Claude, Mode::Attended, inst, &["--settings", theirs]), &no_file).unwrap();
         assert!(p.settings.unwrap()["sandbox"]["network"].get("httpProxyPort").is_none(), "denied domains need Claude Code's own proxy");
+        let managed = |p: &Path| if p == Path::new(MANAGED[0]) { Ok(r#"{"sandbox":{"network":{"allowedDomains":["corp.example"]}}}"#.into()) } else { no_file(p) };
+        let p = plan(&request(Harness::Claude, Mode::Attended, inst, &[]), &managed).unwrap();
+        assert!(p.settings.unwrap()["sandbox"]["network"].get("httpProxyPort").is_none(), "an organisation's network rules are not set aside");
         let p = plan(&Request { egress: None, ..request(Harness::Claude, Mode::Attended, inst, &[]) }, &no_file).unwrap();
         let s = p.settings.unwrap();
         assert!(s["sandbox"]["network"].get("httpProxyPort").is_none() && s["sandbox"]["filesystem"]["allowWrite"] == json!(["~"]));

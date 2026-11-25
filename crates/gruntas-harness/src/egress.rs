@@ -67,13 +67,18 @@ fn serve(listener: TcpListener, name: &str, conn: fn(TcpStream) -> io::Result<()
     Ok(())
 }
 
+/// Every signal but the faults a thread raises itself, which still end
+/// gruntas as they would anywhere (a stack overflow still says so).
 #[cfg(unix)]
 fn block_signals() {
-    // SAFETY: sigfillset fills a mask on this stack; pthread_sigmask sets
-    // this thread's own.
+    // SAFETY: the mask is on this stack; pthread_sigmask sets this
+    // thread's own.
     unsafe {
         let mut all: libc::sigset_t = std::mem::zeroed();
         libc::sigfillset(&mut all);
+        for fault in [libc::SIGSEGV, libc::SIGBUS, libc::SIGFPE, libc::SIGILL] {
+            libc::sigdelset(&mut all, fault);
+        }
         libc::pthread_sigmask(libc::SIG_BLOCK, &all, std::ptr::null_mut());
     }
 }
@@ -250,20 +255,31 @@ mod tests {
         got
     }
 
-    /// A signal sent to gruntas never lands on a proxy thread.
+    /// A signal sent to gruntas never lands on a proxy thread: neither
+    /// the listeners' nor a connection's.
     #[cfg(target_os = "linux")]
     #[test]
     fn its_threads_take_no_signal() {
-        let (tx, rx) = std::sync::mpsc::channel();
-        thread::spawn(move || {
-            block_signals();
-            let status = std::fs::read_to_string("/proc/thread-self/status").unwrap();
-            tx.send(status.lines().find(|l| l.starts_with("SigBlk:")).unwrap().to_string()).unwrap();
-        });
-        let blk = rx.recv().unwrap();
-        let mask = u64::from_str_radix(blk.split_whitespace().nth(1).unwrap(), 16).unwrap();
-        for sig in [libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGHUP] {
-            assert!(mask & (1 << (sig - 1)) != 0, "signal {sig} blocked: {blk}");
+        let e = start().unwrap();
+        let dest = echo();
+        let mut c = TcpStream::connect(("127.0.0.1", e.http)).unwrap();
+        c.write_all(format!("CONNECT 127.0.0.1:{dest} HTTP/1.1\r\n\r\n").as_bytes()).unwrap();
+        read_to(&mut c, b"\r\n\r\n");
+        let mut masks = Vec::new();
+        for task in std::fs::read_dir("/proc/self/task").unwrap().flatten() {
+            let status = std::fs::read_to_string(task.path().join("status")).unwrap_or_default();
+            let field = |k: &str| status.lines().find_map(|l| l.strip_prefix(k)).unwrap_or_default().trim().to_string();
+            let mask = u64::from_str_radix(&field("SigBlk:"), 16).unwrap_or_default();
+            masks.push((field("Name:"), mask));
+        }
+        // A connection's threads carry their listener's name on Linux.
+        let ours: Vec<_> = masks.iter().filter(|(n, _)| n.starts_with("gruntas-egress")).collect();
+        assert!(ours.len() >= 4, "the two listeners and the open tunnel's two: {masks:?}");
+        for (name, mask) in ours {
+            for sig in [libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGHUP] {
+                assert!(mask & (1 << (sig - 1)) != 0, "{name}: signal {sig} not blocked ({mask:x})");
+            }
+            assert!(mask & (1 << (libc::SIGSEGV - 1)) == 0, "{name}: a fault still ends it");
         }
     }
 
