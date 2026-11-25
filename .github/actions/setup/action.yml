@@ -33,6 +33,13 @@ runs:
       with:
         tool: cargo-nextest@0.9.146
 
+    # `make check` runs the pi extension's tests on node's own runner,
+    # which strips TypeScript's types from 22.18 on. The version moves with
+    # the one in mise.toml.
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: 22
+
     # The opencode fixture is built from SQL at case time, failing rather
     # than skipping under CI on Linux.
     - name: Ensure sqlite3

@@ -2,7 +2,7 @@
 # A checkout and a release should not disagree about what version this is.
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo dev)
 
-.PHONY: build test test-build test-run test-doc lint lint-lean lint-sessions lint-harness check check-build check-run quick-check signoff install dev mock clean dist release-check golden golden-build golden-device golden-full golden-run golden-update bin/devregistry schema codex-schema codex-schema-update lean-deps name-sweep bench
+.PHONY: build test test-build test-run test-doc lint lint-lean lint-sessions lint-harness check check-build check-run quick-check signoff install dev mock clean dist release-check golden golden-build golden-device golden-full golden-run golden-update bin/devregistry schema codex-schema codex-schema-update lean-deps name-sweep bench pi-test
 
 build: ## Build target/release/gruntas (the full build) and gruntas-mcp
 	GRUNTAS_VERSION=$(VERSION) cargo build --release -p gruntas --features harness
@@ -63,7 +63,7 @@ check: ## Everything CI runs
 	$(MAKE) -j$(CHECK_JOBS) $(OUTPUT_SYNC) check-build
 	$(MAKE) check-run
 
-check-build: lint lean-deps name-sweep test-build test-doc golden-build
+check-build: lint lean-deps name-sweep test-build test-doc golden-build pi-test
 
 check-run: golden-run test-run
 
@@ -86,6 +86,11 @@ signoff: ## Run `make check` here and sign off on the commit
 	@test -z "$$(git status --porcelain)" || { echo "signoff names a commit: commit or stash first" >&2; exit 1; }
 	sha=$$(git rev-parse HEAD) && NEXTEST_PROFILE=ci $(MAKE) check && \
 		{ gh signoff --commit "$$sha" || { echo "push, then: gh signoff --commit $$sha" >&2; exit 1; }; }
+
+# The pi extension's tests (npm/pi), on node's own runner, which strips the
+# types: node 22.18 or later, as mise.toml pins.
+pi-test: ## The @gruntas/pi extension's tests
+	node --test npm/pi/src/gruntas.test.ts
 
 # R-PKG-2: the agent build links exactly the crates crates/gruntas/lean-deps.txt lists, on every target.
 lean-deps: ## Hold the agent build to its dependency list

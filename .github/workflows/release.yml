@@ -5,7 +5,8 @@ name: Release
 # five platforms in parallel (dist.yml), rebuilds one platform on a second
 # runner and refuses to go on unless the bytes match, signs the checksums and
 # the SBOMs, opens the GitHub Release with all of it on it, and publishes the
-# seven npm packages with provenance and, for a stable release, server.json to
+# seven npm packages with provenance (an eighth, @gruntas/pi, is built and
+# held back: npm/build.mjs says until when) and, for a stable release, server.json to
 # the MCP registry. SECURITY.md says how to verify each.
 #
 # Three components, deliberately: the moving `v0` tag this workflow pushes at
@@ -497,6 +498,12 @@ jobs:
       #   2. Delete the NPM_TOKEN repo secret, and revoke the token on npmjs.com.
       # The next release publishes through OIDC; a package missing step 1 fails
       # the step and names itself.
+      #
+      # @gruntas/pi is staged and held back (manifest.json's `held`) until it
+      # has a trusted publisher. A trusted publisher needs the package to
+      # exist, so: publish its first version by hand from a release's
+      # dist/npm/gruntas-pi, set its trusted publisher as in step 1, then
+      # delete PI_HELD in npm/build.mjs.
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

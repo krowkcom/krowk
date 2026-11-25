@@ -44,6 +44,24 @@ jobs:
       - name: Advisories, licences and sources
         run: cargo deny check
 
+  # The pi extension's tests (`make pi-test`): seconds, and they hold its
+  # payloads to the hook fixtures the Rust tests read.
+  pi:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: The pi extension's tests
+        run: make pi-test
+
   # R-BACK-3: gruntas drives `codex app-server`, and the schema of that
   # protocol is pinned in crates/gruntas-harness/schema/codex/ for the Codex
   # version beside it. This installs exactly that Codex and fails when the

@@ -25,16 +25,18 @@ case "$1" in
 esac
 `;
 
-function run({ env = {}, args = [] } = {}) {
+const CLI_ONLY = [{ name: "@gruntas/cli", dir: "cli" }];
+
+function run({ env = {}, args = [], packages = CLI_ONLY } = {}) {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "publish-test-"));
   const bin = path.join(work, "bin");
   const staged = path.join(work, "npm");
   fs.mkdirSync(bin);
-  fs.mkdirSync(path.join(staged, "cli"), { recursive: true });
+  for (const p of packages) fs.mkdirSync(path.join(staged, p.dir), { recursive: true });
   fs.writeFileSync(path.join(bin, "npm"), FAKE_NPM, { mode: 0o755 });
   fs.writeFileSync(
     path.join(staged, "manifest.json"),
-    JSON.stringify({ version: "2026.11.0", prerelease: false, packages: [{ name: "@gruntas/cli", dir: "cli" }] }),
+    JSON.stringify({ version: "2026.11.0", prerelease: false, packages }),
   );
   const log = path.join(work, "npm.log");
 
@@ -110,4 +112,13 @@ test("a dry run needs no credentials", () => {
   const ran = run({ args: ["--dry-run"] });
   assert.equal(ran.status, 0, ran.stderr);
   assert.deepEqual(ran.publishes, ["publish --access public --tag latest --dry-run"]);
+});
+
+test("a package the build holds back is not published, and the run says why", () => {
+  const packages = [...CLI_ONLY, { name: "@gruntas/pi", dir: "pi", held: "no trusted publisher yet" }];
+  const ran = run({ env: OIDC, packages });
+  assert.equal(ran.status, 0, ran.stderr);
+  assert.deepEqual(ran.publishes, ["publish --access public --tag latest --provenance"]);
+  assert.match(ran.stdout, /@gruntas\/pi@2026\.11\.0 is held back: no trusted publisher yet/);
+  assert.match(ran.stdout, /published 1 npm packages/);
 });
