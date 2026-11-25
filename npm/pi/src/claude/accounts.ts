@@ -83,6 +83,8 @@ export class Accounts {
     const rows = await this.gruntas.list()
     const find = (name: string | undefined) => rows.find(r => r.instance === name && usable(r) && r.ready)
     const row = find(this.last()) ?? find(await this.gruntas.auto())
+    // A move while this was asking gruntas wins.
+    if (this.now) return this.now
     if (!row) throw new Error('gruntas: no Claude Code account is ready. `gruntas providers list --check` says why')
     const to = account(row)
     this.set(to)

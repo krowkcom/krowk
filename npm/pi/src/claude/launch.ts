@@ -29,11 +29,15 @@ export function launcherArgv(account: string, args: readonly string[]): string[]
   return ['gruntas', 'run', 'claude', '--account', account, '--no-plugin', ...args]
 }
 
-/** `env` less the variables that tell Claude Code it runs inside another Claude Code. */
+/**
+ * `env` less what tells Claude Code it runs inside another Claude Code. The SDK's own
+ * `CLAUDE_CODE_ENTRYPOINT` (`sdk-ts`, set after `childEnv` cleared pi's) stays: Claude Code
+ * says honestly that the Agent SDK runs it.
+ */
 export function launcherEnv(env: Record<string, string | undefined>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [k, v] of Object.entries(env)) {
-    if (v === undefined || k === 'CLAUDECODE' || k === 'CLAUDE_CODE_ENTRYPOINT') continue
+    if (v === undefined || k === 'CLAUDECODE') continue
     out[k] = v
   }
   return out

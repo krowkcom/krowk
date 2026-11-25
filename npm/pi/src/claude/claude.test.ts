@@ -14,6 +14,7 @@ import type { Gruntas, Listed } from './accounts.ts'
 import { installClaude, PROVIDER } from './extension.ts'
 import { childEnv, launcherArgv, launcherEnv, spawnOnAccount } from './launch.ts'
 import { ClaudeSdkProvider } from './provider.ts'
+import { synthesizeSession } from './synth.ts'
 import type { ClaudeSession, SessionSpec } from './session.ts'
 import { AsyncQueue } from './util.ts'
 
@@ -312,6 +313,8 @@ test('Claude Code is started through gruntas run on the account, never as pi\'s 
   const env = launcherEnv(childEnv({ PATH: '/bin', CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'cli' }, {}))
   assert.equal(env.CLAUDECODE, undefined)
   assert.equal(env.CLAUDE_CODE_ENTRYPOINT, undefined)
+  // The SDK's own marker, which it sets after, stays: Claude Code says the Agent SDK runs it.
+  assert.equal(launcherEnv({ CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'sdk-ts' }).CLAUDE_CODE_ENTRYPOINT, 'sdk-ts')
   // The extension adds no credential: every variable it sets is one of these.
   assert.deepEqual(Object.keys(env).filter(k => k !== 'PATH').sort(), [
     'CLAUDE_AGENT_SDK_CLIENT_APP',
@@ -357,5 +360,50 @@ test('the extension\'s code reads no login, key or pi credential store', () => {
     for (const bad of [/\.credentials\.json/, /auth\.json/, /ANTHROPIC_API_KEY/, /ANTHROPIC_AUTH_TOKEN/, /CLAUDE_CODE_OAUTH_TOKEN/, /oauth\s*:/i, /keychain/i, /authHeader/, /user-agent/i]) {
       assert.doesNotMatch(text, bad, `${f}: ${bad}`)
     }
+  }
+})
+
+// --- review round 1 ----------------------------------------------------------
+
+test('a conversation written for another account keeps the trailing tool loop\'s thinking of this provider\'s turns', () => {
+  const home = scratch()
+  try {
+    const turn = { role: 'assistant', api: 'gruntas-claude-code', provider: PROVIDER, model: MODEL.id, stopReason: 'toolUse', timestamp: 1, usage: {}, content: [{ type: 'thinking', thinking: 'let me look', thinkingSignature: 'sig-1' }, { type: 'toolCall', id: 'toolu_1', name: 'bash', arguments: { command: 'ls' } }] }
+    synthesizeSession(home, '/work/repo', MODEL.id, [user('list files') as never, turn as never])
+    const [file] = readdirSync(home, { recursive: true }).map(String).filter(f => f.endsWith('.jsonl'))
+    const written = readFileSync(join(home, file!), 'utf8')
+    assert.ok(written.includes('"signature":"sig-1"'), written)
+    assert.equal(statSync(join(home, file!)).mode & 0o777, 0o600)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a move while a request runs on the old account closes its Claude Code once the request ends', async () => {
+  const h = harness(() => ({ name: 'claude:a', home: '/h/a' }), [[]])
+  const stream = h.provider.streamSimple(MODEL, { messages: [system, user('list files')] } as never) as unknown as ReturnType<typeof fakeStream>
+  for (let i = 0; i < 20 && h.sessions.length === 0; i++) await new Promise(r => setTimeout(r, 1))
+  const [s] = h.sessions
+  h.provider.retire('claude:b')
+  assert.equal(s!.closed, false, 'not while its request runs')
+  for (const m of TOOL_TURN) s!.events.push(m)
+  await stream.ended
+  assert.equal(s!.closed, true)
+})
+
+test('a move made while the session is still settling its start wins', async () => {
+  const dir = scratch()
+  try {
+    let release!: () => void
+    const held = new Promise<void>(r => (release = r))
+    const g: Gruntas = { list: async () => ROWS, auto: async () => (await held, 'claude') }
+    const accounts = new Accounts(g, join(dir, 'account.json'))
+    const starting = accounts.current()
+    await accounts.moveTo('claude:work')
+    release()
+    assert.equal((await starting).name, 'claude:work')
+    assert.equal(JSON.parse(readFileSync(join(dir, 'account.json'), 'utf8')).last, 'claude:work')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })

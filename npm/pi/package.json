@@ -20,7 +20,8 @@
   "files": [
     "src/gruntas.ts",
     "src/hook.ts",
-    "src/claude"
+    "src/claude",
+    "THIRD-PARTY-NOTICES"
   ],
   "pi": {
     "extensions": [

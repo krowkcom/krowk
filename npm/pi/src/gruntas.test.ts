@@ -117,6 +117,9 @@ test('the manifest loads the extension, pins pi, and ships what it loads', () =>
   assert.ok(Object.keys(manifest.dependencies ?? {}).every(d => !d.startsWith('@earendil-works/')), JSON.stringify(manifest.dependencies))
   for (const e of manifest.pi.extensions) assert.ok(manifest.files.includes(e.replace(/^\.\//, '')), e)
   for (const f of manifest.files) assert.ok(existsSync(join(pkg, f)), f)
+  // The MIT notice of the code the gruntas provider is copied from ships with it.
+  assert.ok(manifest.files.includes('THIRD-PARTY-NOTICES'))
+  assert.match(readFileSync(join(pkg, 'THIRD-PARTY-NOTICES'), 'utf8'), /pi-claude-subscription[\s\S]*Copyright \(c\) 2026 Jarno Keskikangas[\s\S]*Permission is hereby granted/)
 })
 
 test('the factory loads on pi\'s API and, on Windows, does nothing', async () => {

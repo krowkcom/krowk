@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { assistantBlocks, type TurnMessage, userTurnBlocks } from "./transcript.ts";
+import { API, assistantBlocks, type TurnMessage, userTurnBlocks } from "./transcript.ts";
 
 /** Claude Code's per-project session directory under `home`: the working directory's realpath, sanitized. */
 export function projectDir(home: string, cwd: string): string {
@@ -42,7 +42,7 @@ export function synthesizeSession(home: string, cwd: string, model: string, mess
 		const timestamp = new Date(now - (messages.length - i) * 1000).toISOString();
 		const m = messages[i];
 		if (m.role === "assistant") {
-			const keepThinking = i > lastUserText && m.model === model && (m.api === "claude-agent-sdk" || m.api === "anthropic-messages");
+			const keepThinking = i > lastUserText && m.model === model && (m.api === API || m.api === "anthropic-messages");
 			const content = assistantBlocks(m as AssistantMessage, keepThinking);
 			lines.push(
 				JSON.stringify({
@@ -83,7 +83,8 @@ export function synthesizeSession(home: string, cwd: string, model: string, mess
 		parent = uuid;
 	}
 	const dir = projectDir(home, cwd);
-	mkdirSync(dir, { recursive: true });
-	writeFileSync(join(dir, `${sessionId}.jsonl`), `${lines.join("\n")}\n`);
+	// The conversation, pi's instructions and all: the person's alone, as Claude Code keeps its own.
+	mkdirSync(dir, { recursive: true, mode: 0o700 });
+	writeFileSync(join(dir, `${sessionId}.jsonl`), `${lines.join("\n")}\n`, { mode: 0o600 });
 	return { sessionId, at: parent! };
 }

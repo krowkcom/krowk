@@ -135,8 +135,9 @@ export class LiveSession implements ClaudeSession {
 					spawnOnAccount(spec.account.name, o, (d) => {
 						this.stderrTail = (this.stderrTail + d).slice(-2000);
 					}),
-				// Which needs that Claude Code to be at least the SDK's own version.
-				mcpServersDelivery: "initialize",
+				// pi's tools are an in-process server, which this does not touch; "argv" keeps any account's
+				// Claude Code version working, where "initialize" needs the SDK's own or newer.
+				mcpServersDelivery: "argv",
 				env: childEnv(process.env, spec),
 			},
 		});

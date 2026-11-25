@@ -18,10 +18,10 @@ import type { Account } from "./launch.ts";
 import { thinkingOptions } from "./models.ts";
 import type { ClaudeSession, SessionSpec } from "./session.ts";
 import { synthesizeSession } from "./synth.ts";
-import { piToolName, readTranscript, type Transcript, type TurnMessage, userTurnBlocks, fingerprint } from "./transcript.ts";
+import { API, piToolName, readTranscript, type Transcript, type TurnMessage, userTurnBlocks, fingerprint } from "./transcript.ts";
 import { errorText, sha } from "./util.ts";
 
-export const API = "gruntas-claude-code";
+export { API };
 
 export interface ProviderOptions {
 	/** Live Claude Code processes kept for reuse (one per concurrent conversation). */
@@ -61,6 +61,8 @@ export class ClaudeSdkProvider {
 	private readonly opts: Required<Pick<ProviderOptions, "maxSessions" | "idleMs" | "cwd">> & ProviderOptions;
 	private timer?: NodeJS.Timeout;
 	lastRoute?: Route;
+	/** The account the session moved to last; a process on any other closes when its request ends. */
+	private keep?: string;
 
 	constructor(opts: ProviderOptions) {
 		// An option explicitly set to undefined means "not configured": it must not overwrite a
@@ -180,6 +182,8 @@ export class ClaudeSdkProvider {
 			if (session) {
 				session.busy = false;
 				this.active.delete(session);
+				// The account moved while this request ran on the old one (retire, below).
+				if (this.keep !== undefined && session.spec.account.name !== this.keep) this.drop(session);
 			}
 			this.scheduleSweep();
 		}
@@ -466,6 +470,7 @@ export class ClaudeSdkProvider {
 	 * request starts afresh on the new one with the conversation pi holds, its cache cold there.
 	 */
 	retire(keep: string): void {
+		this.keep = keep;
 		for (const s of [...this.sessions]) if (s.spec.account.name !== keep && !this.active.has(s)) this.drop(s);
 	}
 

@@ -64,6 +64,9 @@ function toToolDeclaration(tool: Tool): Tool {
 	};
 }
 
+/** The pi API of the `gruntas` provider's models, which its own turns carry. */
+export const API = "gruntas-claude-code";
+
 export const MCP_SERVER = "pi";
 export const MCP_PREFIX = `mcp__${MCP_SERVER}__`;
 
