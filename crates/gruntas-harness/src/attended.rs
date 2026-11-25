@@ -54,6 +54,11 @@ pub struct Next {
     /// it leaves; copied to the next account's home before resuming.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript: Option<String>,
+    /// A person picked it (`/gruntas:account`), not the daemon as the
+    /// account ran low: the Launcher goes there even when the run was on it
+    /// before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub picked: bool,
 }
 
 pub fn launched_path(daemon: &Path, pid: u32) -> PathBuf {
@@ -205,7 +210,7 @@ pub fn due(daemon: &Path, before: &Data, after: &Data, login: &str, windows: &[U
         let keys = crate::ladder::keys_open(harness, true, None, None);
         let from = ModelRef { instance: l.account, model: l.model };
         if let Some(step) = registry.ladder.next(registry, after, &from, keys, now_ms) {
-            out.push((pid, Next { session: s.session_id.clone(), account: step.to.instance, model: step.to.model, rung: step.rung, transcript: s.transcript_path.clone() }, limited));
+            out.push((pid, Next { session: s.session_id.clone(), account: step.to.instance, model: step.to.model, rung: step.rung, transcript: s.transcript_path.clone(), picked: false }, limited));
         }
     }
     out
@@ -251,7 +256,7 @@ mod tests {
         }
         assert!(due(&daemon, &data, &data, "a", &window(50.0), &sessions, &r, 1).is_empty(), "room left");
         let told = due(&daemon, &data, &data, "a", &window(100.0), &sessions, &r, 1);
-        let next = Next { session: "s1".into(), account: "claude:b".into(), model: "opus".into(), rung: Rung::SameHarness, transcript: Some("/h/a/projects/-r/s.jsonl".into()) };
+        let next = Next { session: "s1".into(), account: "claude:b".into(), model: "opus".into(), rung: Rung::SameHarness, transcript: Some("/h/a/projects/-r/s.jsonl".into()), picked: false };
         assert_eq!(told, vec![(11, next.clone(), true)]);
         assert_eq!(notice(&next, true, 10.0), "This account has hit its usage limit. Next: claude:b on opus (another subscription) — type /exit to continue this session there.");
         let key = Next { account: "claude:key".into(), rung: Rung::ApiKey, ..next.clone() };

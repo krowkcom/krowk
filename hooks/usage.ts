@@ -301,11 +301,12 @@ async function pick($: EngineInterface, value: string): Promise<void> {
   }
 }
 
-/** Bare `/gruntas:account`: the picker where the session can move, else the list. */
+/** Bare `/gruntas:account`: the picker, the same in every session; one
+ * `gruntas run` did not start cannot move, which Enter says. The list where
+ * there is no picker (gruntas missing, or one before it). */
 async function picker($: EngineInterface): Promise<string | undefined> {
   const got = await choices($)
   if (got === undefined) return account($, '')
-  if (!got.launched) return got.list ?? account($, '')
   picking = got
   // Open already (asked again): drawn afresh from these rows.
   $.ui.invalidate('ui.render')
@@ -335,7 +336,7 @@ export const register: Register = on => {
           options: p.choices.map(c => ({ value: c.account, label: c.label })),
           onSelect: value => void pick($, value),
         }),
-        Text({ dimColor: true, children: '↑↓ move · Enter switches (/exit, then resumes there) · Esc keeps this account' }),
+        Text({ dimColor: true, children: p.launched ? '↑↓ move · Enter switches (/exit, then resumes there) · Esc keeps this account' : '↑↓ move · Esc closes · to switch, start Claude Code with `gruntas run claude`' }),
       ],
     })
   })

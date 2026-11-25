@@ -300,6 +300,19 @@ pub fn transcript_path(config_dir: &Path, cwd: &str, session_id: &str) -> PathBu
         .unwrap_or(direct)
 }
 
+/// Whether the transcript at `path` holds a conversation — a user or
+/// assistant entry — that `claude --resume` can take up. Claude Code
+/// writes one with only its own records (mode, owner, last prompt) for a
+/// session where nothing was said but a slash command a plugin's mod
+/// answered, and refuses to resume it ("No conversation found").
+pub fn has_conversation(path: &Path) -> bool {
+    use std::io::BufRead;
+    let Ok(file) = std::fs::File::open(path) else { return false };
+    std::io::BufReader::new(file).lines().map_while(Result::ok).any(|line| {
+        (line.contains("\"user\"") || line.contains("\"assistant\"")) && serde_json::from_str::<Value>(&line).is_ok_and(|v| matches!(v.get("type").and_then(Value::as_str), Some("user" | "assistant")))
+    })
+}
+
 /// A tool call Claude Code asks about, as gruntas's permission evaluator
 /// judges it (`crate::permissions`): Claude Code's own tool names are the
 /// names rules are written in. Calls Claude Code allows itself — its

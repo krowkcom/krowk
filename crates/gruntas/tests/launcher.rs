@@ -395,6 +395,9 @@ fn account_auto_picks_the_account_with_the_most_headroom() {
 /// which the hook passes over looking for its harness. Linux names a
 /// script's process after the script; macOS after its interpreter, which
 /// for `#!/bin/sh` is `sh`.
+/// A transcript with something said in it, which `claude --resume` takes up.
+const SAID: &str = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n";
+
 fn harness_script(b: &Sandbox, name: &str, body: &str) {
     use std::os::unix::fs::PermissionsExt;
     let bash = ["/bin/bash", "/usr/bin/bash"].into_iter().find(|p| std::path::Path::new(p).exists()).expect("bash");
@@ -476,7 +479,7 @@ fn rl03_exit_after_a_notice_resumes_the_session_on_the_next_account() {
     let session = "0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e5f";
     let transcript = work.join(format!("projects/-r/{session}.jsonl"));
     std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
-    std::fs::write(&transcript, "{}\n").unwrap();
+    std::fs::write(&transcript, SAID).unwrap();
     std::fs::write(&queue, serde_json::json!({ "session": session, "account": "claude:spare", "model": "opus", "rung": "same-harness", "transcript": transcript }).to_string()).unwrap();
     std::fs::remove_file(&runs).unwrap();
     let o = run();
@@ -489,9 +492,64 @@ fn rl03_exit_after_a_notice_resumes_the_session_on_the_next_account() {
     assert!(l[0].starts_with(&format!("{} |", work.display())), "{l:?}");
     assert!(l[1].starts_with(&format!("{} |", spare.display())) && l[1].contains(&format!("--resume {session} --model opus")), "{l:?}");
     assert!(l[1].ends_with(r#"| {"account":"claude:spare","model":"opus"}"#), "{l:?}");
-    assert_eq!(std::fs::read_to_string(spare.join(format!("projects/-r/{session}.jsonl"))).unwrap(), "{}\n", "the transcript, where --resume finds it");
+    assert_eq!(std::fs::read_to_string(spare.join(format!("projects/-r/{session}.jsonl"))).unwrap(), SAID, "the transcript, where --resume finds it");
     let daemon = std::fs::read_dir(b.root.join("run/gruntas")).unwrap().flatten().find(|e| e.path().join("attended").is_dir()).unwrap().path();
     assert_eq!(std::fs::read_dir(daemon.join("attended")).unwrap().count(), 0, "the records gone with the run");
+}
+
+/// An account the daemon queues as the one a run is on runs low is not
+/// one the run already left: going back would only go round the same
+/// accounts, so the run ends there — until a window of it has reset. One a
+/// person picked is gone to anyway.
+#[test]
+fn a_run_never_rolls_back_to_an_account_it_left_until_it_resets() {
+    let b = Sandbox::new("rollover-loop");
+    let mut config: serde_json::Value = serde_json::from_slice(&std::fs::read(b.home().join("config.json")).unwrap()).unwrap();
+    std::fs::create_dir_all(b.root.join("accounts/claude-spare")).unwrap();
+    config["instances"]["claude:spare"] = serde_json::json!({ "kind": "claude-code", "binary": b.root.join("bin/claude"), "configDir": b.root.join("accounts/claude-spare") });
+    std::fs::write(b.home().join("config.json"), config.to_string()).unwrap();
+    let (runs, queue) = (b.root.join("runs"), b.root.join("queue"));
+    std::fs::create_dir_all(b.root.join("run")).unwrap();
+    // Each run writes down its home and queues the next of queue.1,
+    // queue.2, … left, then exits with its count.
+    script(&b, "claude", &format!("i=0\nuntil a=$(ls -d {1}/gruntas/*/attended 2>/dev/null) && [ -e \"$a/$$.json\" ]; do i=$((i+1)); [ $i -gt 500 ] && exit 9; sleep 0.01; done\necho \"$CLAUDE_CONFIG_DIR | $*\" >> '{0}'\nfor q in '{2}'.*; do [ -e \"$q\" ] && mv \"$q\" $a/$$.next.json && break; done\nexit $(wc -l < '{0}')\n", runs.display(), b.root.join("run").display(), queue.display()));
+    let run = || b.command(&["run", "claude", "--account", "work", "--no-sandbox"]).env("XDG_RUNTIME_DIR", b.root.join("run")).output().unwrap();
+    let lines = || std::fs::read_to_string(&runs).unwrap_or_default().lines().map(String::from).collect::<Vec<_>>();
+    let session = "0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e64";
+    let transcript = b.root.join(format!("accounts/claude-work/projects/-r/{session}.jsonl"));
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    std::fs::write(&transcript, SAID).unwrap();
+    let queued = |n: u32, account: &str, picked: bool| std::fs::write(b.root.join(format!("queue.{n}")), serde_json::json!({ "session": session, "account": account, "rung": "same-harness", "picked": picked }).to_string()).unwrap();
+
+    // work → spare, then the daemon's pick of work again: the run ends on spare.
+    queued(1, "claude:spare", false);
+    queued(2, "claude:work", false);
+    let o = run();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(2), "spare's own code; {err}");
+    assert_eq!(lines().len(), 2, "{:?}", lines());
+    assert!(err.contains(&format!("session {session} is not moved back to claude:work, which this run left when it ran low and has not reset since")), "{err}");
+
+    // A person's pick goes back.
+    std::fs::remove_file(&runs).unwrap();
+    queued(1, "claude:spare", false);
+    queued(2, "claude:work", true);
+    let o = run();
+    assert_eq!(o.status.code(), Some(3), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(lines()[2].starts_with(&format!("{} |", b.root.join("accounts/claude-work").display())), "{:?}", lines());
+
+    // Back to work automatically once a window of its login that was
+    // running when the run left it has reset: it has room again. The first
+    // harness writes that window, to reset a second or two after it ends;
+    // the second outlasts it.
+    std::fs::remove_file(&runs).unwrap();
+    queued(1, "claude:spare", false);
+    queued(2, "claude:work", false);
+    let usage = b.home().join("usage.json");
+    script(&b, "claude", &format!("i=0\nuntil a=$(ls -d {1}/gruntas/*/attended 2>/dev/null) && [ -e \"$a/$$.json\" ]; do i=$((i+1)); [ $i -gt 500 ] && exit 9; sleep 0.01; done\necho \"$CLAUDE_CONFIG_DIR | $*\" >> '{0}'\nfor q in '{2}'.*; do [ -e \"$q\" ] && mv \"$q\" $a/$$.next.json && break; done\nn=$(wc -l < '{0}')\nif [ $n = 1 ]; then r=$(( $(date +%s) * 1000 + 2000 )); echo \"{{\\\"logins\\\":{{\\\"w@x.io\\\":{{\\\"five_hour\\\":{{\\\"status\\\":\\\"limited\\\",\\\"usedPercent\\\":100,\\\"resetsAtMs\\\":$r,\\\"seenAtMs\\\":$((r - 60000))}}}}}},\\\"instances\\\":{{\\\"claude:work\\\":{{\\\"login\\\":\\\"w@x.io\\\",\\\"seenAtMs\\\":1}}}}}}\" > '{3}'; fi\n[ $n = 2 ] && sleep 3\nexit $n\n", runs.display(), b.root.join("run").display(), queue.display(), usage.display()));
+    let o = run();
+    assert_eq!(o.status.code(), Some(3), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(lines()[2].starts_with(&format!("{} |", b.root.join("accounts/claude-work").display())), "{:?}", lines());
 }
 
 /// A switch from the default account, run in the home the shell exports
@@ -521,14 +579,14 @@ fn a_switch_carries_from_the_inherited_home_and_an_empty_session_starts_afresh()
     let session = "0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e60";
     let transcript = elsewhere.join(format!("projects/-r/{session}.jsonl"));
     std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
-    std::fs::write(&transcript, "{}\n").unwrap();
+    std::fs::write(&transcript, SAID).unwrap();
     std::fs::write(&queue, serde_json::json!({ "session": session, "account": "claude:spare", "model": "opus", "rung": "same-harness", "transcript": transcript }).to_string()).unwrap();
     let o = run();
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(3), "the resumed run's code; {err}");
     assert!(err.contains(&format!("continuing session {session} on claude:spare")), "{err}");
     assert!(lines()[1].starts_with(&format!("{} |", spare.display())) && lines()[1].contains(&format!("--resume {session}")), "{:?}", lines());
-    assert_eq!(std::fs::read_to_string(spare.join(format!("projects/-r/{session}.jsonl"))).unwrap(), "{}\n", "carried from the inherited home");
+    assert_eq!(std::fs::read_to_string(spare.join(format!("projects/-r/{session}.jsonl"))).unwrap(), SAID, "carried from the inherited home");
 
     // Nothing said yet: no transcript, so a new session, not a resume.
     std::fs::remove_file(&runs).unwrap();
@@ -542,6 +600,22 @@ fn a_switch_carries_from_the_inherited_home_and_an_empty_session_starts_afresh()
     assert_eq!(l.len(), 2, "{l:?}");
     assert!(l[1].starts_with(&format!("{} |", spare.display())) && !l[1].contains("--resume") && l[1].contains("--model opus"), "{l:?}");
 
+    // Only a slash command the mod answered: Claude Code wrote a
+    // transcript of its own records, with nothing said, which it would
+    // refuse to resume.
+    std::fs::remove_file(&runs).unwrap();
+    let answered = "0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e63";
+    let records = elsewhere.join(format!("projects/-r/{answered}.jsonl"));
+    std::fs::write(&records, format!("{{\"type\":\"last-prompt\",\"leafUuid\":\"x\",\"sessionId\":\"{answered}\"}}\n{{\"type\":\"mode\",\"mode\":\"normal\",\"sessionId\":\"{answered}\"}}\n")).unwrap();
+    std::fs::write(&queue, serde_json::json!({ "session": answered, "account": "claude:spare", "model": "opus", "rung": "same-harness", "transcript": records }).to_string()).unwrap();
+    let o = run();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(5), "the new session's own code; {err}");
+    assert!(err.contains(&format!("session {answered} had nothing said yet, so a new one starts on claude:spare")), "{err}");
+    let l = lines();
+    assert!(l.len() == 2 && !l[1].contains("--resume"), "{l:?}");
+    assert!(!spare.join(format!("projects/-r/{answered}.jsonl")).exists(), "nothing carried");
+
     // Back from claude:spare to the default: carried into the home the
     // default runs in, the inherited one, not its written-down one. The
     // queue names no transcript where one is: it is found under spare's.
@@ -549,13 +623,13 @@ fn a_switch_carries_from_the_inherited_home_and_an_empty_session_starts_afresh()
     let back = "0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e62";
     let at_spare = spare.join(format!("projects/-q/{back}.jsonl"));
     std::fs::create_dir_all(at_spare.parent().unwrap()).unwrap();
-    std::fs::write(&at_spare, "{}\n").unwrap();
+    std::fs::write(&at_spare, SAID).unwrap();
     std::fs::write(&queue, serde_json::json!({ "session": back, "account": "claude", "model": "opus", "rung": "same-harness", "transcript": spare.join(format!("projects/-r/{back}.jsonl")) }).to_string()).unwrap();
     let o = b.command(&["run", "claude", "--account", "spare", "--no-sandbox", "--model", "opus"]).env("XDG_RUNTIME_DIR", b.root.join("run")).env("CLAUDE_CONFIG_DIR", &elsewhere).output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(3), "the resumed run's code; {err}");
     assert!(lines()[1].starts_with(&format!("{} |", elsewhere.display())) && lines()[1].contains(&format!("--resume {back}")), "{:?}", lines());
-    assert_eq!(std::fs::read_to_string(elsewhere.join(format!("projects/-q/{back}.jsonl"))).unwrap(), "{}\n", "carried into the inherited home");
+    assert_eq!(std::fs::read_to_string(elsewhere.join(format!("projects/-q/{back}.jsonl"))).unwrap(), SAID, "carried into the inherited home");
 }
 
 /// RL03 with RL04 (D5, D6): an attended Codex session whose queued next
@@ -693,7 +767,7 @@ fn rl06_an_attended_session_is_told_and_continues_after_exit() {
     let session = "0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e71";
     let transcript = work.join(format!("projects/-r/{session}.jsonl"));
     std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
-    std::fs::write(&transcript, "{}\n").unwrap();
+    std::fs::write(&transcript, SAID).unwrap();
     let send = |a: Activity| gruntas_harness::hook::send(&socket, "/r", "test", a).unwrap();
     send(Activity::Register(Registration { session_id: session.into(), harness: PluginHarness::Claude, harness_pid: Some(pid), config_home: Some(work.display().to_string()), cwd: Some(b.root.display().to_string()), repository: None, transcript_path: Some(transcript.display().to_string()), attendance: Some(Attendance::Attended) }));
     send(Activity::Usage { config_home: work.display().to_string(), windows: vec![UsageWindow { kind: "fiveHour".into(), used_percent: 100.0, resets_at_ms: None }] });
@@ -707,7 +781,7 @@ fn rl06_an_attended_session_is_told_and_continues_after_exit() {
     assert!(err.contains(&format!("continuing session {session} on claude:spare")), "{err}");
     let resumed = std::fs::read_to_string(&resumed).unwrap();
     assert!(resumed.starts_with(&format!("{} |", spare.display())) && resumed.contains(&format!("--resume {session} --model opus")), "{resumed}");
-    assert_eq!(std::fs::read_to_string(spare.join(format!("projects/-r/{session}.jsonl"))).unwrap(), "{}\n", "the transcript, where --resume finds it");
+    assert_eq!(std::fs::read_to_string(spare.join(format!("projects/-r/{session}.jsonl"))).unwrap(), SAID, "the transcript, where --resume finds it");
 }
 
 /// RL07 fixtures: `claude:spare` on another login, `claude:same` on
@@ -755,6 +829,8 @@ fn account_choices_list_every_account_movable_first_and_why_not() {
     // claude:spare's login has a window known, half left.
     let mut usage: serde_json::Value = serde_json::from_slice(&std::fs::read(b.home().join("usage.json")).unwrap()).unwrap();
     usage["logins"]["s@x.io"] = serde_json::json!({ "five_hour": { "status": "allowed", "usedPercent": 50.0, "resetsAtMs": now + 3_600_000, "seenAtMs": now } });
+    // What a session `gruntas run` launched on it reported: under its home.
+    usage["logins"][b.root.join("accounts/claude-spare").display().to_string()] = serde_json::json!({ "seven_day": { "status": "allowed", "usedPercent": 30.0, "resetsAtMs": now + 86_400_000, "seenAtMs": now } });
     std::fs::write(b.home().join("usage.json"), usage.to_string()).unwrap();
     let session = "0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e72";
     let o = b.command(&["hook", "claude", "account", session, "--choices"]).env("CLAUDE_CONFIG_DIR", b.root.join("accounts/claude-work")).output().unwrap();
@@ -770,7 +846,7 @@ fn account_choices_list_every_account_movable_first_and_why_not() {
     assert_eq!(why("claude:work"), "this session runs on it");
     assert_eq!(why("codex:team"), "it is a Codex account, and a Claude Code session moves only to another Claude Code account");
     let label = |n: &str| v["choices"].as_array().unwrap().iter().find(|c| c["account"] == n).map(|c| c["label"].as_str().unwrap_or_default().to_string()).unwrap_or_default();
-    assert_eq!(label("claude:spare"), "claude:spare · max · 5h 50% left");
+    assert_eq!(label("claude:spare"), "claude:spare · 30% weekly, 50% 5-hour", "the weekly reported under spare's home, read as its login's");
     assert_eq!(label("claude:out"), "claude:out · not signed in");
     assert_eq!(label("claude:same"), "claude:same · same login as claude:work");
     assert_eq!(label("claude:work"), "claude:work · this session");
@@ -800,7 +876,7 @@ fn rl07_providers_check_rows_carry_login_plan_usage_and_shared_logins() {
     assert_eq!((out["ready"].as_bool(), &out["plan"]), (Some(false), &serde_json::Value::Null), "{out}");
     assert_eq!(row("claude")["login"], serde_json::Value::Null, "never seen: unknown");
     let human = String::from_utf8_lossy(&b.gruntas(&["providers", "list", "--check", "--format", "human"]).stdout).into_owned();
-    assert!(human.contains("w@x.io (max) · 5h 60% left, resets ") && human.contains("same login as claude:same"), "{human}");
+    assert!(human.contains("w@x.io (max) · 90% weekly (resets ") && human.contains("), 40% 5-hour (resets ") && human.contains("same login as claude:same"), "{human}");
     assert!(human.contains("s@x.io (max) · usage unknown"), "{human}");
 }
 
@@ -823,7 +899,7 @@ fn rl07_a_picked_account_continues_the_session_after_exit() {
     let slug: String = b.root.display().to_string().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
     let transcript = b.root.join(format!("accounts/claude-work/projects/{slug}/{session}.jsonl"));
     std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
-    std::fs::write(&transcript, "{}\n").unwrap();
+    std::fs::write(&transcript, SAID).unwrap();
     harness_script(&b, "claude", &format!("{RL07_AUTH}i=0\nuntil a=$(ls -d {run}/gruntas/*/attended 2>/dev/null) && [ -e \"$a/$$.json\" ]; do i=$((i+1)); [ $i -gt 500 ] && exit 9; sleep 0.01; done\necho \"$CLAUDE_CONFIG_DIR | $*\" >> '{runs}'\ncase \"$*\" in *--resume*) exit 3;; esac\nfor w in . claude:nope codex:team claude:out claude:same claude:work claude:spare --cancel --cancel claude:spare; do [ \"$w\" = . ] && w=; echo \"> $w\" >> '{said}'; {gruntas} hook claude account {session} $w >> '{said}' 2>&1; echo \"= $? queued=$([ -e $a/$$.next.json ] && echo y || echo n)\" >> '{said}'; done\nexit 5\n", run = b.root.join("run").display(), runs = runs.display(), said = said.display()));
     let o = b.command(&["run", "claude", "--account", "work", "--no-sandbox", "--model", "opus"]).env("XDG_RUNTIME_DIR", b.root.join("run")).output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);

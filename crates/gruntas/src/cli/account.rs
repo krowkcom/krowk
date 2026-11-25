@@ -60,7 +60,7 @@ fn run(ctx: &mut Ctx, args: &[String], pid: Option<u32>, var: &dyn Fn(&str) -> S
         return Err(format!("{session:?} is not a session id"));
     }
     let (_, registry, reports) = status::reports(ctx).map_err(|e| e.to_string())?;
-    let data = status::usage(ctx).map_err(|e| e.to_string())?;
+    let data = status::usage(ctx, &registry).map_err(|e| e.to_string())?;
     let now = gruntas_store::now_ms();
     let (reports, others): (Vec<Report>, Vec<Report>) = reports.into_iter().partition(|r| r.kind == harness.kind());
     let daemon = gruntas_harness::daemon::dir(ctx.io.env).ok();
@@ -156,7 +156,7 @@ fn run(ctx: &mut Ctx, args: &[String], pid: Option<u32>, var: &dyn Fn(&str) -> S
                 return Err(format!("{name} is signed in as the same login as {from}, so moving there gains nothing: {}.", valid()));
             }
             let transcript = transcript(d, session, &registry, &from);
-            let next = Next { session: session.to_string(), account: to.clone(), model: l.model, rung: Rung::SameHarness, transcript };
+            let next = Next { session: session.to_string(), account: to.clone(), model: l.model, rung: Rung::SameHarness, transcript, picked: true };
             attended::queue(d, p, &next).map_err(|e| format!("{to} could not be queued: {e}"))?;
             Ok(format!("Type /exit to continue on {to}."))
         }
