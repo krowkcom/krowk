@@ -131,6 +131,10 @@ pub struct Request<'a> {
     pub gruntas: PathBuf,
     /// False for `--no-sandbox`: the sandbox parts are left out.
     pub sandbox: bool,
+    /// The open proxy an attended Claude session's sandboxed commands
+    /// reach the network through (`crate::egress`); none leaves Claude
+    /// Code's own, which asks before each new domain.
+    pub egress: Option<crate::egress::Egress>,
     /// The person's own arguments, passed through but for `--settings`,
     /// which is merged into gruntas's.
     pub args: Vec<String>,
@@ -199,10 +203,17 @@ pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> R
             let (typed, rest) = take_settings(&req.args, read)?;
             theirs.extend(typed);
             let mut ours = worktree_hooks(&req.gruntas);
+            let settings = theirs.into_iter().fold(Value::Object(Map::new()), merge);
             if req.sandbox {
                 ours = merge(ours, claude_sandbox(&req.hidden));
+                if req.mode == Mode::Attended {
+                    // A proxy or denied domains the person gave in a
+                    // `--settings` stay theirs: no open proxy over them.
+                    let n = &settings["sandbox"]["network"];
+                    let named = ["httpProxyPort", "socksProxyPort", "deniedDomains"].iter().any(|k| n.get(k).is_some());
+                    ours = merge(ours, claude_attended(&req.hidden, req.egress.filter(|_| !named)));
+                }
             }
-            let settings = theirs.into_iter().fold(Value::Object(Map::new()), merge);
             let settings = merge(settings, ours);
             if let Mode::Unattended { .. } = req.mode {
                 plan.args.push("--bg".into());
@@ -330,6 +341,51 @@ pub fn claude_sandbox(hidden: &[PathBuf]) -> Value {
     })
 }
 
+/// Where Claude Code keeps an organisation's managed settings: each holds
+/// `managed-settings.json` and a `managed-settings.d/` of `*.json` drop-ins.
+const MANAGED: [&str; 2] = ["/etc/claude-code", "/Library/Application Support/ClaudeCode"];
+
+/// Whether an organisation's managed settings files say anything of the
+/// sandbox's network, which gruntas's open proxy would silently set aside:
+/// the launcher then starts none, and Claude Code's own proxy applies them.
+/// Read from disk, unlike `plan`.
+pub fn managed_network() -> bool {
+    managed_network_in(&MANAGED.map(PathBuf::from))
+}
+
+fn managed_network_in(dirs: &[PathBuf]) -> bool {
+    let mut files = Vec::new();
+    for d in dirs {
+        files.push(d.join("managed-settings.json"));
+        if let Ok(rd) = std::fs::read_dir(d.join("managed-settings.d")) {
+            files.extend(rd.flatten().map(|e| e.path()).filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(".json") && !n.starts_with('.'))));
+        }
+    }
+    files.iter().filter_map(|f| std::fs::read_to_string(f).ok()).filter_map(|t| serde_json::from_str::<Value>(&t).ok()).any(|v| v["sandbox"].get("network").is_some())
+}
+
+/// What an attended session's sandbox adds to `claude_sandbox`, so the
+/// person's own credentials and logins work in it as they do in their own
+/// `claude`: every Unix socket (ssh-agent, the desktop's secret store over
+/// D-Bus, Docker), writes anywhere in their home (a CLI refreshing its
+/// token) but the hidden paths, and, through `egress`, every destination
+/// without a prompt.
+/// The sandbox stays on with no command outside it, so the home stays
+/// hidden from what a session reads and runs; but a soft fence, not a hard
+/// one: a session set on it can reach out through the sockets (systemd over
+/// D-Bus) or a file it writes that runs later (a shell's rc file). It stops
+/// accidents and the naive injection, not the deliberate one (the threat
+/// model's sandbox rule). An unattended session keeps the hard fence.
+pub fn claude_attended(hidden: &[PathBuf], egress: Option<crate::egress::Egress>) -> Value {
+    let paths: Vec<String> = hidden.iter().map(|p| p.display().to_string()).collect();
+    let mut network = json!({ "allowAllUnixSockets": true });
+    if let Some(e) = egress {
+        network["httpProxyPort"] = json!(e.http);
+        network["socksProxyPort"] = json!(e.socks);
+    }
+    json!({ "sandbox": { "filesystem": { "allowWrite": ["~"], "denyWrite": paths }, "network": network } })
+}
+
 /// The WorktreeCreate and WorktreeRemove hooks, run by `gruntas`, the case
 /// the plugin's own misses (the spike): Claude Code's worktrees come from
 /// gruntas, as the plugin's hooks make them.
@@ -409,6 +465,7 @@ mod tests {
             plugin_dir: "/h/.local/share/gruntas/plugin".into(),
             gruntas: "/usr/bin/gruntas".into(),
             sandbox: true,
+            egress: Some(crate::egress::Egress { http: 3128, socks: 1080 }),
             args: args.iter().map(|s| s.to_string()).collect(),
         }
     }
@@ -451,7 +508,11 @@ mod tests {
         assert!(p.env_remove.contains(&"ANTHROPIC_API_KEY") && !p.env_remove.contains(&"ANTHROPIC_BASE_URL"));
         let s = p.settings.clone().unwrap();
         let want = json!({
-            "sandbox": { "network": { "allowedDomains": ["x.dev"] }, "filesystem": { "denyRead": ["/secret", "/h/.gruntas"] }, "enabled": true, "failIfUnavailable": true, "allowUnsandboxedCommands": false },
+            "sandbox": {
+                "network": { "allowedDomains": ["x.dev"], "allowAllUnixSockets": true, "httpProxyPort": 3128, "socksProxyPort": 1080 },
+                "filesystem": { "denyRead": ["/secret", "/h/.gruntas"], "allowWrite": ["~"], "denyWrite": ["/h/.gruntas"] },
+                "enabled": true, "failIfUnavailable": true, "allowUnsandboxedCommands": false,
+            },
             "permissions": { "deny": ["Bash(rm:*)", "Read(//h/.gruntas/**)"] },
             "model": "opus",
         });
@@ -515,6 +576,46 @@ mod tests {
         }
     }
 
+    /// Attended, a proxy or denied domains the person gave in `--settings`
+    /// are kept, and without gruntas's proxy the rest still applies.
+    #[test]
+    fn attended_keeps_the_persons_proxy() {
+        let r = registry();
+        let inst = account(&r, Harness::Claude, "claude").unwrap();
+        let theirs = r#"{"sandbox":{"network":{"httpProxyPort":9000}}}"#;
+        let p = plan(&request(Harness::Claude, Mode::Attended, inst, &["--settings", theirs]), &no_file).unwrap();
+        let n = &p.settings.unwrap()["sandbox"]["network"];
+        assert_eq!((&n["httpProxyPort"], n.get("socksProxyPort"), &n["allowAllUnixSockets"]), (&json!(9000), None, &json!(true)));
+        let theirs = r#"{"sandbox":{"network":{"deniedDomains":["evil.example"]}}}"#;
+        let p = plan(&request(Harness::Claude, Mode::Attended, inst, &["--settings", theirs]), &no_file).unwrap();
+        assert!(p.settings.unwrap()["sandbox"]["network"].get("httpProxyPort").is_none(), "denied domains need Claude Code's own proxy");
+        let p = plan(&Request { egress: None, ..request(Harness::Claude, Mode::Attended, inst, &[]) }, &no_file).unwrap();
+        let s = p.settings.unwrap();
+        assert!(s["sandbox"]["network"].get("httpProxyPort").is_none() && s["sandbox"]["filesystem"]["allowWrite"] == json!(["~"]));
+    }
+
+    /// Managed network rules are found in the file and in its drop-ins,
+    /// a hidden or non-JSON drop-in passed over.
+    #[test]
+    fn managed_network_rules_are_found_in_the_file_and_its_drop_ins() {
+        let t = std::env::temp_dir().join(format!("gruntas-managed-{}", std::process::id()));
+        let (a, b) = (t.join("a"), t.join("b"));
+        std::fs::create_dir_all(a.join("managed-settings.d")).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let dirs = [a.clone(), b.clone()];
+        let rules = r#"{"sandbox":{"network":{"allowedDomains":["corp.example"]}}}"#;
+        std::fs::write(a.join("managed-settings.json"), r#"{"model":"opus"}"#).unwrap();
+        std::fs::write(a.join("managed-settings.d/.hidden.json"), rules).unwrap();
+        std::fs::write(a.join("managed-settings.d/50-net.txt"), rules).unwrap();
+        assert!(!managed_network_in(&dirs));
+        std::fs::write(a.join("managed-settings.d/50-net.json"), rules).unwrap();
+        assert!(managed_network_in(&dirs));
+        std::fs::remove_file(a.join("managed-settings.d/50-net.json")).unwrap();
+        std::fs::write(b.join("managed-settings.json"), rules).unwrap();
+        assert!(managed_network_in(&dirs));
+        let _ = std::fs::remove_dir_all(&t);
+    }
+
     #[test]
     fn claude_unattended_starts_in_the_background_on_the_task() {
         let r = registry();
@@ -522,7 +623,8 @@ mod tests {
         let p = plan(&request(Harness::Claude, Mode::Unattended { task: "fix the build".into() }, inst, &["--model", "opus"]), &no_file).unwrap();
         assert_eq!(p.args[0], "--bg");
         assert_eq!(p.args.last().unwrap(), "fix the build");
-        assert_eq!(p.settings.as_ref().unwrap()["sandbox"]["failIfUnavailable"], true);
+        let s = p.settings.as_ref().unwrap();
+        assert_eq!(s["sandbox"], claude_sandbox(&["/h/.gruntas".into()])["sandbox"], "unattended keeps the narrow sandbox: no sockets, no proxy, no writes outside");
         assert!(p.args.windows(2).any(|w| w == ["--model", "opus"]));
         assert_eq!(set(&p, "CLAUDE_CONFIG_DIR"), Some("/h/.gruntas/accounts/claude-work"));
     }
