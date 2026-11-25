@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code/testing'
-import { configHome, payload, PICKER, POLL_MS, statusSegments } from './usage'
+import { cells, configHome, payload, PICKER, POLL_MS, statusSegments } from './usage'
 import type { Choices } from './usage'
 
 const LIMITS = [
@@ -355,6 +355,7 @@ test('an offer that cannot be put back after a picker closed mid-pick is said to
 const text = (s: ReturnType<typeof statusSegments>) => s?.map(x => x.text).join('')
 const at = (ms: number) => new Date(ms).toISOString()
 const WEEK_RESET = Date.UTC(2026, 10, 27, 7)
+const BEFORE = Date.UTC(2026, 10, 25, 9)
 const HOUR_RESET = Date.UTC(2026, 10, 25, 12)
 const day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(WEEK_RESET).getDay()]
 const clock = `${String(new Date(HOUR_RESET).getHours()).padStart(2, '0')}:${String(new Date(HOUR_RESET).getMinutes()).padStart(2, '0')}`
@@ -364,25 +365,41 @@ const windows = (weekly: number | undefined, hour: number | undefined) => [
 ]
 
 test('the status line: account and device, then what each window has used, weekly first', () => {
-  expect(text(statusSegments('claude:elvinas-herder', 'thinkpad', windows(69.4, 12), 120))).toBe('elvinas-herder, thinkpad     69% weekly, 12% 5-hour')
-  expect(text(statusSegments('claude', 'thinkpad', windows(69, 12), 120))).toBe('claude, thinkpad     69% weekly, 12% 5-hour')
+  expect(text(statusSegments('claude:elvinas-herder', 'thinkpad', windows(69.4, 12), 120, BEFORE))).toBe('elvinas-herder, thinkpad     69% weekly, 12% 5-hour')
+  expect(text(statusSegments('claude', 'thinkpad', windows(69, 12), 120, BEFORE))).toBe('claude, thinkpad     69% weekly, 12% 5-hour')
   // Near a limit: its reset, the number amber; full, red.
-  const near = statusSegments('claude:a', 'm', windows(91, 100), 120)
+  const near = statusSegments('claude:a', 'm', windows(91, 100), 120, BEFORE)
   expect(text(near)).toBe(`a, m     91% weekly resets ${day}, 100% 5-hour resets ${clock}`)
   expect(near?.filter(s => s.tone !== 'dim').map(s => [s.text, s.tone])).toEqual([['91%', 'warning'], ['100%', 'error']])
-  expect(statusSegments('claude:a', 'm', windows(69, 12), 120)?.filter(s => s.tone !== 'dim').map(s => s.tone)).toEqual(['plain', 'plain'])
+  expect(statusSegments('claude:a', 'm', windows(69, 12), 120, BEFORE)?.filter(s => s.tone !== 'dim').map(s => s.tone)).toEqual(['plain', 'plain'])
   // A window not reported says so; none reported, who and where alone.
-  expect(text(statusSegments('claude:a', 'm', windows(69, undefined), 120))).toBe('a, m     69% weekly, 5-hour unknown')
-  expect(text(statusSegments('claude:a', 'm', [], 120))).toBe('a, m')
-  expect(statusSegments(undefined, undefined, [], 120)).toBeUndefined()
+  expect(text(statusSegments('claude:a', 'm', windows(69, undefined), 120, BEFORE))).toBe('a, m     69% weekly, 5-hour unknown')
+  expect(text(statusSegments('claude:a', 'm', [], 120, BEFORE))).toBe('a, m')
+  expect(statusSegments(undefined, undefined, [], 120, BEFORE)).toBeUndefined()
+})
+
+test('the status line never overstates use: a passed reset is unknown, and only a full window reads 100%', () => {
+  // Claude Code's reading is from before the 5-hour reset at HOUR_RESET.
+  expect(text(statusSegments('claude:a', 'm', windows(69, 100), 120, HOUR_RESET + 60_000))).toBe('a, m     69% weekly, 5-hour unknown')
+  const almost = statusSegments('claude:a', 'm', windows(99.5, 12), 120, BEFORE)
+  expect(text(almost)).toBe(`a, m     99% weekly resets ${day}, 12% 5-hour`)
+  expect(almost?.find(s => s.text === '99%')?.tone).toBe('warning')
+})
+
+test('the status line measures terminal cells: a wide device name gives way before the numbers', () => {
+  expect([cells('thinkpad'), cells('東京のマック'), cells('é'), cells('🖥️')]).toEqual([8, 12, 1, 2])
+  const l = windows(69, 12)
+  // 'a, 東京のマック     69% weekly, 12% 5-hour' is 42 cells, not 36.
+  expect(text(statusSegments('claude:a', '東京のマック', l, 42, BEFORE))).toBe('a, 東京のマック     69% weekly, 12% 5-hour')
+  expect(text(statusSegments('claude:a', '東京のマック', l, 41, BEFORE))).toBe('a     69% weekly, 12% 5-hour')
 })
 
 test('a narrow status line loses the device, then the resets, then the account, never the numbers', () => {
   const l = windows(91, 12)
-  expect(text(statusSegments('claude:elvinas-herder', 'thinkpad', l, 55))).toBe(`elvinas-herder     91% weekly resets ${day}, 12% 5-hour`)
-  expect(text(statusSegments('claude:elvinas-herder', 'thinkpad', l, 45))).toBe('elvinas-herder     91% weekly, 12% 5-hour')
-  expect(text(statusSegments('claude:elvinas-herder', 'thinkpad', l, 30))).toBe('91% weekly, 12% 5-hour')
-  expect(text(statusSegments('claude:elvinas-herder', 'thinkpad', l, 10))).toBe('91% weekly, 12% 5-hour')
+  expect(text(statusSegments('claude:elvinas-herder', 'thinkpad', l, 55, BEFORE))).toBe(`elvinas-herder     91% weekly resets ${day}, 12% 5-hour`)
+  expect(text(statusSegments('claude:elvinas-herder', 'thinkpad', l, 45, BEFORE))).toBe('elvinas-herder     91% weekly, 12% 5-hour')
+  expect(text(statusSegments('claude:elvinas-herder', 'thinkpad', l, 30, BEFORE))).toBe('91% weekly, 12% 5-hour')
+  expect(text(statusSegments('claude:elvinas-herder', 'thinkpad', l, 10, BEFORE))).toBe('91% weekly, 12% 5-hour')
 })
 
 test('the status line draws under the prompt from gruntas and Claude Code, a person\'s own line kept above it', async ($, on) => {
@@ -400,6 +417,10 @@ test('the status line draws under the prompt from gruntas and Claude Code, a per
   expect(drawn.children.map(c => c.type)).toEqual(['engine', 'Text'])
   expect(await own.find({ type: 'Text', text: /^elvinas-herder, thinkpad {5}69% weekly/ })).toBeDefined()
   await own.unmount()
+  // Their own line of three rows, with three to spare: theirs whole, this one left out.
+  const three = await $.ui.mount({ plugin: 'gruntas', surface: 'terminal', component: 'StatusLine', props: { ...props, text: 'a\nb\nc', maxRows: 3 } } as never)
+  expect(await three.find({ type: 'Text', text: /69% weekly/ })).toBeUndefined()
+  await three.unmount()
   // One row only: the person's own line keeps it.
   const tight = await $.ui.mount({ plugin: 'gruntas', surface: 'terminal', component: 'StatusLine', props: { ...props, text: 'my line', maxRows: 1 } } as never)
   expect(await tight.find({ type: 'Text', text: /69% weekly/ })).toBeUndefined()

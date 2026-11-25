@@ -337,18 +337,32 @@ function resets(kind: string, at: string | undefined): string | undefined {
   return kind === 'seven_day' ? DAYS[d.getDay()] : `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
+/** The terminal cells `text` takes: two for a wide or emoji character, none for a combining mark. */
+export function cells(text: string): number {
+  let n = 0
+  for (const ch of text) {
+    const c = ch.codePointAt(0) ?? 0
+    if (/\p{M}/u.test(ch) || c === 0x200d || (c >= 0xfe00 && c <= 0xfe0f)) continue
+    const wide = (c >= 0x1100 && c <= 0x115f) || (c >= 0x2e80 && c <= 0xa4cf) || (c >= 0xac00 && c <= 0xd7a3) || (c >= 0xf900 && c <= 0xfaff) || (c >= 0xfe30 && c <= 0xfe4f) || (c >= 0xff00 && c <= 0xff60) || (c >= 0xffe0 && c <= 0xffe6) || (c >= 0x1f300 && c <= 0x1faff) || (c >= 0x20000 && c <= 0x3fffd)
+    n += wide ? 2 : 1
+  }
+  return n
+}
+
 /**
  * The status line: `elvinas-herder, thinkpad     69% weekly, 12% 5-hour`.
  * Who and where dim; each window's use, weekly first, its number amber from
  * `NEAR_PERCENT` and red when full, with its reset once it is near; a window
- * not reported is `unknown`. Too wide for `columns`, it loses the device,
+ * not reported, or reported before a reset that has passed by `now`, is
+ * `unknown`; a number is what is used, rounded down, so only a window
+ * that is full reads 100%. Too wide for `columns`, it loses the device,
  * then the resets, then the account, never the numbers. None with nothing
  * to say.
  */
-export function statusSegments(account: string | null | undefined, device: string | null | undefined, limits: readonly SessionRateLimit[] | undefined, columns: number): Segment[] | undefined {
+export function statusSegments(account: string | null | undefined, device: string | null | undefined, limits: readonly SessionRateLimit[] | undefined, columns: number, now: number): Segment[] | undefined {
   const name = account?.replace(/^claude:/, '') || undefined
   const host = device?.trim() || undefined
-  const windows = (['seven_day', 'five_hour'] as const).map(kind => ({ kind, label: kind === 'seven_day' ? 'weekly' : '5-hour', limit: limits?.find(l => l.kind === kind && Number.isFinite(l.percentUsed)) }))
+  const windows = (['seven_day', 'five_hour'] as const).map(kind => ({ kind, label: kind === 'seven_day' ? 'weekly' : '5-hour', limit: limits?.find(l => l.kind === kind && Number.isFinite(l.percentUsed) && !(Date.parse(l.resetsAt ?? '') <= now)) }))
   const usage = windows.some(w => w.limit !== undefined)
   if (name === undefined && host === undefined && !usage) return undefined
   const build = (withHost: boolean, withResets: boolean, withName: boolean): Segment[] => {
@@ -360,14 +374,14 @@ export function statusSegments(account: string | null | undefined, device: strin
     windows.forEach((w, i) => {
       if (i > 0) out.push({ text: ', ', tone: 'dim' })
       if (w.limit === undefined) return void out.push({ text: `${w.label} unknown`, tone: 'dim' })
-      const used = Math.round(w.limit.percentUsed)
-      out.push({ text: `${used}%`, tone: used >= 100 ? 'error' : used >= NEAR_PERCENT ? 'warning' : 'plain' })
-      const at = withResets && used >= NEAR_PERCENT ? resets(w.kind, w.limit.resetsAt) : undefined
+      const raw = w.limit.percentUsed
+      out.push({ text: `${Math.max(0, Math.floor(raw))}%`, tone: raw >= 100 ? 'error' : raw >= NEAR_PERCENT ? 'warning' : 'plain' })
+      const at = withResets && raw >= NEAR_PERCENT ? resets(w.kind, w.limit.resetsAt) : undefined
       out.push({ text: at === undefined ? ` ${w.label}` : ` ${w.label} resets ${at}`, tone: 'dim' })
     })
     return out
   }
-  const width = (s: Segment[]) => s.reduce((n, x) => n + x.text.length, 0)
+  const width = (s: Segment[]) => s.reduce((n, x) => n + cells(x.text), 0)
   const tries = [build(true, true, true), build(false, true, true), build(false, false, true), build(false, false, false)]
   return tries.find(t => width(t) <= columns) ?? tries[tries.length - 1]
 }
@@ -381,13 +395,22 @@ async function identify($: EngineInterface): Promise<void> {
   if (got === undefined) return
   shown.account = got.current
   shown.device = typeof got.device === 'string' ? got.device : undefined
-  $.ui.invalidate('ui.render')
+  redraw($)
+}
+
+/**
+ * The status line drawn again. Not while the picker is open: an invalidate
+ * asks every render this plugin answers, the picker's too, and redraws it
+ * mid-pick; its closing draws the line instead.
+ */
+function redraw($: EngineInterface): void {
+  if (picking === undefined) $.ui.invalidate('ui.render')
 }
 
 /** The windows as Claude Code reports them now, drawn. */
 function measured($: EngineInterface, limits: readonly SessionRateLimit[]): void {
   shown.limits = limits
-  $.ui.invalidate('ui.render')
+  redraw($)
 }
 
 export const register: Register = on => {
@@ -416,7 +439,10 @@ export const register: Register = on => {
   })
 
   on('ui.close', ($, e, next) => {
-    if (e.id === PICKER) picking = undefined
+    if (e.id === PICKER) {
+      picking = undefined
+      redraw($)
+    }
     return next(e)
   })
 
@@ -455,15 +481,17 @@ export const register: Register = on => {
   // statusLine command keeps its row; this line goes under it where there
   // is room for both, and gives way where there is not.
   on('ui.render', { component: 'StatusLine' }, async ($, e, next) => {
-    const segments = statusSegments(shown.account, shown.device, shown.limits, e.props.columns)
+    const segments = statusSegments(shown.account, shown.device, shown.limits, e.props.columns, await $.clock.now())
     if (segments === undefined || e.props.maxRows < 1) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     const mine = Text({
       wrap: 'truncate',
       children: segments.map(s => Text({ dimColor: s.tone === 'dim', color: s.tone === 'warning' ? 'warning' : s.tone === 'error' ? 'error' : undefined, children: s.text })),
     })
-    // A person's own line, one row only: theirs.
-    if (e.props.text !== null && !e.props.isManaged && e.props.maxRows < 2) return next(e)
+    // A person's own line keeps every row it printed: this one goes under it
+    // only where a row is left.
+    const theirs = e.props.text === null || e.props.isManaged ? 0 : e.props.text.split('\n').length
+    if (theirs + 1 > e.props.maxRows) return next(e)
     return Box({ flexDirection: 'column', children: [await next(e), mine] })
   })
 }
