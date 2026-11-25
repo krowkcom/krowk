@@ -46,7 +46,7 @@ gruntas status                       # every agent on every machine
 gruntas push screenshot.png          # a link to paste where people will read it
 ```
 
-On another machine, install gruntas, run `gruntas`, and type the code `gruntas machines` shows on one you already have.
+On another machine, install gruntas, run `gruntas`, and type the code `gruntas machines` shows on one you already have. `gruntas run` and `gruntas status` need Linux or macOS.
 
 ## Learn more
 
