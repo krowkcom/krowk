@@ -1,6 +1,6 @@
 # Threat model
 
-> Published from Canon, krowk's private design specs (`canon/engineering/threat-model.md` in `gruntas/cloud` at 8022857). `crypto.md` is in this directory. The other design files it cites, such as `relay.md`, `harness.md` and `devices.md`, are not published.
+> Published from Canon, krowk's private design specs (`canon/engineering/threat-model.md` in `gruntas/cloud` at e5097e4). `crypto.md` is in this directory. The other design files it cites, such as `relay.md`, `harness.md` and `devices.md`, are not published.
 
 What krowk protects, from whom, where each protection lives, and what it does not protect against. This is the public threat model spec R-OSS-1 asks for before sync ships; `crypto.md` is the crypto design it rests on, and `relay.md` the relay's contract. It states each defence once and links the file that holds it, so that the two cannot drift.
 
@@ -83,6 +83,8 @@ A session's parent is the session that started it: a subagent's parent session, 
 **Origin framing.** Every steering command carries an origin: kind (person or agent), the steering session if an agent, and the machine's device name. The engine receives the text framed as `steer from <session> on <machine>, by an agent` or `by a person on <machine>`, neutralised the way handoffs already neutralise foreign text, so the target weighs it as input, not as the person's voice. The session log keeps the raw text with the origin beside it. The channel a command came through is the only signal used. Fields are optional on the wire, so older peers decode them, ignore the origin and see the raw text.
 
 **The sandbox rule.** A plugin cannot apply a sandbox, so the gruntas home is protected per session by settings the launcher applies to every session it starts. In Claude Code that is a block with the sandbox enabled, `failIfUnavailable`, `allowUnsandboxedCommands: false`, the home in `filesystem.denyRead`, and a `Read(<home>/**)` deny rule; all four parts are needed. In Codex it is a custom permissions profile that sets the home to `none`, because the built-in profiles still read it. For sessions a person starts, `gruntas doctor` checks their Claude settings and prints the block. This narrows the same-user risks below wherever it applies.
+
+**Attended sessions get a soft fence.** An attended Claude Code session must reach the person's logins as their own `claude` does, or the launcher is not worth using. Its block keeps the four parts and adds every Unix socket (ssh-agent, the keyring over D-Bus; on Linux the sandbox opens all or none), writes anywhere in the person's home but the gruntas home, and an open network through a pass-through proxy the launcher runs for the session (Claude Code's own asks before each new domain and cannot be told to allow all). That keeps the home out of what the session reads and runs, which stops accidents and a naive injection, but not a deliberate one: the session bus reaches systemd, which runs commands outside the sandbox, and a file it writes, such as a shell's rc file, runs outside it later. Accepted, because a person is watching. Unattended sessions keep the hard fence: no sockets, no writes outside the project, Claude Code's own asking network.
 
 **Accepted risks that remain.**
 
