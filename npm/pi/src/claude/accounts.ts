@@ -7,6 +7,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { Account } from './launch.ts'
+import type { Next } from './rollover.ts'
 
 /** One row of `gruntas providers list --json`, as far as the extension reads it. No credential is in it. */
 export interface Listed {
@@ -20,8 +21,10 @@ export interface Listed {
 export interface Gruntas {
   /** `gruntas providers list --json`'s instances. */
   list(): Promise<Listed[]>
-  /** The account `gruntas run claude --account auto` picks: rollover's ranking's first ready one. */
+  /** The account a session starts on when it has none: rollover's ranking's first ready subscription. */
   auto(): Promise<string | undefined>
+  /** `gruntas providers next --from <from> --tried <tried>`: where a session on a spent account goes. */
+  next(from: string, tried: string[]): Promise<Next | undefined>
 }
 
 /** pi's config home, where the extension keeps the account a session used last. */
@@ -79,6 +82,11 @@ export class Accounts {
     return to
   }
 
+  /** Where a session on `from`, spent, goes next, by gruntas's rollover; none when gruntas cannot say. */
+  next(from: string, tried: string[]): Promise<Next | undefined> {
+    return this.gruntas.next(from, tried)
+  }
+
   private async start(): Promise<Account> {
     const rows = await this.gruntas.list()
     const find = (name: string | undefined) => rows.find(r => r.instance === name && usable(r) && r.ready)
@@ -114,9 +122,4 @@ export class Accounts {
 
 function account(row: Listed): Account {
   return { name: row.instance, ...(row.config_dir ? { home: row.config_dir } : {}) }
-}
-
-/** The line `--account auto` writes on stderr: `--account auto: <name>, <why>`. */
-export function autoPick(stderr: string): string | undefined {
-  return /^--account auto: ([^,\s]+),/m.exec(stderr)?.[1]
 }

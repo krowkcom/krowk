@@ -4,12 +4,12 @@
 //   node --test npm/pi/src/claude/claude.test.ts
 
 import assert from 'node:assert/strict'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { Accounts, agentDir, autoPick } from './accounts.ts'
+import { Accounts, agentDir } from './accounts.ts'
 import type { Gruntas, Listed } from './accounts.ts'
 import { installClaude, PROVIDER } from './extension.ts'
 import { childEnv, launcherArgv, launcherEnv, spawnOnAccount } from './launch.ts'
@@ -38,6 +38,7 @@ function fakeGruntas(auto: string | undefined, rows = ROWS) {
   const g: Gruntas = {
     list: async () => (calls.push('list'), rows),
     auto: async () => (calls.push('auto'), auto),
+    next: async () => undefined,
   }
   return { g, calls }
 }
@@ -94,12 +95,6 @@ test('with no ready account, the request fails saying so', async () => {
 test('the last account is kept in pi\'s config home', () => {
   assert.equal(agentDir({ PI_CODING_AGENT_DIR: '/p' }), '/p')
   assert.match(agentDir({}), /\.pi\/agent$/)
-})
-
-test('rollover\'s pick is read from the launcher\'s --account auto line', () => {
-  assert.equal(autoPick('--account auto: claude:trip1, first by rollover\'s ranking: 71% left as of 14:32\n'), 'claude:trip1')
-  assert.equal(autoPick('--account auto: claude, your own account — no other signed-in claude account has room to spare\n'), 'claude')
-  assert.equal(autoPick('something else\n'), undefined)
 })
 
 test('a move is refused for an unknown account or a Codex one', async () => {
@@ -340,7 +335,7 @@ test('the launch runs gruntas with the SDK\'s arguments, cwd and environment, le
     child.stdout.setEncoding('utf8').on('data', (d: string) => (out += d))
     child.stdin.end()
     await new Promise(r => child.on('close', r))
-    assert.deepEqual(out.trim().split('\n'), ['run claude --account claude:work --no-plugin --print', dir, 'nested=no pi=x'])
+    assert.deepEqual(out.trim().split('\n'), ['run claude --account claude:work --no-plugin --print', realpathSync(dir), 'nested=no pi=x'])
     assert.equal(err, 'oops\n')
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -396,7 +391,7 @@ test('a move made while the session is still settling its start wins', async () 
   try {
     let release!: () => void
     const held = new Promise<void>(r => (release = r))
-    const g: Gruntas = { list: async () => ROWS, auto: async () => (await held, 'claude') }
+    const g: Gruntas = { list: async () => ROWS, auto: async () => (await held, 'claude'), next: async () => undefined }
     const accounts = new Accounts(g, join(dir, 'account.json'))
     const starting = accounts.current()
     await accounts.moveTo('claude:work')

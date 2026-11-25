@@ -103,7 +103,9 @@ export async function claude(pi: ExtensionAPI, host: Host, env: Record<string, s
   if (host.platform === 'win32' || !host.onPath()) return undefined
   try {
     const { runtime } = await import('./claude/runtime.ts')
-    return installClaude(pi, runtime, systemAccounts(env))
+    // Usage readings go to gruntas's usage record, fired and not waited on.
+    const usage = (payload: string) => void host.run(argv('usage'), payload, LIMIT_MS)
+    return installClaude(pi, runtime, systemAccounts(env), { usage })
   } catch (e) {
     pi.on('session_start', (_event, ctx) => ctx.ui.notify(`gruntas: Claude turns through your gruntas accounts are off: ${e instanceof Error ? e.message : String(e)}`, 'warning'))
     return undefined

@@ -208,7 +208,7 @@ pub(crate) fn config_get(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
 
 /// The effective `defaultMode`, `rollover` or `steer` for the working directory.
 #[cfg(feature = "harness")]
-fn effective_global(ctx: &Ctx, key: &str) -> Result<(String, String), Error> {
+pub(super) fn effective_global(ctx: &Ctx, key: &str) -> Result<(String, String), Error> {
     use crate::settings;
     use gruntas_harness::{permissions, protocol::PermissionMode, trust};
     use std::sync::Arc;

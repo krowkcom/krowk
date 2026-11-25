@@ -350,6 +350,45 @@ pub(super) fn list(ctx: &mut Ctx) -> Result<(), Error> {
     Ok(())
 }
 
+/// `gruntas providers next [--from ACCOUNT] [--tried A,B]` (pi plugin
+/// R-PI-8): the signed-in Claude Code subscription a session on `--from`
+/// moves to (`ladder::subscription_next`), the rollover setting for the
+/// working directory, and until when `--from`'s limit holds.
+pub(super) fn next(ctx: &mut Ctx) -> Result<(), Error> {
+    use gruntas_harness::{instances::Registry, ladder, launch::{self, Harness}, readiness};
+    let registry = Registry::resolve(&super::prompt::load_instances()?, ctx.io.env);
+    let from = Some(ctx.f.from.trim()).filter(|f| !f.is_empty()).map(String::from);
+    if let Some(f) = &from {
+        launch::account(&registry, Harness::Claude, f).map_err(|e| fail("no_account", e))?;
+    }
+    let tried: Vec<String> = ctx.f.tried.split(',').map(str::trim).filter(|t| !t.is_empty()).map(String::from).collect();
+    let data = super::status::usage(ctx, &registry)?;
+    let now = gruntas_store::now_ms();
+    let (credentials, probe) = (credentials_path()?, super::status::neutral_probe(ctx)?);
+    let signed_in = |name: &str| registry.instances.get(name).is_some_and(|i| readiness::check(i, &credentials, &probe).refusal(i).is_none());
+    let next = ladder::subscription_next(&registry, &data, Harness::Claude, from.as_deref(), &tried, now).into_iter().find(|n| signed_in(n));
+    let resets_at = from.as_deref().and_then(|f| ladder::limited_until(&data, &registry.current(f), now));
+    // A repository's settings that cannot be read leave the global setting, else the default,
+    // rather than no answer at all.
+    let mode = super::workspace::effective_global(ctx, "rollover").map(|(m, _)| m).unwrap_or_else(|_| {
+        use gruntas_harness::protocol::Rollover;
+        let global = super::prompt::config_json().ok().and_then(|c| crate::settings::global_rollover(c.as_object()?)).and_then(|v| Rollover::parse(&v).ok());
+        crate::settings::rollover_name(global.unwrap_or_default()).to_string()
+    });
+    if ctx.format != Format::Human {
+        let summary = match &next {
+            Some(n) => format!("next: {n} (rollover {mode})"),
+            None => format!("no other subscription account has room (rollover {mode})"),
+        };
+        return super::sessions::emit_data(ctx, json!({ "next": next, "mode": mode, "resetsAt": resets_at }), summary);
+    }
+    let _ = match &next {
+        Some(n) => writeln!(ctx.io.stdout, "{n}  (rollover {mode})"),
+        None => writeln!(ctx.io.stdout, "none: no other signed-in Claude Code subscription has room (rollover {mode})"),
+    };
+    Ok(())
+}
+
 /// `gruntas providers rename [instance] [new-name]`: a new name — whole,
 /// never prefixed — for an instance, its login and every place config.json names it with it; each
 /// argument, left out at a terminal, is asked.

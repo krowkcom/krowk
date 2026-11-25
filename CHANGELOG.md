@@ -48,6 +48,19 @@ breaking changes may affect it without notice.
   activity, and a run that did work without a `gruntas_report` is reminded
   once to report. Without `gruntas` on the PATH the extension only says how
   to install it; a missing or stopped daemon never holds pi up.
+- **A pi session rolls over when its account runs out.** The usage Claude
+  Code reports during pi's turns now lands in gruntas's usage record under
+  that account, as a Claude Code session's does. When an account hits its
+  limit, pi follows your `rollover` setting: `offer` asks whether to
+  continue on the next account (the question times out, so nothing hangs;
+  with no UI, as in `pi -p`, it only names the next account and when the
+  limit resets), `auto` moves and says so, `off` leaves it to you. For now
+  pi moves only between subscription accounts, never onto an API key.
+- **`gruntas providers next [--from <account>] [--tried <a,b>] --json`**
+  answers the signed-in Claude Code subscription a session moves to, by
+  rollover's ranking, with your `rollover` setting and when `--from`'s limit
+  resets. The pi extension asks it, also for the account a new session
+  starts on.
 
 ## [2026.11.5] - 2026-11-25
 
