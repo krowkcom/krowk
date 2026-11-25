@@ -1003,6 +1003,13 @@ fn providers_command() -> Command {
                 ..cmd("list", "gruntas providers list [--check]", "List every instance, and whether it is ready")
             },
             Command {
+                flags: vec![
+                    flag("from", STRING, "The Claude Code account the session is on; absent, the account a session starts on"),
+                    flag("tried", STRING, "Accounts the session already tried, comma-separated: never answered"),
+                ],
+                ..cmd("next", "gruntas providers next [--from ACCOUNT] [--tried A,B] [--json]", "The Claude Code subscription account a session moves to next, and the rollover setting")
+            },
+            Command {
                 args: vec![arg("instance", "The instance to remove, e.g. openai:work", true)],
                 ..cmd("remove", "gruntas providers remove <instance>", "Remove an instance's definition, and forget its login")
             },
@@ -1014,7 +1021,7 @@ fn providers_command() -> Command {
                 ..cmd("rename", "gruntas providers rename [instance] [new-name]", "Rename an instance; its login and sessions follow")
             },
         ],
-        ..cmd("providers", "", "Low-level instance config (add, list, rename, remove)")
+        ..cmd("providers", "", "Low-level instance config (add, list, next, rename, remove)")
     }
 }
 
@@ -1197,6 +1204,14 @@ default permission mode, so there is no --permission-mode here.",
         "providers add" => "\
 Adds a Claude Code or Codex account: on a subscription (signed in with
 `claude auth login` or `codex login`), or on an API key or a gateway.",
+        #[cfg(feature = "harness")]
+        "providers next" => "\
+Ranks the signed-in Claude Code subscription accounts by rollover's headroom
+ranking, leaving out --from and --tried, and answers the first (null when
+none has room), the rollover setting (offer, auto or off) and, with --from,
+when its limit resets. API-key and gateway accounts are never answered: a
+session asking here keeps no spend cap. The pi extension asks it when an
+account runs out.",
         #[cfg(feature = "harness")]
         "providers list" => "\
 Where each runs, too. With --check, the readiness table and JSON alone:

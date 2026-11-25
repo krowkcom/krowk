@@ -1159,7 +1159,7 @@ stdout:
     },
     {
       "name": "providers",
-      "summary": "Low-level instance config (add, list, rename, remove)",
+      "summary": "Low-level instance config (add, list, next, rename, remove)",
       "subcommands": [
         {
           "name": "add",
@@ -1222,6 +1222,26 @@ stdout:
               "type": "bool",
               "default": "false",
               "usage": "Only the readiness check (what gruntas status showed before it became the agent tree): exits 3 when no instance is ready"
+            }
+          ],
+          "hidden": false
+        },
+        {
+          "name": "next",
+          "usage": "gruntas providers next [--from ACCOUNT] [--tried A,B] [--json]",
+          "summary": "The Claude Code subscription account a session moves to next, and the rollover setting",
+          "flags": [
+            {
+              "name": "from",
+              "type": "string",
+              "default": "",
+              "usage": "The Claude Code account the session is on; absent, the account a session starts on"
+            },
+            {
+              "name": "tried",
+              "type": "string",
+              "default": "",
+              "usage": "Accounts the session already tried, comma-separated: never answered"
             }
           ],
           "hidden": false
@@ -3321,7 +3341,7 @@ tty:
     },
     {
       "name": "providers",
-      "summary": "Low-level instance config (add, list, rename, remove)",
+      "summary": "Low-level instance config (add, list, next, rename, remove)",
       "subcommands": [
         {
           "name": "add",
@@ -3384,6 +3404,26 @@ tty:
               "type": "bool",
               "default": "false",
               "usage": "Only the readiness check (what gruntas status showed before it became the agent tree): exits 3 when no instance is ready"
+            }
+          ],
+          "hidden": false
+        },
+        {
+          "name": "next",
+          "usage": "gruntas providers next [--from ACCOUNT] [--tried A,B] [--json]",
+          "summary": "The Claude Code subscription account a session moves to next, and the rollover setting",
+          "flags": [
+            {
+              "name": "from",
+              "type": "string",
+              "default": "",
+              "usage": "The Claude Code account the session is on; absent, the account a session starts on"
+            },
+            {
+              "name": "tried",
+              "type": "string",
+              "default": "",
+              "usage": "Accounts the session already tried, comma-separated: never answered"
             }
           ],
           "hidden": false

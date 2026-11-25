@@ -250,6 +250,31 @@ pub fn notice(step: &Step, cap_usd: f64) -> String {
     }
 }
 
+/// `gruntas providers next`'s pick (pi plugin R-PI-8): `harness`'s
+/// subscription accounts a session on `from` may move to, best first by
+/// rollover's headroom ranking, leaving out `from` and the accounts it
+/// already `tried`. Subscriptions alone: a session outside the Launcher
+/// keeps no spend reading, so the API-key rung's cap could not hold. With
+/// no `from`, every subscription ranks: where a session starts.
+pub fn subscription_next(registry: &Registry, data: &Data, harness: Harness, from: Option<&str>, tried: &[String], now_ms: i64) -> Vec<String> {
+    let from = from.map(|f| registry.current(f));
+    let tried: Vec<String> = tried.iter().map(|t| registry.current(t)).collect();
+    let candidates: Vec<ModelRef> = registry
+        .instances
+        .iter()
+        .filter(|(n, i)| i.kind == harness.kind() && i.backend.is_some() && i.api_key_env.is_empty() && from.as_ref() != Some(*n) && !tried.contains(n))
+        .map(|(n, _)| ModelRef { instance: n.clone(), model: String::new() })
+        .collect();
+    let login = from.as_deref().map_or("", |f| data.login_of(f));
+    data.rank(login, &candidates, now_ms).into_iter().map(|r| r.model.instance).collect()
+}
+
+/// Until when a limit is in force on `instance`'s login: the latest reset
+/// of the windows that say limited, none when none does or none says when.
+pub fn limited_until(data: &Data, instance: &str, now_ms: i64) -> Option<i64> {
+    data.readings(data.login_of(instance), now_ms).into_iter().filter(|r| r.status == crate::protocol::LimitState::Limited).filter_map(|r| r.resets_at_ms).max()
+}
+
 fn ids(t: &TierModels, harness: Harness) -> &[String] {
     match harness {
         Harness::Claude => &t.claude,
@@ -414,6 +439,32 @@ mod tests {
         // The notice names the account, its rung and the cap.
         assert_eq!(notice(&step, 2.5), "Continuing on claude:key (opus): an API-key account, billed per use, up to $2.50 this session.");
         assert_eq!(notice(&Step { rung: Rung::SameHarness, to: on("claude:b", "opus") }, 2.5), "Continuing on claude:b (opus): another subscription of the same harness.");
+    }
+
+    #[test]
+    fn pi08_next_ranks_subscriptions_skips_tried_and_never_keys() {
+        let reg = registry(json!(null));
+        let mut d = usage(&[("claude", None), ("claude:b", Some(20.0)), ("codex", Some(5.0)), ("codex:t", Some(10.0))]);
+        d.logins.get_mut("claude").unwrap().get_mut("five_hour").unwrap().resets_at_ms = Some(9_000);
+        let next = |from: Option<&str>, tried: &[&str], d: &Data| subscription_next(&reg, d, Harness::Claude, from, &tried.iter().map(|t| t.to_string()).collect::<Vec<_>>(), 2_000);
+        // The one other subscription with room; the API-key account and Codex never.
+        assert_eq!(next(Some("claude"), &[], &d), ["claude:b"]);
+        assert_eq!(limited_until(&d, "claude", 2_000), Some(9_000), "until its limited window resets");
+        assert_eq!(limited_until(&d, "claude:b", 2_000), None);
+        // Tried already: none left.
+        assert!(next(Some("claude"), &["claude:b"], &d).is_empty());
+        // The ranking orders them: more headroom first, never-seen after.
+        let mut reg2 = reg.clone();
+        reg2.instances.insert("claude:c".into(), reg.instances["claude:b"].clone());
+        d.logins.get_mut("claude:b").unwrap().get_mut("five_hour").unwrap().used_percent = Some(60.0);
+        let ranked = subscription_next(&reg2, &d, Harness::Claude, Some("claude:key"), &[], 2_000);
+        assert_eq!(ranked, ["claude:b", "claude:c"], "seen with room, then never seen; the limited one left out");
+        d.instances.insert("claude:c".into(), InstanceRecord { login: "claude:c".into(), models: Vec::new(), seen_at_ms: 1_000, config_home: None });
+        d.logins.entry("claude:c".into()).or_default().insert("five_hour".into(), Window { status: LimitState::Allowed, used_percent: Some(10.0), resets_at_ms: None, seen_at_ms: 1_000, first_span_ms: None });
+        assert_eq!(subscription_next(&reg2, &d, Harness::Claude, Some("claude:b"), &[], 2_000), ["claude:c"]);
+        assert_eq!(subscription_next(&reg2, &d, Harness::Claude, None, &[], 2_000), ["claude:c", "claude:b"], "with no from, every subscription ranks");
+        // Only API-key accounts besides: none.
+        assert!(next(Some("claude"), &["claude:b"], &usage(&[("claude:key", Some(0.0))])).is_empty());
     }
 
     #[test]

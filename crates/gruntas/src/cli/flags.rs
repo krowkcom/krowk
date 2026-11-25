@@ -167,6 +167,9 @@ pub struct Flags {
     pub no_sandbox: bool,
     #[cfg(feature = "harness")]
     pub no_plugin: bool,
+    /// `providers next`: the accounts a session already tried, comma-separated.
+    #[cfg(feature = "harness")]
+    pub tried: String,
     /// Which flags were typed, by canonical name — a different question from
     /// what they carry: `--jq "$UNSET"` was given and is empty.
     pub given: BTreeSet<String>,
@@ -381,6 +384,8 @@ impl Flags {
             "account" => text(&mut self.account),
             #[cfg(feature = "harness")]
             "unattended" => text(&mut self.unattended),
+            #[cfg(feature = "harness")]
+            "tried" => text(&mut self.tried),
             _ => {
                 let b = parse_bool(name, v)?;
                 *match name {

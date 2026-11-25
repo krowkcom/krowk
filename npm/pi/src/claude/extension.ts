@@ -7,9 +7,11 @@ import { spawn } from 'node:child_process'
 import { appendFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
-import { Accounts, agentDir, autoPick, type Gruntas, type Listed } from './accounts.ts'
+import { Accounts, agentDir, type Gruntas, type Listed } from './accounts.ts'
+import type { Account } from './launch.ts'
 import { anthropicChatModels, claudeModels } from './models.ts'
 import { API, ClaudeSdkProvider, type ProviderOptions } from './provider.ts'
+import { limitHit, Rollover, usagePayload, type Next, type Ui } from './rollover.ts'
 
 export const PROVIDER = 'gruntas'
 
@@ -22,13 +24,39 @@ export interface Claude {
   provider: ClaudeSdkProvider
 }
 
+export interface ClaudeOptions {
+  /** Sends `gruntas hook pi usage` a payload, without waiting on it. */
+  usage?: (payload: string) => void
+  /** GRUNTAS_PI_DEBUG=<file>: each request's account and route, as pi-claude-subscription's PI_CLAUDE_SDK_DEBUG. */
+  debugPath?: string
+}
+
+/** pi's `ctx.ui` as rollover uses it; with no UI (print or JSON mode) a notice goes to stderr. */
+function rolloverUi(ctx: { hasUI: boolean; ui: any }): Ui {
+  return {
+    hasUI: ctx.hasUI,
+    confirm: (title, message, opts) => ctx.ui.confirm(title, message, opts),
+    notify: (message, level) => (ctx.hasUI ? ctx.ui.notify(message, level) : process.stderr.write(`gruntas: ${message}\n`)),
+  }
+}
+
 /** Registers the `gruntas` provider on `pi`. */
-export function installClaude(pi: ExtensionAPI, runtime: Runtime, accounts: Accounts, debugPath = process.env.GRUNTAS_PI_DEBUG): Claude {
-  // GRUNTAS_PI_DEBUG=<file>: each request's account and route, as pi-claude-subscription's PI_CLAUDE_SDK_DEBUG.
+export function installClaude(pi: ExtensionAPI, runtime: Runtime, accounts: Accounts, opts: ClaudeOptions = {}): Claude {
+  const debugPath = opts.debugPath ?? process.env.GRUNTAS_PI_DEBUG
   const debug = debugPath ? (msg: string) => appendFileSync(debugPath, `${new Date().toISOString()} ${msg}\n`) : undefined
-  const onRateLimit = debug && ((a: { name: string }, info: unknown) => debug(`usage account=${a.name} ${JSON.stringify(info)}`))
-  const provider = new ClaudeSdkProvider({ ...runtime, account: () => accounts.current(), debug, ...(onRateLimit ? { onRateLimit } : {}) })
+  // The UI of the session's latest event: where rollover asks and tells.
+  let ui: Ui | undefined
+  const rollover = new Rollover(accounts, (from, tried) => accounts.next(from, tried), () => ui)
+  const onRateLimit = (a: Account, info: unknown) => {
+    debug?.(`usage account=${a.name} ${JSON.stringify(info)}`)
+    const payload = usagePayload(a, info)
+    if (payload) opts.usage?.(payload)
+    const hit = limitHit(info)
+    if (hit) void rollover.hit(a.name, hit.resetsAt)
+  }
+  const provider = new ClaudeSdkProvider({ ...runtime, account: () => accounts.current(), debug, onRateLimit })
   accounts.onMove(to => provider.retire(to.name))
+  for (const event of ['session_start', 'agent_start', 'turn_start'] as const) pi.on(event, (_event: unknown, ctx: any) => void (ui = rolloverUi(ctx)))
 
   const register = (models = claudeModels()) =>
     pi.registerProvider(PROVIDER, {
@@ -74,6 +102,17 @@ function gruntas(args: string[], limitMs: number): Promise<{ code: number | null
   })
 }
 
+/** `gruntas providers next --json <args>`'s answer; none when gruntas could not say. */
+async function providersNext(args: string[]): Promise<Next | undefined> {
+  const r = await gruntas(['providers', 'next', '--json', ...args], 15_000)
+  if (!r || r.code !== 0) return undefined
+  try {
+    return JSON.parse(r.out).data
+  } catch {
+    return undefined
+  }
+}
+
 /** The machine's gruntas, as the accounts read it. */
 export const systemGruntas: Gruntas = {
   async list(): Promise<Listed[]> {
@@ -82,9 +121,12 @@ export const systemGruntas: Gruntas = {
     return JSON.parse(r.out).data.instances
   },
   async auto(): Promise<string | undefined> {
-    // `--version` makes the launch it resolves a cheap one: Claude Code prints its version.
-    const r = await gruntas(['run', 'claude', '--account', 'auto', '--no-plugin', '--version'], 15_000)
-    return r && autoPick(r.err)
+    // None with room: the default account, as `--account auto` falls back to it.
+    const a = await providersNext([])
+    return a && (a.next ?? 'claude')
+  },
+  next(from: string, tried: string[]): Promise<Next | undefined> {
+    return providersNext(['--from', from, ...(tried.length ? ['--tried', tried.join(',')] : [])])
   },
 }
 
