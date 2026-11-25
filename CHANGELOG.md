@@ -61,6 +61,13 @@ breaking changes may affect it without notice.
   rollover's ranking, with your `rollover` setting and when `--from`'s limit
   resets. The pi extension asks it, also for the account a new session
   starts on.
+- **pi's bash calls get the paste guard, and its heavy builds take a build
+  slot.** A bash command in pi that the paste guards refuse (an upload to
+  a paste site, a bare gruntas card link in a `gh` body) is blocked with
+  the guard's message, as in Claude Code and Codex; any other runs as it
+  was, waiting at most two seconds on gruntas. A command on the
+  `builds.heavy` list, such as `cargo build`, counts toward the machine's
+  build slots while it runs.
 
 ## [2026.11.5] - 2026-11-25
 

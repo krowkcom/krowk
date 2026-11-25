@@ -319,9 +319,20 @@ fn kt03_heavy_commands_move_the_announced_busy_slots_and_decide_nothing() {
     hook("claude", "Stop", &serde_json::from_slice(&fixture("claude", "Stop")).unwrap());
     assert_eq!(busy().in_use, 0);
 
+    // pi's `cargo test` counts from its start to its end, or to its run's end.
+    let pi = |event: &str| serde_json::from_slice::<serde_json::Value>(&fixture("pi", event)).unwrap();
+    hook("pi", "PreToolUse", &pi("PreToolUse"));
+    assert_eq!(busy().in_use, 1);
+    hook("pi", "PostToolUse", &pi("PostToolUse"));
+    assert_eq!(busy().in_use, 0);
+    hook("pi", "PreToolUse", &pi("PreToolUse"));
+    assert_eq!(busy().in_use, 1);
+    hook("pi", "Stop", &pi("Stop"));
+    assert_eq!(busy().in_use, 0);
+
     // Every event, heavy or not, decides nothing about a tool call: a turn's
     // end after work may only remind the agent to report it (SL03).
-    for harness in ["claude", "codex"] {
+    for harness in ["claude", "codex", "pi"] {
         for event in EVENTS {
             let (out, took) = s.hook(harness, event, &fixture(harness, event));
             assert!(out.status.success() && took < LIMIT, "{harness} {event}: {out:?} in {took:?}");
