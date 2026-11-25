@@ -6,13 +6,13 @@
     "url": "https://github.com/gruntas/gruntas",
     "source": "github"
   },
-  "version": "2026.11.2",
+  "version": "2026.11.3",
   "websiteUrl": "https://gruntas.com",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@gruntas/mcp",
-      "version": "2026.11.2",
+      "version": "2026.11.3",
       "transport": { "type": "stdio" },
       "environmentVariables": [
         {
