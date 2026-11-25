@@ -19,6 +19,33 @@ breaking changes may affect it without notice.
 
 ## [Unreleased]
 
+### Changed
+
+- **The account picker says what each account has used, the way Claude
+  Code does: `90% weekly, 3% 5-hour`.** It said what was left, mixed in
+  the plan, and could read days-old figures (below). The same picker now
+  opens in every Claude Code session; in one `gruntas run claude` did not
+  start, Enter says how to start one that can switch, where before you got
+  a text list instead.
+
+### Fixed
+
+- **The picker and rollover read your accounts' current usage.** A session
+  `gruntas run claude` started reported its usage under its config
+  directory, which neither the picker nor rollover looked at: they went by
+  readings days old, so the picker showed odd percentages and rollover
+  could pick an account already at its limit.
+- **`/exit` and Ctrl-C end a launched session again, rather than rotating
+  through your accounts.** Rollover could hand the session from one spent
+  account to the next and back, so every exit started Claude Code again on
+  another account. A run now never moves back to an account it left unless
+  you pick it, and quitting Claude Code with Ctrl-C ends the run even with
+  an account queued.
+- **Switching accounts right after `/gruntas:account`.** When nothing had
+  been said in the session yet, the switch tried to resume it and Claude
+  Code answered "No conversation found"; a new session now starts on the
+  next account.
+
 ## [2026.11.3] - 2026-11-25
 
 **Switch accounts from inside Claude Code with the arrow keys.** In a session

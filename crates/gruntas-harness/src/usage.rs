@@ -230,6 +230,32 @@ impl Data {
     pub fn login_of<'a>(&'a self, instance: &'a str) -> &'a str {
         self.instance(instance).map_or(instance, |i| i.login.as_str())
     }
+
+    /// Each of `registry`'s accounts whose login is known tied to the home
+    /// it runs in, and what a plugin reported under that home before the
+    /// tie folded into the login's windows, the later reading of each
+    /// window kept. A session `gruntas run` launched reports by its home
+    /// alone: untied, its readings were never its login's, which rollover
+    /// and the picker read.
+    pub fn link_homes(&mut self, registry: &crate::instances::Registry) {
+        for (name, r) in &registry.instances {
+            let Some(home) = r.backend.as_ref().and_then(|b| b.home.as_ref()) else { continue };
+            let home = home_key(&home.display().to_string());
+            let Some(record) = self.instances.get_mut(name) else { continue };
+            if record.login == home {
+                continue;
+            }
+            record.config_home = Some(home.clone());
+            let login = record.login.clone();
+            let Some(reported) = self.logins.remove(&home) else { continue };
+            let kept = self.logins.entry(login).or_default();
+            for (window, w) in reported {
+                if kept.get(&window).is_none_or(|k| k.seen_at_ms < w.seen_at_ms) {
+                    kept.insert(window, w);
+                }
+            }
+        }
+    }
 }
 
 /// The store: a path, and nothing held open.
@@ -272,6 +298,11 @@ impl Usage {
     /// Marks `login` as moved to now (D19), for every process.
     pub fn mark_moved(&self, login: &str, now_ms: i64) -> Result<(), String> {
         self.change(|d| d.mark_moved(login, now_ms))
+    }
+
+    /// `Data::link_homes`, saved.
+    pub fn link_homes(&self, registry: &crate::instances::Registry) -> Result<(), String> {
+        self.change(|d| d.link_homes(registry))
     }
 
     /// Saves `instance`'s login and the models it listed. Told every turn,
@@ -481,6 +512,32 @@ mod tests {
         assert_eq!(d.runs_low("a", &[], 2_000), None);
         // A window that has reset does not bind.
         assert_eq!(d.runs_low("a", &[five(96.0)], 9_500_000), None);
+    }
+
+    /// A launched session reports by its home alone: tied to the account's
+    /// login, what it reported is the login's, the later reading of each
+    /// window kept, and the next report goes straight under the login.
+    #[test]
+    fn readings_under_an_accounts_home_become_its_logins() {
+        let (u, dir) = store("link-homes");
+        let raw = serde_json::json!({ "instances": { "claude:a": { "kind": "claude-code", "configDir": "/h/a" }, "claude:new": { "kind": "claude-code", "configDir": "/h/new" } } });
+        let registry = crate::instances::Registry::resolve(&crate::instances::from_config_json(&raw).unwrap(), &|k| if k == "HOME" { "/h".into() } else { String::new() });
+        u.record_instance("claude:a", "a@x.com", &[], 1).unwrap();
+        u.record_limit("a@x.com", &limit("five_hour", 10.0, Some(9_000_000)), 1_000).unwrap();
+        u.record_limit("a@x.com", &limit("seven_day", 50.0, Some(90_000_000)), 3_000).unwrap();
+        let window = |kind: &str, used: f64, resets: u64| UsageWindow { kind: kind.into(), used_percent: used, resets_at_ms: Some(resets) };
+        u.record_windows("/h/a", &[window("fiveHour", 95.0, 9_000_000), window("sevenDay", 40.0, 90_000_000)], 2_000).unwrap();
+        u.record_windows("/h/new", &[window("fiveHour", 5.0, 9_000_000)], 2_000).unwrap();
+        let mut d = u.read();
+        assert!(d.logins.contains_key("/h/a"), "reported under the home, untied");
+        d.link_homes(&registry);
+        let used = |d: &Data, w: &str| d.readings("a@x.com", 4_000).into_iter().find(|r| r.window == w).and_then(|r| r.used_percent);
+        assert_eq!((used(&d, "five_hour"), used(&d, "seven_day")), (Some(95.0), Some(50.0)), "the later of each");
+        assert!(!d.logins.contains_key("/h/a") && d.logins.contains_key("/h/new"), "an account whose login is unknown keeps its home's");
+        u.link_homes(&registry).unwrap();
+        assert_eq!(u.read().login_for_home("/h/a"), Some("a@x.com"));
+        assert_eq!(u.record_windows("/h/a/", &[window("fiveHour", 97.0, 9_000_000)], 5_000).unwrap(), "a@x.com", "straight under the login");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

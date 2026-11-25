@@ -1386,8 +1386,14 @@ impl State {
             let home = crate::usage::home_key(&config_home);
             let on_it: Vec<_> = self.registry.sessions().filter(|r| r.config_home.as_deref().is_some_and(|h| crate::usage::home_key(h) == home)).cloned().collect();
             let tell = self.opts.accounts.clone().zip(self.opts.socket.parent().map(Path::to_path_buf)).filter(|_| !on_it.is_empty());
+            let accounts = self.opts.accounts.clone();
             if !windows.is_empty() {
                 tokio::task::spawn_blocking(move || {
+                    // Under the account's login, which rollover reads, not
+                    // its home alone.
+                    if let Some(Err(e)) = accounts.map(|a| a().and_then(|r| usage.link_homes(&r))) {
+                        eprintln!("the accounts' homes could not be tied to their logins: {e}");
+                    }
                     let before = tell.as_ref().map(|_| usage.read());
                     match usage.record_windows(&config_home, &windows, now) {
                         Ok(login) => {

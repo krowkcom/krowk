@@ -57,9 +57,12 @@ pub(super) fn neutral_probe(ctx: &Ctx) -> Result<readiness::Probe, Error> {
 }
 
 /// The usage records rollover keeps (`usage.json`): every account's login
-/// and each login's windows.
-pub(super) fn usage(ctx: &Ctx) -> Result<Data, Error> {
-    Ok(gruntas_harness::usage::Usage::in_home(&gruntas_api::home::dir(ctx.io.env)?).read())
+/// and each login's windows, with what was reported under `registry`'s
+/// homes read as their logins' (`Data::link_homes`).
+pub(super) fn usage(ctx: &Ctx, registry: &Registry) -> Result<Data, Error> {
+    let mut data = gruntas_harness::usage::Usage::in_home(&gruntas_api::home::dir(ctx.io.env)?).read();
+    data.link_homes(registry);
+    Ok(data)
 }
 
 /// What `r`'s account is signed in as and has left (D8), as of `now_ms`.
@@ -102,54 +105,50 @@ impl Standing {
         self.main_windows().filter_map(|(_, left, _)| *left).reduce(f64::min)
     }
 
-    /// A picker's few words: the plan and what the 5-hour and 7-day windows
-    /// have left.
+    /// A picker's few words: what the 7-day and 5-hour windows have used,
+    /// `90% weekly, 3% 5-hour`.
     pub fn brief(&self) -> String {
-        let windows: Vec<String> = self.main_windows().map(|(w, left, _)| format!("{} {} left", window_name(w), left.map_or("?".into(), |l| format!("{l:.0}%")))).collect();
-        let usage = if windows.is_empty() { "usage unknown".to_string() } else { windows.join(" · ") };
-        match &self.plan {
-            Some(p) => format!("{p} · {usage}"),
-            None => usage,
-        }
+        self.used(false)
     }
 
-    /// One line for a person: the login and plan, what each window has
-    /// left and when it resets, and the accounts sharing the login.
+    /// One line for a person: the login and plan, what the 7-day and
+    /// 5-hour windows have used and when they reset, and the accounts
+    /// sharing the login.
     pub fn line(&self) -> String {
         let mut out = match (&self.login, &self.plan) {
             (Some(l), Some(p)) => format!("{l} ({p})"),
             (Some(l), None) => l.clone(),
             (None, _) => "login unknown".into(),
         };
-        if self.windows.is_empty() {
-            out.push_str(" · usage unknown");
-        }
-        for (w, left, at) in &self.windows {
-            let name = window_name(w);
-            let left = left.map_or("?".into(), |l| format!("{l:.0}%"));
-            let at = at.and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok()).map(|t| format!(", resets {}", t.to_zoned(jiff::tz::TimeZone::system()).strftime("%a %H:%M"))).unwrap_or_default();
-            out.push_str(&format!(" · {name} {left} left{at}"));
-        }
+        out.push_str(&format!(" · {}", self.used(true)));
         if !self.shared.is_empty() {
             out.push_str(&format!(" · same login as {}", self.shared.join(", ")));
         }
         out
     }
-}
 
-/// A usage window's short name: `5h`, `7d`, else its own.
-fn window_name(w: &str) -> &str {
-    match w {
-        "five_hour" => "5h",
-        "seven_day" => "7d",
-        w => w,
+    /// `90% weekly, 3% 5-hour`: each main window's use, the weekly first,
+    /// with its reset when `resets`; `usage unknown` when neither is known.
+    fn used(&self, resets: bool) -> String {
+        let mut windows: Vec<_> = self.main_windows().collect();
+        windows.sort_by_key(|(w, _, _)| w != "seven_day");
+        let parts: Vec<String> = windows
+            .into_iter()
+            .map(|(w, left, at)| {
+                let name = if w == "seven_day" { "weekly" } else { "5-hour" };
+                let used = left.map_or("?".into(), |l| format!("{:.0}%", 100.0 - l));
+                let at = at.filter(|_| resets).and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok()).map(|t| format!(" (resets {})", t.to_zoned(jiff::tz::TimeZone::system()).strftime("%a %H:%M"))).unwrap_or_default();
+                format!("{used} {name}{at}")
+            })
+            .collect();
+        if parts.is_empty() { "usage unknown".into() } else { parts.join(", ") }
     }
 }
 
 pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
-    let (_, _, reports) = reports(ctx)?;
+    let (_, registry, reports) = reports(ctx)?;
     let ready = reports.iter().filter(|r| r.readiness.is_ready()).count();
-    let (data, now) = (usage(ctx)?, gruntas_store::now_ms());
+    let (data, now) = (usage(ctx, &registry)?, gruntas_store::now_ms());
     let standings: Vec<Standing> = reports.iter().map(|r| standing(r, &reports, &data, now)).collect();
     let rows = reports.iter().zip(&standings).map(|(r, s)| {
         let mut row = r.json();

@@ -155,33 +155,20 @@ test('a notice of the next account shows as a toast and in the status line, once
   expect(acks(files)).toEqual([{ id: 'n1', outcome: 'delivered' }])
 })
 
-const LIST = '  claude        ready  a@x.io (max) · 5h 60% left, resets Tue 17:48\n* claude:trip1  ready  t@x.io (max) · usage unknown\n'
-
-test('/gruntas:account lists the accounts from gruntas, the current one marked, with no model turn', async ($, on) => {
-  const ran: (readonly string[])[] = []
-  const turns: string[] = []
-  on('session.id', () => ({ value: 's1' }))
-  on('process.run', (_, e) => {
-    ran.push(e.argv)
-    // Outside a session `gruntas run` started: no picker, the list.
-    const stdout = e.argv.at(-1) === '--choices' ? JSON.stringify({ launched: false, current: 'claude:trip1', queued: null, choices: [], list: LIST.trimEnd() }) : LIST
-    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
-  on('prompt.submit', (_, e) => {
-    turns.push(e.text)
-    return { text: e.text }
-  })
-  on('turn.start', (_, e) => {
-    turns.push(e.text)
-    return { turnId: e.turnId }
-  })
+test('/gruntas:account outside a session gruntas run started opens the same picker, whose Enter says why it cannot move', async ($, on) => {
+  const did = launched(on, async () => 'This session was not started by gruntas, so it cannot move to another account: start Claude Code with `gruntas run claude` to be able to.\n', { ...CHOICES, launched: false })
+  await begin($, did)
   const r = await $.command.run({ command: 'gruntas:account', args: '' })
-  // One run of gruntas: --choices carries the list where there is no picker.
-  expect(ran).toEqual([['gruntas', 'hook', 'claude', 'account', 's1', '--choices']])
-  expect(r.text).toBe(LIST.trimEnd())
-  expect(r.text).toContain('* claude:trip1')
-  expect(r.isTextDisplayOnly).toBe(true)
-  expect(turns).toEqual([])
+  expect(r.text).toBeUndefined()
+  expect(did.opened).toEqual([expect.objectContaining({ id: PICKER })])
+  const ui = await $.ui.mount({ plugin: 'gruntas', surface: 'terminal', component: 'Pane', requestId: PICKER, props: { title: 'Continue this session on', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 10 }, view: {} } } as never)
+  const labels = ((await ui.find({ key: 'account' }))?.props.options as { label: string }[]).map(o => o.label)
+  expect(labels).toEqual(CHOICES.choices.map(c => c.label))
+  await ui.select({ key: 'account', value: 'claude:trip1' })
+  for (let i = 0; i < 20; i++) await Promise.resolve()
+  expect(did.toasts.at(-1)).toContain('start Claude Code with `gruntas run claude`')
+  expect(did.commands).toEqual([])
+  expect(did.turns).toEqual([])
 })
 
 test('/gruntas:account <name> queues it and keeps the notice in the status line; a refusal does not', async ($, on) => {
@@ -214,7 +201,7 @@ const CHOICES: Choices = {
   current: 'claude',
   queued: null,
   choices: [
-    { account: 'claude:primevise', label: 'claude:primevise · max · 7d 100% left', why: null },
+    { account: 'claude:primevise', label: 'claude:primevise · 29% weekly, 95% 5-hour', why: null },
     { account: 'claude:trip1', label: 'claude:trip1 · usage unknown', why: null },
     { account: 'claude', label: 'claude · this session', why: 'this session runs on it' },
     { account: 'codex:team', label: 'codex:team · Codex account', why: 'it is a Codex account, and a Claude Code session moves only to another Claude Code account' },
@@ -222,13 +209,13 @@ const CHOICES: Choices = {
 }
 
 /** A session `gruntas run` started, with the picker's answers and what the mod did. */
-function launched(on: Parameters<Parameters<typeof test>[1]>[1], answer?: (argv: readonly string[]) => Promise<string>) {
+function launched(on: Parameters<Parameters<typeof test>[1]>[1], answer?: (argv: readonly string[]) => Promise<string>, choices: Choices = CHOICES) {
   const did = { ran: [] as (readonly string[])[], opened: [] as unknown[], closed: [] as string[], commands: [] as string[], toasts: [] as string[], turns: [] as string[] }
   on('session.id', () => ({ value: 's1' }))
   on('process.run', async (_, e) => {
     did.ran.push(e.argv)
     const last = e.argv.at(-1)
-    const stdout = last === '--choices' ? JSON.stringify(CHOICES) : answer !== undefined ? await answer(e.argv) : `Type /exit to continue on ${last}.\n`
+    const stdout = last === '--choices' ? JSON.stringify(choices) : answer !== undefined ? await answer(e.argv) : `Type /exit to continue on ${last}.\n`
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('ui.open', (_, e) => (did.opened.push(e), { value: { isPlaced: true } }))
@@ -259,7 +246,7 @@ test('bare /gruntas:account opens a picker of every account; Enter on one queues
   const ui = await $.ui.mount({ plugin: 'gruntas', surface: 'terminal', component: 'Pane', requestId: PICKER, props: { title: 'Continue this session on', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 10 }, view: {} } } as never)
   const select = await ui.find({ key: 'account' })
   const labels = (select?.props.options as { label: string }[]).map(o => o.label)
-  expect(labels).toEqual(['claude:primevise · max · 7d 100% left', 'claude:trip1 · usage unknown', 'claude · this session', 'codex:team · Codex account'])
+  expect(labels).toEqual(['claude:primevise · 29% weekly, 95% 5-hour', 'claude:trip1 · usage unknown', 'claude · this session', 'codex:team · Codex account'])
   expect(select?.props.value).toBe('claude')
   await ui.select({ key: 'account', value: 'claude:trip1' })
   for (let i = 0; i < 20; i++) await Promise.resolve()
