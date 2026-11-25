@@ -157,10 +157,30 @@ test('a spent account is passed over until it resets, five hours when nobody sai
   now += 60_000
   await r.hit('claude:b', NOW + 3_600_000)
   assert.deepEqual(asks.at(-1), ['claude:a'], 'a is still out')
-  now = NOW + 5 * 3_600_000 + 1
+  now = NOW + 5 * 3_600_000 - 1
   accounts.name = 'claude:c'
   await r.hit('claude:c')
-  assert.deepEqual(asks.at(-1), [], 'both have reset')
+  assert.deepEqual(asks.at(-1), ['claude:a'], 'a is out until five hours have passed')
+  now = NOW + 5 * 3_600_000 + 1
+  accounts.name = 'claude:d'
+  await r.hit('claude:d')
+  assert.deepEqual(asks.at(-1), ['claude:c'], 'a and b have reset')
+})
+
+test('a reset gruntas knows, where the reading said none, is how long the account is passed over', async () => {
+  let now = NOW
+  const accounts = { name: 'claude:a' as string | undefined, moveTo: async (n: string) => (accounts.name = n) }
+  const asks: string[][] = []
+  const r = new Rollover(accounts, async (from, tried) => (asks.push(tried), { next: 'claude:x', mode: 'off', resetsAt: from === 'claude:a' ? NOW + 3_600_000 : null }), () => undefined, () => now)
+  await r.hit('claude:a')
+  now = NOW + 3_600_000 - 1
+  accounts.name = 'claude:b'
+  await r.hit('claude:b', NOW + 9 * 3_600_000)
+  assert.deepEqual(asks.at(-1), ['claude:a'], 'until gruntas\'s reset')
+  now = NOW + 3_600_000 + 1
+  accounts.name = 'claude:c'
+  await r.hit('claude:c', NOW + 9 * 3_600_000)
+  assert.deepEqual(asks.at(-1), ['claude:b'], 'a dropped at gruntas\'s reset, not five hours')
 })
 
 // --- wired into the provider ---------------------------------------------------

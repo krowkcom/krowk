@@ -144,10 +144,10 @@ export class Rollover {
     } catch {
       answer = undefined
     }
+    const at = resetsAt ?? answer?.resetsAt ?? undefined
+    if (resetsAt === undefined && at !== undefined) this.tried.set(account, at)
     // gruntas could not say, or the person keeps rollover off: pi's own error stands.
     if (!answer || answer.mode === 'off') return
-    const at = resetsAt ?? answer.resetsAt ?? undefined
-    if (resetsAt === undefined && at !== undefined) this.tried.set(account, at)
     const out = `${account} is out of usage${at === undefined ? '' : ` until ${when(at, now)}`}`
     const ui = this.ui()
     const notify = (m: string, level: 'info' | 'warning' | 'error' = 'info') => ui?.notify(m, level)

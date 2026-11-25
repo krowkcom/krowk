@@ -368,8 +368,13 @@ pub(super) fn next(ctx: &mut Ctx) -> Result<(), Error> {
     let signed_in = |name: &str| registry.instances.get(name).is_some_and(|i| readiness::check(i, &credentials, &probe).refusal(i).is_none());
     let next = ladder::subscription_next(&registry, &data, Harness::Claude, from.as_deref(), &tried, now).into_iter().find(|n| signed_in(n));
     let resets_at = from.as_deref().and_then(|f| ladder::limited_until(&data, &registry.current(f), now));
-    // A settings file that cannot be read leaves the default, rather than no answer at all.
-    let mode = super::workspace::effective_global(ctx, "rollover").map_or_else(|_| "offer".to_string(), |(m, _)| m);
+    // A repository's settings that cannot be read leave the global setting, else the default,
+    // rather than no answer at all.
+    let mode = super::workspace::effective_global(ctx, "rollover").map(|(m, _)| m).unwrap_or_else(|_| {
+        use gruntas_harness::protocol::Rollover;
+        let global = super::prompt::config_json().ok().and_then(|c| crate::settings::global_rollover(c.as_object()?)).and_then(|v| Rollover::parse(&v).ok());
+        crate::settings::rollover_name(global.unwrap_or_default()).to_string()
+    });
     if ctx.format != Format::Human {
         let summary = match &next {
             Some(n) => format!("next: {n} (rollover {mode})"),
