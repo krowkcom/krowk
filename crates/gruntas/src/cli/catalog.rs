@@ -759,8 +759,9 @@ fn run_command() -> Command {
             flag("account", STRING, "The account: its name (work for claude:work), or auto for the one with the most headroom (default: the one plain claude or codex in your shell uses)"),
             flag("unattended", STRING, "Start a background session on this task instead of taking the terminal"),
             flag("no-sandbox", BOOL, "Run without the sandbox that keeps the session out of the gruntas home, this once; attended only"),
+            flag("no-plugin", BOOL, "Start Claude Code without the gruntas plugin and hooks, so it never registers as a session; its arguments, stdin and stdout pass through, so a program can run it as its Claude Code (the Agent SDK's executable). Attended claude only"),
         ],
-        ..cmd("run", "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [args...]", "Start Claude Code or Codex on one of your accounts")
+        ..cmd("run", "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [--no-plugin] [args...]", "Start Claude Code or Codex on one of your accounts")
     }
 }
 
@@ -1248,7 +1249,12 @@ home: for Claude Code one --settings, merged with any --settings you pass, that
 also carries gruntas's worktree hooks; for Codex a permissions profile. Nothing
 is written into the account. --account work is claude:work (or codex:work);
 none, or the harness's own name, is the account plain claude or codex in your
-shell uses.",
+shell uses.
+
+With --no-plugin, Claude Code starts without the gruntas plugin or hooks, so it
+never registers as a session, and runs once, its arguments, stdin, stdout and
+exit code passed through: a program that drives Claude Code (the Agent SDK) can
+run `gruntas run claude --account work --no-plugin` as its Claude Code.",
         #[cfg(feature = "harness")]
         "worktrees add" => "\
 The worktree is of the repository you are in, on a new branch gruntas/<hex>,
