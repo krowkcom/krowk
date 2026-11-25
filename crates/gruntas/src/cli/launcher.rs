@@ -219,7 +219,7 @@ fn model_of(args: &[String]) -> Option<String> {
 /// handed to the other harness (`other_harness`). Exiting with nothing
 /// queued ends the run with the harness's own code; so does Ctrl-C in the
 /// moment gruntas says where it goes on (`STOP`), and the daemon's pick of
-/// an account the run already left none of whose windows has reset since,
+/// an account the run left when it ran low that has not reset since,
 /// which would only go round the same spent accounts.
 fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: String) -> Result<i32, Error> {
     use gruntas_harness::attended;
@@ -228,8 +228,10 @@ fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: Str
         attended::sweep(d);
     }
     let mut account = req.instance.name.clone();
-    // Each account the run left, and when its windows were to reset then.
-    let mut left: Vec<(String, Vec<i64>)> = Vec::new();
+    // Each account the run left, and until when the daemon's pick may not
+    // bring it back (`blocked_until`), as it was when last left.
+    let mut left: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+    let mut last = 0;
     loop {
         if plan.harness == Harness::Claude {
             claude_ready(ctx, &mut plan)?;
@@ -242,13 +244,17 @@ fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: Str
                 let _ = attended::mark(d, pid, &launched);
             }
         };
-        let code = child::run(&plan, mark).map_err(|e| fail("no_binary", format!("{} could not be started: {e}. Is it installed? `gruntas providers list --check` checks", plan.program.display())))?;
+        let Some(code) = child::run(&plan, mark).map_err(|e| fail("no_binary", format!("{} could not be started: {e}. Is it installed? `gruntas providers list --check` checks", plan.program.display())))? else {
+            let _ = writeln!(ctx.io.stderr, "gruntas: stopped before {account} started");
+            return Ok(last);
+        };
+        last = code.code;
         let next = daemon.as_ref().and_then(|d| attended::take(d, code.pid));
         // Told to end (a closed terminal, a kill): no harness starts again.
         let Some(next) = next.filter(|_| !code.ending) else { return Ok(code.code) };
         let now = gruntas_store::now_ms();
-        if !next.picked && (next.account == account || left.iter().any(|(a, resets)| *a == next.account && !resets.iter().any(|r| *r <= now))) {
-            let _ = writeln!(ctx.io.stderr, "gruntas: session {} is not moved back to {}, which this run already left and has not reset since: every account it could go to is running low", next.session, next.account);
+        if !next.picked && (next.account == account || left.get(&next.account).is_some_and(|until| now < *until)) {
+            let _ = writeln!(ctx.io.stderr, "gruntas: session {} is not moved back to {}, which this run left when it ran low and has not reset since: every account it could go to is running low", next.session, next.account);
             return Ok(code.code);
         }
         // Claude Code reads Ctrl-C as a key, never a signal: gruntas, which
@@ -305,9 +311,9 @@ fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: Str
             let _ = writeln!(ctx.io.stderr, "gruntas: stopped; session {} is not continued on {}", next.session, to.name);
             return Ok(code.code);
         }
-        let resets = live_resets(ctx, &registry, &account);
+        let until = blocked_until(ctx, &registry, &account);
         plan = next_plan;
-        left.push((std::mem::replace(&mut account, next.account), resets));
+        left.insert(std::mem::replace(&mut account, next.account), until);
         model = next.model;
     }
 }
@@ -315,19 +321,24 @@ fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: Str
 /// How long gruntas waits, between one harness and the next, for a Ctrl-C.
 const STOP: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// When `account`'s windows that have not reset yet will: once one of
-/// these has passed, the account has room again. Under its login, else
-/// the home it reported under.
-fn live_resets(ctx: &Ctx, registry: &Registry, account: &str) -> Vec<i64> {
-    let Ok(home) = gruntas_api::home::dir(ctx.io.env) else { return Vec::new() };
-    let mut data = gruntas_harness::usage::Usage::in_home(&home).read();
+/// Until when the daemon's pick may not bring the run back to `account`,
+/// which it is leaving: none (0) while it has room, else the reset of the
+/// window it ran low on; for ever when its usage is not known. Read under
+/// its login, else the home it reported under.
+fn blocked_until(ctx: &Ctx, registry: &Registry, account: &str) -> i64 {
+    use gruntas_harness::usage::{home_key, Usage, MIN_HEADROOM};
+    let Ok(home) = gruntas_api::home::dir(ctx.io.env) else { return i64::MAX };
+    let mut data = Usage::in_home(&home).read();
     data.link_homes(registry);
     let now = gruntas_store::now_ms();
-    let key = match data.instance(account) {
-        Some(i) => Some(i.login.clone()),
-        None => registry.instances.get(account).and_then(|i| i.backend.as_ref()).and_then(|b| b.config_dir.as_ref()).map(|d| gruntas_harness::usage::home_key(&d.display().to_string())),
-    };
-    key.and_then(|k| data.logins.get(&k)).map(|w| w.values().filter_map(|w| w.resets_at_ms).filter(|r| *r > now).collect()).unwrap_or_default()
+    let record = data.instance(account);
+    let named = registry.instances.get(account).and_then(|i| i.backend.as_ref()).and_then(|b| b.config_dir.as_ref()).map(|d| home_key(&d.display().to_string()));
+    let keys = [record.map(|r| r.login.clone()), record.and_then(|r| r.config_home.clone()), named];
+    match keys.into_iter().flatten().find_map(|k| data.standing(&k, now)) {
+        Some(s) if s.headroom >= MIN_HEADROOM => 0,
+        Some(s) => s.reset_ms.unwrap_or(i64::MAX),
+        None => i64::MAX,
+    }
 }
 
 /// The session's transcript copied from the home it ran in to the one the
@@ -478,10 +489,11 @@ mod child {
         relay::INTERRUPTED.load(SeqCst)
     }
 
-    /// Runs the plan's program to its end, `started` told its pid. Ctrl-C
+    /// Runs the plan's program to its end, `started` told its pid; none
+    /// started when Ctrl-C came between harnesses (`stopped_within`). Ctrl-C
     /// and Ctrl-\ reach it from the terminal, gruntas ignoring them; a
     /// SIGTERM or SIGHUP sent to gruntas is passed on to it.
-    pub(super) fn run(plan: &Plan, started: impl FnOnce(u32)) -> std::io::Result<Ended> {
+    pub(super) fn run(plan: &Plan, started: impl FnOnce(u32)) -> std::io::Result<Option<Ended>> {
         use std::os::unix::process::{CommandExt, ExitStatusExt};
         let blocked = relay::start();
         let mut cmd = command(plan);
@@ -497,7 +509,11 @@ mod child {
         use std::sync::atomic::Ordering::SeqCst;
         // Launching: a SIGTERM or SIGHUP now waits for the harness.
         relay::CHILD.store(relay::LAUNCHING, SeqCst);
-        relay::INTERRUPTED.store(false, SeqCst);
+        if relay::INTERRUPTED.swap(false, SeqCst) {
+            relay::CHILD.store(0, SeqCst);
+            relay::end_if_told();
+            return Ok(None);
+        }
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -512,7 +528,7 @@ mod child {
         let status = child.wait();
         relay::CHILD.store(0, SeqCst);
         let status = status?;
-        Ok(Ended { pid: child.id(), code: status.code().or_else(|| status.signal().map(|s| 128 + s)).unwrap_or(1), ending: relay::TOLD.load(SeqCst) != 0 })
+        Ok(Some(Ended { pid: child.id(), code: status.code().or_else(|| status.signal().map(|s| 128 + s)).unwrap_or(1), ending: relay::TOLD.load(SeqCst) != 0 }))
     }
 
     fn command(plan: &Plan) -> std::process::Command {

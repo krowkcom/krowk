@@ -84,7 +84,7 @@ pub struct Data {
 const MOVED_MS: i64 = 5 * 60_000;
 /// The headroom below which a login is never picked (D7), and the spread
 /// of headroom within which candidates count as tied (D8).
-const MIN_HEADROOM: f64 = 10.0;
+pub const MIN_HEADROOM: f64 = 10.0;
 const NEAR_TIE: f64 = 10.0;
 
 /// What is known of a login's room: its headroom (D6) and the binding

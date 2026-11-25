@@ -528,7 +528,7 @@ fn a_run_never_rolls_back_to_an_account_it_left_until_it_resets() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(2), "spare's own code; {err}");
     assert_eq!(lines().len(), 2, "{:?}", lines());
-    assert!(err.contains(&format!("session {session} is not moved back to claude:work, which this run already left")), "{err}");
+    assert!(err.contains(&format!("session {session} is not moved back to claude:work, which this run left when it ran low and has not reset since")), "{err}");
 
     // A person's pick goes back.
     std::fs::remove_file(&runs).unwrap();
