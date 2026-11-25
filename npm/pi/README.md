@@ -4,6 +4,9 @@ Gruntas for [pi](https://pi.dev). Each pi event the extension handles runs
 `gruntas hook pi <event>`, the entry point gruntas's Claude Code and Codex
 plugins run, so a pi session is treated as theirs are.
 
+The session also gets the gruntas MCP server, which pi starts as
+`gruntas-mcp` (its tools are `mcp__gruntas__<tool>`), and the gruntas skill.
+
 ```bash
 pi install npm:@gruntas/pi
 ```

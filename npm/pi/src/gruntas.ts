@@ -50,6 +50,8 @@ export function install(pi: ExtensionAPI, host: Host): void {
     return
   }
 
+  pi.registerMcpServer('gruntas', MCP_SERVER)
+
   /** Runs the hook without waiting on it: the host kills it past the limit, so none outlives it. */
   const fire = (event: HookEvent, payload: string) => void host.run(argv(event), payload, LIMIT_MS)
 
@@ -93,6 +95,19 @@ export function install(pi: ExtensionAPI, host: Host): void {
   // overruled by a later extension) must not mark the next run as one.
   on('agent_settled', () => void (continuing = false))
 }
+
+/**
+ * The gruntas MCP server, which pi starts itself: `gruntas-mcp` with no
+ * shell or launcher, so its parent is pi, the process the hook registered
+ * the session under, and gruntas_session_info finds this session. Its tools
+ * are declared to the model (`direct`), so a report is a call of
+ * `mcp__gruntas__gruntas_report`, which the hook counts as one.
+ */
+export const MCP_SERVER = {
+  command: 'gruntas-mcp',
+  exposure: 'direct',
+  description: 'gruntas: report this session\'s status, delegate tasks to your other machines and collect them, and publish files to permalinks',
+} as const
 
 /**
  * The `gruntas` provider, where gruntas is there to start Claude Code. A runtime
