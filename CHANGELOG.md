@@ -19,6 +19,15 @@ breaking changes may affect it without notice.
 
 ## [Unreleased]
 
+## [2026.11.4] - 2026-11-25
+
+**Switching accounts in Claude Code works as it should.** The account
+picker shows what each account has used (`90% weekly, 3% 5-hour`), read
+from current usage rather than days-old figures, and looks the same in
+every session. A switch made before anything was said starts a new session
+instead of failing, and `/exit` or Ctrl-C no longer sends a launched
+session round your accounts.
+
 ### Changed
 
 - **The account picker says what each account has used, the way Claude
@@ -4261,7 +4270,8 @@ was released on GitHub but never published to npm.
   credentials travel, and a refusal is written to stderr and into the JSON
   envelope.
 
-[Unreleased]: https://github.com/gruntas/gruntas/compare/v2026.11.3...HEAD
+[Unreleased]: https://github.com/gruntas/gruntas/compare/v2026.11.4...HEAD
+[2026.11.4]: https://github.com/gruntas/gruntas/compare/v2026.11.3...v2026.11.4
 [2026.11.3]: https://github.com/gruntas/gruntas/compare/v2026.11.2...v2026.11.3
 [2026.11.2]: https://github.com/gruntas/gruntas/compare/v2026.11.1...v2026.11.2
 [2026.11.1]: https://github.com/gruntas/gruntas/compare/v2026.11.0...v2026.11.1

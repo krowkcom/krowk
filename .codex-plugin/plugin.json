@@ -1,6 +1,6 @@
 {
   "name": "gruntas",
-  "version": "2026.11.3",
+  "version": "2026.11.4",
   "description": "Gruntas, the coding agent harness, for Codex: every session registers with the gruntas daemon and gets the gruntas MCP server (publishing, session info, delegation) and skill. Codex asks you to approve the plugin's hooks once, in /hooks.",
   "author": { "name": "Gruntas", "url": "https://gruntas.com" },
   "homepage": "https://gruntas.com",
