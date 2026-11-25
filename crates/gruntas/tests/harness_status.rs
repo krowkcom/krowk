@@ -139,12 +139,14 @@ fn status_with_no_config_lists_the_two_implicit_accounts_in_their_states() {
     // The documented shape: every key on every row, null when it has no value.
     for r in &rows {
         let keys: Vec<&String> = r.as_object().unwrap().keys().collect();
-        assert_eq!(keys, ["instance", "kind", "label", "state", "ready", "source", "fix", "var", "reason", "login", "plan", "usage", "sharedWith"], "{r}");
+        assert_eq!(keys, ["instance", "kind", "label", "state", "ready", "source", "fix", "var", "reason", "login", "plan", "usage", "sharedWith", "config_dir"], "{r}");
         assert_eq!(r["ready"].as_bool(), Some(r["state"] == "ready"));
         assert_eq!(r["fix"].is_null(), r["state"] == "ready", "a fix exactly when it is not ready: {r}");
     }
     assert_eq!(row(&rows, "claude")["source"], format!("Claude Code's own login in {} (signed in with a Claude max subscription)", b.home().join(".claude").display()));
     assert_eq!(row(&rows, "codex")["fix"], "sign in with `gruntas connect openai --method subscription`, which runs Codex's own login");
+    // Each account's config home, which the pi extension records a turn's usage under.
+    assert_eq!(row(&rows, "claude")["config_dir"], b.home().join(".claude").display().to_string());
     let printed = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(!printed.contains(KEY_SENTINEL) && !printed.contains(TOKEN_SENTINEL), "no secret is printed: {printed}");
 
