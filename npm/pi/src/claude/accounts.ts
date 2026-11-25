@@ -9,17 +9,32 @@ import { dirname, join } from 'node:path'
 import type { Account } from './launch.ts'
 import type { Next } from './rollover.ts'
 
-/** One row of `gruntas providers list --json`, as far as the extension reads it. No credential is in it. */
+/** One window of an account's usage: the percent left, and when it resets. */
+export interface Window {
+  window: string
+  left: number
+  resetsAtMs?: number | null
+}
+
+/** One row of `gruntas providers list --check --json`, as far as the extension reads it. No credential is in it. */
 export interface Listed {
   instance: string
   kind: string
   ready: boolean
   config_dir?: string | null
+  /** The kind in words, such as `Claude subscription`. */
+  label?: string
+  /** `ready`, `not_signed_in`, …: the readiness check's verdict. */
+  state?: string
+  reason?: string | null
+  fix?: string | null
+  /** Usage left per window, where gruntas has a reading. */
+  usage?: Window[]
 }
 
 /** How the accounts reach gruntas: one seam, so tests replace it. */
 export interface Gruntas {
-  /** `gruntas providers list --json`'s instances. */
+  /** `gruntas providers list --check --json`'s instances. */
   list(): Promise<Listed[]>
   /** The account a session starts on when it has none: rollover's ranking's first ready subscription. */
   auto(): Promise<string | undefined>
@@ -60,6 +75,11 @@ export class Accounts {
   /** The account it is on, if it has started: what a footer shows. */
   get name(): string | undefined {
     return this.now?.name
+  }
+
+  /** Every account gruntas has, checked: what the picker lists. */
+  list(): Promise<Listed[]> {
+    return this.gruntas.list()
   }
 
   /** Called with the new account on each move. */

@@ -10,6 +10,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Accounts, agentDir, type Gruntas, type Listed } from './accounts.ts'
 import type { Account } from './launch.ts'
 import { anthropicChatModels, claudeModels } from './models.ts'
+import { installPicker } from './picker.ts'
 import { API, ClaudeSdkProvider, type ProviderOptions } from './provider.ts'
 import { limitHit, Rollover, usagePayload, type Next, type Ui } from './rollover.ts'
 
@@ -57,6 +58,7 @@ export function installClaude(pi: ExtensionAPI, runtime: Runtime, accounts: Acco
   const provider = new ClaudeSdkProvider({ ...runtime, account: () => accounts.current(), debug, onRateLimit })
   accounts.onMove(to => provider.retire(to.name))
   for (const event of ['session_start', 'agent_start', 'turn_start'] as const) pi.on(event, (_event: unknown, ctx: any) => void (ui = rolloverUi(ctx)))
+  installPicker(pi, accounts, PROVIDER)
 
   const register = (models = claudeModels()) =>
     pi.registerProvider(PROVIDER, {
@@ -113,12 +115,26 @@ async function providersNext(args: string[]): Promise<Next | undefined> {
   }
 }
 
+/**
+ * The rows of `gruntas providers list --check --json`: its data, or, when no account is ready
+ * (exit 3, `none_ready`), the same rows on the failure's details. None when it said neither.
+ */
+export function listed(r: { code: number | null; out: string; err: string }): Listed[] | undefined {
+  try {
+    const rows = r.code === 0 ? JSON.parse(r.out).data.instances : r.code === 3 ? JSON.parse(r.err).error.details.instances : undefined
+    return Array.isArray(rows) ? rows : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** The machine's gruntas, as the accounts read it. */
 export const systemGruntas: Gruntas = {
   async list(): Promise<Listed[]> {
-    const r = await gruntas(['providers', 'list', '--json'], 15_000)
-    if (!r || r.code !== 0) throw new Error(`gruntas: \`gruntas providers list\` failed${r?.err ? `: ${r.err.trim()}` : ''}`)
-    return JSON.parse(r.out).data.instances
+    const r = await gruntas(['providers', 'list', '--check', '--json'], 15_000)
+    const rows = r && listed(r)
+    if (!rows) throw new Error(`gruntas: \`gruntas providers list --check\` failed${r?.err ? `: ${r.err.trim()}` : ''}`)
+    return rows
   },
   async auto(): Promise<string | undefined> {
     // None with room, or no answer: the default account, as `--account auto` falls back to it.

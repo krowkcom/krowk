@@ -90,7 +90,7 @@ signoff: ## Run `make check` here and sign off on the commit
 # The pi extension's tests (npm/pi), on node's own runner, which strips the
 # types: node 22.18 or later, as mise.toml pins.
 pi-test: ## The @gruntas/pi extension's tests
-	node --test npm/pi/src/gruntas.test.ts npm/pi/src/claude/claude.test.ts npm/pi/src/claude/rollover.test.ts
+	node --test npm/pi/src/gruntas.test.ts npm/pi/src/claude/claude.test.ts npm/pi/src/claude/rollover.test.ts npm/pi/src/claude/picker.test.ts
 
 # R-PKG-2: the agent build links exactly the crates crates/gruntas/lean-deps.txt lists, on every target.
 lean-deps: ## Hold the agent build to its dependency list

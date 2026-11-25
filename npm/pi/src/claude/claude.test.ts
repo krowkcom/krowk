@@ -254,6 +254,7 @@ test('a move mid-conversation runs the next request on the new account with the 
     const fakePi = {
       registerProvider: (name: string, config: any) => registered.push({ name, config }),
       on: () => {},
+      registerCommand: () => {},
     }
     ;({ provider } = installClaude(fakePi as never, {
       createSession: (spec, chain, count) => {

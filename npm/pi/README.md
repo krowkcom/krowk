@@ -32,7 +32,11 @@ are bridged in, and pi runs them.
 
 A session starts on the account it used last (kept in pi's config home,
 `gruntas/account.json`), else on the ready account rollover ranks first.
-Codex accounts are not usable from pi yet.
+`/account` picks another: it lists every gruntas account with its kind,
+readiness and usage left per window, and the next request runs on the one
+you choose. `/account <name>` moves directly, also where pi has no UI. The
+footer shows `gruntas: <account>` while a `gruntas/` model is in use. Codex
+accounts are listed but not usable from pi yet.
 
 The provider is adapted from the MIT-licensed
 [pi-claude-subscription](https://github.com/jkeskikangas/pi-claude-subscription);

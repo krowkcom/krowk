@@ -75,6 +75,12 @@ breaking changes may affect it without notice.
   was, waiting at most two seconds on gruntas. A command on the
   `builds.heavy` list, such as `cargo build`, counts toward the machine's
   build slots while it runs.
+- **`/account` in pi picks the gruntas account Claude turns run on.** It
+  lists every gruntas account with its kind, readiness and usage left per
+  window, the current one marked; choosing one moves the session to it from
+  the next request, and pi's footer shows `gruntas: <account>`. Codex
+  accounts are listed as not usable from pi yet. `/account <name>` moves
+  directly, which is how it works where pi has no UI.
 
 ## [2026.11.5] - 2026-11-25
 
