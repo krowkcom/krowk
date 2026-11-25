@@ -43,8 +43,8 @@ export function install(pi: ExtensionAPI, host: Host): void {
   if (host.platform === 'win32') return
   const on = pi.on.bind(pi) as On
 
-  // Looked up once, as pi loads the extension: a gruntas installed later is
-  // picked up by the next pi.
+  // Looked up as pi loads the extension, which it does again on a reload or
+  // a session switch.
   if (!host.onPath()) {
     on('session_start', (_e, ctx) => ctx.ui.notify(INSTALL_HINT, 'warning'))
     return
@@ -88,6 +88,10 @@ export function install(pi: ExtensionAPI, host: Host): void {
     const reminder = { type: 'custom_message', customType: 'gruntas-report-reminder', content: reason, display: true }
     return { entries: [...(e.entries ?? []), reminder], continue: true }
   })
+  // pi settles once it will not run again by itself: a continuation it ran
+  // ended in the boundary above first, so one it never ran (aborted, or
+  // overruled by a later extension) must not mark the next run as one.
+  on('agent_settled', () => void (continuing = false))
 }
 
 /**

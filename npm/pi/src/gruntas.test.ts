@@ -226,6 +226,18 @@ test('PI02: the end of a run awaits Stop and turns its block into one continuati
   assert.equal(third?.continue, true)
 })
 
+test('PI02: a continuation pi never ran (an abort) does not make the next run\'s end a continuation\'s', async () => {
+  const pi = fakePi()
+  const { host, runs } = fakeHost(e => (e === 'Stop' ? JSON.stringify({ decision: 'block', reason: 'report' }) : ''))
+  install(pi.api, host)
+  const [first] = (await pi.fire('agent_before_settle', { entries: [] })) as any[]
+  assert.equal(first?.continue, true)
+  await pi.fire('agent_settled', { aborted: true })
+  const [next] = (await pi.fire('agent_before_settle', { entries: [] })) as any[]
+  assert.equal((runs.filter(r => r.argv[3] === 'Stop')[1]?.stdin as any)?.stop_hook_active, false)
+  assert.equal(next?.continue, true)
+})
+
 test('PI02: a Stop that answers nothing, or never answers, leaves the run to end', { timeout: 5000 }, async () => {
   for (const hangs of [false, true]) {
     const pi = fakePi()

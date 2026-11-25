@@ -44,7 +44,7 @@ breaking changes may affect it without notice.
   MIT-licensed `pi-claude-subscription` (see THIRD-PARTY-NOTICES).
 - **pi sessions register with gruntas.** With `@gruntas/pi` installed
   (`pi install npm:@gruntas/pi`), a pi session shows in `gruntas agents` as
-  harness `pi` from its start until pi exits, its tool calls count as its
+  harness `pi` from its start until it ends, its tool calls count as its
   activity, and a run that did work without a `gruntas_report` is reminded
   once to report. Without `gruntas` on the PATH the extension only says how
   to install it; a missing or stopped daemon never holds pi up.

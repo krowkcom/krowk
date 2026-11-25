@@ -9,7 +9,7 @@ pi install npm:@gruntas/pi
 ```
 
 A pi session then registers with the gruntas daemon as it starts and shows in
-`gruntas agents` as harness `pi` until pi exits; its tool calls count as its
+`gruntas agents` as harness `pi` until it ends; its tool calls count as its
 activity, and a run that did work without a `gruntas_report` is reminded once
 to report.
 
