@@ -9,10 +9,9 @@
 //! any `--settings` the person passed; for Codex, a permissions profile
 //! that reads everything but the gruntas home.
 //!
-//! Pure: a plan resolves paths and reads a settings file the person named
-//! and Claude Code's managed ones, and writes nothing, an account's
-//! settings, credentials and installed plugins least of all (R-RUN-5).
-//! Running it is the CLI's.
+//! Pure: a plan resolves paths and reads a settings file the person named,
+//! and writes nothing, an account's settings, credentials and installed
+//! plugins least of all (R-RUN-5). Running it is the CLI's.
 
 use crate::instances::{Backend, Registry, Resolved};
 use serde_json::{json, Map, Value};
@@ -165,7 +164,7 @@ pub struct Plan {
 
 /// The plan for `req`. An unattended Claude session's task is its prompt,
 /// after the person's arguments, so they carry no prompt of their own.
-/// `read` reads a `--settings` the person gave as a file, and Claude Code's managed settings. Refused: an unattended session without the sandbox (D4), and a
+/// `read` reads a `--settings` the person gave as a file. Refused: an unattended session without the sandbox (D4), and a
 /// `--settings` that is not a JSON object.
 pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> Result<Plan, String> {
     if !req.sandbox && matches!(req.mode, Mode::Unattended { .. }) {
@@ -210,10 +209,8 @@ pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> R
                 if req.mode == Mode::Attended {
                     // A proxy or denied domains the person gave in a
                     // `--settings` stay theirs: no open proxy over them.
-                    // Nor over an organisation's managed settings that
-                    // say anything of the sandbox's network.
                     let n = &settings["sandbox"]["network"];
-                    let named = ["httpProxyPort", "socksProxyPort", "deniedDomains"].iter().any(|k| n.get(k).is_some()) || managed_network(read);
+                    let named = ["httpProxyPort", "socksProxyPort", "deniedDomains"].iter().any(|k| n.get(k).is_some());
                     ours = merge(ours, claude_attended(&req.hidden, req.egress.filter(|_| !named)));
                 }
             }
@@ -344,13 +341,27 @@ pub fn claude_sandbox(hidden: &[PathBuf]) -> Value {
     })
 }
 
-/// Claude Code's managed settings files, an organisation's policy.
-const MANAGED: [&str; 2] = ["/etc/claude-code/managed-settings.json", "/Library/Application Support/ClaudeCode/managed-settings.json"];
+/// Where Claude Code keeps an organisation's managed settings: each holds
+/// `managed-settings.json` and a `managed-settings.d/` of `*.json` drop-ins.
+const MANAGED: [&str; 2] = ["/etc/claude-code", "/Library/Application Support/ClaudeCode"];
 
-/// Whether managed settings say anything of the sandbox's network, which an
-/// open proxy would silently set aside.
-fn managed_network(read: &dyn Fn(&Path) -> std::io::Result<String>) -> bool {
-    MANAGED.iter().filter_map(|p| read(Path::new(p)).ok()).filter_map(|t| serde_json::from_str::<Value>(&t).ok()).any(|v| v["sandbox"].get("network").is_some())
+/// Whether an organisation's managed settings files say anything of the
+/// sandbox's network, which gruntas's open proxy would silently set aside:
+/// the launcher then starts none, and Claude Code's own proxy applies them.
+/// Read from disk, unlike `plan`.
+pub fn managed_network() -> bool {
+    managed_network_in(&MANAGED.map(PathBuf::from))
+}
+
+fn managed_network_in(dirs: &[PathBuf]) -> bool {
+    let mut files = Vec::new();
+    for d in dirs {
+        files.push(d.join("managed-settings.json"));
+        if let Ok(rd) = std::fs::read_dir(d.join("managed-settings.d")) {
+            files.extend(rd.flatten().map(|e| e.path()).filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(".json") && !n.starts_with('.'))));
+        }
+    }
+    files.iter().filter_map(|f| std::fs::read_to_string(f).ok()).filter_map(|t| serde_json::from_str::<Value>(&t).ok()).any(|v| v["sandbox"].get("network").is_some())
 }
 
 /// What an attended session's sandbox adds to `claude_sandbox`, so the
@@ -578,12 +589,31 @@ mod tests {
         let theirs = r#"{"sandbox":{"network":{"deniedDomains":["evil.example"]}}}"#;
         let p = plan(&request(Harness::Claude, Mode::Attended, inst, &["--settings", theirs]), &no_file).unwrap();
         assert!(p.settings.unwrap()["sandbox"]["network"].get("httpProxyPort").is_none(), "denied domains need Claude Code's own proxy");
-        let managed = |p: &Path| if p == Path::new(MANAGED[0]) { Ok(r#"{"sandbox":{"network":{"allowedDomains":["corp.example"]}}}"#.into()) } else { no_file(p) };
-        let p = plan(&request(Harness::Claude, Mode::Attended, inst, &[]), &managed).unwrap();
-        assert!(p.settings.unwrap()["sandbox"]["network"].get("httpProxyPort").is_none(), "an organisation's network rules are not set aside");
         let p = plan(&Request { egress: None, ..request(Harness::Claude, Mode::Attended, inst, &[]) }, &no_file).unwrap();
         let s = p.settings.unwrap();
         assert!(s["sandbox"]["network"].get("httpProxyPort").is_none() && s["sandbox"]["filesystem"]["allowWrite"] == json!(["~"]));
+    }
+
+    /// Managed network rules are found in the file and in its drop-ins,
+    /// a hidden or non-JSON drop-in passed over.
+    #[test]
+    fn managed_network_rules_are_found_in_the_file_and_its_drop_ins() {
+        let t = std::env::temp_dir().join(format!("gruntas-managed-{}", std::process::id()));
+        let (a, b) = (t.join("a"), t.join("b"));
+        std::fs::create_dir_all(a.join("managed-settings.d")).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let dirs = [a.clone(), b.clone()];
+        let rules = r#"{"sandbox":{"network":{"allowedDomains":["corp.example"]}}}"#;
+        std::fs::write(a.join("managed-settings.json"), r#"{"model":"opus"}"#).unwrap();
+        std::fs::write(a.join("managed-settings.d/.hidden.json"), rules).unwrap();
+        std::fs::write(a.join("managed-settings.d/50-net.txt"), rules).unwrap();
+        assert!(!managed_network_in(&dirs));
+        std::fs::write(a.join("managed-settings.d/50-net.json"), rules).unwrap();
+        assert!(managed_network_in(&dirs));
+        std::fs::remove_file(a.join("managed-settings.d/50-net.json")).unwrap();
+        std::fs::write(b.join("managed-settings.json"), rules).unwrap();
+        assert!(managed_network_in(&dirs));
+        let _ = std::fs::remove_dir_all(&t);
     }
 
     #[test]

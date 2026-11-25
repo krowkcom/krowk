@@ -109,9 +109,10 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<i32, Error> {
     }
     let model = model_of(&asked.rest).unwrap_or_else(|| registry.model_on(instance, None, &|_| Vec::new()).unwrap_or_default());
     // Attended, Claude's sandboxed commands reach the network through
-    // gruntas's open proxy rather than Claude Code's asking one.
+    // gruntas's open proxy rather than Claude Code's asking one, unless an
+    // organisation's managed settings set network rules it would set aside.
     let egress = match (harness, &mode, asked.no_sandbox) {
-        (Harness::Claude, Mode::Attended, false) => gruntas_harness::egress::start()
+        (Harness::Claude, Mode::Attended, false) if !launch::managed_network() => gruntas_harness::egress::start()
             .inspect_err(|e| {
                 let _ = writeln!(ctx.io.stderr, "gruntas: the sandbox's open network proxy could not start ({e}), so Claude Code asks before each new domain");
             })

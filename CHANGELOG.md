@@ -27,8 +27,8 @@ breaking changes may affect it without notice.
   other Unix socket work, commands can write anywhere in your home but the
   gruntas home, and the network goes through an open proxy gruntas runs
   for the session, so no domain asks first (unless your `--settings` names
-  a proxy or denied domains of its own, or your organisation's managed
-  settings set network rules, which are kept). The fence is soft: it keeps
+  a proxy or denied domains of its own, or Claude Code's managed settings
+  files set network rules, which are kept). The fence is soft: it keeps
   the session from reading the gruntas home, not one set on getting around
   it. Unattended sessions (`--unattended`) keep the full sandbox.
 

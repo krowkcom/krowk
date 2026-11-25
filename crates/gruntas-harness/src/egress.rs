@@ -265,6 +265,9 @@ mod tests {
         let mut c = TcpStream::connect(("127.0.0.1", e.http)).unwrap();
         c.write_all(format!("CONNECT 127.0.0.1:{dest} HTTP/1.1\r\n\r\n").as_bytes()).unwrap();
         read_to(&mut c, b"\r\n\r\n");
+        // Its echo has come back through both of the tunnel's threads.
+        c.write_all(b"x").unwrap();
+        read_to(&mut c, b"x");
         let mut masks = Vec::new();
         for task in std::fs::read_dir("/proc/self/task").unwrap().flatten() {
             let status = std::fs::read_to_string(task.path().join("status")).unwrap_or_default();
