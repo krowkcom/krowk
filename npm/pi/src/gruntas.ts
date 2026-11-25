@@ -84,7 +84,15 @@ export function install(pi: ExtensionAPI, host: Host): void {
     inputs.set(e.toolCallId, e.input)
     if (e.toolName !== 'bash') return undefined
     const call = { toolCallId: e.toolCallId, toolName: e.toolName, input: e.input }
-    const reason = denyReason(await host.run(argv('PreToolUse'), toolEvent('PreToolUse', session(ctx), call), LIMIT_MS))
+    let payload: string
+    try {
+      // A runtime pi has let go of (a reload) throws here: pi would block
+      // the call on a throw, and gruntas never fails a call it cannot judge.
+      payload = toolEvent('PreToolUse', session(ctx), call)
+    } catch {
+      return undefined
+    }
+    const reason = denyReason(await host.run(argv('PreToolUse'), payload, LIMIT_MS))
     return reason ? { block: true, reason } : undefined
   })
   on('tool_execution_end', (e, ctx) => {
