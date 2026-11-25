@@ -268,7 +268,7 @@ test('PI02: without gruntas on the PATH, a session\'s start shows the install hi
 
 const DENY = JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'gruntas: that uploads to a paste site.' } })
 
-test('PI03: a bash call awaits PreToolUse and is blocked with the guard\'s message', { skip: 'PI03' }, async () => {
+test('PI03: a bash call awaits PreToolUse and is blocked with the guard\'s message', async () => {
   const pi = fakePi()
   const { host, runs } = fakeHost(e => (e === 'PreToolUse' ? DENY : ''))
   install(pi.api, host)
@@ -279,7 +279,7 @@ test('PI03: a bash call awaits PreToolUse and is blocked with the guard\'s messa
   assert.deepEqual(answer, { block: true, reason: 'gruntas: that uploads to a paste site.' })
 })
 
-test('PI03: a bash call gruntas lets through, or a hook that answers nothing, runs untouched', { skip: 'PI03' }, async () => {
+test('PI03: a bash call gruntas lets through, or a hook that answers nothing, runs untouched', async () => {
   for (const said of ['', undefined]) {
     const pi = fakePi()
     const { host } = fakeHost(() => said)
@@ -291,7 +291,7 @@ test('PI03: a bash call gruntas lets through, or a hook that answers nothing, ru
   }
 })
 
-test('PI03: only bash calls go to PreToolUse, as in the Claude Code plugin', { skip: 'PI03' }, async () => {
+test('PI03: only bash calls go to PreToolUse, as in the Claude Code plugin', async () => {
   const pi = fakePi()
   const { host, runs } = fakeHost()
   install(pi.api, host)

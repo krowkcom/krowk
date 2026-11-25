@@ -38,6 +38,17 @@ function blockReason(out: string | undefined): string | undefined {
   }
 }
 
+/** The reason of a PreToolUse answer that refuses the call (Claude Code's `permissionDecision: "deny"`). */
+function denyReason(out: string | undefined): string | undefined {
+  try {
+    const o = JSON.parse(out ?? '')?.hookSpecificOutput
+    if (o?.permissionDecision !== 'deny') return undefined
+    return typeof o.permissionDecisionReason === 'string' && o.permissionDecisionReason ? o.permissionDecisionReason : 'gruntas refused this command.'
+  } catch {
+    return undefined
+  }
+}
+
 /** The extension, on `host`: what pi's factory does, on the machine as it is. */
 export function install(pi: ExtensionAPI, host: Host): void {
   if (host.platform === 'win32') return
@@ -65,7 +76,17 @@ export function install(pi: ExtensionAPI, host: Host): void {
   // the object tool_call hands on, which tool_call handlers mutate in place.
   const inputs = new Map<string, unknown>()
   on('tool_execution_start', e => void inputs.set(e.toolCallId, e.args))
-  on('tool_call', e => void inputs.set(e.toolCallId, e.input))
+  // A bash call waits on PreToolUse, as in the Claude Code plugin, whose
+  // PreToolUse is for Bash only: the paste guards may refuse it, and a heavy
+  // command counts toward the build slots from here to its end (or the
+  // run's). A hook that answers nothing, or not in time, lets it run.
+  on('tool_call', async (e, ctx) => {
+    inputs.set(e.toolCallId, e.input)
+    if (e.toolName !== 'bash') return undefined
+    const call = { toolCallId: e.toolCallId, toolName: e.toolName, input: e.input }
+    const reason = denyReason(await host.run(argv('PreToolUse'), toolEvent('PreToolUse', session(ctx), call), LIMIT_MS))
+    return reason ? { block: true, reason } : undefined
+  })
   on('tool_execution_end', (e, ctx) => {
     const input = inputs.get(e.toolCallId)
     inputs.delete(e.toolCallId)
