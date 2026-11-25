@@ -1,0 +1,36 @@
+{
+  "name": "@gruntas/pi",
+  "version": "0.0.0-unpublished",
+  "description": "Gruntas for pi: registers pi sessions with the gruntas daemon, through the same `gruntas hook` the Claude Code and Codex plugins run.",
+  "keywords": [
+    "pi-package",
+    "gruntas",
+    "pi",
+    "coding-agent"
+  ],
+  "homepage": "https://gruntas.com",
+  "bugs": "https://github.com/gruntas/gruntas/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gruntas/gruntas.git",
+    "directory": "npm/pi"
+  },
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "src/gruntas.ts",
+    "src/hook.ts"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/gruntas.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "engines": {
+    "node": ">=22",
+    "pi": ">=1.6.0 <2"
+  }
+}

@@ -38,6 +38,7 @@ fn answer_in(daemon: &Path, sessions: &Path, session: &str, page: Option<&str>) 
     let log = sessions.join(session).join(crate::log::EVENTS_FILE);
     let entries = match crate::daemon::registry::Registry::read(daemon).get(session) {
         Some(r) if r.harness == PluginHarness::Codex => return HostAnswer::refused(refusal::CANT_READ, "can't read this session yet: it is a Codex session, and gruntas reads no Codex transcript yet"),
+        Some(r) if r.harness == PluginHarness::Pi => return HostAnswer::refused(refusal::CANT_READ, "can't read this session yet: it is a pi session, and gruntas reads no pi transcript yet"),
         Some(r) => match r.transcript_path.as_deref() {
             Some(path) => claude(Path::new(path)),
             None => return HostAnswer::refused(refusal::CANT_READ, "can't read this session yet: Claude Code has not said where its transcript is"),
@@ -260,10 +261,12 @@ mod tests {
     #[test]
     fn ga04_a_codex_session_cant_be_read_yet() {
         let d = scratch("codex");
-        registered(&d, PluginHarness::Codex, &d.join("rollout.jsonl"));
-        let HostAnswer::Refused { code, message } = answer_in(&d, &d, SESSION, None) else { panic!() };
-        assert_eq!(code, refusal::CANT_READ);
-        assert!(message.contains("can't read this session yet"), "{message}");
+        for (harness, what) in [(PluginHarness::Pi, "pi session"), (PluginHarness::Codex, "Codex session")] {
+            registered(&d, harness, &d.join("rollout.jsonl"));
+            let HostAnswer::Refused { code, message } = answer_in(&d, &d, SESSION, None) else { panic!() };
+            assert_eq!(code, refusal::CANT_READ);
+            assert!(message.contains("can't read this session yet") && message.contains(what), "{message}");
+        }
         let none = answer_in(&d, &d, "01a0ec7b-0000-7000-8000-0000000000ff", None);
         assert!(matches!(none, HostAnswer::Refused { ref code, .. } if code == refusal::NO_SESSION), "{none:?}");
         let _ = std::fs::remove_dir_all(&d);

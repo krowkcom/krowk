@@ -21,6 +21,11 @@ breaking changes may affect it without notice.
 
 ### Added
 
+- **`gruntas hook pi <event>` takes pi's sessions.** pi joins Claude Code
+  and Codex as a harness gruntas's hook reads: a pi session registers as
+  harness `pi`, and its account is pi's config home, `PI_CODING_AGENT_DIR`,
+  else `~/.pi/agent`. The `@gruntas/pi` extension that sends pi's events
+  there is built with each release; it is not on npm yet.
 - **`gruntas run claude --account <name> --no-plugin` runs Claude Code on
   an account for another program.** It starts Claude Code on that account,
   its login or key kept in gruntas, without the gruntas plugin or hooks, so
