@@ -312,9 +312,19 @@ async function picker($: EngineInterface): Promise<string | undefined> {
   picking = got
   // Open already (asked again): drawn afresh from these rows.
   $.ui.invalidate('ui.render')
-  const opened = await $.ui.open({ id: PICKER, title: 'Continue this session on', focus: true, closeOnEscape: true, rows: got.choices.length + 3, columns: 72 })
+  // Not placed, or refused: no pane, so no close clears it, and the status
+  // line, held back while it is open, is drawn again.
+  let opened
+  try {
+    opened = await $.ui.open({ id: PICKER, title: 'Continue this session on', focus: true, closeOnEscape: true, rows: got.choices.length + 3, columns: 72 })
+  } catch (err) {
+    picking = undefined
+    redraw($)
+    throw err
+  }
   if (opened.isPlaced) return undefined
   picking = undefined
+  redraw($)
   return account($, '')
 }
 
@@ -337,13 +347,13 @@ function resets(kind: string, at: string | undefined): string | undefined {
   return kind === 'seven_day' ? DAYS[d.getDay()] : `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-/** The terminal cells `text` takes: two for a wide or emoji character, none for a combining mark. */
+/** The terminal cells `text` takes: two for a wide East Asian character, none for a combining mark. */
 export function cells(text: string): number {
   let n = 0
   for (const ch of text) {
     const c = ch.codePointAt(0) ?? 0
-    if (/\p{M}/u.test(ch) || c === 0x200d || (c >= 0xfe00 && c <= 0xfe0f)) continue
-    const wide = (c >= 0x1100 && c <= 0x115f) || (c >= 0x2e80 && c <= 0xa4cf) || (c >= 0xac00 && c <= 0xd7a3) || (c >= 0xf900 && c <= 0xfaff) || (c >= 0xfe30 && c <= 0xfe4f) || (c >= 0xff00 && c <= 0xff60) || (c >= 0xffe0 && c <= 0xffe6) || (c >= 0x1f300 && c <= 0x1faff) || (c >= 0x20000 && c <= 0x3fffd)
+    if (/\p{M}/u.test(ch)) continue
+    const wide = (c >= 0x1100 && c <= 0x115f) || (c >= 0x2e80 && c <= 0xa4cf) || (c >= 0xac00 && c <= 0xd7a3) || (c >= 0xf900 && c <= 0xfaff) || (c >= 0xfe30 && c <= 0xfe4f) || (c >= 0xff00 && c <= 0xff60) || (c >= 0xffe0 && c <= 0xffe6) || (c >= 0x20000 && c <= 0x3fffd)
     n += wide ? 2 : 1
   }
   return n
@@ -490,7 +500,7 @@ export const register: Register = on => {
     })
     // A person's own line keeps every row it printed: this one goes under it
     // only where a row is left.
-    const theirs = e.props.text === null || e.props.isManaged ? 0 : e.props.text.split('\n').length
+    const theirs = e.props.text === null || e.props.isManaged ? 0 : e.props.text.replace(/\n+$/, '').split('\n').length
     if (theirs + 1 > e.props.maxRows) return next(e)
     return Box({ flexDirection: 'column', children: [await next(e), mine] })
   })

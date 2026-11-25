@@ -188,6 +188,22 @@ test('/gruntas:account <name> queues it and keeps the notice in the status line;
   expect(statuses).toEqual(['Type /exit to continue on claude:trip1.', undefined])
 })
 
+test('a picker that cannot open leaves the status line drawn again', async ($, on) => {
+  let invalidated = 0
+  on('session.id', () => ({ value: 's1' }))
+  on('process.run', (_, e) => ({ value: { exitCode: 0, stdout: e.argv.at(-1) === '--choices' ? JSON.stringify(CHOICES) : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('ui.open', () => {
+    throw new Error('the pane id is held')
+  })
+  on('ui.invalidate', (_, e) => (invalidated++, { value: undefined }) as never)
+  on('session.measure', (_, e) => ({ changed: e.changed }))
+  await $.command.run({ command: 'gruntas:account', args: '' }).catch(() => undefined)
+  const before = invalidated
+  await $.session.measure({ context: { size: 200_000 } as never, rateLimits: LIMITS, changed: ['rateLimits'] })
+  for (let i = 0; i < 20; i++) await Promise.resolve()
+  expect(invalidated).toBeGreaterThan(before)
+})
+
 test('/gruntas:account without gruntas says how to install it', async ($, on) => {
   on('session.id', () => ({ value: 's1' }))
   on('process.run', () => {
@@ -387,7 +403,7 @@ test('the status line never overstates use: a passed reset is unknown, and only 
 })
 
 test('the status line measures terminal cells: a wide device name gives way before the numbers', () => {
-  expect([cells('thinkpad'), cells('東京のマック'), cells('é'), cells('🖥️')]).toEqual([8, 12, 1, 2])
+  expect([cells('thinkpad'), cells('東京のマック'), cells('é'), cells('e\u0301')]).toEqual([8, 12, 1, 1])
   const l = windows(69, 12)
   // 'a, 東京のマック     69% weekly, 12% 5-hour' is 42 cells, not 36.
   expect(text(statusSegments('claude:a', '東京のマック', l, 42, BEFORE))).toBe('a, 東京のマック     69% weekly, 12% 5-hour')
@@ -417,6 +433,10 @@ test('the status line draws under the prompt from gruntas and Claude Code, a per
   expect(drawn.children.map(c => c.type)).toEqual(['engine', 'Text'])
   expect(await own.find({ type: 'Text', text: /^elvinas-herder, thinkpad {5}69% weekly/ })).toBeDefined()
   await own.unmount()
+  // Their own line printed with a trailing newline is one row: this one fits under it.
+  const echoed = await $.ui.mount({ plugin: 'gruntas', surface: 'terminal', component: 'StatusLine', props: { ...props, text: 'my line\n', maxRows: 2 } } as never)
+  expect(await echoed.find({ type: 'Text', text: /69% weekly/ })).toBeDefined()
+  await echoed.unmount()
   // Their own line of three rows, with three to spare: theirs whole, this one left out.
   const three = await $.ui.mount({ plugin: 'gruntas', surface: 'terminal', component: 'StatusLine', props: { ...props, text: 'a\nb\nc', maxRows: 3 } } as never)
   expect(await three.find({ type: 'Text', text: /69% weekly/ })).toBeUndefined()
