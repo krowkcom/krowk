@@ -30,8 +30,10 @@ pub struct Egress {
 
 /// How long a destination may take to answer a connect.
 const CONNECT: Duration = Duration::from_secs(30);
-/// The most a request's head may hold before its first blank line.
+/// The most a request's head may hold before its first blank line, and how
+/// long it may take to come.
 const HEAD: usize = 64 * 1024;
+const HEAD_WAIT: Duration = Duration::from_secs(30);
 
 /// Both proxies, listening, each served by a thread that ends with the
 /// process.
@@ -44,14 +46,40 @@ pub fn start() -> io::Result<Egress> {
     Ok(ports)
 }
 
+/// Serves `listener` on a thread of its own. That thread, and every
+/// connection's it starts, which inherit its mask, take no signal: the
+/// launcher's relay waits for SIGINT, SIGTERM and the rest on its own
+/// thread and passes them on to the harness, and a signal sent to gruntas
+/// that reached one of these threads would end gruntas instead. A failed
+/// accept (descriptors run out) waits a moment rather than spin.
 fn serve(listener: TcpListener, name: &str, conn: fn(TcpStream) -> io::Result<()>) -> io::Result<()> {
     thread::Builder::new().name(name.into()).spawn(move || {
-        for client in listener.incoming().flatten() {
-            let _ = thread::Builder::new().spawn(move || conn(client));
+        block_signals();
+        for client in listener.incoming() {
+            match client {
+                Ok(c) => {
+                    let _ = thread::Builder::new().spawn(move || conn(c));
+                }
+                Err(_) => thread::sleep(Duration::from_millis(50)),
+            }
         }
     })?;
     Ok(())
 }
+
+#[cfg(unix)]
+fn block_signals() {
+    // SAFETY: sigfillset fills a mask on this stack; pthread_sigmask sets
+    // this thread's own.
+    unsafe {
+        let mut all: libc::sigset_t = std::mem::zeroed();
+        libc::sigfillset(&mut all);
+        libc::pthread_sigmask(libc::SIG_BLOCK, &all, std::ptr::null_mut());
+    }
+}
+
+#[cfg(not(unix))]
+fn block_signals() {}
 
 fn dial(host: &str, port: u16) -> io::Result<TcpStream> {
     let mut last = io::Error::new(io::ErrorKind::NotFound, format!("{host} has no address"));
@@ -80,6 +108,7 @@ fn splice(a: TcpStream, b: TcpStream) -> io::Result<()> {
 
 /// The request's head up to its blank line, and whatever came after it.
 fn head(c: &mut TcpStream) -> io::Result<(String, Vec<u8>)> {
+    c.set_read_timeout(Some(HEAD_WAIT))?;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -95,6 +124,9 @@ fn head(c: &mut TcpStream) -> io::Result<(String, Vec<u8>)> {
             return Err(io::ErrorKind::UnexpectedEof.into());
         }
         buf.extend_from_slice(&chunk[..n]);
+        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            c.set_read_timeout(None)?;
+        }
     }
 }
 
@@ -143,6 +175,7 @@ fn http_conn(mut c: TcpStream) -> io::Result<()> {
 }
 
 fn socks_conn(mut c: TcpStream) -> io::Result<()> {
+    c.set_read_timeout(Some(HEAD_WAIT))?;
     let mut b = [0u8; 2];
     c.read_exact(&mut b)?;
     if b[0] != 5 {
@@ -184,6 +217,7 @@ fn socks_conn(mut c: TcpStream) -> io::Result<()> {
     }
     let Ok(up) = dial(&host, u16::from_be_bytes(p)) else { return reply(&mut c, 5) };
     reply(&mut c, 0)?;
+    c.set_read_timeout(None)?;
     splice(c, up)
 }
 
@@ -214,6 +248,23 @@ mod tests {
             got.push(b[0]);
         }
         got
+    }
+
+    /// A signal sent to gruntas never lands on a proxy thread.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn its_threads_take_no_signal() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            block_signals();
+            let status = std::fs::read_to_string("/proc/thread-self/status").unwrap();
+            tx.send(status.lines().find(|l| l.starts_with("SigBlk:")).unwrap().to_string()).unwrap();
+        });
+        let blk = rx.recv().unwrap();
+        let mask = u64::from_str_radix(blk.split_whitespace().nth(1).unwrap(), 16).unwrap();
+        for sig in [libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGHUP] {
+            assert!(mask & (1 << (sig - 1)) != 0, "signal {sig} blocked: {blk}");
+        }
     }
 
     #[test]

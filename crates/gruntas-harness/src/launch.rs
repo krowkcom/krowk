@@ -207,8 +207,10 @@ pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> R
             if req.sandbox {
                 ours = merge(ours, claude_sandbox(&req.hidden));
                 if req.mode == Mode::Attended {
-                    // A proxy the person named stays theirs.
-                    let named = settings["sandbox"]["network"].get("httpProxyPort").is_some() || settings["sandbox"]["network"].get("socksProxyPort").is_some();
+                    // A proxy or denied domains the person gave in a
+                    // `--settings` stay theirs: no open proxy over them.
+                    let n = &settings["sandbox"]["network"];
+                    let named = ["httpProxyPort", "socksProxyPort", "deniedDomains"].iter().any(|k| n.get(k).is_some());
                     ours = merge(ours, claude_attended(&req.hidden, req.egress.filter(|_| !named)));
                 }
             }
@@ -551,8 +553,8 @@ mod tests {
         }
     }
 
-    /// Attended, a proxy the person named in their settings is kept, and
-    /// without one of gruntas's the rest still applies.
+    /// Attended, a proxy or denied domains the person gave in `--settings`
+    /// are kept, and without gruntas's proxy the rest still applies.
     #[test]
     fn attended_keeps_the_persons_proxy() {
         let r = registry();
@@ -561,6 +563,9 @@ mod tests {
         let p = plan(&request(Harness::Claude, Mode::Attended, inst, &["--settings", theirs]), &no_file).unwrap();
         let n = &p.settings.unwrap()["sandbox"]["network"];
         assert_eq!((&n["httpProxyPort"], n.get("socksProxyPort"), &n["allowAllUnixSockets"]), (&json!(9000), None, &json!(true)));
+        let theirs = r#"{"sandbox":{"network":{"deniedDomains":["evil.example"]}}}"#;
+        let p = plan(&request(Harness::Claude, Mode::Attended, inst, &["--settings", theirs]), &no_file).unwrap();
+        assert!(p.settings.unwrap()["sandbox"]["network"].get("httpProxyPort").is_none(), "denied domains need Claude Code's own proxy");
         let p = plan(&Request { egress: None, ..request(Harness::Claude, Mode::Attended, inst, &[]) }, &no_file).unwrap();
         let s = p.settings.unwrap();
         assert!(s["sandbox"]["network"].get("httpProxyPort").is_none() && s["sandbox"]["filesystem"]["allowWrite"] == json!(["~"]));

@@ -26,7 +26,8 @@ breaking changes may affect it without notice.
   (`gh`, `docker` and other CLIs that keep their login there) and every
   other Unix socket work, commands can write anywhere in your home but the
   gruntas home, and the network goes through an open proxy gruntas runs
-  for the session, so no domain asks first. The fence is soft: it keeps
+  for the session, so no domain asks first (unless your `--settings` names
+  a proxy or denied domains of its own, which are kept). The fence is soft: it keeps
   the session from reading the gruntas home, not one set on getting around
   it. Unattended sessions (`--unattended`) keep the full sandbox.
 
