@@ -1,7 +1,7 @@
 {
   "name": "@gruntas/pi",
   "version": "0.0.0-unpublished",
-  "description": "Gruntas for pi: registers pi sessions with the gruntas daemon, through the same `gruntas hook` the Claude Code and Codex plugins run.",
+  "description": "Gruntas for pi: registers pi sessions with the gruntas daemon, through the same `gruntas hook` the Claude Code and Codex plugins run, and runs pi's Claude turns on your gruntas accounts through Claude Code.",
   "keywords": [
     "pi-package",
     "gruntas",
@@ -19,14 +19,21 @@
   "type": "module",
   "files": [
     "src/gruntas.ts",
-    "src/hook.ts"
+    "src/hook.ts",
+    "src/claude",
+    "THIRD-PARTY-NOTICES"
   ],
   "pi": {
     "extensions": [
       "./src/gruntas.ts"
     ]
   },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.332",
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
   "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*"
   },
   "engines": {

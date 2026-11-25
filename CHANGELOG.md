@@ -33,6 +33,15 @@ breaking changes may affect it without notice.
   arguments, stdin, stdout and exit code through untouched. A program that
   drives Claude Code, such as one built on the Claude Agent SDK, can run it
   as its Claude Code. Nothing in the account's settings or plugins changes.
+- **pi's Claude turns run on your gruntas accounts.** The `@gruntas/pi`
+  extension gives pi a `gruntas` provider, whose models are
+  `gruntas/<model>`: each turn runs through Claude Code on the session's
+  gruntas account, started by `gruntas run claude --account <name>
+  --no-plugin`, with Claude Code's own system prompt and pi's tools run by
+  pi. No account needs a login inside pi, and no login or API key ever
+  reaches pi. A session starts on the account it used last, else on the
+  ready account rollover ranks first. The provider is adapted from the
+  MIT-licensed `pi-claude-subscription` (see THIRD-PARTY-NOTICES).
 
 ## [2026.11.5] - 2026-11-25
 
