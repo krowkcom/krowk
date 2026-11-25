@@ -4,7 +4,7 @@
 //   node --test npm/pi/src/claude/claude.test.ts
 
 import assert from 'node:assert/strict'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
@@ -335,7 +335,7 @@ test('the launch runs gruntas with the SDK\'s arguments, cwd and environment, le
     child.stdout.setEncoding('utf8').on('data', (d: string) => (out += d))
     child.stdin.end()
     await new Promise(r => child.on('close', r))
-    assert.deepEqual(out.trim().split('\n'), ['run claude --account claude:work --no-plugin --print', dir, 'nested=no pi=x'])
+    assert.deepEqual(out.trim().split('\n'), ['run claude --account claude:work --no-plugin --print', realpathSync(dir), 'nested=no pi=x'])
     assert.equal(err, 'oops\n')
   } finally {
     rmSync(dir, { recursive: true, force: true })
