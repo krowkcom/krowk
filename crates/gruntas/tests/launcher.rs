@@ -244,6 +244,9 @@ fn no_plugin_passes_claude_through_without_the_plugin() {
     assert!(!settings.to_string().contains(" hook claude") && settings["enabledPlugins"]["gruntas@gruntas"] == false, "{settings}");
     assert!(args.ends_with(&["-p".into(), "--output-format".into(), "stream-json".into()]), "{args:?}");
     assert!(env.contains(&format!("CLAUDE_CONFIG_DIR={}", b.root.join("accounts/claude-work").display())));
+    // A --plugin-dir of the caller's is theirs, passed through even where it is not.
+    assert_eq!(b.gruntas(&["run", "claude", "--account", "work", "--no-plugin", "--plugin-dir", "/nowhere"]).status.code(), Some(3));
+    assert!(b.started("claude").0.ends_with(&["--plugin-dir".into(), "/nowhere".into()]));
     failed(&b.gruntas(&["run", "codex", "--account", "team", "--no-plugin"]), 1, "--no-plugin is for claude");
     failed(&b.gruntas(&["run", "claude", "--no-plugin", "--unattended", "fix it"]), 1, "drop --no-plugin");
 }

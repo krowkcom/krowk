@@ -225,10 +225,18 @@ fn model_of(args: &[String]) -> Option<String> {
 /// moment gruntas says where it goes on (`STOP`), and the daemon's pick of
 /// an account the run left when it ran low that has not reset since,
 /// which would only go round the same spent accounts. Without the plugin
-/// (`--no-plugin`), the harness runs once and is not marked: a session that
-/// never registers is not one the daemon moves.
+/// (`--no-plugin`), gruntas becomes the harness (exec), so the program that
+/// started it has Claude Code's own stdio, signals and exit status: a
+/// session that never registers is not one the daemon moves.
 fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: String) -> Result<i32, Error> {
     use gruntas_harness::attended;
+    if !req.plugin {
+        claude_ready(ctx, &mut plan, false)?;
+        let _ = ctx.io.stdout.flush();
+        let _ = ctx.io.stderr.flush();
+        let e = std::os::unix::process::CommandExt::exec(&mut child::command(&plan));
+        return Err(fail("no_binary", format!("{} could not be started: {e}. Is it installed? `gruntas providers list --check` checks", plan.program.display())));
+    }
     let daemon = gruntas_harness::daemon::dir(ctx.io.env).ok();
     if let Some(d) = &daemon {
         attended::sweep(d);
@@ -240,7 +248,7 @@ fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: Str
     let mut last = 0;
     loop {
         if plan.harness == Harness::Claude {
-            claude_ready(ctx, &mut plan)?;
+            claude_ready(ctx, &mut plan, true)?;
         }
         let _ = ctx.io.stdout.flush();
         let _ = ctx.io.stderr.flush();
@@ -455,19 +463,21 @@ fn pick_auto(ctx: &mut Ctx, registry: &Registry, harness: Harness) -> Result<Str
 /// LN02: `claude` per the plan, but where the sandbox cannot run, say so,
 /// and start only with `--no-sandbox`. A plugin directory that could not be
 /// written is left out with a note, where Claude Code would pass over it
-/// without a word.
-fn claude_ready(ctx: &mut Ctx, plan: &mut Plan) -> Result<(), Error> {
+/// without a word; without the `plugin`, a `--plugin-dir` is the caller's,
+/// passed through as given.
+fn claude_ready(ctx: &mut Ctx, plan: &mut Plan, plugin: bool) -> Result<(), Error> {
     if plan.sandboxed
         && let Err(why) = claude_sandbox_runs(ctx.io.env)
     {
         return Err(fail("sandbox_unavailable", format!("Claude Code's sandbox cannot run here: {why}. Or start this run with --no-sandbox, which leaves the gruntas home readable to it")));
     }
-    if let Some(i) = plan.args.iter().position(|a| a == "--plugin-dir") {
-        let dir = std::path::PathBuf::from(&plan.args[i + 1]);
-        if !dir.is_dir() {
-            let _ = writeln!(ctx.io.stderr, "gruntas: no gruntas plugin at {} yet, so claude starts without it", dir.display());
-            plan.args.drain(i..i + 2);
-        }
+    if plugin
+        && let Some(i) = plan.args.iter().position(|a| a == "--plugin-dir")
+        && let Some(dir) = plan.args.get(i + 1).map(std::path::PathBuf::from)
+        && !dir.is_dir()
+    {
+        let _ = writeln!(ctx.io.stderr, "gruntas: no gruntas plugin at {} yet, so claude starts without it", dir.display());
+        plan.args.drain(i..i + 2);
     }
     Ok(())
 }
@@ -540,7 +550,7 @@ mod child {
         Ok(Some(Ended { pid: child.id(), code: status.code().or_else(|| status.signal().map(|s| 128 + s)).unwrap_or(1), ending: relay::TOLD.load(SeqCst) != 0 }))
     }
 
-    fn command(plan: &Plan) -> std::process::Command {
+    pub(super) fn command(plan: &Plan) -> std::process::Command {
         let mut cmd = std::process::Command::new(&plan.program);
         cmd.args(&plan.args);
         for k in &plan.env_remove {
