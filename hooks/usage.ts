@@ -233,14 +233,18 @@ async function account($: EngineInterface, args: string): Promise<string> {
 /** One row of the picker, as `gruntas hook claude account <session> --choices` gives it. */
 export type Choice = { account: string; label: string; why: string | null }
 
-/** What `--choices` answers. */
-export type Choices = { launched: boolean; current: string | null; queued: string | null; choices: Choice[] }
+/** What `--choices` answers; `list` is the text list where there is no picker. */
+export type Choices = { launched: boolean; current: string | null; queued: string | null; choices: Choice[]; list?: string | null }
 
 /** The picker's pane. */
 export const PICKER = 'gruntas-account'
 
 /** The rows the open picker shows; none while it is closed. */
 let picking: Choices | undefined
+
+/** Whether a pick is under way: one at a time. */
+let switching = false
+
 
 /** The accounts to pick from; none where gruntas gives no picker (missing, or one before it). */
 async function choices($: EngineInterface): Promise<Choices | undefined> {
@@ -255,27 +259,44 @@ async function choices($: EngineInterface): Promise<Choices | undefined> {
 
 /** Enter on `value`: a move queued and `/exit` run, or why not, the picker left open. */
 async function pick($: EngineInterface, value: string): Promise<void> {
-  const row = picking?.choices.find(c => c.account === value)
-  if (row === undefined) return
+  const open = picking
+  const row = open?.choices.find(c => c.account === value)
+  if (row === undefined || switching) return
   if (row.why !== null) {
     void Promise.resolve($.ui.toast(`Not ${row.account}: ${row.why}.`)).catch(() => undefined)
     return
   }
-  const said = await account($, row.account)
-  if (!said.startsWith('Type /exit')) {
-    void Promise.resolve($.ui.toast(said)).catch(() => undefined)
-    return
+  switching = true
+  try {
+    void Promise.resolve($.ui.toast(`Switching to ${row.account}…`)).catch(() => undefined)
+    const said = await account($, row.account)
+    // Closed (Esc) while gruntas answered: the person kept this account.
+    if (picking !== open) {
+      if (said.startsWith('Type /exit')) await account($, '--cancel')
+      return
+    }
+    if (!said.startsWith('Type /exit')) {
+      void Promise.resolve($.ui.toast(said)).catch(() => undefined)
+      return
+    }
+    picking = undefined
+    // Not awaited: a close waits on the picker's other picks settling, and
+    // this is one of them; /exit takes the pane with the session anyway.
+    void $.ui.close({ id: PICKER }).catch(() => undefined)
+    await $.command.run({ command: 'exit' }).catch(() => undefined)
+  } finally {
+    switching = false
   }
-  picking = undefined
-  await $.ui.close({ id: PICKER }).catch(() => undefined)
-  await $.command.run({ command: 'exit' })
 }
 
 /** Bare `/gruntas:account`: the picker where the session can move, else the list. */
 async function picker($: EngineInterface): Promise<string | undefined> {
   const got = await choices($)
-  if (got === undefined || !got.launched) return account($, '')
+  if (got === undefined) return account($, '')
+  if (!got.launched) return got.list ?? account($, '')
   picking = got
+  // Open already (asked again): drawn afresh from these rows.
+  $.ui.invalidate('ui.render')
   const opened = await $.ui.open({ id: PICKER, title: 'Continue this session on', focus: true, closeOnEscape: true, rows: got.choices.length + 3, columns: 72 })
   if (opened.isPlaced) return undefined
   picking = undefined

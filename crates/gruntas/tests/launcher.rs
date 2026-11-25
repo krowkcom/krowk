@@ -541,6 +541,21 @@ fn a_switch_carries_from_the_inherited_home_and_an_empty_session_starts_afresh()
     let l = lines();
     assert_eq!(l.len(), 2, "{l:?}");
     assert!(l[1].starts_with(&format!("{} |", spare.display())) && !l[1].contains("--resume") && l[1].contains("--model opus"), "{l:?}");
+
+    // Back from claude:spare to the default: carried into the home the
+    // default runs in, the inherited one, not its written-down one. The
+    // queue names no transcript where one is: it is found under spare's.
+    std::fs::remove_file(&runs).unwrap();
+    let back = "0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e62";
+    let at_spare = spare.join(format!("projects/-q/{back}.jsonl"));
+    std::fs::create_dir_all(at_spare.parent().unwrap()).unwrap();
+    std::fs::write(&at_spare, "{}\n").unwrap();
+    std::fs::write(&queue, serde_json::json!({ "session": back, "account": "claude", "model": "opus", "rung": "same-harness", "transcript": spare.join(format!("projects/-r/{back}.jsonl")) }).to_string()).unwrap();
+    let o = b.command(&["run", "claude", "--account", "spare", "--no-sandbox", "--model", "opus"]).env("XDG_RUNTIME_DIR", b.root.join("run")).env("CLAUDE_CONFIG_DIR", &elsewhere).output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(3), "the resumed run's code; {err}");
+    assert!(lines()[1].starts_with(&format!("{} |", elsewhere.display())) && lines()[1].contains(&format!("--resume {back}")), "{:?}", lines());
+    assert_eq!(std::fs::read_to_string(elsewhere.join(format!("projects/-q/{back}.jsonl"))).unwrap(), "{}\n", "carried into the inherited home");
 }
 
 /// RL03 with RL04 (D5, D6): an attended Codex session whose queued next
