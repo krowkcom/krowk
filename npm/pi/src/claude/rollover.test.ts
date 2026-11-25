@@ -36,6 +36,8 @@ test('a reading becomes the usage payload the hook takes, under the account\'s c
   // A rejected window with no figure of its own is spent.
   assert.deepEqual(usageWindows({ status: 'rejected', resetsAt: 10, rateLimitType: 'five_hour' }), [{ kind: 'fiveHour', usedPercent: 100, resetsAtMs: 10_000 }])
   assert.deepEqual(usageWindows(UNIFIED).map(w => [w.kind, Math.round(w.usedPercent)]), [['fiveHour', 90], ['sevenDay', 100]])
+  // Nor one whose figure says less: rejected is spent.
+  assert.equal(usageWindows({ status: 'rejected', resetsAt: 10, rateLimitType: 'five_hour', utilization: 0.97 })[0]!.usedPercent, 100)
   // Nothing to record: no payload.
   assert.equal(usagePayload({ name: 'a' }, { status: 'allowed', rateLimitType: 'five_hour' }), undefined)
   assert.equal(usagePayload({ name: 'a' }, null), undefined)
@@ -47,6 +49,8 @@ test('a reading becomes the usage payload the hook takes, under the account\'s c
 test('only a rejected reading is a limit hit, with when it resets', () => {
   assert.deepEqual(limitHit(REJECTED), { resetsAt: 1790431200000 })
   assert.equal(limitHit(WARNING), undefined)
+  // The named window's reset, when the reading has none at the top.
+  assert.deepEqual(limitHit({ status: 'rejected', rateLimitType: 'seven_day', unifiedWindows: UNIFIED.unifiedWindows }), { resetsAt: 1791846000000 })
   assert.equal(limitHit(undefined), undefined)
   const now = new Date(2026, 10, 25, 9, 0).getTime()
   assert.equal(when(new Date(2026, 10, 25, 14, 5).getTime(), now), '14:05')
@@ -142,6 +146,21 @@ test('a spent account is tried once: the next hit skips it, and a repeat or old 
   assert.deepEqual(t.moves, ['claude:b'], 'a reading of the account it left')
   await t.r.hit('claude:b', RESET)
   assert.deepEqual(t.asks.at(-1), ['claude:b', ['claude:a']])
+})
+
+test('a spent account is passed over until it resets, five hours when nobody said', async () => {
+  let now = NOW
+  const accounts = { name: 'claude:a' as string | undefined, moveTo: async (n: string) => (accounts.name = n) }
+  const asks: string[][] = []
+  const r = new Rollover(accounts, async (_from, tried) => (asks.push(tried), { next: accounts.name === 'claude:a' ? 'claude:b' : 'claude:a', mode: 'auto', resetsAt: null }), () => fakeUi(true, true).ui, () => now)
+  await r.hit('claude:a')
+  now += 60_000
+  await r.hit('claude:b', NOW + 3_600_000)
+  assert.deepEqual(asks.at(-1), ['claude:a'], 'a is still out')
+  now = NOW + 5 * 3_600_000 + 1
+  accounts.name = 'claude:c'
+  await r.hit('claude:c')
+  assert.deepEqual(asks.at(-1), [], 'both have reset')
 })
 
 // --- wired into the provider ---------------------------------------------------

@@ -50,7 +50,9 @@ export function usageWindows(info: any): UsageWindow[] {
   const rejected = info.status === 'rejected'
   const out = new Map<string, UsageWindow>()
   const add = (name: string, w: any) => {
-    const used = percent(w) ?? (rejected && name === named ? 100 : undefined)
+    // The window a rejection names is spent, whatever figure it carries: gruntas reads a limit
+    // from the figure alone.
+    const used = rejected && name === named ? Math.max(percent(w) ?? 100, 100) : percent(w)
     if (!name || used === undefined) return
     const at = resetMs(w)
     out.set(name, { kind: kind(name), usedPercent: used, ...(at === undefined ? {} : { resetsAtMs: at }) })
@@ -75,7 +77,7 @@ export function usagePayload(account: Account, info: unknown, env?: Record<strin
 /** The limit a reading says was hit, with when it resets; none below the limit. */
 export function limitHit(info: any): { resetsAt?: number } | undefined {
   if (info?.status !== 'rejected') return undefined
-  const at = resetMs(info)
+  const at = resetMs(info) ?? resetMs(info.unifiedWindows?.[info.rateLimitType])
   return at === undefined ? {} : { resetsAt: at }
 }
 
@@ -104,9 +106,12 @@ export interface Moves {
   moveTo(name: string): Promise<unknown>
 }
 
+/** How long a spent account whose reset was not said is passed over: a 5-hour window. */
+const UNKNOWN_RESET_MS = 5 * 3_600_000
+
 export class Rollover {
-  /** Accounts this session found spent, with when each resets (none: not known). */
-  private readonly tried = new Map<string, number | undefined>()
+  /** Accounts this session found spent, with when each is passed over until. */
+  private readonly tried = new Map<string, number>()
   private busy?: Promise<void>
   private readonly accounts: Moves
   private readonly next: (from: string, tried: string[]) => Promise<Next | undefined>
@@ -130,8 +135,9 @@ export class Rollover {
     // The session already moved on: an old request's reading.
     if (this.accounts.name !== undefined && this.accounts.name !== account) return
     const now = this.now()
-    for (const [name, at] of this.tried) if (at !== undefined && at <= now) this.tried.delete(name)
-    this.tried.set(account, resetsAt)
+    for (const [name, at] of this.tried) if (at <= now) this.tried.delete(name)
+    // Not said when it resets: passed over for a 5-hour window's length.
+    this.tried.set(account, resetsAt ?? now + UNKNOWN_RESET_MS)
     let answer: Next | undefined
     try {
       answer = await this.next(account, [...this.tried.keys()].filter(t => t !== account))
@@ -141,6 +147,7 @@ export class Rollover {
     // gruntas could not say, or the person keeps rollover off: pi's own error stands.
     if (!answer || answer.mode === 'off') return
     const at = resetsAt ?? answer.resetsAt ?? undefined
+    if (resetsAt === undefined && at !== undefined) this.tried.set(account, at)
     const out = `${account} is out of usage${at === undefined ? '' : ` until ${when(at, now)}`}`
     const ui = this.ui()
     const notify = (m: string, level: 'info' | 'warning' | 'error' = 'info') => ui?.notify(m, level)
@@ -154,7 +161,7 @@ export class Rollover {
     try {
       await this.accounts.moveTo(to)
     } catch (e) {
-      return notify(`gruntas: could not continue on ${to}: ${e instanceof Error ? e.message : String(e)}`, 'error')
+      return notify(`Could not continue on ${to}: ${e instanceof Error ? e.message : String(e)}`, 'error')
     }
     if (answer.mode === 'auto') notify(`Continued on ${to}: ${out}.`)
   }

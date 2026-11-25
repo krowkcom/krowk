@@ -368,7 +368,8 @@ pub(super) fn next(ctx: &mut Ctx) -> Result<(), Error> {
     let signed_in = |name: &str| registry.instances.get(name).is_some_and(|i| readiness::check(i, &credentials, &probe).refusal(i).is_none());
     let next = ladder::subscription_next(&registry, &data, Harness::Claude, from.as_deref(), &tried, now).into_iter().find(|n| signed_in(n));
     let resets_at = from.as_deref().and_then(|f| ladder::limited_until(&data, &registry.current(f), now));
-    let (mode, _) = super::workspace::effective_global(ctx, "rollover")?;
+    // A settings file that cannot be read leaves the default, rather than no answer at all.
+    let mode = super::workspace::effective_global(ctx, "rollover").map_or_else(|_| "offer".to_string(), |(m, _)| m);
     if ctx.format != Format::Human {
         let summary = match &next {
             Some(n) => format!("next: {n} (rollover {mode})"),

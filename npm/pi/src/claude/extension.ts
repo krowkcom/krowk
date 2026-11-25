@@ -121,9 +121,8 @@ export const systemGruntas: Gruntas = {
     return JSON.parse(r.out).data.instances
   },
   async auto(): Promise<string | undefined> {
-    // None with room: the default account, as `--account auto` falls back to it.
-    const a = await providersNext([])
-    return a && (a.next ?? 'claude')
+    // None with room, or no answer: the default account, as `--account auto` falls back to it.
+    return (await providersNext([]))?.next ?? 'claude'
   },
   next(from: string, tried: string[]): Promise<Next | undefined> {
     return providersNext(['--from', from, ...(tried.length ? ['--tried', tried.join(',')] : [])])
