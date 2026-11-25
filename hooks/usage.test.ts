@@ -334,3 +334,33 @@ test('a picker closed or reopened while gruntas queues a pick keeps the account 
     CHOICES.queued = null
   }
 })
+
+test('an offer that cannot be put back after a picker closed mid-pick is said to be dropped', async ($, on) => {
+  let release: () => void = () => undefined
+  const held = new Promise<void>(r => (release = r))
+  const did = launched(on, async argv => {
+    const last = argv.at(-1)
+    if (last === 'claude:trip1') await held
+    if (last === 'codex:team') return 'codex:team is not a claude account, and this session moves only to another of its own harness\'s: choose one of claude:trip1.\n'
+    return last === '--cancel' ? 'claude:trip1 is no longer queued: /exit ends this session as usual.\n' : `Type /exit to continue on ${last}.\n`
+  })
+  // Rollover had offered the other harness before the pick.
+  CHOICES.queued = 'codex:team'
+  try {
+    await begin($, did)
+    await $.command.run({ command: 'gruntas:account', args: '' })
+    const ui = await $.ui.mount({ plugin: 'gruntas', surface: 'terminal', component: 'Pane', requestId: PICKER, props: { title: 'Continue this session on', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 10 }, view: {} } } as never)
+    const first = ui.select({ key: 'account', value: 'claude:trip1' })
+    for (let i = 0; i < 20; i++) await Promise.resolve()
+    await $.command.run({ command: 'gruntas:account', args: '' })
+    release()
+    await first
+    for (let i = 0; i < 40; i++) await Promise.resolve()
+    expect(did.ran.filter(a => a.includes('account')).map(a => a.at(-1))).toEqual(['--choices', 'claude:trip1', '--choices', 'codex:team', '--cancel'])
+    expect(did.toasts).toEqual(['Switching to claude:trip1…', 'Kept claude; codex:team is no longer queued.'])
+    expect(did.commands).toEqual([])
+    await ui.unmount()
+  } finally {
+    CHOICES.queued = null
+  }
+})

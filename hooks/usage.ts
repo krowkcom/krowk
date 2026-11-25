@@ -273,12 +273,18 @@ async function pick($: EngineInterface, value: string): Promise<void> {
     // Closed (Esc) while gruntas answered: the person kept this account, and
     // whatever was queued before the pick replaced it.
     if (picking !== open) {
+      let lost: string | undefined
       if (said.startsWith('Type /exit')) {
-        const before = open?.queued
-        const back = before == null ? undefined : await account($, before)
-        if (back === undefined || !back.startsWith('Type /exit')) await account($, '--cancel')
+        const before = open?.queued ?? undefined
+        const back = before === undefined ? undefined : await account($, before)
+        if (back === undefined || !back.startsWith('Type /exit')) {
+          await account($, '--cancel')
+          lost = before
+        }
       }
-      void Promise.resolve($.ui.toast(`Kept ${open?.current ?? 'this account'}.`)).catch(() => undefined)
+      // An offer on the other harness cannot be queued again by name: said so.
+      const kept = `Kept ${open?.current ?? 'this account'}`
+      void Promise.resolve($.ui.toast(lost === undefined ? `${kept}.` : `${kept}; ${lost} is no longer queued.`)).catch(() => undefined)
       return
     }
     if (!said.startsWith('Type /exit')) {
