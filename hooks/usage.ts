@@ -79,7 +79,9 @@ async function send($: EngineInterface, limits: readonly SessionRateLimit[]): Pr
  */
 async function report($: EngineInterface): Promise<void> {
   try {
-    await send($, (await $.session.usage()).rateLimits)
+    const limits = (await $.session.usage()).rateLimits
+    measured($, limits)
+    await send($, limits)
   } catch {
     // Nothing to read: the next measurement or tick tries again.
   }
@@ -316,6 +318,78 @@ async function picker($: EngineInterface): Promise<string | undefined> {
   return account($, '')
 }
 
+/** One run of the status line: its text and how it is drawn. */
+export type Segment = { text: string; tone: 'dim' | 'plain' | 'warning' | 'error' }
+
+/** From this use on a window says when it resets, and its number is amber. */
+export const NEAR_PERCENT = 80
+
+/** Between who and what: wide enough to part them without a mark. */
+const GAP = '     '
+
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+/** A reset as a person reads it: the weekly by its day, the 5-hour by its time. */
+function resets(kind: string, at: string | undefined): string | undefined {
+  const ms = at === undefined ? NaN : Date.parse(at)
+  if (!Number.isFinite(ms)) return undefined
+  const d = new Date(ms)
+  return kind === 'seven_day' ? DAYS[d.getDay()] : `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+/**
+ * The status line: `elvinas-herder, thinkpad     69% weekly, 12% 5-hour`.
+ * Who and where dim; each window's use, weekly first, its number amber from
+ * `NEAR_PERCENT` and red when full, with its reset once it is near; a window
+ * not reported is `unknown`. Too wide for `columns`, it loses the device,
+ * then the resets, then the account, never the numbers. None with nothing
+ * to say.
+ */
+export function statusSegments(account: string | null | undefined, device: string | null | undefined, limits: readonly SessionRateLimit[] | undefined, columns: number): Segment[] | undefined {
+  const name = account?.replace(/^claude:/, '') || undefined
+  const host = device?.trim() || undefined
+  const windows = (['seven_day', 'five_hour'] as const).map(kind => ({ kind, label: kind === 'seven_day' ? 'weekly' : '5-hour', limit: limits?.find(l => l.kind === kind && Number.isFinite(l.percentUsed)) }))
+  const usage = windows.some(w => w.limit !== undefined)
+  if (name === undefined && host === undefined && !usage) return undefined
+  const build = (withHost: boolean, withResets: boolean, withName: boolean): Segment[] => {
+    const out: Segment[] = []
+    const who = [withName ? name : undefined, withHost ? host : undefined].filter(w => w !== undefined).join(', ')
+    if (who !== '') out.push({ text: who, tone: 'dim' })
+    if (!usage) return out
+    if (who !== '') out.push({ text: GAP, tone: 'dim' })
+    windows.forEach((w, i) => {
+      if (i > 0) out.push({ text: ', ', tone: 'dim' })
+      if (w.limit === undefined) return void out.push({ text: `${w.label} unknown`, tone: 'dim' })
+      const used = Math.round(w.limit.percentUsed)
+      out.push({ text: `${used}%`, tone: used >= 100 ? 'error' : used >= NEAR_PERCENT ? 'warning' : 'plain' })
+      const at = withResets && used >= NEAR_PERCENT ? resets(w.kind, w.limit.resetsAt) : undefined
+      out.push({ text: at === undefined ? ` ${w.label}` : ` ${w.label} resets ${at}`, tone: 'dim' })
+    })
+    return out
+  }
+  const width = (s: Segment[]) => s.reduce((n, x) => n + x.text.length, 0)
+  const tries = [build(true, true, true), build(false, true, true), build(false, false, true), build(false, false, false)]
+  return tries.find(t => width(t) <= columns) ?? tries[tries.length - 1]
+}
+
+/** What the status line shows: the account and device gruntas names, and the windows Claude Code last reported. */
+const shown: { account?: string | null; device?: string; limits?: readonly SessionRateLimit[] } = {}
+
+/** The account this session runs on and this machine's name, from gruntas, once a session. */
+async function identify($: EngineInterface): Promise<void> {
+  const got = (await choices($)) as (Choices & { device?: unknown }) | undefined
+  if (got === undefined) return
+  shown.account = got.current
+  shown.device = typeof got.device === 'string' ? got.device : undefined
+  $.ui.invalidate('ui.render')
+}
+
+/** The windows as Claude Code reports them now, drawn. */
+function measured($: EngineInterface, limits: readonly SessionRateLimit[]): void {
+  shown.limits = limits
+  $.ui.invalidate('ui.render')
+}
+
 export const register: Register = on => {
   on('command.run', { command: 'gruntas:account' }, async ($, e) => {
     const text = (e.args ?? '').trim() === '' ? await picker($) : await account($, e.args)
@@ -349,6 +423,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     void report($)
+    void identify($)
     $.clock.every(EVERY_MS, () => void report($))
     // Not awaited: the session starts at once.
     void inboxDir($).then(dir => {
@@ -369,7 +444,26 @@ export const register: Register = on => {
 
   on('session.measure', async ($, e, next) => {
     // Not awaited: the measurement goes on at once.
-    if (e.changed.includes('rateLimits')) void send($, e.rateLimits)
+    if (e.changed.includes('rateLimits')) {
+      measured($, e.rateLimits)
+      void send($, e.rateLimits)
+    }
     return next(e)
+  })
+
+  // Under the prompt: who, where, and how much is used. A person's own
+  // statusLine command keeps its row; this line goes under it where there
+  // is room for both, and gives way where there is not.
+  on('ui.render', { component: 'StatusLine' }, async ($, e, next) => {
+    const segments = statusSegments(shown.account, shown.device, shown.limits, e.props.columns)
+    if (segments === undefined || e.props.maxRows < 1) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    const mine = Text({
+      wrap: 'truncate',
+      children: segments.map(s => Text({ dimColor: s.tone === 'dim', color: s.tone === 'warning' ? 'warning' : s.tone === 'error' ? 'error' : undefined, children: s.text })),
+    })
+    // A person's own line, one row only: theirs.
+    if (e.props.text !== null && !e.props.isManaged && e.props.maxRows < 2) return next(e)
+    return Box({ flexDirection: 'column', children: [await next(e), mine] })
   })
 }

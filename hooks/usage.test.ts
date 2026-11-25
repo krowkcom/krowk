@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code/testing'
-import { configHome, payload, PICKER, POLL_MS } from './usage'
+import { configHome, payload, PICKER, POLL_MS, statusSegments } from './usage'
 import type { Choices } from './usage'
 
 const LIMITS = [
@@ -350,4 +350,58 @@ test('an offer that cannot be put back after a picker closed mid-pick is said to
   } finally {
     CHOICES.queued = null
   }
+})
+
+const text = (s: ReturnType<typeof statusSegments>) => s?.map(x => x.text).join('')
+const at = (ms: number) => new Date(ms).toISOString()
+const WEEK_RESET = Date.UTC(2026, 10, 27, 7)
+const HOUR_RESET = Date.UTC(2026, 10, 25, 12)
+const day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date(WEEK_RESET).getDay()]
+const clock = `${String(new Date(HOUR_RESET).getHours()).padStart(2, '0')}:${String(new Date(HOUR_RESET).getMinutes()).padStart(2, '0')}`
+const windows = (weekly: number | undefined, hour: number | undefined) => [
+  ...(weekly === undefined ? [] : [{ kind: 'seven_day', percentUsed: weekly, resetsAt: at(WEEK_RESET) }]),
+  ...(hour === undefined ? [] : [{ kind: 'five_hour', percentUsed: hour, resetsAt: at(HOUR_RESET) }]),
+]
+
+test('the status line: account and device, then what each window has used, weekly first', () => {
+  expect(text(statusSegments('claude:elvinas-herder', 'thinkpad', windows(69.4, 12), 120))).toBe('elvinas-herder, thinkpad     69% weekly, 12% 5-hour')
+  expect(text(statusSegments('claude', 'thinkpad', windows(69, 12), 120))).toBe('claude, thinkpad     69% weekly, 12% 5-hour')
+  // Near a limit: its reset, the number amber; full, red.
+  const near = statusSegments('claude:a', 'm', windows(91, 100), 120)
+  expect(text(near)).toBe(`a, m     91% weekly resets ${day}, 100% 5-hour resets ${clock}`)
+  expect(near?.filter(s => s.tone !== 'dim').map(s => [s.text, s.tone])).toEqual([['91%', 'warning'], ['100%', 'error']])
+  expect(statusSegments('claude:a', 'm', windows(69, 12), 120)?.filter(s => s.tone !== 'dim').map(s => s.tone)).toEqual(['plain', 'plain'])
+  // A window not reported says so; none reported, who and where alone.
+  expect(text(statusSegments('claude:a', 'm', windows(69, undefined), 120))).toBe('a, m     69% weekly, 5-hour unknown')
+  expect(text(statusSegments('claude:a', 'm', [], 120))).toBe('a, m')
+  expect(statusSegments(undefined, undefined, [], 120)).toBeUndefined()
+})
+
+test('a narrow status line loses the device, then the resets, then the account, never the numbers', () => {
+  const l = windows(91, 12)
+  expect(text(statusSegments('claude:elvinas-herder', 'thinkpad', l, 55))).toBe(`elvinas-herder     91% weekly resets ${day}, 12% 5-hour`)
+  expect(text(statusSegments('claude:elvinas-herder', 'thinkpad', l, 45))).toBe('elvinas-herder     91% weekly, 12% 5-hour')
+  expect(text(statusSegments('claude:elvinas-herder', 'thinkpad', l, 30))).toBe('91% weekly, 12% 5-hour')
+  expect(text(statusSegments('claude:elvinas-herder', 'thinkpad', l, 10))).toBe('91% weekly, 12% 5-hour')
+})
+
+test('the status line draws under the prompt from gruntas and Claude Code, a person\'s own line kept above it', async ($, on) => {
+  const did = launched(on, undefined, { ...CHOICES, current: 'claude:elvinas-herder', device: 'thinkpad' } as Choices)
+  on('session.usage', () => ({ value: { rateLimits: windows(69, 12) } }) as never)
+  await begin($, did)
+  for (let i = 0; i < 50; i++) await Promise.resolve()
+  const props = { text: null, isManaged: false, isWorking: false, maxRows: 1, columns: 100 }
+  const ui = await $.ui.mount({ plugin: 'gruntas', surface: 'terminal', component: 'StatusLine', props } as never)
+  expect(await ui.find({ type: 'Text', text: /^elvinas-herder, thinkpad {5}69% weekly, 12% 5-hour$/ })).toBeDefined()
+  await ui.unmount()
+  // A person's own line, drawn by the engine: kept first, this one under it.
+  const own = await $.ui.mount({ plugin: 'gruntas', surface: 'terminal', component: 'StatusLine', props: { ...props, text: 'my line', maxRows: 2 } } as never)
+  const drawn = (await own.drawn()) as unknown as { children: { type: string }[] }
+  expect(drawn.children.map(c => c.type)).toEqual(['engine', 'Text'])
+  expect(await own.find({ type: 'Text', text: /^elvinas-herder, thinkpad {5}69% weekly/ })).toBeDefined()
+  await own.unmount()
+  // One row only: the person's own line keeps it.
+  const tight = await $.ui.mount({ plugin: 'gruntas', surface: 'terminal', component: 'StatusLine', props: { ...props, text: 'my line', maxRows: 1 } } as never)
+  expect(await tight.find({ type: 'Text', text: /69% weekly/ })).toBeUndefined()
+  await tight.unmount()
 })

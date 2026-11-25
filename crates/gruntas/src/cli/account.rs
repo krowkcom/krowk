@@ -116,9 +116,10 @@ fn run(ctx: &mut Ctx, args: &[String], pid: Option<u32>, var: &dyn Fn(&str) -> S
             // Stable: equal ones keep the list's order.
             rows.sort_by(|a, b| b.1.unwrap_or(f64::NEG_INFINITY).total_cmp(&a.1.unwrap_or(f64::NEG_INFINITY)));
             let choices: Vec<serde_json::Value> = rows.into_iter().map(|(v, _)| v).collect();
-            // Where there is no picker, the list it shows instead, so the mod asks once.
+            // Where there is no picker, the list it shows instead, so the mod
+            // asks once; this machine's name, for the mod's status line.
             let text = launched.is_none().then(|| list(&reports, &standings, current.as_deref(), queued.as_ref()));
-            Ok(serde_json::json!({ "launched": launched.is_some(), "current": current, "queued": queued.map(|n| n.account), "choices": choices, "list": text }).to_string())
+            Ok(serde_json::json!({ "launched": launched.is_some(), "current": current, "device": super::machine::name(ctx), "queued": queued.map(|n| n.account), "choices": choices, "list": text }).to_string())
         }
         [flag] if flag == "--cancel" => {
             let (Some(d), Some(p), Some(n)) = (daemon.as_deref(), pid, queued) else { return Ok("Nothing is queued: /exit ends this session as usual.".into()) };

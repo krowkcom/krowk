@@ -19,6 +19,17 @@ breaking changes may affect it without notice.
 
 ## [Unreleased]
 
+### Added
+
+- **A status line under the prompt says which account and machine you are
+  on, and what the account has used:** `elvinas-herder, thinkpad     69%
+  weekly, 12% 5-hour`. It is dim, with the numbers turning amber from 80%
+  (with when that window resets) and red when full; a window Claude Code
+  has not reported says `unknown`. On a narrow terminal it drops the
+  machine, then the reset, then the account, never the numbers. Your own
+  `statusLine` command keeps its row, with this line under it where there
+  is room.
+
 ## [2026.11.4] - 2026-11-25
 
 **Switching accounts in Claude Code works as it should.** The account

@@ -833,9 +833,10 @@ fn account_choices_list_every_account_movable_first_and_why_not() {
     usage["logins"][b.root.join("accounts/claude-spare").display().to_string()] = serde_json::json!({ "seven_day": { "status": "allowed", "usedPercent": 30.0, "resetsAtMs": now + 86_400_000, "seenAtMs": now } });
     std::fs::write(b.home().join("usage.json"), usage.to_string()).unwrap();
     let session = "0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e72";
-    let o = b.command(&["hook", "claude", "account", session, "--choices"]).env("CLAUDE_CONFIG_DIR", b.root.join("accounts/claude-work")).output().unwrap();
+    let o = b.command(&["hook", "claude", "account", session, "--choices"]).env("CLAUDE_CONFIG_DIR", b.root.join("accounts/claude-work")).env("GRUNTAS_DEVICE_NAME", "thinkpad").output().unwrap();
     let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or_else(|_| panic!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)));
     assert_eq!((&v["launched"], &v["current"], &v["queued"]), (&serde_json::json!(false), &serde_json::json!("claude:work"), &serde_json::Value::Null), "{v}");
+    assert_eq!(v["device"], "thinkpad", "this machine's name, for the status line: {v}");
     let rows: Vec<(String, Option<String>)> = v["choices"].as_array().unwrap().iter().map(|c| (c["account"].as_str().unwrap().to_string(), c["why"].as_str().map(String::from))).collect();
     let names: Vec<&str> = rows.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(names, ["claude:spare", "claude", "claude:out", "claude:same", "claude:work", "codex", "codex:team"], "{v}");
