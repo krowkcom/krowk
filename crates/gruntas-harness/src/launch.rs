@@ -131,6 +131,10 @@ pub struct Request<'a> {
     pub gruntas: PathBuf,
     /// False for `--no-sandbox`: the sandbox parts are left out.
     pub sandbox: bool,
+    /// The open proxy an attended Claude session's sandboxed commands
+    /// reach the network through (`crate::egress`); none leaves Claude
+    /// Code's own, which asks before each new domain.
+    pub egress: Option<crate::egress::Egress>,
     /// The person's own arguments, passed through but for `--settings`,
     /// which is merged into gruntas's.
     pub args: Vec<String>,
@@ -199,10 +203,15 @@ pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> R
             let (typed, rest) = take_settings(&req.args, read)?;
             theirs.extend(typed);
             let mut ours = worktree_hooks(&req.gruntas);
+            let settings = theirs.into_iter().fold(Value::Object(Map::new()), merge);
             if req.sandbox {
                 ours = merge(ours, claude_sandbox(&req.hidden));
+                if req.mode == Mode::Attended {
+                    // A proxy the person named stays theirs.
+                    let named = settings["sandbox"]["network"].get("httpProxyPort").is_some() || settings["sandbox"]["network"].get("socksProxyPort").is_some();
+                    ours = merge(ours, claude_attended(&req.hidden, req.egress.filter(|_| !named)));
+                }
             }
-            let settings = theirs.into_iter().fold(Value::Object(Map::new()), merge);
             let settings = merge(settings, ours);
             if let Mode::Unattended { .. } = req.mode {
                 plan.args.push("--bg".into());
@@ -330,6 +339,27 @@ pub fn claude_sandbox(hidden: &[PathBuf]) -> Value {
     })
 }
 
+/// What an attended session's sandbox adds to `claude_sandbox`, so the
+/// person's own credentials and logins work in it as they do in their own
+/// `claude`: every Unix socket (ssh-agent, the keyring over D-Bus, Docker),
+/// writes anywhere in their home (a CLI refreshing its token) but the
+/// hidden paths, and, through `egress`, every destination without a prompt.
+/// The sandbox stays on with no command outside it, so the home stays
+/// hidden from what a session reads and runs; but a soft fence, not a hard
+/// one: a session set on it can reach out through the sockets (systemd over
+/// D-Bus) or a file it writes that runs later (a shell's rc file). It stops
+/// accidents and the naive injection, not the deliberate one (the threat
+/// model's sandbox rule). An unattended session keeps the hard fence.
+pub fn claude_attended(hidden: &[PathBuf], egress: Option<crate::egress::Egress>) -> Value {
+    let paths: Vec<String> = hidden.iter().map(|p| p.display().to_string()).collect();
+    let mut network = json!({ "allowAllUnixSockets": true });
+    if let Some(e) = egress {
+        network["httpProxyPort"] = json!(e.http);
+        network["socksProxyPort"] = json!(e.socks);
+    }
+    json!({ "sandbox": { "filesystem": { "allowWrite": ["~"], "denyWrite": paths }, "network": network } })
+}
+
 /// The WorktreeCreate and WorktreeRemove hooks, run by `gruntas`, the case
 /// the plugin's own misses (the spike): Claude Code's worktrees come from
 /// gruntas, as the plugin's hooks make them.
@@ -409,6 +439,7 @@ mod tests {
             plugin_dir: "/h/.local/share/gruntas/plugin".into(),
             gruntas: "/usr/bin/gruntas".into(),
             sandbox: true,
+            egress: Some(crate::egress::Egress { http: 3128, socks: 1080 }),
             args: args.iter().map(|s| s.to_string()).collect(),
         }
     }
@@ -451,7 +482,11 @@ mod tests {
         assert!(p.env_remove.contains(&"ANTHROPIC_API_KEY") && !p.env_remove.contains(&"ANTHROPIC_BASE_URL"));
         let s = p.settings.clone().unwrap();
         let want = json!({
-            "sandbox": { "network": { "allowedDomains": ["x.dev"] }, "filesystem": { "denyRead": ["/secret", "/h/.gruntas"] }, "enabled": true, "failIfUnavailable": true, "allowUnsandboxedCommands": false },
+            "sandbox": {
+                "network": { "allowedDomains": ["x.dev"], "allowAllUnixSockets": true, "httpProxyPort": 3128, "socksProxyPort": 1080 },
+                "filesystem": { "denyRead": ["/secret", "/h/.gruntas"], "allowWrite": ["~"], "denyWrite": ["/h/.gruntas"] },
+                "enabled": true, "failIfUnavailable": true, "allowUnsandboxedCommands": false,
+            },
             "permissions": { "deny": ["Bash(rm:*)", "Read(//h/.gruntas/**)"] },
             "model": "opus",
         });
@@ -515,6 +550,21 @@ mod tests {
         }
     }
 
+    /// Attended, a proxy the person named in their settings is kept, and
+    /// without one of gruntas's the rest still applies.
+    #[test]
+    fn attended_keeps_the_persons_proxy() {
+        let r = registry();
+        let inst = account(&r, Harness::Claude, "claude").unwrap();
+        let theirs = r#"{"sandbox":{"network":{"httpProxyPort":9000}}}"#;
+        let p = plan(&request(Harness::Claude, Mode::Attended, inst, &["--settings", theirs]), &no_file).unwrap();
+        let n = &p.settings.unwrap()["sandbox"]["network"];
+        assert_eq!((&n["httpProxyPort"], n.get("socksProxyPort"), &n["allowAllUnixSockets"]), (&json!(9000), None, &json!(true)));
+        let p = plan(&Request { egress: None, ..request(Harness::Claude, Mode::Attended, inst, &[]) }, &no_file).unwrap();
+        let s = p.settings.unwrap();
+        assert!(s["sandbox"]["network"].get("httpProxyPort").is_none() && s["sandbox"]["filesystem"]["allowWrite"] == json!(["~"]));
+    }
+
     #[test]
     fn claude_unattended_starts_in_the_background_on_the_task() {
         let r = registry();
@@ -522,7 +572,8 @@ mod tests {
         let p = plan(&request(Harness::Claude, Mode::Unattended { task: "fix the build".into() }, inst, &["--model", "opus"]), &no_file).unwrap();
         assert_eq!(p.args[0], "--bg");
         assert_eq!(p.args.last().unwrap(), "fix the build");
-        assert_eq!(p.settings.as_ref().unwrap()["sandbox"]["failIfUnavailable"], true);
+        let s = p.settings.as_ref().unwrap();
+        assert_eq!(s["sandbox"], claude_sandbox(&["/h/.gruntas".into()])["sandbox"], "unattended keeps the narrow sandbox: no sockets, no proxy, no writes outside");
         assert!(p.args.windows(2).any(|w| w == ["--model", "opus"]));
         assert_eq!(set(&p, "CLAUDE_CONFIG_DIR"), Some("/h/.gruntas/accounts/claude-work"));
     }

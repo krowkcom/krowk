@@ -108,7 +108,18 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<i32, Error> {
         let _ = writeln!(ctx.io.stderr, "gruntas: the gruntas plugin could not be written to {}: {e}", plugin_dir.display());
     }
     let model = model_of(&asked.rest).unwrap_or_else(|| registry.model_on(instance, None, &|_| Vec::new()).unwrap_or_default());
-    let req = launch::Request { harness, mode, instance, hidden: launch::hidden(&home, ctx.io.env), plugin_dir, gruntas, sandbox: !asked.no_sandbox, args: asked.rest };
+    // Attended, Claude's sandboxed commands reach the network through
+    // gruntas's open proxy rather than Claude Code's asking one; started
+    // for Codex too, which rollover may hand on to Claude.
+    let egress = match (&mode, asked.no_sandbox) {
+        (Mode::Attended, false) => gruntas_harness::egress::start()
+            .inspect_err(|e| {
+                let _ = writeln!(ctx.io.stderr, "gruntas: the sandbox's open network proxy could not start ({e}), so Claude Code asks before each new domain");
+            })
+            .ok(),
+        _ => None,
+    };
+    let req = launch::Request { harness, mode, instance, hidden: launch::hidden(&home, ctx.io.env), plugin_dir, gruntas, sandbox: !asked.no_sandbox, egress, args: asked.rest };
     let plan = launch::plan(&req, &|p| std::fs::read_to_string(p)).map_err(bad)?;
     let ok = |()| super::exit::OK;
     match (plan.harness, &plan.mode) {
@@ -183,7 +194,7 @@ pub(super) fn continue_in(ctx: &mut Ctx, step: &gruntas_harness::ladder::Step, f
         Harness::Claude => vec!["--model".to_string(), step.to.model.clone()],
         Harness::Codex => Vec::new(),
     };
-    let req = launch::Request { harness, mode: Mode::Unattended { task: prompt.clone() }, instance, hidden: launch::hidden(&home, ctx.io.env), plugin_dir, gruntas, sandbox: true, args };
+    let req = launch::Request { harness, mode: Mode::Unattended { task: prompt.clone() }, instance, hidden: launch::hidden(&home, ctx.io.env), plugin_dir, gruntas, sandbox: true, egress: None, args };
     let plan = launch::plan(&req, &|p| std::fs::read_to_string(p)).map_err(|e| fail("launch_failed", e))?;
     let id = match harness {
         Harness::Claude => claude_unattended(ctx, plan, Some(&cwd))?,
@@ -294,7 +305,7 @@ fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: Str
         if !next.model.is_empty() {
             args.extend(["--model".to_string(), next.model.clone()]);
         }
-        let r = launch::Request { harness: req.harness, mode: Mode::Attended, instance: to, hidden: req.hidden.clone(), plugin_dir: req.plugin_dir.clone(), gruntas: req.gruntas.clone(), sandbox: req.sandbox, args };
+        let r = launch::Request { harness: req.harness, mode: Mode::Attended, instance: to, hidden: req.hidden.clone(), plugin_dir: req.plugin_dir.clone(), gruntas: req.gruntas.clone(), sandbox: req.sandbox, egress: req.egress, args };
         let next_plan = launch::plan(&r, &|p| std::fs::read_to_string(p)).map_err(|e| fail("bad_flag", e))?;
         // Into the home the next run runs in, worked out the same way.
         if let Some(t) = &found
