@@ -19,6 +19,12 @@ breaking changes may affect it without notice.
 
 ## [Unreleased]
 
+## [2026.11.6] - 2026-11-25
+
+**`gruntas run claude` works with your logins.** The sandbox an attended
+session runs in now only hides the gruntas home, so ssh-agent, the keyring
+and every domain work as they do in your own `claude`.
+
 ### Fixed
 
 - **`gruntas run claude` reaches your logins and the network.** An attended
