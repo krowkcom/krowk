@@ -4,9 +4,9 @@
 
 use super::catalog::{self, Catalog, Command, Flag, ALL_ONLY, BOOL, GROUPS, MORE_HEADING};
 
-/// The Gruntas mark: the logo's four-by-four grid of squares, two grid rows to a
-/// text row so a square stays square.
-const MARK: [&str; 2] = ["█  █", "█▀▀▄"];
+/// The Gruntas mark: the pixel-G monogram of `.github/logo.svg`, its
+/// four-by-four grid two grid rows to a text row so a square stays square.
+const MARK: [&str; 2] = ["█▀▀▀", "█▄██"];
 
 /// What every page is held to, so nothing wraps on a standard terminal.
 const COLUMNS: usize = 80;

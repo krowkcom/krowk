@@ -1,7 +1,7 @@
 $ gruntas --help
 stdout:
-█  █  Gruntas 0.0.0-golden
-█▀▀▄  Permalinks for agent output
+█▀▀▀  Gruntas 0.0.0-golden
+█▄██  Permalinks for agent output
 
 Usage
   gruntas <command> [flags]
@@ -42,8 +42,8 @@ exit: 0
 
 $ gruntas help
 stdout:
-█  █  Gruntas 0.0.0-golden
-█▀▀▄  Permalinks for agent output
+█▀▀▀  Gruntas 0.0.0-golden
+█▄██  Permalinks for agent output
 
 Usage
   gruntas <command> [flags]
@@ -84,8 +84,8 @@ exit: 0
 
 $ gruntas -h
 stdout:
-█  █  Gruntas 0.0.0-golden
-█▀▀▄  Permalinks for agent output
+█▀▀▀  Gruntas 0.0.0-golden
+█▄██  Permalinks for agent output
 
 Usage
   gruntas <command> [flags]

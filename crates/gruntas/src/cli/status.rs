@@ -91,6 +91,28 @@ impl Standing {
         json!({ "login": self.login, "plan": self.plan, "usage": usage, "sharedWith": self.shared })
     }
 
+    /// The 5-hour and 7-day windows: what a picker shows and ranks by.
+    fn main_windows(&self) -> impl Iterator<Item = &(String, Option<f64>, Option<i64>)> {
+        self.windows.iter().filter(|(w, _, _)| w == "five_hour" || w == "seven_day")
+    }
+
+    /// The least the 5-hour or 7-day window has left, in percent: none when
+    /// neither is known.
+    pub fn least_left(&self) -> Option<f64> {
+        self.main_windows().filter_map(|(_, left, _)| *left).reduce(f64::min)
+    }
+
+    /// A picker's few words: the plan and what the 5-hour and 7-day windows
+    /// have left.
+    pub fn brief(&self) -> String {
+        let windows: Vec<String> = self.main_windows().map(|(w, left, _)| format!("{} {} left", window_name(w), left.map_or("?".into(), |l| format!("{l:.0}%")))).collect();
+        let usage = if windows.is_empty() { "usage unknown".to_string() } else { windows.join(" · ") };
+        match &self.plan {
+            Some(p) => format!("{p} · {usage}"),
+            None => usage,
+        }
+    }
+
     /// One line for a person: the login and plan, what each window has
     /// left and when it resets, and the accounts sharing the login.
     pub fn line(&self) -> String {
@@ -103,11 +125,7 @@ impl Standing {
             out.push_str(" · usage unknown");
         }
         for (w, left, at) in &self.windows {
-            let name = match w.as_str() {
-                "five_hour" => "5h",
-                "seven_day" => "7d",
-                w => w,
-            };
+            let name = window_name(w);
             let left = left.map_or("?".into(), |l| format!("{l:.0}%"));
             let at = at.and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok()).map(|t| format!(", resets {}", t.to_zoned(jiff::tz::TimeZone::system()).strftime("%a %H:%M"))).unwrap_or_default();
             out.push_str(&format!(" · {name} {left} left{at}"));
@@ -116,6 +134,15 @@ impl Standing {
             out.push_str(&format!(" · same login as {}", self.shared.join(", ")));
         }
         out
+    }
+}
+
+/// A usage window's short name: `5h`, `7d`, else its own.
+fn window_name(w: &str) -> &str {
+    match w {
+        "five_hour" => "5h",
+        "seven_day" => "7d",
+        w => w,
     }
 }
 

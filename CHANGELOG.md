@@ -19,6 +19,32 @@ breaking changes may affect it without notice.
 
 ## [Unreleased]
 
+### Added
+
+- **`/gruntas:account` is a picker.** In a Claude Code session `gruntas
+  run claude` started, `/gruntas:account` alone opens a list of every
+  account you have connected: the ones this session can move to first, by
+  what their 5-hour and 7-day windows have left, then the rest, each saying
+  why not (this session, not signed in, the same login, a Codex account).
+  Arrow keys move, Enter switches: the session exits and resumes on that
+  account in the same terminal. Esc keeps the account you are on.
+  `/gruntas:account <name>` and `--cancel` work as before.
+
+### Changed
+
+- **`gruntas` shows the Gruntas monogram**, the pixel G of the logo, in
+  place of the mark it carried over from Krowk.
+
+### Fixed
+
+- **Switching away from your default Claude Code account when your shell
+  exports `CLAUDE_CONFIG_DIR`.** The session ran in that directory, but the
+  switch looked for its conversation under `~/.claude` and gave up; it now
+  carries it from where the session ran.
+- **Switching before anything was said.** A session left before its first
+  message has no conversation to resume, so the switch gave up; a new
+  session now starts on the next account instead.
+
 ## [2026.11.2] - 2026-11-24
 
 **Start Claude Code or Codex on any of your accounts, and keep working when

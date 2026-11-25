@@ -62,7 +62,7 @@ fn run(ctx: &mut Ctx, args: &[String], pid: Option<u32>, var: &dyn Fn(&str) -> S
     let (_, registry, reports) = status::reports(ctx).map_err(|e| e.to_string())?;
     let data = status::usage(ctx).map_err(|e| e.to_string())?;
     let now = gruntas_store::now_ms();
-    let reports: Vec<Report> = reports.into_iter().filter(|r| r.kind == harness.kind()).collect();
+    let (reports, others): (Vec<Report>, Vec<Report>) = reports.into_iter().partition(|r| r.kind == harness.kind());
     let daemon = gruntas_harness::daemon::dir(ctx.io.env).ok();
     // The account the session runs on: the one the Launcher started it on,
     // else the one whose home the harness runs in.
@@ -86,6 +86,40 @@ fn run(ctx: &mut Ctx, args: &[String], pid: Option<u32>, var: &dyn Fn(&str) -> S
     let queued = daemon.as_deref().zip(pid).and_then(|(d, p)| attended::queued(d, p));
     match rest {
         [] => Ok(list(&reports, &standings, current.as_deref(), queued.as_ref())),
+        // The mod's picker: every connected account, those a move can go to
+        // first (the most left in its tightest window first, unknown after),
+        // the rest after them with why not.
+        [flag] if flag == "--choices" => {
+            let mut rows: Vec<(serde_json::Value, Option<f64>)> = reports
+                .iter()
+                .zip(&standings)
+                .map(|(r, s)| {
+                    let name = r.instance.as_str();
+                    // Why not, as a sentence for the toast and in a few words for the row.
+                    let (why, note) = if Some(name) == current.as_deref() {
+                        (Some("this session runs on it".to_string()), "this session".to_string())
+                    } else if !r.readiness.is_ready() {
+                        (Some(format!("it is {}", r.readiness.label())), r.readiness.label().to_string())
+                    } else if let Some(c) = current.as_deref().filter(|c| login(name) == login(c)) {
+                        (Some(format!("it is signed in as the same login as {c}, so moving there gains nothing")), format!("same login as {c}"))
+                    } else {
+                        (None, s.brief())
+                    };
+                    let left = if why.is_none() { s.least_left().or(Some(-1.0)) } else { None };
+                    (serde_json::json!({ "account": name, "label": format!("{name} · {note}"), "why": why }), left)
+                })
+                .collect();
+            rows.extend(others.iter().map(|r| {
+                let why = "it is a Codex account, and a Claude Code session moves only to another Claude Code account";
+                (serde_json::json!({ "account": r.instance, "label": format!("{} · Codex account", r.instance), "why": why }), None)
+            }));
+            // Stable: equal ones keep the list's order.
+            rows.sort_by(|a, b| b.1.unwrap_or(f64::NEG_INFINITY).total_cmp(&a.1.unwrap_or(f64::NEG_INFINITY)));
+            let choices: Vec<serde_json::Value> = rows.into_iter().map(|(v, _)| v).collect();
+            // Where there is no picker, the list it shows instead, so the mod asks once.
+            let text = launched.is_none().then(|| list(&reports, &standings, current.as_deref(), queued.as_ref()));
+            Ok(serde_json::json!({ "launched": launched.is_some(), "current": current, "queued": queued.map(|n| n.account), "choices": choices, "list": text }).to_string())
+        }
         [flag] if flag == "--cancel" => {
             let (Some(d), Some(p), Some(n)) = (daemon.as_deref(), pid, queued) else { return Ok("Nothing is queued: /exit ends this session as usual.".into()) };
             std::fs::remove_file(attended::next_path(d, p)).map_err(|e| format!("{} stays queued: {e}", n.account))?;
