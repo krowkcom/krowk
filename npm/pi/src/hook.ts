@@ -67,8 +67,8 @@ export function stop(s: Session, active: boolean): string {
 /** How the extension reaches the machine: one seam, so tests replace it. */
 export interface Host {
   platform: string
-  /** Whether `gruntas` is on the PATH. */
-  onPath(): boolean
+  /** Whether `name` (`gruntas` when none) is on the PATH. */
+  onPath(name?: string): boolean
   /** Runs `argv` with `stdin`; its stdout, or nothing when it could not run or took past `limitMs`. */
   run(argv: readonly string[], stdin: string, limitMs: number): Promise<string | undefined>
 }
@@ -125,6 +125,6 @@ export function run(command: readonly string[], stdin: string, limitMs: number):
 
 /** The machine as it is. */
 export function systemHost(): Host {
-  return { platform: process.platform, onPath: () => onPath('gruntas', process.env.PATH), run }
+  return { platform: process.platform, onPath: (name = 'gruntas') => onPath(name, process.env.PATH), run }
 }
 

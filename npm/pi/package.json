@@ -21,11 +21,15 @@
     "src/gruntas.ts",
     "src/hook.ts",
     "src/claude",
-    "THIRD-PARTY-NOTICES"
+    "THIRD-PARTY-NOTICES",
+    "skills/gruntas/SKILL.md"
   ],
   "pi": {
     "extensions": [
       "./src/gruntas.ts"
+    ],
+    "skills": [
+      "./skills"
     ]
   },
   "dependencies": {

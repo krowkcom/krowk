@@ -302,7 +302,7 @@ test('PI03: only bash calls go to PreToolUse, as in the Claude Code plugin', asy
 
 // --- PI04: the MCP tools and the skill ---------------------------------------
 
-test('PI04: the gruntas MCP server is registered as gruntas-mcp, started by pi itself with no shell', { skip: 'PI04' }, () => {
+test('PI04: the gruntas MCP server is registered as gruntas-mcp, started by pi itself with no shell', () => {
   const pi = fakePi()
   install(pi.api, fakeHost().host)
   assert.equal(pi.mcp.length, 1)
@@ -311,11 +311,20 @@ test('PI04: the gruntas MCP server is registered as gruntas-mcp, started by pi i
   assert.equal(server?.name, 'gruntas')
   assert.equal(server?.config.command, 'gruntas-mcp')
   assert.ok(!['sh', 'bash', 'env', 'npx'].includes(server?.config.command))
+  // Declared to the model: pi's default (codemode) would hide them behind codemode.
+  assert.equal(server?.config.exposure, 'direct')
 })
 
-test('PI04: without gruntas on the PATH, no MCP server is registered', { skip: 'PI04' }, () => {
+test('PI04: without gruntas on the PATH, no MCP server is registered', () => {
   const pi = fakePi()
   install(pi.api, fakeHost(undefined, { onPath: false }).host)
+  assert.deepEqual(pi.mcp, [])
+})
+
+test('PI04: with gruntas but no gruntas-mcp on the PATH (npm installs them apart), no MCP server is registered', () => {
+  const pi = fakePi()
+  const { host } = fakeHost()
+  install(pi.api, { ...host, onPath: (name?: string) => name !== 'gruntas-mcp' })
   assert.deepEqual(pi.mcp, [])
 })
 
@@ -326,7 +335,7 @@ function skills(at: string): string[] {
   return readdirSync(at).flatMap(n => skills(join(at, n)))
 }
 
-test('PI04: the package ships the gruntas skill', { skip: 'PI04' }, () => {
+test('PI04: the package ships the gruntas skill', () => {
   const manifest = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8'))
   assert.ok(manifest.pi.skills?.length > 0, 'no skills in the manifest')
   const found = manifest.pi.skills.flatMap((s: string) => skills(join(pkg, s)))

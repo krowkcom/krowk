@@ -26,6 +26,13 @@ breaking changes may affect it without notice.
   harness `pi`, and its account is pi's config home, `PI_CODING_AGENT_DIR`,
   else `~/.pi/agent`. The `@gruntas/pi` extension that sends pi's events
   there is built with each release; it is not on npm yet.
+- **pi sessions get the gruntas MCP tools and skill.** With `gruntas` and
+  `gruntas-mcp` on the PATH, the `@gruntas/pi` extension gives each pi
+  session the gruntas MCP server (`gruntas_report`, `gruntas_session_info`,
+  `gruntas_delegate`, `gruntas_collect`, `gruntas_machines`, publishing and
+  the rest), its tools declared to the model as `mcp__gruntas__<tool>`, and
+  ships the gruntas skill. pi starts `gruntas-mcp` itself, so
+  `gruntas_session_info` finds the pi session it runs in.
 - **`gruntas run claude --account <name> --no-plugin` runs Claude Code on
   an account for another program.** It starts Claude Code on that account,
   its login or key kept in gruntas, without the gruntas plugin or hooks, so
