@@ -311,11 +311,20 @@ test('PI04: the gruntas MCP server is registered as gruntas-mcp, started by pi i
   assert.equal(server?.name, 'gruntas')
   assert.equal(server?.config.command, 'gruntas-mcp')
   assert.ok(!['sh', 'bash', 'env', 'npx'].includes(server?.config.command))
+  // Declared to the model: pi's default (codemode) would hide them behind codemode.
+  assert.equal(server?.config.exposure, 'direct')
 })
 
 test('PI04: without gruntas on the PATH, no MCP server is registered', () => {
   const pi = fakePi()
   install(pi.api, fakeHost(undefined, { onPath: false }).host)
+  assert.deepEqual(pi.mcp, [])
+})
+
+test('PI04: with gruntas but no gruntas-mcp on the PATH (npm installs them apart), no MCP server is registered', () => {
+  const pi = fakePi()
+  const { host } = fakeHost()
+  install(pi.api, { ...host, onPath: (name?: string) => name !== 'gruntas-mcp' })
   assert.deepEqual(pi.mcp, [])
 })
 

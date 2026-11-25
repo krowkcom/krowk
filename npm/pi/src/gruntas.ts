@@ -50,7 +50,8 @@ export function install(pi: ExtensionAPI, host: Host): void {
     return
   }
 
-  pi.registerMcpServer('gruntas', MCP_SERVER)
+  // gruntas-mcp comes with gruntas from the installer, but npm has it apart.
+  if (host.onPath('gruntas-mcp')) pi.registerMcpServer('gruntas', MCP_SERVER)
 
   /** Runs the hook without waiting on it: the host kills it past the limit, so none outlives it. */
   const fire = (event: HookEvent, payload: string) => void host.run(argv(event), payload, LIMIT_MS)
