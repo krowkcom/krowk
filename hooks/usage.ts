@@ -24,6 +24,10 @@
 // name, and this module's `command.run` hook runs `gruntas hook claude
 // account` with the session and the arguments, and shows what it says. With a
 // name that it queued, the line stays in the status line until `/exit`.
+// Bare, in a session `gruntas run` started, it opens a picker of every
+// connected account: arrows move, Enter on one this session can move to
+// queues it and runs `/exit`, and the Launcher resumes the same session there
+// in the same terminal; Enter on another says why not; Esc changes nothing.
 import type { EngineInterface, Register, SessionRateLimit } from 'claude-code'
 
 /** One window as `gruntas hook claude usage` takes it. */
@@ -226,8 +230,87 @@ async function account($: EngineInterface, args: string): Promise<string> {
   return said
 }
 
+/** One row of the picker, as `gruntas hook claude account <session> --choices` gives it. */
+export type Choice = { account: string; label: string; why: string | null }
+
+/** What `--choices` answers. */
+export type Choices = { launched: boolean; current: string | null; queued: string | null; choices: Choice[] }
+
+/** The picker's pane. */
+export const PICKER = 'gruntas-account'
+
+/** The rows the open picker shows; none while it is closed. */
+let picking: Choices | undefined
+
+/** The accounts to pick from; none where gruntas gives no picker (missing, or one before it). */
+async function choices($: EngineInterface): Promise<Choices | undefined> {
+  try {
+    const r = await $.process.run(['gruntas', 'hook', 'claude', 'account', await $.session.id(), '--choices'], { timeoutMs: ACCOUNT_MS })
+    const got = r.exitCode === 0 ? (JSON.parse(r.stdout) as Partial<Choices>) : undefined
+    return Array.isArray(got?.choices) ? (got as Choices) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Enter on `value`: a move queued and `/exit` run, or why not, the picker left open. */
+async function pick($: EngineInterface, value: string): Promise<void> {
+  const row = picking?.choices.find(c => c.account === value)
+  if (row === undefined) return
+  if (row.why !== null) {
+    void Promise.resolve($.ui.toast(`Not ${row.account}: ${row.why}.`)).catch(() => undefined)
+    return
+  }
+  const said = await account($, row.account)
+  if (!said.startsWith('Type /exit')) {
+    void Promise.resolve($.ui.toast(said)).catch(() => undefined)
+    return
+  }
+  picking = undefined
+  await $.ui.close({ id: PICKER }).catch(() => undefined)
+  await $.command.run({ command: 'exit' })
+}
+
+/** Bare `/gruntas:account`: the picker where the session can move, else the list. */
+async function picker($: EngineInterface): Promise<string | undefined> {
+  const got = await choices($)
+  if (got === undefined || !got.launched) return account($, '')
+  picking = got
+  const opened = await $.ui.open({ id: PICKER, title: 'Continue this session on', focus: true, closeOnEscape: true, rows: got.choices.length + 3, columns: 72 })
+  if (opened.isPlaced) return undefined
+  picking = undefined
+  return account($, '')
+}
+
 export const register: Register = on => {
-  on('command.run', { command: 'gruntas:account' }, async ($, e) => ({ text: await account($, e.args), isTextDisplayOnly: true }))
+  on('command.run', { command: 'gruntas:account' }, async ($, e) => {
+    const text = (e.args ?? '').trim() === '' ? await picker($) : await account($, e.args)
+    return text === undefined ? {} : { text, isTextDisplayOnly: true }
+  })
+
+  on('ui.render', { component: 'Pane', requestId: PICKER }, ($, e) => {
+    const { Box, Select, Text } = $.ui.resolve(e)
+    const p = picking
+    if (p === undefined) return Text({ dimColor: true, children: 'Nothing to pick.' })
+    return Box({
+      flexDirection: 'column',
+      children: [
+        Select({
+          key: 'account',
+          autoFocus: true,
+          value: p.queued ?? p.current ?? undefined,
+          options: p.choices.map(c => ({ value: c.account, label: c.label })),
+          onSelect: value => void pick($, value),
+        }),
+        Text({ dimColor: true, children: '↑↓ move · Enter switches (/exit, then resumes there) · Esc keeps this account' }),
+      ],
+    })
+  })
+
+  on('ui.close', ($, e, next) => {
+    if (e.id === PICKER) picking = undefined
+    return next(e)
+  })
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)

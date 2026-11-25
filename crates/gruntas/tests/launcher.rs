@@ -494,6 +494,55 @@ fn rl03_exit_after_a_notice_resumes_the_session_on_the_next_account() {
     assert_eq!(std::fs::read_dir(daemon.join("attended")).unwrap().count(), 0, "the records gone with the run");
 }
 
+/// A switch from the default account, run in the home the shell exports
+/// (`CLAUDE_CONFIG_DIR`, as `claude` there would): the transcript is carried
+/// from that home. A session left before anything was said has no
+/// transcript to carry, so a new one starts on the next account.
+#[test]
+fn a_switch_carries_from_the_inherited_home_and_an_empty_session_starts_afresh() {
+    let b = Sandbox::new("switch-inherited");
+    let mut config: serde_json::Value = serde_json::from_slice(&std::fs::read(b.home().join("config.json")).unwrap()).unwrap();
+    // The default account written down with Claude Code's own home, as
+    // `gruntas connect` leaves it; the shell exports another.
+    config["instances"]["claude"] = serde_json::json!({ "kind": "claude-code", "binary": b.root.join("bin/claude"), "configDir": b.root.join("home/.claude") });
+    std::fs::create_dir_all(b.root.join("accounts/claude-spare")).unwrap();
+    config["instances"]["claude:spare"] = serde_json::json!({ "kind": "claude-code", "binary": b.root.join("bin/claude"), "configDir": b.root.join("accounts/claude-spare") });
+    std::fs::write(b.home().join("config.json"), config.to_string()).unwrap();
+    let (runs, queue) = (b.root.join("runs"), b.root.join("queue"));
+    std::fs::create_dir_all(b.root.join("run")).unwrap();
+    // As RL03's: each run writes down its home and arguments; the first
+    // queues what the test left (once), and a resumed run exits 3.
+    script(&b, "claude", &format!("i=0\nuntil a=$(ls -d {1}/gruntas/*/attended 2>/dev/null) && [ -e \"$a/$$.json\" ]; do i=$((i+1)); [ $i -gt 500 ] && exit 9; sleep 0.01; done\necho \"$CLAUDE_CONFIG_DIR | $*\" >> '{0}'\ncase \"$*\" in *--resume*) exit 3;; esac\n[ -e '{2}' ] && mv '{2}' $a/$$.next.json\nexit 5\n", runs.display(), b.root.join("run").display(), queue.display()));
+    let elsewhere = b.root.join("accounts/elsewhere");
+    let run = || b.command(&["run", "claude", "--no-sandbox", "--model", "opus"]).env("XDG_RUNTIME_DIR", b.root.join("run")).env("CLAUDE_CONFIG_DIR", &elsewhere).output().unwrap();
+    let lines = || std::fs::read_to_string(&runs).unwrap_or_default().lines().map(String::from).collect::<Vec<_>>();
+    let spare = b.root.join("accounts/claude-spare");
+
+    let session = "0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e60";
+    let transcript = elsewhere.join(format!("projects/-r/{session}.jsonl"));
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    std::fs::write(&transcript, "{}\n").unwrap();
+    std::fs::write(&queue, serde_json::json!({ "session": session, "account": "claude:spare", "model": "opus", "rung": "same-harness", "transcript": transcript }).to_string()).unwrap();
+    let o = run();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(3), "the resumed run's code; {err}");
+    assert!(err.contains(&format!("continuing session {session} on claude:spare")), "{err}");
+    assert!(lines()[1].starts_with(&format!("{} |", spare.display())) && lines()[1].contains(&format!("--resume {session}")), "{:?}", lines());
+    assert_eq!(std::fs::read_to_string(spare.join(format!("projects/-r/{session}.jsonl"))).unwrap(), "{}\n", "carried from the inherited home");
+
+    // Nothing said yet: no transcript, so a new session, not a resume.
+    std::fs::remove_file(&runs).unwrap();
+    let fresh = "0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e61";
+    std::fs::write(&queue, serde_json::json!({ "session": fresh, "account": "claude:spare", "model": "opus", "rung": "same-harness", "transcript": elsewhere.join(format!("projects/-r/{fresh}.jsonl")) }).to_string()).unwrap();
+    let o = run();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(5), "the new session's own code; {err}");
+    assert!(err.contains(&format!("session {fresh} had nothing said yet, so a new one starts on claude:spare")), "{err}");
+    let l = lines();
+    assert_eq!(l.len(), 2, "{l:?}");
+    assert!(l[1].starts_with(&format!("{} |", spare.display())) && !l[1].contains("--resume") && l[1].contains("--model opus"), "{l:?}");
+}
+
 /// RL03 with RL04 (D5, D6): an attended Codex session whose queued next
 /// account is on Claude Code continues there after `/exit`, in the
 /// background from a handoff (`continue_on`), the run ending with Codex's
@@ -676,6 +725,41 @@ const RL07_AUTH: &str = "case \"$1 $2\" in \"auth status\") echo '{\"loggedIn\":
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64
+}
+
+/// The mod's picker (`/gruntas:account` bare): `--choices` lists every
+/// connected account, those this session can move to first, by what their
+/// tightest window has left (unknown after), and the rest with why not:
+/// the account it runs on, one signed out, one on its login, Codex's.
+#[test]
+fn account_choices_list_every_account_movable_first_and_why_not() {
+    let b = Sandbox::new("account-choices");
+    let now = now_ms();
+    rl07_accounts(&b, now);
+    script(&b, "claude", RL07_AUTH);
+    // claude:spare's login has a window known, half left.
+    let mut usage: serde_json::Value = serde_json::from_slice(&std::fs::read(b.home().join("usage.json")).unwrap()).unwrap();
+    usage["logins"]["s@x.io"] = serde_json::json!({ "five_hour": { "status": "allowed", "usedPercent": 50.0, "resetsAtMs": now + 3_600_000, "seenAtMs": now } });
+    std::fs::write(b.home().join("usage.json"), usage.to_string()).unwrap();
+    let session = "0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e72";
+    let o = b.command(&["hook", "claude", "account", session, "--choices"]).env("CLAUDE_CONFIG_DIR", b.root.join("accounts/claude-work")).output().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or_else(|_| panic!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)));
+    assert_eq!((&v["launched"], &v["current"], &v["queued"]), (&serde_json::json!(false), &serde_json::json!("claude:work"), &serde_json::Value::Null), "{v}");
+    let rows: Vec<(String, Option<String>)> = v["choices"].as_array().unwrap().iter().map(|c| (c["account"].as_str().unwrap().to_string(), c["why"].as_str().map(String::from))).collect();
+    let names: Vec<&str> = rows.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["claude:spare", "claude", "claude:out", "claude:same", "claude:work", "codex", "codex:team"], "{v}");
+    assert!(rows[..2].iter().all(|(_, why)| why.is_none()), "{v}");
+    let why = |n: &str| rows.iter().find(|(m, _)| m == n).and_then(|(_, w)| w.clone()).unwrap_or_default();
+    assert!(why("claude:out").starts_with("it is not signed in"), "{v}");
+    assert!(why("claude:same").contains("same login as claude:work"), "{v}");
+    assert_eq!(why("claude:work"), "this session runs on it");
+    assert_eq!(why("codex:team"), "it is a Codex account, and a Claude Code session moves only to another Claude Code account");
+    let label = |n: &str| v["choices"].as_array().unwrap().iter().find(|c| c["account"] == n).map(|c| c["label"].as_str().unwrap_or_default().to_string()).unwrap_or_default();
+    assert_eq!(label("claude:spare"), "claude:spare · max · 5h 50% left");
+    assert_eq!(label("claude:out"), "claude:out · not signed in");
+    assert_eq!(label("claude:same"), "claude:same · same login as claude:work");
+    assert_eq!(label("claude:work"), "claude:work · this session");
+    assert_eq!(label("codex:team"), "codex:team · Codex account");
 }
 
 /// RL07 (D8, R-RL-8): each account's row says its login, plan, what each

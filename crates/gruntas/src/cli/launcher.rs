@@ -245,20 +245,33 @@ fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: Str
         let registry = Registry::resolve(&super::prompt::load_instances()?, ctx.io.env);
         let Ok(to) = launch::account(&registry, plan.harness, &next.account) else { return other_harness(ctx, &next, code.code) };
         let from = launch::account(&registry, plan.harness, &account).map_err(|e| fail("no_account", e))?;
-        if let Some(t) = &next.transcript
-            && let Err(e) = carry(from, to, plan.harness, t, &next.session)
+        // Where the harness ran: the account's own home, or for the default
+        // account the one inherited from the shell, as `claude` there would.
+        let var = if plan.harness == Harness::Claude { "CLAUDE_CONFIG_DIR" } else { "CODEX_HOME" };
+        let inherited = Some((ctx.io.env)(var)).filter(|v| !v.is_empty() && !plan.env_remove.contains(&var)).map(std::path::PathBuf::from);
+        let ran_in = plan.config_home.clone().or(inherited);
+        // Claude Code writes a transcript at the first message: a session
+        // left before one has nothing to continue, so it starts afresh there.
+        let empty = plan.harness == Harness::Claude && next.transcript.as_deref().is_some_and(|t| !std::path::Path::new(t).exists());
+        if !empty
+            && let Some(t) = &next.transcript
+            && let Err(e) = carry(from, ran_in, to, plan.harness, t, &next.session)
         {
             ctx.warn(&format!("session {} was not continued on {}: {e}", next.session, to.name));
             return Ok(code.code);
         }
-        let mut args = match plan.harness {
-            Harness::Claude => vec!["--resume".to_string(), next.session.clone()],
-            Harness::Codex => vec!["resume".to_string(), next.session.clone()],
+        let mut args = match (plan.harness, empty) {
+            (_, true) => Vec::new(),
+            (Harness::Claude, false) => vec!["--resume".to_string(), next.session.clone()],
+            (Harness::Codex, false) => vec!["resume".to_string(), next.session.clone()],
         };
         if !next.model.is_empty() {
             args.extend(["--model".to_string(), next.model.clone()]);
         }
-        let _ = writeln!(ctx.io.stderr, "gruntas: continuing session {} on {}", next.session, to.name);
+        let _ = match empty {
+            true => writeln!(ctx.io.stderr, "gruntas: session {} had nothing said yet, so a new one starts on {}", next.session, to.name),
+            false => writeln!(ctx.io.stderr, "gruntas: continuing session {} on {}", next.session, to.name),
+        };
         let r = launch::Request { harness: req.harness, mode: Mode::Attended, instance: to, hidden: req.hidden.clone(), plugin_dir: req.plugin_dir.clone(), gruntas: req.gruntas.clone(), sandbox: req.sandbox, args };
         plan = launch::plan(&r, &|p| std::fs::read_to_string(p)).map_err(|e| fail("bad_flag", e))?;
         account = next.account;
@@ -266,13 +279,17 @@ fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: Str
     }
 }
 
-/// The session's transcript copied from `from`'s home to `to`'s, where its
-/// harness finds it to resume.
-fn carry(from: &Resolved, to: &Resolved, harness: Harness, transcript: &str, session: &str) -> Result<(), String> {
+/// The session's transcript copied from the home it ran in (`ran_in`, else
+/// `from`'s) to `to`'s, where its harness finds it to resume.
+fn carry(from: &Resolved, ran_in: Option<std::path::PathBuf>, to: &Resolved, harness: Harness, transcript: &str, session: &str) -> Result<(), String> {
     use gruntas_harness::handoff::{self, Vendor};
     let home = |i: &Resolved| i.backend.as_ref().and_then(|b| b.home.clone()).ok_or_else(|| format!("{} has no home to keep the session in", i.name));
     let vendor = if harness == Harness::Claude { Vendor::ClaudeCode } else { Vendor::Codex };
-    handoff::carry(std::path::Path::new(transcript), &home(from)?, &home(to)?, vendor, session).map(drop)
+    let from = match ran_in {
+        Some(h) => h,
+        None => home(from)?,
+    };
+    handoff::carry(std::path::Path::new(transcript), &from, &home(to)?, vendor, session).map(drop)
 }
 
 /// The continuation on the other harness, from a handoff (D6): where the

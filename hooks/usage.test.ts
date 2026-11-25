@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code/testing'
-import { configHome, payload, POLL_MS } from './usage'
+import { configHome, payload, PICKER, POLL_MS } from './usage'
 
 const LIMITS = [
   { kind: 'five_hour', percentUsed: 37.5, resetsAt: '2026-11-23T14:00:00.000Z' },
@@ -162,7 +162,9 @@ test('/gruntas:account lists the accounts from gruntas, the current one marked, 
   on('session.id', () => ({ value: 's1' }))
   on('process.run', (_, e) => {
     ran.push(e.argv)
-    return { value: { exitCode: 0, stdout: LIST, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    // Outside a session `gruntas run` started: no picker, the list.
+    const stdout = e.argv.at(-1) === '--choices' ? JSON.stringify({ launched: false, current: 'claude:trip1', queued: null, choices: [] }) : LIST
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('prompt.submit', (_, e) => {
     turns.push(e.text)
@@ -173,7 +175,7 @@ test('/gruntas:account lists the accounts from gruntas, the current one marked, 
     return { turnId: e.turnId }
   })
   const r = await $.command.run({ command: 'gruntas:account', args: '' })
-  expect(ran).toEqual([['gruntas', 'hook', 'claude', 'account', 's1']])
+  expect(ran).toEqual([['gruntas', 'hook', 'claude', 'account', 's1', '--choices'], ['gruntas', 'hook', 'claude', 'account', 's1']])
   expect(r.text).toBe(LIST.trimEnd())
   expect(r.text).toContain('* claude:trip1')
   expect(r.isTextDisplayOnly).toBe(true)
@@ -203,4 +205,67 @@ test('/gruntas:account without gruntas says how to install it', async ($, on) =>
     throw new Error('spawn gruntas ENOENT')
   })
   expect((await $.command.run({ command: 'gruntas:account', args: '' })).text).toContain('curl -fsSL https://gruntas.com/install | bash')
+})
+
+const CHOICES = {
+  launched: true,
+  current: 'claude',
+  queued: null,
+  choices: [
+    { account: 'claude:primevise', label: 'claude:primevise · max · 7d 100% left', why: null },
+    { account: 'claude:trip1', label: 'claude:trip1 · usage unknown', why: null },
+    { account: 'claude', label: 'claude · this session', why: 'this session runs on it' },
+    { account: 'codex:team', label: 'codex:team · Codex account', why: 'it is a Codex account, and a Claude Code session moves only to another Claude Code account' },
+  ],
+}
+
+/** A session `gruntas run` started, with the picker's answers and what the mod did. */
+function launched(on: Parameters<Parameters<typeof test>[1]>[1]) {
+  const did = { ran: [] as (readonly string[])[], opened: [] as unknown[], closed: [] as string[], commands: [] as string[], toasts: [] as string[], turns: [] as string[] }
+  on('session.id', () => ({ value: 's1' }))
+  on('process.run', (_, e) => {
+    did.ran.push(e.argv)
+    const last = e.argv.at(-1)
+    const stdout = last === '--choices' ? JSON.stringify(CHOICES) : `Type /exit to continue on ${last}.\n`
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('ui.open', (_, e) => (did.opened.push(e), { value: { isPlaced: true } }))
+  on('ui.close', (_, e) => (did.closed.push(e.id), { value: undefined }))
+  on('ui.toast', (_, e) => (did.toasts.push(e.text), { value: undefined }))
+  on('ui.status', () => ({ value: undefined }))
+  on('command.run', { command: 'exit' }, (_, e) => (did.commands.push(e.command), { text: '' }))
+  on('turn.start', (_, e) => (did.turns.push(e.text), { turnId: e.turnId }))
+  return did
+}
+
+test('bare /gruntas:account opens a picker of every account; Enter on one queues it and runs /exit', async ($, on) => {
+  const did = launched(on)
+  const r = await $.command.run({ command: 'gruntas:account', args: '' })
+  expect(r.text).toBeUndefined()
+  expect(did.opened).toEqual([expect.objectContaining({ id: PICKER, focus: true, closeOnEscape: true })])
+  const ui = await $.ui.mount({ plugin: 'gruntas', surface: 'terminal', component: 'Pane', requestId: PICKER, props: { title: 'Continue this session on', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 10 }, view: {} } } as never)
+  const select = await ui.find({ key: 'account' })
+  const labels = (select?.props.options as { label: string }[]).map(o => o.label)
+  expect(labels).toEqual(['claude:primevise · max · 7d 100% left', 'claude:trip1 · usage unknown', 'claude · this session', 'codex:team · Codex account'])
+  expect(select?.props.value).toBe('claude')
+  await ui.select({ key: 'account', value: 'claude:trip1' })
+  for (let i = 0; i < 20; i++) await Promise.resolve()
+  expect(did.ran.at(-1)).toEqual(['gruntas', 'hook', 'claude', 'account', 's1', 'claude:trip1'])
+  expect(did.closed).toEqual([PICKER])
+  expect(did.commands).toEqual(['exit'])
+  expect(did.turns).toEqual([])
+  await ui.unmount()
+})
+
+test('Enter on an account the session cannot move to says why and keeps the picker open', async ($, on) => {
+  const did = launched(on)
+  await $.command.run({ command: 'gruntas:account', args: '' })
+  const ui = await $.ui.mount({ plugin: 'gruntas', surface: 'terminal', component: 'Pane', requestId: PICKER, props: { title: 'Continue this session on', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 10 }, view: {} } } as never)
+  await ui.select({ key: 'account', value: 'codex:team' })
+  for (let i = 0; i < 20; i++) await Promise.resolve()
+  expect(did.toasts).toEqual(["Not codex:team: it is a Codex account, and a Claude Code session moves only to another Claude Code account."])
+  expect(did.ran.map(a => a.at(-1))).toEqual(['--choices'])
+  expect(did.closed).toEqual([])
+  expect(did.commands).toEqual([])
+  await ui.unmount()
 })
