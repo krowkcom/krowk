@@ -75,7 +75,6 @@ file: scripts/install_test.sh
 file: CHANGELOG.md
 file: docs/security/**
 krowkcom/krowk-apps
-in README.md :: Coming from krowk\?|a krowk binary|`~/\.krowk`|`krowk@krowk`
 # Recordings of real Claude Code runs, kept as recorded.
 file: crates/gruntas-harness/tests/fixtures/claude/recorded/*.txt
 
