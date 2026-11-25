@@ -38,9 +38,10 @@ breaking changes may affect it without notice.
 - **`/exit` and Ctrl-C end a launched session again, rather than rotating
   through your accounts.** Rollover could hand the session from one spent
   account to the next and back, so every exit started Claude Code again on
-  another account. A run now never moves back to an account it left unless
-  you pick it, and quitting Claude Code with Ctrl-C ends the run even with
-  an account queued.
+  another account. A run now moves back to an account it left only once
+  that account's usage has reset, or when you pick it; and before it
+  starts Claude Code on the next account, `gruntas` waits 3 seconds, in
+  which Ctrl-C ends the run there.
 - **Switching accounts right after `/gruntas:account`.** When nothing had
   been said in the session yet, the switch tried to resume it and Claude
   Code answered "No conversation found"; a new session now starts on the

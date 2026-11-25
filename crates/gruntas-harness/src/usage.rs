@@ -236,11 +236,17 @@ impl Data {
     /// tie folded into the login's windows, the later reading of each
     /// window kept. A session `gruntas run` launched reports by its home
     /// alone: untied, its readings were never its login's, which rollover
-    /// and the picker read.
+    /// and the picker read. Only a home an account names (`configDir`) and
+    /// no other does: one taken from the environment is whichever the
+    /// process reading happened to inherit, not the account's.
     pub fn link_homes(&mut self, registry: &crate::instances::Registry) {
+        let named = |r: &crate::instances::Resolved| r.backend.as_ref().and_then(|b| b.config_dir.as_ref()).map(|d| home_key(&d.display().to_string()));
+        let homes: Vec<String> = registry.instances.values().filter_map(named).collect();
         for (name, r) in &registry.instances {
-            let Some(home) = r.backend.as_ref().and_then(|b| b.home.as_ref()) else { continue };
-            let home = home_key(&home.display().to_string());
+            let Some(home) = named(r) else { continue };
+            if homes.iter().filter(|h| **h == home).count() > 1 {
+                continue;
+            }
             let Some(record) = self.instances.get_mut(name) else { continue };
             if record.login == home {
                 continue;
@@ -521,7 +527,15 @@ mod tests {
     fn readings_under_an_accounts_home_become_its_logins() {
         let (u, dir) = store("link-homes");
         let raw = serde_json::json!({ "instances": { "claude:a": { "kind": "claude-code", "configDir": "/h/a" }, "claude:new": { "kind": "claude-code", "configDir": "/h/new" } } });
-        let registry = crate::instances::Registry::resolve(&crate::instances::from_config_json(&raw).unwrap(), &|k| if k == "HOME" { "/h".into() } else { String::new() });
+        // The default account names no home: the one the environment
+        // exports is claude:a's, which it must not take.
+        let env = |k: &str| match k {
+            "HOME" => "/h".into(),
+            "CLAUDE_CONFIG_DIR" => "/h/a".into(),
+            _ => String::new(),
+        };
+        let registry = crate::instances::Registry::resolve(&crate::instances::from_config_json(&raw).unwrap(), &env);
+        u.record_instance("claude", "d@x.com", &[], 9).unwrap();
         u.record_instance("claude:a", "a@x.com", &[], 1).unwrap();
         u.record_limit("a@x.com", &limit("five_hour", 10.0, Some(9_000_000)), 1_000).unwrap();
         u.record_limit("a@x.com", &limit("seven_day", 50.0, Some(90_000_000)), 3_000).unwrap();
@@ -534,6 +548,7 @@ mod tests {
         let used = |d: &Data, w: &str| d.readings("a@x.com", 4_000).into_iter().find(|r| r.window == w).and_then(|r| r.used_percent);
         assert_eq!((used(&d, "five_hour"), used(&d, "seven_day")), (Some(95.0), Some(50.0)), "the later of each");
         assert!(!d.logins.contains_key("/h/a") && d.logins.contains_key("/h/new"), "an account whose login is unknown keeps its home's");
+        assert!(!d.logins.contains_key("d@x.com") && d.instance("claude").unwrap().config_home.is_none(), "the default, on the environment's home, is not tied to it");
         u.link_homes(&registry).unwrap();
         assert_eq!(u.read().login_for_home("/h/a"), Some("a@x.com"));
         assert_eq!(u.record_windows("/h/a/", &[window("fiveHour", 97.0, 9_000_000)], 5_000).unwrap(), "a@x.com", "straight under the login");

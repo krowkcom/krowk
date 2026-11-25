@@ -217,9 +217,10 @@ fn model_of(args: &[String]) -> Option<String> {
 /// once this one runs low and tells the session; when the harness exits
 /// after that, the same session is resumed on the next account here, or
 /// handed to the other harness (`other_harness`). Exiting with nothing
-/// queued, or by Ctrl-C, ends the run with the harness's own code; so does
-/// the daemon's pick of an account the run already left, which would only
-/// go round the same accounts.
+/// queued ends the run with the harness's own code; so does Ctrl-C in the
+/// moment gruntas says where it goes on (`STOP`), and the daemon's pick of
+/// an account the run already left whose windows have not reset since,
+/// which would only go round the same spent accounts.
 fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: String) -> Result<i32, Error> {
     use gruntas_harness::attended;
     let daemon = gruntas_harness::daemon::dir(ctx.io.env).ok();
@@ -227,7 +228,8 @@ fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: Str
         attended::sweep(d);
     }
     let mut account = req.instance.name.clone();
-    let mut left: Vec<String> = Vec::new();
+    // Each account the run left, and when.
+    let mut left: Vec<(String, i64)> = Vec::new();
     loop {
         if plan.harness == Harness::Claude {
             claude_ready(ctx, &mut plan)?;
@@ -244,14 +246,18 @@ fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: Str
         let next = daemon.as_ref().and_then(|d| attended::take(d, code.pid));
         // Told to end (a closed terminal, a kill): no harness starts again.
         let Some(next) = next.filter(|_| !code.ending) else { return Ok(code.code) };
-        // Quit with Ctrl-C: the person ends the run, whatever was queued.
-        if code.interrupted {
-            let _ = writeln!(ctx.io.stderr, "gruntas: quit with Ctrl-C, so session {} is not continued on {}", next.session, next.account);
+        if !next.picked && (next.account == account || left.iter().any(|(a, at)| *a == next.account && !reset_since(ctx, &next.account, *at))) {
+            let _ = writeln!(ctx.io.stderr, "gruntas: session {} is not moved back to {}, which this run already left and has not reset since: every account it could go to is running low", next.session, next.account);
             return Ok(code.code);
         }
-        if !next.picked && (next.account == account || left.contains(&next.account)) {
-            let _ = writeln!(ctx.io.stderr, "gruntas: session {} is not moved back to {}, which this run already left: every account it could go to is running low", next.session, next.account);
-            return Ok(code.code);
+        // Claude Code reads Ctrl-C as a key, never a signal: gruntas, which
+        // has the terminal back, gives the person a moment to stop here.
+        if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            let _ = writeln!(ctx.io.stderr, "gruntas: session {} continues on {} in {}s — press Ctrl-C to stop here", next.session, next.account, STOP.as_secs());
+            if child::stopped_within(STOP) {
+                let _ = writeln!(ctx.io.stderr, "gruntas: stopped; session {} is not continued on {}", next.session, next.account);
+                return Ok(code.code);
+            }
         }
         // The accounts as they are now: the daemon picked from those.
         let registry = Registry::resolve(&super::prompt::load_instances()?, ctx.io.env);
@@ -295,9 +301,20 @@ fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: Str
             false => writeln!(ctx.io.stderr, "gruntas: continuing session {} on {}", next.session, to.name),
         };
         plan = next_plan;
-        left.push(std::mem::replace(&mut account, next.account));
+        left.push((std::mem::replace(&mut account, next.account), gruntas_store::now_ms()));
         model = next.model;
     }
+}
+
+/// How long gruntas waits, between one harness and the next, for a Ctrl-C.
+const STOP: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Whether a window of `account`'s login has reset since `since_ms`.
+fn reset_since(ctx: &Ctx, account: &str, since_ms: i64) -> bool {
+    let Ok(home) = gruntas_api::home::dir(ctx.io.env) else { return false };
+    let data = gruntas_harness::usage::Usage::in_home(&home).read();
+    let now = gruntas_store::now_ms();
+    data.logins.get(data.login_of(account)).is_some_and(|w| w.values().any(|w| w.resets_at_ms.is_some_and(|r| r > since_ms && r <= now)))
 }
 
 /// The session's transcript copied from the home it ran in to the one the
@@ -427,18 +444,27 @@ mod child {
     use gruntas_harness::launch::Plan;
 
     /// How a harness ended: its pid, its exit code (128 + the signal that
-    /// ended it), whether gruntas was told to end (SIGTERM, SIGHUP), and
-    /// whether it was quit with Ctrl-C (a SIGINT within `QUIT` of its end).
+    /// ended it), and whether gruntas was told to end (SIGTERM, SIGHUP).
     pub(super) struct Ended {
         pub pid: u32,
         pub code: i32,
         pub ending: bool,
-        pub interrupted: bool,
     }
 
-    /// How close to the harness's end the last Ctrl-C has to be to have
-    /// quit it: Claude Code quits on a second Ctrl-C within about a second.
-    const QUIT: std::time::Duration = std::time::Duration::from_secs(2);
+    /// Whether Ctrl-C comes within `d`, with no harness running: gruntas
+    /// waits that long for one.
+    pub(super) fn stopped_within(d: std::time::Duration) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        relay::INTERRUPTED.store(false, SeqCst);
+        let end = std::time::Instant::now() + d;
+        while std::time::Instant::now() < end {
+            if relay::INTERRUPTED.load(SeqCst) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        relay::INTERRUPTED.load(SeqCst)
+    }
 
     /// Runs the plan's program to its end, `started` told its pid. Ctrl-C
     /// and Ctrl-\ reach it from the terminal, gruntas ignoring them; a
@@ -473,8 +499,7 @@ mod child {
         let status = child.wait();
         relay::CHILD.store(0, SeqCst);
         let status = status?;
-        let interrupted = relay::interrupted_within(QUIT);
-        Ok(Ended { pid: child.id(), code: status.code().or_else(|| status.signal().map(|s| 128 + s)).unwrap_or(1), ending: relay::TOLD.load(SeqCst) != 0, interrupted })
+        Ok(Ended { pid: child.id(), code: status.code().or_else(|| status.signal().map(|s| 128 + s)).unwrap_or(1), ending: relay::TOLD.load(SeqCst) != 0 })
     }
 
     fn command(plan: &Plan) -> std::process::Command {
@@ -501,15 +526,9 @@ mod child {
         pub(super) const LAUNCHING: i32 = -1;
         /// The SIGTERM or SIGHUP gruntas was sent, once it was; 0 before.
         pub(super) static TOLD: AtomicI32 = AtomicI32::new(0);
-        /// When the terminal last sent Ctrl-C, in milliseconds since the
-        /// Unix epoch; 0 before.
-        static INTERRUPTED_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
-
-        /// Whether Ctrl-C was pressed within `d` of now.
-        pub(super) fn interrupted_within(d: std::time::Duration) -> bool {
-            let at = INTERRUPTED_MS.load(Ordering::SeqCst);
-            at != 0 && gruntas_store::now_ms() - at <= d.as_millis() as i64
-        }
+        /// Set by a Ctrl-C while no harness runs: one between harnesses is
+        /// gruntas's own (`stopped_within`).
+        pub(super) static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
         /// The signal gruntas was told to end by, passed on to the harness
         /// `pid` that started as it came.
@@ -545,8 +564,8 @@ mod child {
                     if unsafe { libc::sigwait(&set, &mut sig) } != 0 {
                         continue;
                     }
-                    if sig == libc::SIGINT {
-                        INTERRUPTED_MS.store(gruntas_store::now_ms(), Ordering::SeqCst);
+                    if sig == libc::SIGINT && CHILD.load(Ordering::SeqCst) == 0 {
+                        INTERRUPTED.store(true, Ordering::SeqCst);
                     }
                     if !matches!(sig, libc::SIGTERM | libc::SIGHUP) {
                         continue;

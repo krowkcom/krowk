@@ -499,21 +499,20 @@ fn rl03_exit_after_a_notice_resumes_the_session_on_the_next_account() {
 
 /// An account the daemon queues as the one a run is on runs low is not
 /// one the run already left: going back would only go round the same
-/// accounts, so the run ends there. One a person picked is gone to anyway.
-/// And a harness quit with Ctrl-C ends the run, whatever was queued.
+/// accounts, so the run ends there — until a window of it has reset. One a
+/// person picked is gone to anyway.
 #[test]
-fn a_run_never_rolls_back_to_an_account_it_left_and_ctrl_c_ends_it() {
+fn a_run_never_rolls_back_to_an_account_it_left_until_it_resets() {
     let b = Sandbox::new("rollover-loop");
     let mut config: serde_json::Value = serde_json::from_slice(&std::fs::read(b.home().join("config.json")).unwrap()).unwrap();
     std::fs::create_dir_all(b.root.join("accounts/claude-spare")).unwrap();
     config["instances"]["claude:spare"] = serde_json::json!({ "kind": "claude-code", "binary": b.root.join("bin/claude"), "configDir": b.root.join("accounts/claude-spare") });
     std::fs::write(b.home().join("config.json"), config.to_string()).unwrap();
-    let (runs, queue, int) = (b.root.join("runs"), b.root.join("queue"), b.root.join("int"));
+    let (runs, queue) = (b.root.join("runs"), b.root.join("queue"));
     std::fs::create_dir_all(b.root.join("run")).unwrap();
     // Each run writes down its home and queues the next of queue.1,
-    // queue.2, … left, then exits with its count; with `int` there it
-    // first sends gruntas a Ctrl-C, as the terminal would.
-    script(&b, "claude", &format!("i=0\nuntil a=$(ls -d {1}/gruntas/*/attended 2>/dev/null) && [ -e \"$a/$$.json\" ]; do i=$((i+1)); [ $i -gt 500 ] && exit 9; sleep 0.01; done\necho \"$CLAUDE_CONFIG_DIR | $*\" >> '{0}'\nfor q in '{2}'.*; do [ -e \"$q\" ] && mv \"$q\" $a/$$.next.json && break; done\n[ -e '{3}' ] && kill -INT $PPID && sleep 0.2\nexit $(wc -l < '{0}')\n", runs.display(), b.root.join("run").display(), queue.display(), int.display()));
+    // queue.2, … left, then exits with its count.
+    script(&b, "claude", &format!("i=0\nuntil a=$(ls -d {1}/gruntas/*/attended 2>/dev/null) && [ -e \"$a/$$.json\" ]; do i=$((i+1)); [ $i -gt 500 ] && exit 9; sleep 0.01; done\necho \"$CLAUDE_CONFIG_DIR | $*\" >> '{0}'\nfor q in '{2}'.*; do [ -e \"$q\" ] && mv \"$q\" $a/$$.next.json && break; done\nexit $(wc -l < '{0}')\n", runs.display(), b.root.join("run").display(), queue.display()));
     let run = || b.command(&["run", "claude", "--account", "work", "--no-sandbox"]).env("XDG_RUNTIME_DIR", b.root.join("run")).output().unwrap();
     let lines = || std::fs::read_to_string(&runs).unwrap_or_default().lines().map(String::from).collect::<Vec<_>>();
     let session = "0190f3c1-8a2b-7c4d-9e5f-0a1b2c3d4e64";
@@ -539,15 +538,20 @@ fn a_run_never_rolls_back_to_an_account_it_left_and_ctrl_c_ends_it() {
     assert_eq!(o.status.code(), Some(3), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(lines()[2].starts_with(&format!("{} |", b.root.join("accounts/claude-work").display())), "{:?}", lines());
 
-    // Quit with Ctrl-C: the run ends with the harness, the queue left.
+    // Back to work automatically once a window of its login has reset
+    // since the run left it: it has room again.
     std::fs::remove_file(&runs).unwrap();
     queued(1, "claude:spare", false);
-    std::fs::write(&int, "").unwrap();
+    queued(2, "claude:work", false);
+    let soon = now_ms() + 1_500;
+    std::fs::write(b.home().join("usage.json"), serde_json::json!({
+        "logins": { "w@x.io": { "five_hour": { "status": "limited", "usedPercent": 100.0, "resetsAtMs": soon, "seenAtMs": soon - 60_000 } } },
+        "instances": { "claude:work": { "login": "w@x.io", "seenAtMs": 1 } },
+    }).to_string()).unwrap();
+    script(&b, "claude", &format!("i=0\nuntil a=$(ls -d {1}/gruntas/*/attended 2>/dev/null) && [ -e \"$a/$$.json\" ]; do i=$((i+1)); [ $i -gt 500 ] && exit 9; sleep 0.01; done\necho \"$CLAUDE_CONFIG_DIR | $*\" >> '{0}'\nfor q in '{2}'.*; do [ -e \"$q\" ] && mv \"$q\" $a/$$.next.json && break; done\n[ $(wc -l < '{0}') = 2 ] && sleep 2\nexit $(wc -l < '{0}')\n", runs.display(), b.root.join("run").display(), queue.display()));
     let o = run();
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert_eq!(o.status.code(), Some(1), "the harness's own code; {err}");
-    assert_eq!(lines().len(), 1, "no harness started again: {:?}", lines());
-    assert!(err.contains(&format!("quit with Ctrl-C, so session {session} is not continued on claude:spare")), "{err}");
+    assert_eq!(o.status.code(), Some(3), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(lines()[2].starts_with(&format!("{} |", b.root.join("accounts/claude-work").display())), "{:?}", lines());
 }
 
 /// A switch from the default account, run in the home the shell exports
