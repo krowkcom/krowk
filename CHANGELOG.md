@@ -19,6 +19,15 @@ breaking changes may affect it without notice.
 
 ## [Unreleased]
 
+## [2026.11.3] - 2026-11-25
+
+**Switch accounts from inside Claude Code with the arrow keys.** In a session
+`gruntas run claude` started, `/gruntas:account` opens a picker of every
+account you have connected; Enter moves the session there and it carries on
+in the same terminal. Switching from an exported `CLAUDE_CONFIG_DIR` home, or
+before the first message, now works, and `gruntas` shows the Gruntas
+monogram.
+
 ### Added
 
 - **`/gruntas:account` is a picker.** In a Claude Code session `gruntas
@@ -4224,7 +4233,8 @@ was released on GitHub but never published to npm.
   credentials travel, and a refusal is written to stderr and into the JSON
   envelope.
 
-[Unreleased]: https://github.com/gruntas/gruntas/compare/v2026.11.2...HEAD
+[Unreleased]: https://github.com/gruntas/gruntas/compare/v2026.11.3...HEAD
+[2026.11.3]: https://github.com/gruntas/gruntas/compare/v2026.11.2...v2026.11.3
 [2026.11.2]: https://github.com/gruntas/gruntas/compare/v2026.11.1...v2026.11.2
 [2026.11.1]: https://github.com/gruntas/gruntas/compare/v2026.11.0...v2026.11.1
 [2026.11.0]: https://github.com/gruntas/gruntas/compare/v0.18.0...v2026.11.0
