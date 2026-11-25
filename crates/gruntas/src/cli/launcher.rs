@@ -219,7 +219,7 @@ fn model_of(args: &[String]) -> Option<String> {
 /// handed to the other harness (`other_harness`). Exiting with nothing
 /// queued ends the run with the harness's own code; so does Ctrl-C in the
 /// moment gruntas says where it goes on (`STOP`), and the daemon's pick of
-/// an account the run already left whose windows have not reset since,
+/// an account the run already left none of whose windows has reset since,
 /// which would only go round the same spent accounts.
 fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: String) -> Result<i32, Error> {
     use gruntas_harness::attended;
@@ -228,8 +228,8 @@ fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: Str
         attended::sweep(d);
     }
     let mut account = req.instance.name.clone();
-    // Each account the run left, and when.
-    let mut left: Vec<(String, i64)> = Vec::new();
+    // Each account the run left, and when its windows were to reset then.
+    let mut left: Vec<(String, Vec<i64>)> = Vec::new();
     loop {
         if plan.harness == Harness::Claude {
             claude_ready(ctx, &mut plan)?;
@@ -246,7 +246,8 @@ fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: Str
         let next = daemon.as_ref().and_then(|d| attended::take(d, code.pid));
         // Told to end (a closed terminal, a kill): no harness starts again.
         let Some(next) = next.filter(|_| !code.ending) else { return Ok(code.code) };
-        if !next.picked && (next.account == account || left.iter().any(|(a, at)| *a == next.account && !reset_since(ctx, &next.account, *at))) {
+        let now = gruntas_store::now_ms();
+        if !next.picked && (next.account == account || left.iter().any(|(a, resets)| *a == next.account && !resets.iter().any(|r| *r <= now))) {
             let _ = writeln!(ctx.io.stderr, "gruntas: session {} is not moved back to {}, which this run already left and has not reset since: every account it could go to is running low", next.session, next.account);
             return Ok(code.code);
         }
@@ -300,8 +301,13 @@ fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: Str
             true => writeln!(ctx.io.stderr, "gruntas: session {} had nothing said yet, so a new one starts on {}", next.session, to.name),
             false => writeln!(ctx.io.stderr, "gruntas: continuing session {} on {}", next.session, to.name),
         };
+        if child::stopped_within(std::time::Duration::ZERO) {
+            let _ = writeln!(ctx.io.stderr, "gruntas: stopped; session {} is not continued on {}", next.session, to.name);
+            return Ok(code.code);
+        }
+        let resets = live_resets(ctx, &registry, &account);
         plan = next_plan;
-        left.push((std::mem::replace(&mut account, next.account), gruntas_store::now_ms()));
+        left.push((std::mem::replace(&mut account, next.account), resets));
         model = next.model;
     }
 }
@@ -309,12 +315,19 @@ fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: Str
 /// How long gruntas waits, between one harness and the next, for a Ctrl-C.
 const STOP: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// Whether a window of `account`'s login has reset since `since_ms`.
-fn reset_since(ctx: &Ctx, account: &str, since_ms: i64) -> bool {
-    let Ok(home) = gruntas_api::home::dir(ctx.io.env) else { return false };
-    let data = gruntas_harness::usage::Usage::in_home(&home).read();
+/// When `account`'s windows that have not reset yet will: once one of
+/// these has passed, the account has room again. Under its login, else
+/// the home it reported under.
+fn live_resets(ctx: &Ctx, registry: &Registry, account: &str) -> Vec<i64> {
+    let Ok(home) = gruntas_api::home::dir(ctx.io.env) else { return Vec::new() };
+    let mut data = gruntas_harness::usage::Usage::in_home(&home).read();
+    data.link_homes(registry);
     let now = gruntas_store::now_ms();
-    data.logins.get(data.login_of(account)).is_some_and(|w| w.values().any(|w| w.resets_at_ms.is_some_and(|r| r > since_ms && r <= now)))
+    let key = match data.instance(account) {
+        Some(i) => Some(i.login.clone()),
+        None => registry.instances.get(account).and_then(|i| i.backend.as_ref()).and_then(|b| b.config_dir.as_ref()).map(|d| gruntas_harness::usage::home_key(&d.display().to_string())),
+    };
+    key.and_then(|k| data.logins.get(&k)).map(|w| w.values().filter_map(|w| w.resets_at_ms).filter(|r| *r > now).collect()).unwrap_or_default()
 }
 
 /// The session's transcript copied from the home it ran in to the one the
@@ -451,11 +464,10 @@ mod child {
         pub ending: bool,
     }
 
-    /// Whether Ctrl-C comes within `d`, with no harness running: gruntas
-    /// waits that long for one.
+    /// Whether Ctrl-C came since the last harness ended, or comes within
+    /// `d`: gruntas waits that long for one.
     pub(super) fn stopped_within(d: std::time::Duration) -> bool {
         use std::sync::atomic::Ordering::SeqCst;
-        relay::INTERRUPTED.store(false, SeqCst);
         let end = std::time::Instant::now() + d;
         while std::time::Instant::now() < end {
             if relay::INTERRUPTED.load(SeqCst) {
@@ -485,6 +497,7 @@ mod child {
         use std::sync::atomic::Ordering::SeqCst;
         // Launching: a SIGTERM or SIGHUP now waits for the harness.
         relay::CHILD.store(relay::LAUNCHING, SeqCst);
+        relay::INTERRUPTED.store(false, SeqCst);
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -526,8 +539,8 @@ mod child {
         pub(super) const LAUNCHING: i32 = -1;
         /// The SIGTERM or SIGHUP gruntas was sent, once it was; 0 before.
         pub(super) static TOLD: AtomicI32 = AtomicI32::new(0);
-        /// Set by a Ctrl-C while no harness runs: one between harnesses is
-        /// gruntas's own (`stopped_within`).
+        /// Set by a Ctrl-C while no harness runs, cleared as one launches:
+        /// one between harnesses is gruntas's own (`stopped_within`).
         pub(super) static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
         /// The signal gruntas was told to end by, passed on to the harness

@@ -538,17 +538,15 @@ fn a_run_never_rolls_back_to_an_account_it_left_until_it_resets() {
     assert_eq!(o.status.code(), Some(3), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(lines()[2].starts_with(&format!("{} |", b.root.join("accounts/claude-work").display())), "{:?}", lines());
 
-    // Back to work automatically once a window of its login has reset
-    // since the run left it: it has room again.
+    // Back to work automatically once a window of its login that was
+    // running when the run left it has reset: it has room again. The first
+    // harness writes that window, to reset a second or two after it ends;
+    // the second outlasts it.
     std::fs::remove_file(&runs).unwrap();
     queued(1, "claude:spare", false);
     queued(2, "claude:work", false);
-    let soon = now_ms() + 1_500;
-    std::fs::write(b.home().join("usage.json"), serde_json::json!({
-        "logins": { "w@x.io": { "five_hour": { "status": "limited", "usedPercent": 100.0, "resetsAtMs": soon, "seenAtMs": soon - 60_000 } } },
-        "instances": { "claude:work": { "login": "w@x.io", "seenAtMs": 1 } },
-    }).to_string()).unwrap();
-    script(&b, "claude", &format!("i=0\nuntil a=$(ls -d {1}/gruntas/*/attended 2>/dev/null) && [ -e \"$a/$$.json\" ]; do i=$((i+1)); [ $i -gt 500 ] && exit 9; sleep 0.01; done\necho \"$CLAUDE_CONFIG_DIR | $*\" >> '{0}'\nfor q in '{2}'.*; do [ -e \"$q\" ] && mv \"$q\" $a/$$.next.json && break; done\n[ $(wc -l < '{0}') = 2 ] && sleep 2\nexit $(wc -l < '{0}')\n", runs.display(), b.root.join("run").display(), queue.display()));
+    let usage = b.home().join("usage.json");
+    script(&b, "claude", &format!("i=0\nuntil a=$(ls -d {1}/gruntas/*/attended 2>/dev/null) && [ -e \"$a/$$.json\" ]; do i=$((i+1)); [ $i -gt 500 ] && exit 9; sleep 0.01; done\necho \"$CLAUDE_CONFIG_DIR | $*\" >> '{0}'\nfor q in '{2}'.*; do [ -e \"$q\" ] && mv \"$q\" $a/$$.next.json && break; done\nn=$(wc -l < '{0}')\nif [ $n = 1 ]; then r=$(( $(date +%s) * 1000 + 2000 )); echo \"{{\\\"logins\\\":{{\\\"w@x.io\\\":{{\\\"five_hour\\\":{{\\\"status\\\":\\\"limited\\\",\\\"usedPercent\\\":100,\\\"resetsAtMs\\\":$r,\\\"seenAtMs\\\":$((r - 60000))}}}}}},\\\"instances\\\":{{\\\"claude:work\\\":{{\\\"login\\\":\\\"w@x.io\\\",\\\"seenAtMs\\\":1}}}}}}\" > '{3}'; fi\n[ $n = 2 ] && sleep 3\nexit $n\n", runs.display(), b.root.join("run").display(), queue.display(), usage.display()));
     let o = run();
     assert_eq!(o.status.code(), Some(3), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(lines()[2].starts_with(&format!("{} |", b.root.join("accounts/claude-work").display())), "{:?}", lines());
