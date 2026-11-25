@@ -249,7 +249,8 @@ fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: Str
         // registration said, else under the home the session ran in. None
         // there, the session was left before one, and starts afresh.
         let from_home = runs_in(&plan, from, ctx.io.env);
-        let found = next.transcript.as_deref().map(std::path::PathBuf::from).filter(|t| t.exists()).or_else(|| match plan.harness {
+        // Codex's path is kept as recorded: a missing one is the carry's to report.
+        let found = next.transcript.as_deref().map(std::path::PathBuf::from).filter(|t| plan.harness == Harness::Codex || t.exists()).or_else(|| match plan.harness {
             Harness::Claude => from_home.as_deref().and_then(|h| find_transcript(h, &next.session)),
             Harness::Codex => None,
         });

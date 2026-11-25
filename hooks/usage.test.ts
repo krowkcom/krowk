@@ -1,6 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code/testing'
 import { configHome, payload, PICKER, POLL_MS } from './usage'
+import type { Choices } from './usage'
 
 const LIMITS = [
   { kind: 'five_hour', percentUsed: 37.5, resetsAt: '2026-11-23T14:00:00.000Z' },
@@ -208,7 +209,7 @@ test('/gruntas:account without gruntas says how to install it', async ($, on) =>
   expect((await $.command.run({ command: 'gruntas:account', args: '' })).text).toContain('curl -fsSL https://gruntas.com/install | bash')
 })
 
-const CHOICES = {
+const CHOICES: Choices = {
   launched: true,
   current: 'claude',
   queued: null,
@@ -303,4 +304,33 @@ test('a second Enter while gruntas queues a pick is ignored: one queue, one /exi
   expect(did.toasts).toEqual(['Switching to claude:trip1…'])
   expect(did.commands).toEqual(['exit'])
   await ui.unmount()
+})
+
+test('a picker closed or reopened while gruntas queues a pick keeps the account and puts back what was queued', async ($, on) => {
+  let release: () => void = () => undefined
+  const held = new Promise<void>(r => (release = r))
+  const did = launched(on, async argv => {
+    if (argv.at(-1) === 'claude:trip1') await held
+    return `Type /exit to continue on ${argv.at(-1)}.\n`
+  })
+  // Rollover had queued claude:primevise before the pick.
+  CHOICES.queued = 'claude:primevise'
+  try {
+    await begin($, did)
+    await $.command.run({ command: 'gruntas:account', args: '' })
+    const ui = await $.ui.mount({ plugin: 'gruntas', surface: 'terminal', component: 'Pane', requestId: PICKER, props: { title: 'Continue this session on', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 10 }, view: {} } } as never)
+    const first = ui.select({ key: 'account', value: 'claude:trip1' })
+    for (let i = 0; i < 20; i++) await Promise.resolve()
+    // Asked again while it waits: the pick in flight gives way.
+    await $.command.run({ command: 'gruntas:account', args: '' })
+    release()
+    await first
+    for (let i = 0; i < 40; i++) await Promise.resolve()
+    expect(did.ran.filter(a => a.includes('account')).map(a => a.at(-1))).toEqual(['--choices', 'claude:trip1', '--choices', 'claude:primevise'])
+    expect(did.toasts).toEqual(['Switching to claude:trip1…', 'Kept claude.'])
+    expect(did.commands).toEqual([])
+    await ui.unmount()
+  } finally {
+    CHOICES.queued = null
+  }
 })

@@ -270,9 +270,15 @@ async function pick($: EngineInterface, value: string): Promise<void> {
   try {
     void Promise.resolve($.ui.toast(`Switching to ${row.account}…`)).catch(() => undefined)
     const said = await account($, row.account)
-    // Closed (Esc) while gruntas answered: the person kept this account.
+    // Closed (Esc) while gruntas answered: the person kept this account, and
+    // whatever was queued before the pick replaced it.
     if (picking !== open) {
-      if (said.startsWith('Type /exit')) await account($, '--cancel')
+      if (said.startsWith('Type /exit')) {
+        const before = open?.queued
+        const back = before == null ? undefined : await account($, before)
+        if (back === undefined || !back.startsWith('Type /exit')) await account($, '--cancel')
+      }
+      void Promise.resolve($.ui.toast(`Kept ${open?.current ?? 'this account'}.`)).catch(() => undefined)
       return
     }
     if (!said.startsWith('Type /exit')) {
