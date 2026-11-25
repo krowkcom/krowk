@@ -79,6 +79,10 @@ export function install(pi: ExtensionAPI, host: Host): void {
   // the object tool_call hands on, which tool_call handlers mutate in place.
   const inputs = new Map<string, unknown>()
   on('tool_execution_start', e => void inputs.set(e.toolCallId, e.args))
+  // pi ends a call it blocked as a failed one. A call gruntas refused never
+  // ran, so, as in the Claude Code plugin, its end is not told: it is no
+  // work to remind the agent to report.
+  const refused = new Set<string>()
   // A bash call waits on PreToolUse, as in the Claude Code plugin, whose
   // PreToolUse is for Bash only: the paste guards may refuse it, and a heavy
   // command counts toward the build slots from here to its end (or the
@@ -96,11 +100,13 @@ export function install(pi: ExtensionAPI, host: Host): void {
       return undefined
     }
     const reason = denyReason(await host.run(argv('PreToolUse'), payload, LIMIT_MS))
+    if (reason) refused.add(e.toolCallId)
     return reason ? { block: true, reason } : undefined
   })
   on('tool_execution_end', (e, ctx) => {
     const input = inputs.get(e.toolCallId)
     inputs.delete(e.toolCallId)
+    if (refused.delete(e.toolCallId)) return
     const event = e.isError ? 'PostToolUseFailure' : 'PostToolUse'
     fire(event, toolEvent(event, session(ctx), { toolCallId: e.toolCallId, toolName: e.toolName, input }))
   })

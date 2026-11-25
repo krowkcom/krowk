@@ -279,6 +279,20 @@ test('PI03: a bash call awaits PreToolUse and is blocked with the guard\'s messa
   assert.deepEqual(answer, { block: true, reason: 'gruntas: that uploads to a paste site.' })
 })
 
+test('PI03: a call gruntas refused never ran: pi\'s failed end of it is not told, so it is no work to report', async () => {
+  const pi = fakePi()
+  const { host, runs } = fakeHost(e => (e === 'PreToolUse' ? DENY : ''))
+  install(pi.api, host)
+  await pi.fire('tool_call', { toolCallId: CALL.toolCallId, toolName: 'bash', input: CALL.input })
+  await pi.fire('tool_execution_end', { toolCallId: CALL.toolCallId, toolName: 'bash', result: {}, isError: true })
+  await settle()
+  assert.deepEqual(runs.map(r => r.argv[3]), ['PreToolUse'])
+  // The next call under the same id (none in pi, but nothing is kept) is told as usual.
+  await pi.fire('tool_execution_end', { toolCallId: CALL.toolCallId, toolName: 'bash', result: {}, isError: true })
+  await settle()
+  assert.deepEqual(runs.map(r => r.argv[3]), ['PreToolUse', 'PostToolUseFailure'])
+})
+
 test('PI03: a bash call gruntas lets through, or a hook that answers nothing, runs untouched', async () => {
   for (const said of ['', undefined]) {
     const pi = fakePi()
