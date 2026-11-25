@@ -19,6 +19,13 @@ breaking changes may affect it without notice.
 
 ## [Unreleased]
 
+## [2026.11.5] - 2026-11-25
+
+**See your account, machine and usage under the prompt.** In Claude Code,
+a quiet status line now reads `elvinas-herder, thinkpad     69% weekly,
+12% 5-hour`, its numbers turning amber, then red, as an account nears its
+limit.
+
 ### Added
 
 - **A status line under the prompt says which account and machine you are
@@ -27,8 +34,8 @@ breaking changes may affect it without notice.
   (with when that window resets) and red when full; a window Claude Code
   has not reported says `unknown`. On a narrow terminal it drops the
   machine, then the reset, then the account, never the numbers. Your own
-  `statusLine` command keeps its row, with this line under it where there
-  is room.
+  `statusLine` command keeps every row it prints, with this line under it
+  where a row is left.
 
 ## [2026.11.4] - 2026-11-25
 
@@ -4281,7 +4288,8 @@ was released on GitHub but never published to npm.
   credentials travel, and a refusal is written to stderr and into the JSON
   envelope.
 
-[Unreleased]: https://github.com/gruntas/gruntas/compare/v2026.11.4...HEAD
+[Unreleased]: https://github.com/gruntas/gruntas/compare/v2026.11.5...HEAD
+[2026.11.5]: https://github.com/gruntas/gruntas/compare/v2026.11.4...v2026.11.5
 [2026.11.4]: https://github.com/gruntas/gruntas/compare/v2026.11.3...v2026.11.4
 [2026.11.3]: https://github.com/gruntas/gruntas/compare/v2026.11.2...v2026.11.3
 [2026.11.2]: https://github.com/gruntas/gruntas/compare/v2026.11.1...v2026.11.2
