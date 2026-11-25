@@ -61,8 +61,12 @@ breaking changes may affect it without notice.
   limit, pi follows your `rollover` setting: `offer` asks whether to
   continue on the next account (the question times out, so nothing hangs;
   with no UI, as in `pi -p`, it only names the next account and when the
-  limit resets), `auto` moves and says so, `off` leaves it to you. For now
-  pi moves only between subscription accounts, never onto an API key.
+  limit resets), `auto` moves and says so, `off` leaves it to you. A
+  prompt already queued behind the limit waits for that choice, so it runs
+  where the session moved. For now pi moves only between subscription
+  accounts, never onto an API key. `gruntas providers list --check --json`
+  rows now carry each account's `config_dir`, as `providers list` does,
+  which is where the usage is recorded.
 - **`gruntas providers next [--from <account>] [--tried <a,b>] --json`**
   answers the signed-in Claude Code subscription a session moves to, by
   rollover's ranking, with your `rollover` setting and when `--from`'s limit
@@ -71,8 +75,9 @@ breaking changes may affect it without notice.
 - **pi's bash calls get the paste guard, and its heavy builds take a build
   slot.** A bash command in pi that the paste guards refuse (an upload to
   a paste site, a bare gruntas card link in a `gh` body) is blocked with
-  the guard's message, as in Claude Code and Codex; any other runs as it
-  was, waiting at most two seconds on gruntas. A command on the
+  the guard's message, as in Claude Code and Codex, and, never having run,
+  is no work the session is reminded to report; any other runs as it was,
+  waiting at most two seconds on gruntas. A command on the
   `builds.heavy` list, such as `cargo build`, counts toward the machine's
   build slots while it runs.
 - **`/account` in pi picks the gruntas account Claude turns run on.** It

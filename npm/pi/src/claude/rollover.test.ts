@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { Accounts, type Gruntas, type Listed } from './accounts.ts'
-import { installClaude } from './extension.ts'
+import { installClaude, rolloverUi } from './extension.ts'
 import { configHome, limitHit, OFFER_TIMEOUT_MS, Rollover, usagePayload, usageWindows, when, type Next, type Ui } from './rollover.ts'
 import type { ClaudeSession, SessionSpec } from './session.ts'
 import { AsyncQueue } from './util.ts'
@@ -181,6 +181,60 @@ test('a reset gruntas knows, where the reading said none, is how long the accoun
   accounts.name = 'claude:c'
   await r.hit('claude:c', NOW + 9 * 3_600_000)
   assert.deepEqual(asks.at(-1), ['claude:b'], 'a dropped at gruntas\'s reset, not five hours')
+})
+
+test('a request sent while a hit is handled waits on it, so it goes where rollover moved the session', async () => {
+  let answer!: (n: Next) => void
+  const accounts = { name: 'claude:a' as string | undefined, moveTo: async (n: string) => (accounts.name = n) }
+  const r = new Rollover(accounts, () => new Promise<Next>(res => (answer = res)), () => fakeUi(true, true).ui, () => NOW)
+  await r.settled()
+  void r.hit('claude:a', RESET)
+  let where: string | undefined
+  const request = r.settled().then(() => (where = accounts.name))
+  await new Promise(res => setTimeout(res, 5))
+  assert.equal(where, undefined, 'still waiting on gruntas')
+  answer({ next: 'claude:b', mode: 'auto', resetsAt: null })
+  await request
+  assert.equal(where, 'claude:b')
+  // A handling that fails still lets the request go.
+  const failing = new Rollover(accounts, async () => ({ next: 'claude:c', mode: 'auto', resetsAt: null }), () => fakeUi(true, true).ui, () => NOW)
+  accounts.moveTo = async () => Promise.reject(new Error('gone'))
+  accounts.name = 'claude:b'
+  void failing.hit('claude:b', RESET)
+  await failing.settled()
+})
+
+test('a context pi has retired (print mode ends the session with the turn): the notice goes to stderr, an offer is declined', async () => {
+  // Built while the context was live, used once pi has retired it, as pi's own ctx throws.
+  let live = true
+  const stale = () => {
+    throw new Error('This extension ctx is stale')
+  }
+  const ctx = {
+    get hasUI(): boolean {
+      return live ? false : stale()
+    },
+    get ui(): any {
+      return stale()
+    },
+  }
+  const ui = rolloverUi(ctx)
+  live = false
+  const written: string[] = []
+  const write = process.stderr.write
+  process.stderr.write = ((s: string) => (written.push(s), true)) as never
+  try {
+    ui.notify('claude:a is out of usage.', 'warning')
+  } finally {
+    process.stderr.write = write
+  }
+  assert.deepEqual(written, ['gruntas: claude:a is out of usage.\n'])
+  await assert.rejects(ui.confirm('t', 'm', { timeout: 1 }))
+  // Rollover takes a refused dialog as no.
+  const moves: string[] = []
+  const r = new Rollover({ name: 'claude:a', moveTo: async n => moves.push(n) }, async () => ({ next: 'claude:b', mode: 'offer', resetsAt: null }), () => ({ ...ui, hasUI: true }), () => NOW)
+  await r.hit('claude:a', RESET)
+  assert.deepEqual(moves, [])
 })
 
 // --- wired into the provider ---------------------------------------------------

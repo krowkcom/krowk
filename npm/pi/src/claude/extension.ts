@@ -32,12 +32,21 @@ export interface ClaudeOptions {
   debugPath?: string
 }
 
-/** pi's `ctx.ui` as rollover uses it; with no UI (print or JSON mode) a notice goes to stderr. */
-function rolloverUi(ctx: { hasUI: boolean; ui: any }): Ui {
+/**
+ * pi's `ctx.ui` as rollover uses it; with no UI (print or JSON mode) a notice goes to stderr. A
+ * limit can be handled after pi has retired `ctx` (print mode ends the session as the turn
+ * ends), where touching it throws: the notice then goes to stderr, and an offer is declined.
+ */
+export function rolloverUi(ctx: { hasUI: boolean; ui: any }): Ui {
   return {
     hasUI: ctx.hasUI,
-    confirm: (title, message, opts) => ctx.ui.confirm(title, message, opts),
-    notify: (message, level) => (ctx.hasUI ? ctx.ui.notify(message, level) : process.stderr.write(`gruntas: ${message}\n`)),
+    confirm: async (title, message, opts) => ctx.ui.confirm(title, message, opts),
+    notify: (message, level) => {
+      try {
+        if (ctx.hasUI) return void ctx.ui.notify(message, level)
+      } catch {}
+      process.stderr.write(`gruntas: ${message}\n`)
+    },
   }
 }
 
@@ -53,9 +62,10 @@ export function installClaude(pi: ExtensionAPI, runtime: Runtime, accounts: Acco
     const payload = usagePayload(a, info)
     if (payload) opts.usage?.(payload)
     const hit = limitHit(info)
-    if (hit) void rollover.hit(a.name, hit.resetsAt)
+    // Never a rejection pi would die of.
+    if (hit) rollover.hit(a.name, hit.resetsAt).catch(() => {})
   }
-  const provider = new ClaudeSdkProvider({ ...runtime, account: () => accounts.current(), debug, onRateLimit })
+  const provider = new ClaudeSdkProvider({ ...runtime, account: () => rollover.settled().then(() => accounts.current()), debug, onRateLimit })
   accounts.onMove(to => provider.retire(to.name))
   for (const event of ['session_start', 'agent_start', 'turn_start'] as const) pi.on(event, (_event: unknown, ctx: any) => void (ui = rolloverUi(ctx)))
   installPicker(pi, accounts, PROVIDER)
