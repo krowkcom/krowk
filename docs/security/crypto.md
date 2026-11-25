@@ -1,6 +1,6 @@
 # End-to-end encryption
 
-> Published from Canon, krowk's private design specs (`canon/engineering/crypto.md` in `gruntas/cloud` at 8022857). `threat-model.md` is in this directory. The other design files it cites, such as `relay.md`, `harness.md` and `devices.md`, are not published.
+> Published from Canon, krowk's private design specs (`canon/engineering/crypto.md` in `gruntas/cloud` at ef4fd7e). `threat-model.md` is in this directory. The other design files it cites, such as `relay.md`, `harness.md` and `devices.md`, are not published.
 
 Sessions leave the machine they ran on — to the registry, the relay and R2 — so that a person can pick one up on another device. A transcript is the most sensitive thing krowk touches: source code, credentials pasted into a prompt, whatever a tool read. This file is the crypto design every sync, relay and client ticket reads instead of choosing again: the constructions and their suite, the key hierarchy, the blob formats, what the server side can and cannot learn, and what is not done yet.
 
