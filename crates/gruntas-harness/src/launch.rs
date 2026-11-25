@@ -341,9 +341,10 @@ pub fn claude_sandbox(hidden: &[PathBuf]) -> Value {
 
 /// What an attended session's sandbox adds to `claude_sandbox`, so the
 /// person's own credentials and logins work in it as they do in their own
-/// `claude`: every Unix socket (ssh-agent, the keyring over D-Bus, Docker),
-/// writes anywhere in their home (a CLI refreshing its token) but the
-/// hidden paths, and, through `egress`, every destination without a prompt.
+/// `claude`: every Unix socket (ssh-agent, the desktop's secret store over
+/// D-Bus, Docker), writes anywhere in their home (a CLI refreshing its
+/// token) but the hidden paths, and, through `egress`, every destination
+/// without a prompt.
 /// The sandbox stays on with no command outside it, so the home stays
 /// hidden from what a session reads and runs; but a soft fence, not a hard
 /// one: a session set on it can reach out through the sockets (systemd over
