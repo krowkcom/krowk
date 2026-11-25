@@ -215,6 +215,39 @@ fn claude_writes_its_plugin_and_the_default_keeps_an_inherited_config_dir() {
     assert!(b.started("claude").1.contains(&work));
 }
 
+/// `--no-plugin`, as the Agent SDK runs it: Claude Code on the account with
+/// no plugin and no gruntas hook, the plugin not even written, its stdin,
+/// stdout and exit code passed through untouched, nothing of gruntas's on
+/// stdout.
+#[test]
+fn no_plugin_passes_claude_through_without_the_plugin() {
+    let b = Sandbox::new("noplugin");
+    for bin in ["bwrap", "socat"] {
+        b.fake(bin);
+    }
+    let out = b.root.join("claude");
+    let script = format!("#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{0}.args'\nenv > '{0}.env'\ncat\nexit 3\n", out.display());
+    std::fs::write(b.root.join("bin/claude"), script).unwrap();
+    let o = b.command(&["run", "claude", "--account", "work", "--no-plugin", "-p", "--output-format", "stream-json"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().and_then(|mut c| {
+        use std::io::Write;
+        c.stdin.take().unwrap().write_all(b"{\"type\":\"user\"}\n")?;
+        c.wait_with_output()
+    });
+    let o = o.unwrap();
+    assert_eq!(o.status.code(), Some(3), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "{\"type\":\"user\"}\n", "only claude's own stdout");
+    let (args, env) = b.started("claude");
+    assert!(!args.iter().any(|a| a == "--plugin-dir"), "{args:?}");
+    assert!(!b.root.join("data/gruntas/plugin").exists(), "no plugin written");
+    let settings: serde_json::Value = serde_json::from_str(&args[1]).unwrap();
+    assert_eq!(args[0], "--settings");
+    assert!(!settings.to_string().contains(" hook claude") && settings["enabledPlugins"]["gruntas@gruntas"] == false, "{settings}");
+    assert!(args.ends_with(&["-p".into(), "--output-format".into(), "stream-json".into()]), "{args:?}");
+    assert!(env.contains(&format!("CLAUDE_CONFIG_DIR={}", b.root.join("accounts/claude-work").display())));
+    failed(&b.gruntas(&["run", "codex", "--account", "team", "--no-plugin"]), 1, "--no-plugin is for claude");
+    failed(&b.gruntas(&["run", "claude", "--no-plugin", "--unattended", "fix it"]), 1, "drop --no-plugin");
+}
+
 /// R-RUN-3, against a daemon in this process: `--unattended` starts a
 /// `--bg` session in the sandbox and prints its id, or refuses where the
 /// sandbox cannot run; the daemon stops the session once its Task is

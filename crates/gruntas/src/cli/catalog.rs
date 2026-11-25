@@ -759,8 +759,9 @@ fn run_command() -> Command {
             flag("account", STRING, "The account: its name (work for claude:work), or auto for the one with the most headroom (default: the one plain claude or codex in your shell uses)"),
             flag("unattended", STRING, "Start a background session on this task instead of taking the terminal"),
             flag("no-sandbox", BOOL, "Run without the sandbox that keeps the session out of the gruntas home, this once; attended only"),
+            flag("no-plugin", BOOL, "Start Claude Code without the gruntas plugin and hooks, so it never registers as a session; its arguments, stdin and stdout pass through, so a program can run it as its Claude Code (the Agent SDK's executable). Attended claude only"),
         ],
-        ..cmd("run", "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [args...]", "Start Claude Code or Codex on one of your accounts")
+        ..cmd("run", "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [--no-plugin] [args...]", "Start Claude Code or Codex on one of your accounts")
     }
 }
 

@@ -795,7 +795,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `gruntas mcp add`")));
             }
         }
-        for name in ["account", "unattended", "no-sandbox"] {
+        for name in ["account", "unattended", "no-sandbox", "no-plugin"] {
             if f.given.contains(name) && words.first() != Some(&"run") {
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `gruntas run`, after the harness: `gruntas run claude --{name} …`")));
             }
