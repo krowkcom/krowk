@@ -11,6 +11,6 @@ pi install npm:@gruntas/pi
 It needs `gruntas` on the PATH: without it, a session's start says how to
 install it and the extension does nothing else. On Windows it does nothing.
 
-Supported pi: 1.6 and later 1.x (`peerDependencies`).
+Supported pi: 1.6 and later 1.x (`engines.pi`).
 
 MIT.

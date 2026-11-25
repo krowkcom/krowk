@@ -1583,8 +1583,8 @@ pub enum ServerFrame {
 pub enum PluginHarness {
     Claude,
     Codex,
-    /// pi (pi.dev), through the `@gruntas/pi` extension, which sends
-    /// Claude-shaped payloads.
+    // pi (pi.dev), through the `@gruntas/pi` extension, which sends
+    // Claude-shaped payloads. Not a doc comment: the schema keeps one enum.
     Pi,
 }
 

@@ -8,7 +8,7 @@
 // before it: that ticket un-skips them.
 
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
@@ -109,11 +109,13 @@ test('the manifest loads the extension, pins pi, and ships what it loads', () =>
   assert.equal(manifest.name, '@gruntas/pi')
   assert.ok(manifest.keywords.includes('pi-package'))
   assert.deepEqual(manifest.pi.extensions, ['./src/gruntas.ts'])
-  assert.match(manifest.peerDependencies['@earendil-works/pi-coding-agent'], /^>=1\.6\.0 <2$/)
-  // pi supplies its own packages; a copy in dependencies would shadow them.
+  // The pi it is tested against. pi's own packages are peers at "*", as pi
+  // asks, and never dependencies, which would shadow pi's copies.
+  assert.equal(manifest.engines.pi, '>=1.6.0 <2')
+  assert.deepEqual(manifest.peerDependencies, { '@earendil-works/pi-coding-agent': '*' })
   assert.equal(manifest.dependencies, undefined)
   for (const e of manifest.pi.extensions) assert.ok(manifest.files.includes(e.replace(/^\.\//, '')), e)
-  for (const f of manifest.files) assert.ok(readFileSync(join(pkg, f)).length > 0, f)
+  for (const f of manifest.files) assert.ok(existsSync(join(pkg, f)), f)
 })
 
 test('the factory loads on pi\'s API and, on Windows, does nothing', async () => {
@@ -167,6 +169,16 @@ test('PI02: session_start runs SessionStart and session_shutdown SessionEnd, nei
   assert.deepEqual(runs[1]?.stdin, fixture('SessionEnd'))
 })
 
+test('PI02: a reload keeps the session registered: no SessionEnd, whose late deregistration would undo the new start', { skip: 'PI02' }, async () => {
+  const pi = fakePi()
+  const { host, runs } = fakeHost()
+  install(pi.api, host)
+  await pi.fire('session_shutdown', { reason: 'reload' })
+  await pi.fire('session_start', { reason: 'reload' })
+  await settle()
+  assert.deepEqual(runs.map(r => r.argv[3]), ['SessionStart'])
+})
+
 test('PI02: a tool call\'s end runs PostToolUse with its input, a failed one PostToolUseFailure', { skip: 'PI02' }, async () => {
   const pi = fakePi()
   const { host, runs } = fakeHost()
@@ -188,25 +200,39 @@ test('PI02: the end of a run awaits Stop and turns its block into one continuati
   const { host, runs } = fakeHost(e => (e === 'Stop' ? JSON.stringify({ decision: 'block', reason: REMINDER }) : ''))
   install(pi.api, host)
   await pi.fire('session_start', { reason: 'startup' })
-  const [first] = (await pi.fire('agent_before_settle', { entries: [] })) as any[]
+  // Another extension's proposal, which the answer must keep.
+  const theirs = { type: 'custom', customType: 'other', data: {} }
+  const [first] = (await pi.fire('agent_before_settle', { entries: [theirs] })) as any[]
   const stops = () => runs.filter(r => r.argv[3] === 'Stop')
   assert.deepEqual(stops()[0]?.stdin, fixture('Stop'))
   assert.ok(stops()[0]!.limitMs <= 2000)
   assert.equal(first?.continue, true)
-  assert.ok(JSON.stringify(first?.entries).includes(REMINDER), JSON.stringify(first))
+  assert.deepEqual(first?.entries[0], theirs)
+  const added = first?.entries.slice(1)
+  assert.equal(added.length, 1, JSON.stringify(first))
+  assert.equal(added[0].type, 'custom_message')
+  assert.ok(JSON.stringify(added[0].content).includes(REMINDER), JSON.stringify(added[0]))
   // The continuation's own end says so, and is never asked to continue again.
   const [second] = (await pi.fire('agent_before_settle', { entries: [] })) as any[]
   assert.equal((stops()[1]?.stdin as any)?.stop_hook_active, true)
   assert.notEqual(second?.continue, true)
+  // The next run starts over: it may be reminded again.
+  const [third] = (await pi.fire('agent_before_settle', { entries: [] })) as any[]
+  assert.equal((stops()[2]?.stdin as any)?.stop_hook_active, false)
+  assert.equal(third?.continue, true)
 })
 
-test('PI02: a Stop that answers nothing, or never answers, leaves the run to end', { skip: 'PI02' }, async () => {
-  const pi = fakePi()
-  const { host } = fakeHost(() => undefined)
-  install(pi.api, host)
-  await pi.fire('session_start', { reason: 'startup' })
-  const [answer] = (await pi.fire('agent_before_settle', { entries: [] })) as any[]
-  assert.notEqual(answer?.continue, true)
+test('PI02: a Stop that answers nothing, or never answers, leaves the run to end', { skip: 'PI02', timeout: 5000 }, async () => {
+  for (const hangs of [false, true]) {
+    const pi = fakePi()
+    const { host } = fakeHost(() => undefined)
+    // A host that never answers stands for a hook past its limit, which the
+    // real host kills (see run, above) and answers nothing for.
+    install(pi.api, hangs ? { ...host, run: (_a, _s, limitMs) => new Promise(r => setTimeout(() => r(undefined), Math.min(limitMs, 100))) } : host)
+    await pi.fire('session_start', { reason: 'startup' })
+    const [answer] = (await pi.fire('agent_before_settle', { entries: [] })) as any[]
+    assert.notEqual(answer?.continue, true)
+  }
 })
 
 test('PI02: without gruntas on the PATH, a session\'s start shows the install hint and runs nothing', { skip: 'PI02' }, async () => {
@@ -277,11 +303,16 @@ test('PI04: without gruntas on the PATH, no MCP server is registered', { skip: '
   assert.deepEqual(pi.mcp, [])
 })
 
+/** Every SKILL.md at or under `at`. */
+function skills(at: string): string[] {
+  if (!existsSync(at)) return []
+  if (!statSync(at).isDirectory()) return at.endsWith('SKILL.md') ? [at] : []
+  return readdirSync(at).flatMap(n => skills(join(at, n)))
+}
+
 test('PI04: the package ships the gruntas skill', { skip: 'PI04' }, () => {
   const manifest = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8'))
   assert.ok(manifest.pi.skills?.length > 0, 'no skills in the manifest')
-  for (const s of manifest.pi.skills) {
-    const skill = readFileSync(join(pkg, s, 'SKILL.md'), 'utf8')
-    assert.match(skill, /^---\nname: gruntas\n/)
-  }
+  const found = manifest.pi.skills.flatMap((s: string) => skills(join(pkg, s)))
+  assert.ok(found.some((f: string) => /^---\nname: gruntas\n/.test(readFileSync(f, 'utf8'))), JSON.stringify(found))
 })

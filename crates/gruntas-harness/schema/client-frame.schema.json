@@ -1230,19 +1230,11 @@
     },
     "PluginHarness": {
       "description": "A harness whose sessions gruntas's plugin reports from.",
-      "oneOf": [
-        {
-          "type": "string",
-          "enum": [
-            "claude",
-            "codex"
-          ]
-        },
-        {
-          "description": "pi (pi.dev), through the `@gruntas/pi` extension, which sends\nClaude-shaped payloads.",
-          "type": "string",
-          "const": "pi"
-        }
+      "type": "string",
+      "enum": [
+        "claude",
+        "codex",
+        "pi"
       ]
     },
     "Registration": {
