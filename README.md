@@ -9,12 +9,12 @@ Run Claude Code and Codex across every machine and account you have, and keep th
 
 ---
 
-Gruntas sits underneath the agents you already run. Keep your harness, subscription, permissions, skills and hooks; gruntas adds machines, accounts and a way to show the work.
+Gruntas sits underneath the agents you already run. Keep your harness, subscription, permissions, skills and hooks; gruntas adds machines, accounts and links to the work.
 
 - **Every machine.** Pair your machines and they share the work. Sessions follow you between them, end-to-end encrypted.
-- **Every account.** When one account hits its limit, the session continues on the next, on Claude Code or Codex, without losing its place.
-- **Every agent, in view.** One tree of every agent on every machine. Any agent can read, message or interrupt the others, within limits you set.
-- **Evidence, not screen-watching.** Agents publish screenshots, diffs and logs as links that unfurl in GitHub, Slack, Linear and Basecamp.
+- **Every account.** When an account hits its limit, a session started with `gruntas run` moves to the next one, on Claude Code or Codex, and carries on.
+- **Every agent, in view.** One tree of every agent on every machine. Agents can read, message or interrupt each other, as far as each machine's `steer` setting allows.
+- **Links to the work.** Agents publish screenshots, diffs and logs as links to paste into GitHub, Slack, Linear or Basecamp.
 
 ## Install
 
@@ -22,9 +22,9 @@ Gruntas sits underneath the agents you already run. Keep your harness, subscript
 curl -fsSL https://gruntas.com/install | bash
 ```
 
-Or `npx @gruntas/cli`, or `cargo install --locked --git https://github.com/gruntas/gruntas --features harness gruntas`. Builds ship for Linux and macOS (amd64, arm64) and Windows (amd64). [Install docs](https://gruntas.com/docs#install)
+Or `npx @gruntas/cli`, or `cargo install --locked --git https://github.com/gruntas/gruntas --features harness gruntas`. Builds ship for Linux and macOS (amd64, arm64) and Windows (amd64). CI and containers get the lean build, which only publishes. [Install docs](https://gruntas.com/docs#install)
 
-Then add the plugin, which registers each session with gruntas:
+Then add the plugin, which registers each session with gruntas. It needs the full `gruntas` on your PATH.
 
 ```text
 # Claude Code
@@ -40,20 +40,25 @@ codex plugin add gruntas@gruntas
 
 ```bash
 gruntas                              # set up this machine: sign in, connect an account
+gruntas -p "fix the build"           # one prompt, headless
 gruntas run claude --account auto    # Claude Code on the account with the most room
 gruntas run claude --unattended "fix the flaky test"   # a background worker
 gruntas status                       # every agent on every machine
 gruntas push screenshot.png          # a link to paste where people will read it
 ```
 
-On another machine, install gruntas, run `gruntas`, and type the code `gruntas machines` shows on one you already have. `gruntas run` and `gruntas status` need Linux or macOS.
+Accounts are Claude or ChatGPT subscriptions, or API keys: Anthropic-compatible keys run in Claude Code, OpenAI-compatible ones (OpenAI, xAI, OpenRouter) in Codex.
+
+To add a machine, install gruntas there and run `gruntas`. Once you've signed in, enter the code `gruntas machines` shows on a machine you already have.
+
+A repository's own hooks and MCP servers run only once you trust it (`gruntas trust`). `gruntas run`, `status` and `machines` need Linux or macOS.
 
 ## Learn more
 
 - **[Sessions](https://gruntas.com/docs#sessions)** — every agent session on the machine, from gruntas, Claude Code, Cursor or opencode, and the ones on your other machines.
 - **[Machines](https://gruntas.com/docs#machines)** — load, memory and free slots, and which machines take work from the others.
-- **[Worktrees](https://gruntas.com/docs#worktrees)** — agents running at once each get their own, so they never overwrite each other.
-- **[Publishing](https://gruntas.com/docs#first-push)** — links that carry the repo, commit, branch, PR and session. Works without an account for a day, and in CI as a GitHub Action (`uses: gruntas/gruntas@v0`).
+- **[Worktrees](https://gruntas.com/docs#worktrees)** — Claude Code sessions with the plugin each get their own, so they never overwrite each other.
+- **[Publishing](https://gruntas.com/docs#first-push)** — links that carry the repo, commit, branch, PR and session. Anyone with the link can open it. Without an account it lasts 24 hours. In CI, use the GitHub Action (`uses: gruntas/gruntas@v0`).
 - **[MCP](https://gruntas.com/docs#mcp)** — the MCP servers you set up for Claude Code, available to Codex too.
 - **[Configuration](https://gruntas.com/docs#configuration)** — `~/.gruntas/`, `.gruntas/config.json` per repository, `GRUNTAS_*` variables.
 
@@ -62,6 +67,8 @@ On another machine, install gruntas, run `gruntas`, and type the code `gruntas m
 ## Versions
 
 Calendar versions, `YYYY.M.N`. Breaking changes are announced in [CHANGELOG.md](CHANGELOG.md) at least one release ahead, and each release is supported for a year. `uses: gruntas/gruntas@v0` follows every stable release; pin a tag to stay on one.
+
+Building from source: [development docs](https://gruntas.com/docs#development).
 
 ## License
 
