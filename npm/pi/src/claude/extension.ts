@@ -10,6 +10,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Accounts, agentDir, type Gruntas, type Listed } from './accounts.ts'
 import type { Account } from './launch.ts'
 import { anthropicChatModels, claudeModels } from './models.ts'
+import { installPicker } from './picker.ts'
 import { API, ClaudeSdkProvider, type ProviderOptions } from './provider.ts'
 import { limitHit, Rollover, usagePayload, type Next, type Ui } from './rollover.ts'
 
@@ -57,6 +58,7 @@ export function installClaude(pi: ExtensionAPI, runtime: Runtime, accounts: Acco
   const provider = new ClaudeSdkProvider({ ...runtime, account: () => accounts.current(), debug, onRateLimit })
   accounts.onMove(to => provider.retire(to.name))
   for (const event of ['session_start', 'agent_start', 'turn_start'] as const) pi.on(event, (_event: unknown, ctx: any) => void (ui = rolloverUi(ctx)))
+  installPicker(pi, accounts, PROVIDER)
 
   const register = (models = claudeModels()) =>
     pi.registerProvider(PROVIDER, {
@@ -116,8 +118,8 @@ async function providersNext(args: string[]): Promise<Next | undefined> {
 /** The machine's gruntas, as the accounts read it. */
 export const systemGruntas: Gruntas = {
   async list(): Promise<Listed[]> {
-    const r = await gruntas(['providers', 'list', '--json'], 15_000)
-    if (!r || r.code !== 0) throw new Error(`gruntas: \`gruntas providers list\` failed${r?.err ? `: ${r.err.trim()}` : ''}`)
+    const r = await gruntas(['providers', 'list', '--check', '--json'], 15_000)
+    if (!r || r.code !== 0) throw new Error(`gruntas: \`gruntas providers list --check\` failed${r?.err ? `: ${r.err.trim()}` : ''}`)
     return JSON.parse(r.out).data.instances
   },
   async auto(): Promise<string | undefined> {
