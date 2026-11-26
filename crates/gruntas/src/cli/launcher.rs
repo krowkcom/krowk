@@ -1,13 +1,13 @@
 //! `gruntas run <harness> [--account <name|auto>] [--unattended "<task>"]
-//! [--no-sandbox] [--no-plugin] [args…]` (Launcher): the stock `claude` or `codex` on one
+//! [--no-sandbox] [--no-plugin] [--passthrough] [args…]` (Launcher): the stock `claude` or `codex` on one
 //! of the person's accounts, with the gruntas plugin and the sandbox that
 //! keeps it out of the gruntas home. The plan is `gruntas_harness::launch`'s;
 //! this reads the command line, resolves the account and hands the plan to
 //! the slice that runs it.
 //!
 //! Its words after the harness are the harness's, so they never reach
-//! gruntas's flag parser: only `--account`, `--unattended`, `--no-sandbox`
-//! and `--no-plugin` are gruntas's, anywhere before a `--`, and everything else
+//! gruntas's flag parser: only `--account`, `--unattended`, `--no-sandbox`,
+//! `--no-plugin` and `--passthrough` are gruntas's, anywhere before a `--`, and everything else
 //! (everything after a `--`, too) passes through as typed.
 
 use super::{flags::Flags, report, Ctx, Io};
@@ -34,6 +34,7 @@ struct Asked {
     unattended: Option<String>,
     no_sandbox: bool,
     no_plugin: bool,
+    passthrough: bool,
     rest: Vec<String>,
 }
 
@@ -63,24 +64,35 @@ fn parse(words: &[String]) -> Result<Asked, String> {
             "--no-sandbox" => return Err("--no-sandbox takes no value".into()),
             "--no-plugin" if inline.is_none() => a.no_plugin = true,
             "--no-plugin" => return Err("--no-plugin takes no value".into()),
+            "--passthrough" if inline.is_none() => a.passthrough = true,
+            "--passthrough" => return Err("--passthrough takes no value".into()),
             _ => a.rest.push(w.clone()),
         }
     }
     if a.unattended.as_deref().is_some_and(|t| t.trim().is_empty()) {
         return Err("--unattended needs the task the session starts on".into());
     }
+    if a.passthrough && a.unattended.is_some() {
+        return Err("--passthrough is for an app that drives the harness itself, not a background session — drop --unattended".into());
+    }
     Ok(a)
 }
 
 /// Runs `gruntas run`, given the words after `run`, and returns the exit
-/// code. Failures are reported as every command's are.
+/// code. Failures are reported as every command's are; with
+/// `--passthrough`, as one line on stderr, the app's to show (R-T3-4).
 pub(super) fn run(io: &mut Io, words: &[String]) -> i32 {
     let format = output::resolve_format("", false, io.tty).unwrap_or(Format::Human);
     let colour = output::colour_for(io.tty, io.env);
     let err_colour = output::colour_for(io.err_tty, io.env);
+    let passthrough = parse(words).is_ok_and(|a| a.passthrough);
     let mut ctx = Ctx { io, f: Flags::default(), format, colour, filter: None };
     match launch_from(&mut ctx, words) {
         Ok(code) => code,
+        Err(e) if passthrough => {
+            let _ = writeln!(ctx.io.stderr, "gruntas: {}", e.fix().split_whitespace().collect::<Vec<_>>().join(" "));
+            super::exit::code_for(&e)
+        }
         Err(e) => report(ctx.io, &e, format, false, err_colour, None),
     }
 }
@@ -94,15 +106,21 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<i32, Error> {
     let registry = Registry::resolve(&super::prompt::load_instances()?, ctx.io.env);
     let name = match account.instance(harness) {
         Some(name) => name,
+        // An app's instance is one account, its home fixed (T3 Code D9).
+        None if asked.passthrough => return Err(bad("--passthrough runs one account: name it, not auto".into())),
         None => pick_auto(ctx, &registry, harness)?,
     };
     let instance = launch::account(&registry, harness, &name).map_err(|e| fail("no_account", e))?;
+    if asked.passthrough {
+        signed_in(ctx, instance)?;
+    }
     // Checked as every command's is, and named by its resolved path (D4).
     let home = gruntas_api::home::dir(ctx.io.env)?;
     let plugin_dir = launch::plugin_dir(ctx.io.env).ok_or_else(|| fail("no_home", "there is no home directory to keep the gruntas plugin in — set HOME"))?;
     let gruntas = std::env::current_exe().map_err(|e| fail("no_binary", format!("this gruntas's own path cannot be read, which the worktree hooks run: {e}")))?;
     let mode = match asked.unattended {
         Some(task) => Mode::Unattended { task },
+        None if asked.passthrough => Mode::Passthrough,
         None => Mode::Attended,
     };
     if harness == Harness::Claude
@@ -132,6 +150,7 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<i32, Error> {
             plugin_hint(ctx, instance)?;
             codex_unattended(ctx, task, &plan, instance, &registry).map(ok)
         }
+        (_, Mode::Passthrough) => passthrough(ctx, &req, plan),
         (_, Mode::Attended) => {
             if harness == Harness::Codex {
                 plugin_hint(ctx, instance)?;
@@ -139,6 +158,38 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<i32, Error> {
             attended(ctx, &req, plan, model)
         }
     }
+}
+
+/// R-T3-4: an account an app's harness would start on signed out, or
+/// without its key, is refused with the command that signs it in; a check
+/// that cannot answer is no reason not to start. Asked without the links
+/// Codex's check makes from the person's own home into the account's
+/// (`codex::share`): a launch writes nothing into an account (R-RUN-5).
+fn signed_in(ctx: &mut Ctx, instance: &Resolved) -> Result<(), Error> {
+    use gruntas_harness::readiness;
+    let (credentials, probe) = (super::providers::credentials_path()?, super::status::neutral_probe(ctx)?);
+    let mut asked = instance.clone();
+    if let Some(b) = asked.backend.as_mut() {
+        b.shared_home = None;
+    }
+    match readiness::check(&asked, &credentials, &probe).refusal(instance) {
+        Some(e) => Err(fail(&e.code, e.message)),
+        None => Ok(()),
+    }
+}
+
+/// R-T3-1: gruntas becomes the harness (exec), so the app that started it
+/// has the harness's own stdin, stdout, stderr, signals and exit status,
+/// and nothing restarts it: an app's session moves account by the app's
+/// own choice of instance, not inside one (T3 Code D3).
+fn passthrough(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan) -> Result<i32, Error> {
+    if plan.harness == Harness::Claude {
+        claude_ready(ctx, &mut plan, req.plugin)?;
+    }
+    let _ = ctx.io.stdout.flush();
+    let _ = ctx.io.stderr.flush();
+    let e = std::os::unix::process::CommandExt::exec(&mut child::command(&plan));
+    Err(fail("no_binary", format!("{} could not be started: {e}. Is it installed? `gruntas providers list --check` checks", plan.program.display())))
 }
 
 /// Continues session `from` on the other harness (Rollover for launched
@@ -832,7 +883,7 @@ mod tests {
     #[test]
     fn gruntas_reads_its_own_flags_and_passes_the_rest() {
         let a = parse(&words("claude --model opus --account=work -c --no-sandbox --unattended fix")).unwrap();
-        assert_eq!(a, Asked { harness: "claude".into(), account: Some("work".into()), unattended: Some("fix".into()), no_sandbox: true, no_plugin: false, rest: words("--model opus -c") });
+        assert_eq!(a, Asked { harness: "claude".into(), account: Some("work".into()), unattended: Some("fix".into()), no_sandbox: true, no_plugin: false, passthrough: false, rest: words("--model opus -c") });
         let a = parse(&words("codex resume -- --account x --no-sandbox --no-plugin")).unwrap();
         assert_eq!((a.account, a.no_sandbox, a.no_plugin, a.rest), (None, false, false, words("resume --account x --no-sandbox --no-plugin")));
         let a = parse(&words("claude --account work --no-plugin -p --output-format stream-json")).unwrap();
@@ -841,6 +892,11 @@ mod tests {
             assert!(parse(&words(bad)).is_err(), "{bad}");
         }
         assert!(parse(&["claude".into(), "--unattended".into(), " ".into()]).is_err());
+        let a = parse(&words("codex --account team --passthrough -- app-server --passthrough")).unwrap();
+        assert_eq!((a.passthrough, a.rest), (true, words("app-server --passthrough")));
+        for bad in ["claude --passthrough=1", "claude --passthrough --unattended fix"] {
+            assert!(parse(&words(bad)).is_err(), "{bad}");
+        }
         assert_eq!(super::words(&words("run claude -c")), Some(&words("run claude -c")[1..]));
         assert_eq!(super::words(&words("run --help")), None);
     }
