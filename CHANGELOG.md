@@ -21,6 +21,18 @@ breaking changes may affect it without notice.
 
 ### Added
 
+- **`gruntas run <claude|codex> --account <name> --passthrough -- <args…>`
+  runs a harness for an app that drives it.** For an app such as T3 Code,
+  which runs Claude Code through the Claude Agent SDK and Codex as `codex
+  app-server`: the account's launch, with the gruntas plugin and the
+  sandbox that keeps the session out of the gruntas home (for Codex, its
+  permissions profile after `app-server`), and the app's arguments after
+  gruntas's own, a `--settings` of the app's merged into gruntas's. The
+  harness's stdin, stdout, stderr and exit code pass through unchanged,
+  `--version` included; gruntas writes nothing to stdout and never
+  restarts the harness. An account that isn't signed in fails with one
+  line on stderr naming `gruntas connect`. `--no-sandbox` works as it does
+  in a terminal.
 - **`gruntas hook pi <event>` takes pi's sessions.** pi joins Claude Code
   and Codex as a harness gruntas's hook reads: a pi session registers as
   harness `pi`, and its account is pi's config home, `PI_CODING_AGENT_DIR`,
