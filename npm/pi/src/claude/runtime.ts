@@ -19,8 +19,10 @@ export async function load(): Promise<{ runtime: Runtime; missing?: string }> {
   try {
     sdk = await import('@anthropic-ai/claude-agent-sdk')
   } catch (e) {
+    // Missing is not-found naming the SDK itself; one of its own imports missing is a broken install.
     const code = (e as { code?: string })?.code
-    const why = code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND' || /cannot find/i.test(String(e)) ? SDK_MISSING : `the Claude Agent SDK beside this extension could not load: ${e instanceof Error ? e.message : String(e)}`
+    const missing = (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND' || /cannot find/i.test(String(e))) && /@anthropic-ai\/claude-agent-sdk['"`]/.test(String(e))
+    const why = missing ? SDK_MISSING : `the Claude Agent SDK beside this extension could not load: ${e instanceof Error ? e.message : String(e)}`
     return { runtime: { ai, createSession: () => { throw new Error(`gruntas: ${why}`) } }, missing: why }
   }
   return { runtime: { ai, createSession: (spec, chain, count) => new LiveSession(spec, chain, count, sdk.query) } }

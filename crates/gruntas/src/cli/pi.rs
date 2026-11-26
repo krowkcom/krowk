@@ -180,7 +180,11 @@ fn fetch_sdk(dir: &Path, npm: &[&OsStr], version: &str) -> Result<(), String> {
                     let _ = child.wait();
                     return Err(format!("npm took longer than {} s", SDK_FETCH_DEADLINE.as_secs()));
                 }
-                Err(e) => return Err(format!("npm: {e}")),
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("npm: {e}"));
+                }
             }
         };
         if !status.success() {
