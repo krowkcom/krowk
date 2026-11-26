@@ -53,6 +53,15 @@ breaking changes may affect it without notice.
   run the gruntas that started the harness, first on its PATH, whatever
   the app's PATH holds. Permission prompts still go to the app unchanged.
 
+### Changed
+
+- **The MCP server's listings say what it does now.** The MCP Registry,
+  npm and the Gemini CLI gallery described `@gruntas/mcp` as publishing
+  only. They now say what it is: orchestration for autonomous agents, from
+  any MCP client — see and steer your agents across machines, hand them work
+  and collect the result — with publishing evidence of their work one part
+  of it. Its README lists every tool and which platforms have it.
+
 ### Fixed
 
 - **The gruntas MCP tools find a Codex session's daemon on Linux.** Codex

@@ -1,7 +1,7 @@
 {
   "name": "gruntas",
   "version": "2026.11.7",
-  "description": "Publishing from Gruntas, the coding agent harness, for Gemini CLI: the gruntas MCP server turns a session's screenshots, recordings, diffs and logs into links that unfurl in Slack and Basecamp; in GitHub and Linear, images show inline.",
+  "description": "Adds Gruntas to Gemini CLI: see what your autonomous agents are doing across machines, steer them, hand work to a machine with room and collect the result. Publishes evidence of their work. Orchestration needs gruntas running on macOS or Linux.",
   "contextFileName": "GEMINI.md",
   "mcpServers": {
     "gruntas": {
