@@ -148,12 +148,15 @@ export const MCP_SERVER = {
 /**
  * The `gruntas` provider, where gruntas is there to start Claude Code. A runtime
  * that cannot load (a broken install) leaves it out and says so as a session
- * starts; the rest of the extension goes on.
+ * starts; the rest of the extension goes on. Without the Agent SDK, which gruntas
+ * fetches beside the carried extension, the provider registers and its turns,
+ * like the session start, say how to fetch it.
  */
 export async function claude(pi: ExtensionAPI, host: Host, env: Record<string, string | undefined>): Promise<Claude | undefined> {
   if (host.platform === 'win32' || !host.onPath()) return undefined
   try {
-    const { runtime } = await import('./claude/runtime.ts')
+    const { runtime, missing } = await (await import('./claude/runtime.ts')).load()
+    if (missing) pi.on('session_start', (_event, ctx) => ctx.ui.notify(`gruntas: Claude turns through your gruntas accounts are off: ${missing}`, 'warning'))
     // Usage readings go to gruntas's usage record, fired and not waited on.
     const usage = (payload: string) => void host.run(argv('usage'), payload, LIMIT_MS)
     return installClaude(pi, runtime, systemAccounts(env), { usage })

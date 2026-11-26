@@ -61,7 +61,6 @@ for pi (`gruntas pi extension`, `gruntas run pi`), is the @gruntas/pi extension
 bundled by npm/pi/bundle.mjs with the parts it uses of these packages, at the
 versions npm/pi/package-lock.json pins:
 
-  @anthropic-ai/claude-agent-sdk 0.3.332   Anthropic's terms (below)
   @modelcontextprotocol/sdk 1.32.2         MIT, Copyright (c) 2024 Anthropic, PBC
   ajv 8.20.0                               MIT, Copyright (c) 2015-2021 Evgeny Poberezkin
   ajv-formats 3.0.1                        MIT, Copyright (c) 2020 Evgeny Poberezkin
@@ -71,10 +70,15 @@ versions npm/pi/package-lock.json pins:
   zod-to-json-schema 3.25.2                ISC, Copyright (c) 2020, Stefan Terdell
   fast-uri 3.1.9                           BSD-3-Clause (below)
 
-The Claude Agent SDK is not MIT-licensed and the MIT license of gruntas does not
-extend to it. Its license reads: "© Anthropic PBC. All rights reserved. Use is
+The extension also uses the Claude Agent SDK (@anthropic-ai/claude-agent-sdk),
+which is not distributed with gruntas: neither the bundle nor any gruntas build
+contains it. The first time gruntas writes the extension, it fetches the exact
+version npm/pi/sdk pins (0.3.332) from npm, checked against the pinned
+integrity hash, into gruntas's own pi directory beside it. The SDK is not
+MIT-licensed and the MIT license of gruntas does not extend to it: it comes
+from npm under Anthropic's terms, "© Anthropic PBC. All rights reserved. Use is
 subject to the Legal Agreements outlined here:
-https://code.claude.com/docs/en/legal-and-compliance." The bundle leaves out the
+https://code.claude.com/docs/en/legal-and-compliance." gruntas leaves out the
 Claude Code the SDK's package ships: the extension starts Claude Code through
 gruntas instead.
 

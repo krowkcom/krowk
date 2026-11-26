@@ -3,11 +3,13 @@
 // npm/pi/carried/gruntas.js, which the full gruntas build embeds and
 // `gruntas pi extension` writes out for pi to load.
 //
-// It inlines what the extension uses of the Claude Agent SDK and the MCP SDK
-// (THIRD-PARTY-NOTICES), and leaves out the SDK's bundled Claude Code: its
-// Claude Code is started by gruntas (`gruntas run claude --no-plugin`). pi's
-// own packages (@earendil-works/*) stay external, so they are the running
-// pi's.
+// It inlines what the extension uses of the MCP SDK (THIRD-PARTY-NOTICES).
+// The Claude Agent SDK stays external: gruntas never distributes it. As
+// gruntas writes the extension it installs the exact SDK npm/pi/sdk pins from
+// npm beside it, where the bundle's bare import finds it; the SDK's own Claude
+// Code is left out, since gruntas starts Claude Code (`gruntas run claude
+// --no-plugin`). pi's own packages (@earendil-works/*) stay external, so they
+// are the running pi's.
 //
 // The file is checked in, so a plain `cargo build` needs no Node. Its first
 // line records a hash of what it was built from and of its own body, and
@@ -57,7 +59,22 @@ function sourcesHash() {
   return h.digest('hex')
 }
 
+const SDK = '@anthropic-ai/claude-agent-sdk'
+
+/** The Agent SDK gruntas fetches (npm/pi/sdk) must be the one the bundle is built and tested against. */
+function sdkPinned() {
+  const locked = f => JSON.parse(fs.readFileSync(path.join(here, f), 'utf8')).packages?.[`node_modules/${SDK}`]
+  const fetched = locked('sdk/package-lock.json')
+  const built = locked('package-lock.json')
+  if (!fetched || fetched.version !== built?.version || fetched.integrity !== built?.integrity) {
+    return `npm/pi/sdk/package-lock.json pins ${SDK} ${fetched?.version}, npm/pi/package-lock.json ${built?.version}: pin the same version in both`
+  }
+  return undefined
+}
+
 function check() {
+  const pin = sdkPinned()
+  if (pin) return pin
   let text
   try {
     text = fs.readFileSync(OUT, 'utf8')
@@ -91,7 +108,7 @@ function installedAsLocked() {
 }
 
 async function build() {
-  const off = installedAsLocked()
+  const off = sdkPinned() ?? installedAsLocked()
   if (off) throw new Error(`${off}: run \`make pi-bundle\`, which runs \`npm ci\` first`)
   let esbuild
   try {
@@ -106,7 +123,7 @@ async function build() {
     platform: 'node',
     format: 'esm',
     target: 'node22',
-    external: ['@earendil-works/*'],
+    external: ['@earendil-works/*', SDK],
     define: { GRUNTAS_PI_VERSION: JSON.stringify(VERSION_TOKEN) },
     legalComments: 'eof',
     charset: 'utf8',
@@ -115,6 +132,8 @@ async function build() {
   })
   const body = result.outputFiles[0].text
   if (!body.includes(VERSION_TOKEN)) throw new Error('the bundle lost the version token gruntas stamps')
+  // A static import of the SDK would stop the whole extension loading where it isn't installed.
+  if (new RegExp(`(\\bfrom|\\bimport)\\s*["']${SDK}(/[^"']*)?["']`).test(body)) throw new Error(`the bundle imports ${SDK} statically: import it in src/claude/runtime.ts only, dynamically`)
   const header = `// @gruntas/pi carried extension: sources sha256:${sourcesHash()} body sha256:${sha256(body)}. Built by \`make pi-bundle\`; do not edit.\n`
   fs.mkdirSync(path.dirname(OUT), { recursive: true })
   fs.writeFileSync(OUT, header + body)

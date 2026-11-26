@@ -87,15 +87,6 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         if name == "codex" && dir.file_name().is_some_and(|d| d == "schema") {
             continue;
         }
-        // The carried pi extension (npm/pi/bundle.mjs): npm/pi/src, which
-        // this scan reads, bundled with the Claude Agent SDK. The SDK's own
-        // code names Claude's login store for its SessionStore resume, an
-        // option the extension never passes: it starts Claude Code through
-        // `gruntas run claude`. The SDK's code, not gruntas's source, as
-        // node_modules is not; exempt by its exact path.
-        if name == "gruntas.js" && dir.ends_with("npm/pi/carried") {
-            continue;
-        }
         if p.is_dir() {
             walk(&p, out);
         } else if matches!(p.extension().and_then(|x| x.to_str()), Some("rs" | "sh" | "toml" | "js" | "mjs" | "py" | "json" | "jsonl" | "md")) || name == "fake-claude" {
