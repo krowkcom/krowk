@@ -5,8 +5,8 @@
 // binaries for one platform, and the two launchers people actually name —
 // `@gruntas/cli` and `@gruntas/mcp` — which depend on all five as optionalDependencies
 // and use whichever npm decided applies. That is the esbuild pattern. The
-// eighth is `@gruntas/pi`, the pi extension, which carries no binary: it runs
-// the `gruntas` already on the PATH.
+// eighth is `@gruntas/pi`, the pi package, which carries no binary: it runs
+// the pi extension the `gruntas` already on the PATH carries.
 //
 // The bytes are the release's bytes, read out of dist/, not a second `cargo build`
 // that could differ from what the checksums cover.
@@ -221,7 +221,12 @@ for (const launcher of LAUNCHERS) {
   published.push({ name: launcher.name, dir });
 }
 
-// --- Write the pi extension ---------------------------------------------------
+// --- Write the pi package -----------------------------------------------------
+
+// @gruntas/pi is a loader: one file that runs the pi extension the gruntas on
+// the PATH carries (npm/pi/carried/gruntas.js, embedded in gruntas). What the
+// extension is built from, and its SDKs, stay in the repository as npm/pi's
+// devDependencies, so the package depends on nothing but the pi that loads it.
 
 // Versioned with the CLI it runs. Held back from publishing (manifest.json's
 // `held`, which npm/publish.mjs skips) until @gruntas/pi has a trusted
@@ -233,6 +238,10 @@ const PI_HELD = "no trusted publisher is set up for @gruntas/pi on npmjs.com yet
   const dir = stage("@gruntas/pi");
   const manifest = readJSON(path.join(from, "package.json"));
   if (manifest.name !== "@gruntas/pi") die("npm/pi is named " + manifest.name + ", not @gruntas/pi");
+  if (manifest.dependencies) die("npm/pi has dependencies, which the loader must not: the extension's are in the bundle gruntas carries");
+  for (const entry of manifest.pi?.extensions ?? []) {
+    if (!manifest.files.includes(path.normalize(entry))) die("npm/pi's pi manifest names " + entry + ", which it does not ship");
+  }
   for (const file of ["package.json", "README.md", ...manifest.files]) {
     if (!fs.existsSync(path.join(from, file))) die("npm/pi ships " + file + ", which is not there");
     fs.cpSync(path.join(from, file), path.join(dir, file), { recursive: true });
@@ -240,6 +249,7 @@ const PI_HELD = "no trusted publisher is set up for @gruntas/pi on npmjs.com yet
   // stage() made a bin/ the extension has no use for.
   fs.rmSync(path.join(dir, "bin"), { recursive: true, force: true });
   manifest.version = version;
+  delete manifest.devDependencies;
   fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify(manifest, null, 2) + "\n");
   published.push({ name: manifest.name, dir, held: PI_HELD });
 }

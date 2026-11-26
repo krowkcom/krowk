@@ -24,6 +24,8 @@ import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const OUT = path.join(here, 'carried', 'gruntas.js')
+/** The @gruntas/pi package's loader, which runs this bundle and is no part of it. */
+const LOADER = path.join(here, 'src', 'loader.ts')
 
 /**
  * The version the bundle reports to Claude Code (launch.ts's VERSION). gruntas
@@ -36,14 +38,14 @@ const HEADER = /^\/\/ @gruntas\/pi carried extension: sources sha256:([0-9a-f]{6
 
 const sha256 = data => createHash('sha256').update(data).digest('hex')
 
-/** Everything the bundle is built from: the extension's source (not its tests), its package.json, the lockfile and this script. */
+/** Everything the bundle is built from: the extension's source (not its tests, nor the package's loader), its package.json, the lockfile and this script. */
 function sourcesHash() {
   const files = []
   const walk = dir => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, e.name)
       if (e.isDirectory()) walk(p)
-      else if (!e.name.endsWith('.test.ts')) files.push(p)
+      else if (!e.name.endsWith('.test.ts') && p !== LOADER) files.push(p)
     }
   }
   walk(path.join(here, 'src'))
