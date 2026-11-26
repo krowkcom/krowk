@@ -592,6 +592,8 @@ pub fn catalog(version: &str) -> Catalog {
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(relay_command());
     #[cfg(all(feature = "harness", unix))]
+    c.commands.push(pi_command());
+    #[cfg(all(feature = "harness", unix))]
     c.commands.push(Command { subcommands: machines_subcommands(), ..cmd("machines", "", "Your machines, and what each can take") });
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(cmd("hosts", "gruntas hosts", "The same as gruntas machines"));
@@ -726,6 +728,16 @@ fn sync_command() -> Command {
             },
         ],
         ..cmd("sync", "", "Sync sessions between your machines, end-to-end encrypted")
+    }
+}
+
+/// `gruntas pi`: plumbing for pi's `@gruntas/pi` loader, which runs the
+/// extension this gruntas carries.
+#[cfg(all(feature = "harness", unix))]
+fn pi_command() -> Command {
+    Command {
+        subcommands: vec![cmd("extension", "gruntas pi extension [--json]", "Write the pi extension and skill this gruntas carries, and print where")],
+        ..cmd("pi", "", "The gruntas extension for pi, as this gruntas carries it")
     }
 }
 
@@ -1376,6 +1388,8 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             #[cfg(all(feature = "harness", unix))]
             "relay",
             #[cfg(all(feature = "harness", unix))]
+            "pi",
+            #[cfg(all(feature = "harness", unix))]
             "ping",
             #[cfg(feature = "sessions")]
             "pricing",
@@ -1412,6 +1426,8 @@ pub const ALL_ONLY: &[&str] = &[
     "run",
     #[cfg(all(feature = "harness", unix))]
     "relay",
+    #[cfg(all(feature = "harness", unix))]
+    "pi",
     #[cfg(all(feature = "harness", unix))]
     "ping",
     #[cfg(feature = "sessions")]

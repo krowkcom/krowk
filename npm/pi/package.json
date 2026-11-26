@@ -43,5 +43,8 @@
   "engines": {
     "node": ">=22",
     "pi": ">=1.6.0 <2"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
   }
 }

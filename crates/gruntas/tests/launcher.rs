@@ -384,6 +384,55 @@ fn codex_attended_execs_codex_with_the_account_and_profile() {
     assert!(!env.iter().any(|v| v.starts_with("CODEX_HOME=")), "the default account keeps Codex's own home");
 }
 
+/// `gruntas run pi` (R-RUNPI-1..4): pi started attended with the extension
+/// and skill this binary carries (`-e`, `--skill`), on the Claude Code
+/// account `--account` names (`GRUNTAS_PI_ACCOUNT`, which the extension
+/// starts the session on), marked as launched (`GRUNTAS_PI_LAUNCHED=1`, so
+/// an installed `@gruntas/pi` loader stands aside), on
+/// `gruntas/<the account's default model>` unless the person named one, and
+/// with no sandbox: `--no-sandbox` changes nothing.
+#[test]
+#[ignore = "pending: gruntas run pi (ticket 02)"]
+fn pi_attended_execs_pi_with_the_carried_extension_account_and_model() {
+    let b = Sandbox::new("runpi");
+    b.fake("pi");
+    let carried = b.root.join("data/gruntas/pi");
+    let ext = carried.join("gruntas.js").display().to_string();
+    let model = format!("gruntas/{}", gruntas_harness::instances::DEFAULT_MODEL);
+    let o = b.gruntas(&["run", "pi", "--account", "work", "-c"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let (args, env) = b.started("pi");
+    assert_eq!(args[..2], ["-e".to_string(), ext.clone()], "{args:?}");
+    assert!(carried.join("gruntas.js").is_file() && carried.join("skills/gruntas/SKILL.md").is_file(), "the carried files, written");
+    assert!(args.windows(2).any(|w| w == ["--model".to_string(), model.clone()]), "{args:?}");
+    assert_eq!(args.last().map(String::as_str), Some("-c"), "the person's arguments last");
+    assert!(env.contains(&"GRUNTAS_PI_ACCOUNT=claude:work".to_string()), "{env:?}");
+    assert!(env.contains(&"GRUNTAS_PI_LAUNCHED=1".to_string()), "{env:?}");
+    // The person's model stands, and --no-sandbox changes nothing else.
+    assert!(b.gruntas(&["run", "pi", "--account", "claude:work", "--no-sandbox", "--model", "gruntas/claude-haiku-4-5"]).status.success());
+    let (args, _) = b.started("pi");
+    assert_eq!(args.iter().filter(|a| *a == "--model").count(), 1, "{args:?}");
+    assert!(args.ends_with(&["--model".into(), "gruntas/claude-haiku-4-5".into()]), "{args:?}");
+    assert!(b.gruntas(&["run", "pi", "--models", "gruntas/*"]).status.success());
+    assert!(!b.started("pi").0.iter().any(|a| a == "--model"), "--models is the person's choice too");
+    let help = b.gruntas(&["help", "run"]);
+    assert!(String::from_utf8_lossy(&help.stdout).contains("gruntas run <claude|codex|pi>"));
+}
+
+/// R-RUNPI-2 and 4: what `gruntas run pi` refuses, each with what to do,
+/// before pi starts.
+#[test]
+#[ignore = "pending: gruntas run pi (ticket 02)"]
+fn pi_refuses_unattended_no_plugin_a_codex_and_an_unknown_account() {
+    let b = Sandbox::new("runpi-refuse");
+    b.fake("pi");
+    failed(&b.gruntas(&["run", "pi", "--unattended", "fix it"]), 1, "--unattended");
+    failed(&b.gruntas(&["run", "pi", "--no-plugin"]), 1, "--no-plugin");
+    failed(&b.gruntas(&["run", "pi", "--account", "team"]), 1, "Claude Code account");
+    failed(&b.gruntas(&["run", "pi", "--account", "nope"]), 2, "gruntas connect anthropic");
+    assert!(!b.root.join("pi.args").exists(), "nothing started");
+}
+
 /// R-RUN-2: `--account auto` ranks the harness's own accounts from the
 /// usage record, as rollover does, measured from the default account's
 /// login, and says which it picked and why.

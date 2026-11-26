@@ -403,3 +403,29 @@ test('a move made while the session is still settling its start wins', async () 
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// Pending: `gruntas run pi --account <name>` (ticket 02) puts the account in GRUNTAS_PI_ACCOUNT;
+// systemAccounts(env) hands it to Accounts as the account to start on, ahead of the one used last.
+test('the account the launcher asks for (GRUNTAS_PI_ACCOUNT) starts the session, ahead of the last one', { skip: 'pending: gruntas run pi (ticket 02)' }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'gruntas-pi-asked-'))
+  try {
+    const rows: Listed[] = [
+      { instance: 'claude', kind: 'claude-code', ready: true, config_dir: '/h/claude' },
+      { instance: 'claude:work', kind: 'claude-code', ready: true, config_dir: '/h/work' },
+      { instance: 'codex', kind: 'codex-app-server', ready: true },
+    ]
+    const g: Gruntas = { list: async () => rows, auto: async () => 'claude', next: async () => undefined }
+    const file = join(dir, 'account.json')
+    writeFileSync(file, JSON.stringify({ last: 'claude' }))
+    const Asked = Accounts as unknown as new (g: Gruntas, file: string, asked?: string) => Accounts
+    assert.equal((await new Asked(g, file, 'claude:work').current()).name, 'claude:work', 'asked beats last')
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).last, 'claude:work', 'and becomes the last one')
+    // One pi cannot run on, or gruntas does not list: the usual start, last then auto.
+    writeFileSync(file, JSON.stringify({ last: 'claude' }))
+    assert.equal((await new Asked(g, file, 'codex').current()).name, 'claude')
+    assert.equal((await new Asked(g, file, 'gone').current()).name, 'claude')
+    assert.equal((await new Asked(g, file, undefined).current()).name, 'claude', 'none asked: as before')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
