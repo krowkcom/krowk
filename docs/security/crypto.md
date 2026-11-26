@@ -1,6 +1,6 @@
 # End-to-end encryption
 
-> Published from Canon, krowk's private design specs (`canon/engineering/crypto.md` in `gruntas/cloud` at ec690a9). `threat-model.md` is in this directory. The other design files it cites, such as `relay.md`, `harness.md` and `devices.md`, are not published.
+> Published from Canon, krowk's private design specs (`canon/engineering/crypto.md` in `gruntas/cloud` at 6e0004c). `threat-model.md` is in this directory. The other design files it cites, such as `relay.md`, `harness.md` and `devices.md`, are not published.
 
 Sessions leave the machine they ran on — to the registry, the relay and R2 — so that a person can pick one up on another device. A transcript is the most sensitive thing krowk touches: source code, credentials pasted into a prompt, whatever a tool read. This file is the crypto design every sync, relay and client ticket reads instead of choosing again: the constructions and their suite, the key hierarchy, the blob formats, what the server side can and cannot learn, and what is not done yet.
 
@@ -50,7 +50,7 @@ session content: batches, frames, chunks
 Why each layer is there, and what a person does with it, is `devices.md` → Keys. What each is, exactly:
 
 - **Device key.** An X25519 keypair per machine and krowk home: RFC 9180's `DeriveKeyPair` over 32 bytes from the operating system. The private half never leaves the machine. A new krowk home is a new device. A device's id is the first 16 bytes of `SHA-256("krowk/device-id/v1" ‖ X25519 public key)`.
-- **Signing key.** An Ed25519 keypair per device (`e2e::SigningKey`), in `signing.json` beside `device.json`. It signs three things, each under its own label: a relay join (`krowk/relay/v1`, `relay.md` → Joining), a registry request (`krowk/registry/v1`, or `v2`, below) and a device-list entry (`krowk/device-list/v1`, below). No key is wrapped to it.
+- **Signing key.** An Ed25519 keypair per device (`e2e::SigningKey`), in `signing.json` beside `device.json`. It signs three things, each under its own label: a relay join (`krowk/relay/v1`, `relay.md` → Joining), a registry request (`krowk/registry/v2`, below) and a device-list entry (`krowk/device-list/v1`, below). No key is wrapped to it.
 - **User key.** 32 random bytes per person, not per workspace, with a generation that starts at 1 and goes up by one on every rotation (a removal, a kit replacement). Its id is the first 16 bytes of `SHA-256("krowk/user-key-id/v1" ‖ generation (u32, big-endian) ‖ key)`, so two generations never share an id. It is held only wrapped: each generation to devices (HPKE), and each generation g under g+1 (XChaCha20-Poly1305), so a device holding the newest opens any older one by walking down one step at a time (`UserKeys::open`). It is not the kit, and nothing but a device holds it.
 - **Adopting a generation.** HPKE Base mode doesn't say who wrapped a key: the registry, holding a device's public key, can wrap a key of its own to it. So a device takes generation g only when the opened key's computed id is the id its verified device list names for g — never the id in the blob's header, which is the sender's claim — and, when it already holds an older generation, only when the new one opens back down to exactly the one it holds (`UserKeys::adopt`).
 - **Recovery device.** The kit's 16 bytes through HKDF-SHA256 with no salt and `info` `"krowk/recovery-device/v1"`, expanded to 64 bytes: the first 32 are `DeriveKeyPair`'s input for the X25519 key, the last 32 the Ed25519 seed. The same words give the same device on every machine; it sits on the device list with kind `recovery` and is wrapped to like any other device, so a rotation never makes the kit stale. Known answers for two kits are frozen in `recovery.rs`'s tests: a change to the label or the split fails them, since it would orphan every kit written.
@@ -309,28 +309,16 @@ An API key says only which workspace, and which person, is asking; a CI job and 
 - a viewer's relay ticket (`GET /v1/sessions/:id/relay_ticket`), and so, with the lease calls, every relay ticket.
 - reading sessions: listing them, showing one, listing a session's chunks (`GET /v1/sessions`, `/v1/sessions/:id`, `…/chunks`). The key alone, copied off a machine without its signing key, reads none of them, not even their sizes and times.
 
-Each carries three headers beside the bearer key, and a fourth for v2 (below):
+Each carries four headers beside the bearer key:
 
 | Header | Value |
 | --- | --- |
 | `X-Krowk-Device` | the device's id, 32 hex characters |
 | `X-Krowk-Timestamp` | when it was signed, Unix milliseconds, decimal |
 | `X-Krowk-Signature` | pure Ed25519 (RFC 8032), 64 bytes in hex |
-| `X-Krowk-Signature-Version` | `2` for v2's lines; absent for v1's |
+| `X-Krowk-Signature-Version` | `2`, the only version there is |
 
-The signature is over five lines joined by `\n` (v1):
-
-```
-krowk/registry/v1
-METHOD
-/v1/path?query          the request target, exactly as sent
-TIMESTAMP               the header's digits, verbatim
-hex(SHA-256(body))      of the empty string for a call with no body
-```
-
-None of the fields can hold a newline — a method is a token, a request target has none, the timestamp is digits and the digest hex — so the lines read one way only. The label keeps a registry signature from ever being a relay join's, or the reverse.
-
-Those are v1's lines. They bind neither the device nor the deployment: nothing in them says which `X-Krowk-Device` the signature was made for, or which registry. A request that carries `X-Krowk-Signature-Version: 2` is signed over seven lines instead:
+The signature is over seven lines joined by `\n`:
 
 ```
 krowk/registry/v2
@@ -342,25 +330,17 @@ DEVICE                  the X-Krowk-Device fingerprint, lowercase hex
 ORIGIN                  the API origin, https://api.gruntas.com in production (https://api.krowk.com from a client released before the move)
 ```
 
-The origin is the API origin the client was pointed at, reduced as `relay.md` → The canonical origin reduces a relay's but keeping `http` and `https` as they are: the scheme, `://`, the host lowercased (an IPv6 address bracketed, in RFC 5952's text), `:port` only when it is not the scheme's default (80 for `http`, 443 for `https`), and nothing else: no user name (a URL with one is refused), no path, no query, no trailing slash. So a client pointed at `https://API.gruntas.com:443/v1` signs `https://api.gruntas.com`. The registry verifies against an **ordered list of origins** in its config, `https://api.gruntas.com` first, then `https://api.krowk.com`, trying each in turn and accepting the request if any verifies; the two are one deployment, the second kept at least until 2027-01-20 for clients released before the move. The origin is never derived from the `Host` header, which behind Cloudflare is what the edge forwarded rather than what the device addressed. Neither new line can hold a newline either: the fingerprint is checked as hex, the client's origin is reduced as above and the registry's come from its config. **The workspace is not a line, on purpose.** A device belongs to the person, not to one of their workspaces (`devices.md`), so any of the person's API keys may carry its signature, and the replay memory is global: a signed request is accepted once, whichever workspace's key it arrives with.
+None of the fields can hold a newline — a method is a token, a request target has none, the timestamp is digits, the digest and the fingerprint hex, and the origin is reduced as below — so the lines read one way only. The label keeps a registry signature from ever being a relay join's, or the reverse. The last two lines bind the signature to the `X-Krowk-Device` it is presented as and to the registry it was made for.
 
-A request without the header is checked over v1's lines, as before. Each one that verifies is logged, and sent to PostHog as `registry.signed_request.v1` (device, user agent and path) at most once per device per day, so the registry can tell when v1 is no longer used and retire it. A header with any value but `2` is refused, so no spelling of the header names v1. The registry accepts both versions; the client signs v2 only once a registry that accepts it is deployed.
+The origin is the API origin the client was pointed at, reduced as `relay.md` → The canonical origin reduces a relay's but keeping `http` and `https` as they are: the scheme, `://`, the host lowercased (an IPv6 address bracketed, in RFC 5952's text), `:port` only when it is not the scheme's default (80 for `http`, 443 for `https`), and nothing else: no user name (a URL with one is refused), no path, no query, no trailing slash. So a client pointed at `https://API.gruntas.com:443/v1` signs `https://api.gruntas.com`. The registry verifies against an **ordered list of origins** in its config, `https://api.gruntas.com` first, then `https://api.krowk.com`, trying each in turn and accepting the request if any verifies; the two are one deployment, the second kept at least until 2027-01-20 for clients released before the move. The origin is never derived from the `Host` header, which behind Cloudflare is what the edge forwarded rather than what the device addressed. **The workspace is not a line, on purpose.** A device belongs to the person, not to one of their workspaces (`devices.md`), so any of the person's API keys may carry its signature, and the replay memory is global: a signed request is accepted once, whichever workspace's key it arrives with.
 
-**v1 retires.** Stop accepting v1 signed lines at the later of two points:
-
-- 30 days after the CLI release that ships cli: 163 (v2 signing);
-- 14 consecutive days with zero distinct devices sending v1.
-
-Either way, never later than 90 days after that release. The refusal keys on the signature version, not on User-Agent.
-
-The registry's setting `signed_requests.v1_until` (an ISO date; blank accepts v1) is how the date is set: past it, a request without the header is refused as `401 signature_version_retired` with the message "this krowk is older than X and signs registry requests with the retired v1 lines — run \`krowk upgrade\`", X being the first release that signs v2 (`signed_requests.v2_release`; blank, the message leaves out "is older than X and"). The command is backticked because the CLI, from cli: 168 on, shows this message as its fix and gives a backticked `krowk …` command in a fix a "Try:" line of its own; older CLIs show the message as it is.
+**v2 is the only version.** A request without `X-Krowk-Signature-Version`, or with any value but `2`, is refused as `401 signature_invalid` with the message "X-Krowk-Signature-Version must be 2 — a krowk that signs without it uses the retired v1 lines: run \`krowk upgrade\`". Every CLI that signs v2 sends the header, so only a CLI from before v2 ever sees this message, and it shows it as it is. v1, sent without the header and signed over the first five lines under the label `krowk/registry/v1`, bound neither the device nor the deployment; it was retired in November 2026.
 
 The registry refuses, each as a `401`:
 
-- a call with any of the three missing (`signature_required`);
-- a signature that does not verify under the signing key on record for that device of the key's person, or a device the person does not have, or an `X-Krowk-Signature-Version` other than `2` (`signature_invalid`) — under v2, a signature presented with another device's fingerprint, or made for an origin not on the registry's list, is one of these;
+- a call with any of `X-Krowk-Device`, `X-Krowk-Timestamp` or `X-Krowk-Signature` missing (`signature_required`);
+- a signature that does not verify under the signing key on record for that device of the key's person, or a device the person does not have, or an `X-Krowk-Signature-Version` that is absent or not `2` (`signature_invalid`) — a signature presented with another device's fingerprint, or made for an origin not on the registry's list, is one of these;
 - a timestamp more than five minutes from the registry's clock (`signature_stale`);
-- a v1 request once v1 has retired (`signature_version_retired`, above);
 - a signed request it has already accepted (`signature_replayed`): each one it accepts is remembered, by a digest of the device and the lines, in a table with a unique index until its window closes, so two processes cannot both accept one.
 
 And then, for the device that signed: a revoked one is refused (`403 device_revoked`); a call that names another device in its body (`device`, for an acquire or a ticket) is refused (`403 device_mismatch`); and a write that is the lease holder's is refused unless the holder signed it (`409 lease_stale`), so a lease token copied to another device writes nothing. A hand-over is signed by the holder and names the next one. The signing key on record is the one the device-list entry that added the device names.
@@ -414,6 +394,7 @@ Every secret type in `krowk-client` — the account key, every user key generati
 
 ## Change log
 
+- **2026-11-26** — registry: 169: v1 signed registry requests are retired. v2 is the only version: a request without `X-Krowk-Signature-Version`, or with any value but `2`, is `signature_invalid` and told to upgrade. The `registry.signed_request.v1` count, the `signed_requests.v1_until` and `v2_release` settings and the `signature_version_retired` code are gone.
 - **2026-11-22** — Move to gruntas.com, GD09: a v2 signature binds `https://api.gruntas.com` in production, and the registry verifies against an ordered list of API origins (`https://api.gruntas.com`, then `https://api.krowk.com`), never the `Host` header.
 - **2026-11-19** — Sync paywall: an expired start (Free) — when a reader accepts a log that starts after chunk 0, what the registry must declare, and the trade-off that a hostile registry can drop a log's start, shown as expired history.
 - **2026-10-30** — Images everywhere IMG9: Image objects (sealing, associated data, keyed name under the epoch-0 key, what the registry learns). What the server side can see gains the exact size of an image object.
