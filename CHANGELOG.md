@@ -19,6 +19,16 @@ breaking changes may affect it without notice.
 
 ## [Unreleased]
 
+## [2026.11.8] - 2026-11-26
+
+**T3 Code runs on your gruntas accounts.** `gruntas t3` writes a launcher per
+Claude Code and Codex account and says what to add in T3 Code's Providers:
+each instance then runs through `gruntas run --passthrough`, registered,
+guarded and with the gruntas tools, while T3 Code keeps its own approvals,
+access modes, models and threads. Codex sessions in T3 Code need their
+hooks approved once in a terminal, and aren't fenced off the gruntas home
+yet: T3 Code's own sandbox setting overrides gruntas's.
+
 ### Added
 
 - **`gruntas run <claude|codex> --account <name> --passthrough -- <args…>`
