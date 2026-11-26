@@ -1521,6 +1521,12 @@ stdout:
       "hidden": true
     },
     {
+      "name": "t3",
+      "usage": "gruntas t3",
+      "summary": "Write T3 Code a launcher per Claude Code and Codex account",
+      "hidden": true
+    },
+    {
       "name": "status",
       "usage": "gruntas status [project]",
       "summary": "Every agent on your machines, by project and machine",
@@ -3706,6 +3712,12 @@ tty:
           "usage": "For an app that drives the harness itself (T3 Code): its arguments, stdin, stdout, stderr and exit code pass through, nothing of gruntas's on stdout, no rollover; an account not signed in fails with one line"
         }
       ],
+      "hidden": true
+    },
+    {
+      "name": "t3",
+      "usage": "gruntas t3",
+      "summary": "Write T3 Code a launcher per Claude Code and Codex account",
       "hidden": true
     },
     {

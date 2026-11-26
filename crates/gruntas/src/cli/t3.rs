@@ -38,11 +38,22 @@ struct Launcher {
 pub(super) fn t3(ctx: &mut Ctx) -> Result<(), Error> {
     let registry = Registry::resolve(&super::prompt::load_instances()?, ctx.io.env);
     let dir = gruntas_api::home::dir(ctx.io.env)?.join(DIR);
+    // Written into and removed from as gruntas's own: never through a link.
+    if std::fs::symlink_metadata(&dir).is_ok_and(|m| !m.is_dir()) {
+        return Err(fail("write_failed", format!("{} is not a directory, so gruntas cannot keep T3 Code's launchers there — move it aside", dir.display())));
+    }
     let gruntas = gruntas_path(ctx.io.env)?;
+    let (reached, unreached) = accounts(&registry);
+    for name in &unreached {
+        ctx.warn(&format!("no launcher for {name}, which `gruntas run --account` cannot name — rename it with `gruntas providers rename`"));
+    }
     let mut launchers = Vec::new();
-    for (account, short, harness) in accounts(&registry) {
+    // Its launcher kept as it is: an account gruntas cannot give one now.
+    let mut kept = Vec::new();
+    for (account, short, harness) in reached {
         let Some(home) = registry.instances[&account].backend.as_ref().and_then(|b| b.home.clone()) else {
-            ctx.warn(&format!("{account} has no config home to give T3 Code — set HOME — so it has no launcher"));
+            ctx.warn(&format!("no config home for {account} to give T3 Code — set HOME — so its launcher is left as it was"));
+            kept.push(dir.join(account.replace(':', "-")));
             continue;
         };
         let label = match harness {
@@ -55,7 +66,7 @@ pub(super) fn t3(ctx: &mut Ctx) -> Result<(), Error> {
         let written = write(&dir, &script, &content).map_err(|e| fail("write_failed", format!("the T3 Code launcher {} could not be written: {e}", script.display())))?;
         launchers.push(Launcher { account, harness, name, script, home, written });
     }
-    let keep: Vec<&Path> = launchers.iter().map(|l| l.script.as_path()).collect();
+    let keep: Vec<&Path> = launchers.iter().map(|l| l.script.as_path()).chain(kept.iter().map(PathBuf::as_path)).collect();
     let removed = remove_stale(&dir, &keep).map_err(|e| fail("write_failed", format!("the T3 Code launchers of accounts that are gone could not be removed from {}: {e}", dir.display())))?;
     if ctx.format != Format::Human {
         let instances: Vec<Value> = launchers
@@ -86,9 +97,10 @@ pub(super) fn t3(ctx: &mut Ctx) -> Result<(), Error> {
 /// The connected (configured) Claude Code and Codex accounts that `gruntas
 /// run --account` reaches: each instance, the name `--account` takes, and
 /// its harness. One whose name `--account` would read as another account
-/// (`claude:auto`) or that is not `<harness>:<name>` is left out.
-fn accounts(registry: &Registry) -> Vec<(String, String, Harness)> {
-    let mut out = Vec::new();
+/// (`claude:auto`), that is not `<harness>:<name>`, or that no file could be
+/// named after is in the second list instead.
+fn accounts(registry: &Registry) -> (Vec<(String, String, Harness)>, Vec<String>) {
+    let (mut out, mut unreached) = (Vec::new(), Vec::new());
     for name in &registry.configured {
         for harness in [Harness::Claude, Harness::Codex] {
             if launch::account(registry, harness, name).is_err() {
@@ -97,15 +109,20 @@ fn accounts(registry: &Registry) -> Vec<(String, String, Harness)> {
             let short = match name.split_once(':') {
                 Some((pre, rest)) if pre == harness.name() => rest.to_string(),
                 None if name == harness.name() => name.clone(),
-                _ => continue,
+                _ => {
+                    unreached.push(name.clone());
+                    continue;
+                }
             };
             let reaches = Account::parse(harness, &short).ok().and_then(|a| a.instance(harness));
             if reaches.as_deref() == Some(name.as_str()) && !short.chars().any(|c| c == '/' || c.is_control()) {
                 out.push((name.clone(), short, harness));
+            } else {
+                unreached.push(name.clone());
             }
         }
     }
-    out
+    (out, unreached)
 }
 
 /// The gruntas a script runs, by an absolute path, since T3 Code may spawn
@@ -172,7 +189,9 @@ fn remove_stale(dir: &Path, keep: &[&Path]) -> std::io::Result<Vec<PathBuf>> {
     let mut removed = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        let ours = entry.file_type().is_ok_and(|t| t.is_file()) && std::fs::read_to_string(&path).is_ok_and(|s| s.lines().nth(1) == Some(MARK));
+        // A dot file is another run's script on its way in (`write`).
+        let hidden = entry.file_name().to_string_lossy().starts_with('.');
+        let ours = !hidden && entry.file_type().is_ok_and(|t| t.is_file()) && std::fs::read_to_string(&path).is_ok_and(|s| s.lines().nth(1) == Some(MARK));
         if ours && !keep.contains(&path.as_path()) {
             std::fs::remove_file(&path)?;
             removed.push(path);

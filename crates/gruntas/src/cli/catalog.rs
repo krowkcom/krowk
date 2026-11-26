@@ -598,7 +598,7 @@ pub fn catalog(version: &str) -> Catalog {
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(run_command());
     #[cfg(all(feature = "harness", unix))]
-    c.commands.push(cmd("t3", "gruntas t3", "Write a launcher per Claude Code and Codex account for T3 Code"));
+    c.commands.push(cmd("t3", "gruntas t3", "Write T3 Code a launcher per Claude Code and Codex account"));
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(Command {
         args: vec![arg("project", "Only this project, e.g. github.com/acme/app", false)],

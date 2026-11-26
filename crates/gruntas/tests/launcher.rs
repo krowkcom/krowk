@@ -1214,10 +1214,23 @@ fn r_t3_5_a_written_launcher_reaches_passthrough_with_its_arguments() {
     }
     passthrough_fake(&b, "claude", r#"{"loggedIn":true,"authMethod":"claude.ai"}"#);
     passthrough_fake(&b, "codex", "Logged in using ChatGPT");
-    assert!(b.gruntas(&["t3"]).status.success());
-    let cases: [(&str, &str, &[&str], &str); 2] = [
+    // A hand-written name the shell would read otherwise, and one
+    // `--account` would read as auto, which has no launcher.
+    std::fs::create_dir_all(b.root.join("accounts/codex-odd")).unwrap();
+    let config = serde_json::json!({ "instances": {
+        "claude:work": { "kind": "claude-code", "binary": b.root.join("bin/claude"), "configDir": b.root.join("accounts/claude-work") },
+        "codex:team": { "kind": "codex-app-server", "binary": b.root.join("bin/codex"), "codexHome": b.root.join("accounts/codex-team") },
+        "codex:o'k $(touch pwned) `x`": { "kind": "codex-app-server", "binary": b.root.join("bin/codex"), "codexHome": b.root.join("accounts/codex-odd") },
+        "claude:auto": { "kind": "claude-code", "binary": b.root.join("bin/claude") },
+    }});
+    std::fs::write(b.home().join("config.json"), config.to_string()).unwrap();
+    let o = b.gruntas(&["t3", "--format", "human"]);
+    assert!(o.status.success() && String::from_utf8_lossy(&o.stderr).contains("No launcher for claude:auto"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!b.home().join("t3/claude-auto").exists());
+    let cases: [(&str, &str, &[&str], &str); 3] = [
         ("claude", "claude-work", &["--output-format", "stream-json", "a b", ""], "CLAUDE_CONFIG_DIR=accounts/claude-work"),
         ("codex", "codex-team", &["app-server", "--listen", "stdio://"], "CODEX_HOME=accounts/codex-team"),
+        ("codex", "codex-o'k $(touch pwned) `x`", &["app-server"], "CODEX_HOME=accounts/codex-odd"),
     ];
     for (harness, script, theirs, home) in cases {
         // Claude's sandbox needs bwrap and socat on the PATH; Codex's nothing.
@@ -1231,4 +1244,5 @@ fn r_t3_5_a_written_launcher_reaches_passthrough_with_its_arguments() {
         let (var, dir) = home.split_once('=').unwrap();
         assert!(env.contains(&format!("{var}={}", b.root.join(dir).display())), "{harness}: {env:?}");
     }
+    assert!(!b.root.join("pwned").exists(), "the name is quoted, never run");
 }
