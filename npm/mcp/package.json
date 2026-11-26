@@ -2,7 +2,7 @@
   "name": "@gruntas/mcp",
   "version": "0.0.0-unpublished",
   "mcpName": "io.github.gruntas/gruntas",
-  "description": "MCP server for Gruntas, the coding agent harness. From any MCP client, your agent publishes screenshots, diffs and logs as paste-ready links (no account needed), and, where gruntas runs, sees, steers and delegates to agents on all your machines.",
+  "description": "MCP server for Gruntas, orchestration for autonomous agents: see what your agents are doing across machines, steer them, hand off work and collect the result. Publishes their work as links. Orchestration needs gruntas running on macOS or Linux.",
   "keywords": [
     "gruntas",
     "mcp",

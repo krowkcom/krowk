@@ -1,7 +1,7 @@
 {
   "name": "gruntas",
   "version": "2026.11.7",
-  "description": "Adds the Gruntas MCP server to Gemini CLI. Your agent publishes screenshots, diffs and logs as paste-ready links (no account needed), and, where gruntas runs (macOS, Linux), sees, steers and delegates to agents on all your machines.",
+  "description": "Adds Gruntas to Gemini CLI: see what your autonomous agents are doing across machines, steer them, hand work to a machine with room and collect the result. Publishes their work as links. Orchestration needs gruntas running on macOS or Linux.",
   "contextFileName": "GEMINI.md",
   "mcpServers": {
     "gruntas": {

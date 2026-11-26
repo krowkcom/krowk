@@ -23,9 +23,10 @@ breaking changes may affect it without notice.
 
 - **The MCP server's listings say what it does now.** The MCP Registry,
   npm and the Gemini CLI gallery described `@gruntas/mcp` as publishing
-  only. They now say it publishes agent work as paste-ready links and, where
-  gruntas runs, sees, steers and delegates to agents on your machines; its
-  README lists every tool and which platforms have it.
+  only. They now say what it is: orchestration for autonomous agents, from
+  any MCP client — see and steer your agents across machines, hand them work
+  and collect the result — with publishing their work as links one part of
+  it. Its README lists every tool and which platforms have it.
 
 ## [2026.11.7] - 2026-11-26
 
