@@ -118,6 +118,8 @@ export class ClaudeSdkProvider {
 			}
 			const thinking = thinkingOptions(options?.reasoning, !!(model as any).thinkingLevelMap);
 			const account = await this.opts.account();
+			// Escape pressed while the request waited on a rollover decision: nothing is started.
+			if (options?.signal?.aborted) return fail("aborted", "Request was aborted");
 			const spec = {
 				cwd: this.opts.cwd(),
 				account,

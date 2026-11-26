@@ -196,12 +196,17 @@ test('a request sent while a hit is handled waits on it, so it goes where rollov
   answer({ next: 'claude:b', mode: 'auto', resetsAt: null })
   await request
   assert.equal(where, 'claude:b')
-  // A handling that fails still lets the request go.
-  const failing = new Rollover(accounts, async () => ({ next: 'claude:c', mode: 'auto', resetsAt: null }), () => fakeUi(true, true).ui, () => NOW)
-  accounts.moveTo = async () => Promise.reject(new Error('gone'))
-  accounts.name = 'claude:b'
-  void failing.hit('claude:b', RESET)
-  await failing.settled()
+})
+
+test('a handling that throws still lets a waiting request go', async () => {
+  const accounts = { name: 'claude:a' as string | undefined, moveTo: async (n: string) => (accounts.name = n) }
+  const r = new Rollover(accounts, async () => ({ next: 'claude:b', mode: 'auto', resetsAt: null }), () => {
+    throw new Error('no ui')
+  }, () => NOW)
+  await assert.rejects(r.hit('claude:a', RESET), /no ui/)
+  void r.hit('claude:a', RESET).catch(() => {})
+  await r.settled()
+  assert.equal(accounts.name, 'claude:a')
 })
 
 test('a context pi has retired (print mode ends the session with the turn): the notice goes to stderr, an offer is declined', async () => {
@@ -285,7 +290,10 @@ test('a limit in a turn records the usage under the account\'s home and rolls th
       { instance: 'claude:b', kind: 'claude-code', ready: true, config_dir: '/h/b' },
     ]
     const asked: [string, string[]][] = []
-    const g: Gruntas = { list: async () => rows, auto: async () => 'claude:a', next: async (from, tried) => (asked.push([from, tried]), { next: 'claude:b', mode: 'auto', resetsAt: null }) }
+    // gruntas answers when the test says, so a request can be sent while the decision is pending.
+    let answer!: () => void
+    const decided = new Promise<void>(r => (answer = r))
+    const g: Gruntas = { list: async () => rows, auto: async () => 'claude:a', next: async (from, tried) => (asked.push([from, tried]), await decided, { next: 'claude:b', mode: 'auto', resetsAt: null }) }
     const accounts = new Accounts(g, join(dir, 'account.json'))
     const handlers = new Map<string, (e: unknown, ctx: unknown) => void>()
     const registered: any[] = []
@@ -295,8 +303,9 @@ test('a limit in a turn records the usage under the account\'s home and rolls th
       { type: 'rate_limit_event', rate_limit_info: REJECTED },
       { type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['You\'ve hit your limit'] },
     ]
+    const created: string[] = []
     installClaude(fakePi as never, {
-      createSession: (spec, chain, count) => new FakeSession(spec, chain, count, script),
+      createSession: (spec, chain, count) => (created.push(spec.account.name), new FakeSession(spec, chain, count, created.length === 1 ? script : script.slice(1))),
       ai: {
         createAssistantMessageEventStream: (() => {
           let end!: () => void
@@ -310,7 +319,18 @@ test('a limit in a turn records the usage under the account\'s home and rolls th
     handlers.get('agent_start')!({}, { hasUI: true, ui: { notify: (m: string) => told.push(m), confirm: async () => true } })
     const stream = registered[0].streamSimple({ id: 'claude-haiku-4-5', api: 'gruntas-claude-code', provider: 'gruntas', maxTokens: 1000 }, { messages: [{ role: 'user', content: 'hi', timestamp: 1 }] })
     await stream.ended
-    for (let i = 0; i < 50 && accounts.name !== 'claude:b'; i++) await new Promise(r => setTimeout(r, 1))
+    const model = { id: 'claude-haiku-4-5', api: 'gruntas-claude-code', provider: 'gruntas', maxTokens: 1000 }
+    // A prompt queued behind the limit, and one Escape cancels, both sent before gruntas answers.
+    const queued = registered[0].streamSimple(model, { messages: [{ role: 'user', content: 'again', timestamp: 2 }] })
+    const abort = new AbortController()
+    const cancelled = registered[0].streamSimple(model, { messages: [{ role: 'user', content: 'never', timestamp: 3 }] }, { signal: abort.signal })
+    await new Promise(r => setTimeout(r, 5))
+    assert.deepEqual(created, ['claude:a'], 'both wait on the pending decision')
+    abort.abort()
+    answer()
+    await queued.ended
+    await cancelled.ended
+    assert.deepEqual(created, ['claude:a', 'claude:b'], 'the queued prompt runs on the account rollover moved to; the cancelled one starts nothing')
     assert.deepEqual(sent.map(p => JSON.parse(p)), [{ configHome: '/h/a', windows: [{ kind: 'fiveHour', usedPercent: 100, resetsAtMs: 1790431200000 }] }])
     assert.deepEqual(asked, [['claude:a', []]])
     assert.equal(accounts.name, 'claude:b')
