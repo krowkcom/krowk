@@ -12,7 +12,8 @@
 // `gruntas run pi` becomes pi (exec), so it marks the run with its own pid
 // (GRUNTAS_PI_LAUNCHED=<pid>): a pi started from inside that session (an
 // agent's bash call) inherits the mark but runs under another pid, and loads
-// gruntas as usual.
+// gruntas as usual. This holds while the `pi` on the PATH runs pi in its own
+// process (the compiled binary, npm's node script), not as a wrapper's child.
 //
 // This file is all the package ships: it imports nothing of the extension's.
 

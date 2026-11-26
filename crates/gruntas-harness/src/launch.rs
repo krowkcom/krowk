@@ -453,7 +453,10 @@ pub const PI_ACCOUNT: &str = "GRUNTAS_PI_ACCOUNT";
 /// pi's own pid (the launcher's, which execs pi), so an installed
 /// `@gruntas/pi` loader stands aside and the extension never loads twice,
 /// while a pi started inside that session, which inherits the mark under
-/// another pid, still loads gruntas.
+/// another pid, still loads gruntas. It assumes the `pi` on the PATH runs pi
+/// in its own process (pi's compiled binary, or npm's `#!/usr/bin/env node`
+/// script); a wrapper that starts pi as a child of its own would leave the
+/// loader loading the extension a second time.
 pub const PI_LAUNCHED: &str = "GRUNTAS_PI_LAUNCHED";
 
 /// `gruntas run pi`'s launch: pi attended with no sandbox (pi has none by
