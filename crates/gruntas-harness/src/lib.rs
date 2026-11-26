@@ -84,6 +84,7 @@ pub mod crossover;
 #[cfg(unix)]
 pub mod daemon;
 pub mod effort;
+pub mod egress;
 pub mod engine;
 pub mod evidence;
 pub mod group;
