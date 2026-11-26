@@ -23,7 +23,9 @@ impl Sandbox {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
         let b = Sandbox { root: root.canonicalize().unwrap() };
-        for bin in ["claude", "codex"] {
+        // npm too: `gruntas run pi` fetches the Agent SDK with the npm on the
+        // PATH, which here must never reach the network.
+        for bin in ["claude", "codex", "npm"] {
             b.fake(bin);
         }
         let config = serde_json::json!({ "instances": {
