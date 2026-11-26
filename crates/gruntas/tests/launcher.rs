@@ -433,10 +433,10 @@ fn pi_passes_the_carried_skill_unless_the_installers_copy_is_there() {
     let installed = b.root.join("home/.agents/skills/gruntas");
     std::fs::create_dir_all(&installed).unwrap();
     std::fs::write(installed.join("SKILL.md"), "an older skill").unwrap();
-    assert!(b.gruntas(&["run", "pi"]).status.success());
+    assert!(b.command(&["run", "pi"]).env("GRUNTAS_PI_ACCOUNT", "claude:stale").status().unwrap().success());
     let (args, env) = b.started("pi");
     assert!(args.contains(&"--skill".to_string()), "a different copy: the carried one still passed: {args:?}");
-    assert!(!env.iter().any(|e| e.starts_with("GRUNTAS_PI_ACCOUNT=")), "none asked: {env:?}");
+    assert!(!env.iter().any(|e| e.starts_with("GRUNTAS_PI_ACCOUNT=")), "none asked: an inherited one is not passed on: {env:?}");
     std::fs::write(installed.join("SKILL.md"), include_str!("../../../skills/gruntas/SKILL.md")).unwrap();
     assert!(b.gruntas(&["run", "pi"]).status.success());
     assert!(!b.started("pi").0.contains(&"--skill".to_string()), "the installer's identical copy: pi finds it, so no second one");
@@ -489,6 +489,11 @@ fn account_auto_picks_the_account_with_the_most_headroom() {
     std::fs::write(b.root.join("accounts/claude-spare/signed-out"), "").unwrap();
     let err = String::from_utf8_lossy(&b.gruntas(&["run", "claude", "--account", "auto"]).stderr).into_owned();
     assert!(err.contains("--account auto: claude:apart, first by rollover's ranking: 40% left"), "{err}");
+    // pi takes the same pick, and starts its session there.
+    b.fake("pi");
+    let err = String::from_utf8_lossy(&b.gruntas(&["run", "pi", "--account", "auto"]).stderr).into_owned();
+    assert!(err.contains("--account auto: claude:apart, first by rollover's ranking"), "{err}");
+    assert!(b.started("pi").1.contains(&"GRUNTAS_PI_ACCOUNT=claude:apart".to_string()));
 
     // Nothing else with room: the default account, saying so.
     let usage = serde_json::json!({ "instances": { "claude": login("me"), "claude:apart": login("apart"), "claude:spare": login("spare"), "claude:work": login("me") }, "logins": { "apart": window(92.0), "spare": window(95.0) } });
