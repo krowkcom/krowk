@@ -171,7 +171,8 @@ fn pi(ctx: &mut Ctx, asked: Asked) -> Result<i32, Error> {
     let dir = super::pi::dir(ctx.io.env).ok_or_else(|| fail("no_home", "there is no home directory to keep the pi extension in — set HOME"))?;
     let carried = super::pi::install(&dir).map_err(|e| fail("write_failed", format!("the pi extension could not be written to {}: {e}", dir.display())))?;
     let skill = (!installer_skill(ctx.io.env)).then_some(carried.skill.as_path());
-    let l = launch::pi(instance.map(|i| i.name.as_str()), model.as_deref(), &carried.extension, skill, &asked.rest);
+    // pi replaces this process (exec), so it runs as this pid.
+    let l = launch::pi(instance.map(|i| i.name.as_str()), model.as_deref(), &carried.extension, skill, &asked.rest, std::process::id());
     let mut cmd = std::process::Command::new("pi");
     cmd.args(&l.args);
     for k in &l.env_remove {

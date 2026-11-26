@@ -387,8 +387,8 @@ fn codex_attended_execs_codex_with_the_account_and_profile() {
 /// `gruntas run pi` (R-RUNPI-1..4): pi started attended with the extension
 /// and skill this binary carries (`-e`, `--skill`), on the Claude Code
 /// account `--account` names (`GRUNTAS_PI_ACCOUNT`, which the extension
-/// starts the session on), marked as launched (`GRUNTAS_PI_LAUNCHED=1`, so
-/// an installed `@gruntas/pi` loader stands aside), on
+/// starts the session on), marked as launched (`GRUNTAS_PI_LAUNCHED=<pi's
+/// pid>`, so an installed `@gruntas/pi` loader stands aside), on
 /// `gruntas/<the account's default model>` unless the person named one, and
 /// with no sandbox: `--no-sandbox` changes nothing.
 #[test]
@@ -398,7 +398,9 @@ fn pi_attended_execs_pi_with_the_carried_extension_account_and_model() {
     let carried = b.root.join("data/gruntas/pi");
     let ext = carried.join("gruntas.js").display().to_string();
     let model = format!("gruntas/{}", gruntas_harness::instances::DEFAULT_MODEL);
-    let o = b.gruntas(&["run", "pi", "--account", "work", "-c"]);
+    let child = b.command(&["run", "pi", "--account", "work", "-c"]).stderr(Stdio::piped()).spawn().unwrap();
+    let pid = child.id();
+    let o = child.wait_with_output().unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let (args, env) = b.started("pi");
     assert_eq!(args[..2], ["-e".to_string(), ext.clone()], "{args:?}");
@@ -406,7 +408,7 @@ fn pi_attended_execs_pi_with_the_carried_extension_account_and_model() {
     assert!(args.windows(2).any(|w| w == ["--model".to_string(), model.clone()]), "{args:?}");
     assert_eq!(args.last().map(String::as_str), Some("-c"), "the person's arguments last");
     assert!(env.contains(&"GRUNTAS_PI_ACCOUNT=claude:work".to_string()), "{env:?}");
-    assert!(env.contains(&"GRUNTAS_PI_LAUNCHED=1".to_string()), "{env:?}");
+    assert!(env.contains(&format!("GRUNTAS_PI_LAUNCHED={pid}")), "the mark names pi, which is gruntas exec'd: {env:?}");
     // The person's model stands, and --no-sandbox changes nothing else.
     assert!(b.gruntas(&["run", "pi", "--account", "claude:work", "--no-sandbox", "--model", "gruntas/claude-haiku-4-5"]).status.success());
     let (args, _) = b.started("pi");

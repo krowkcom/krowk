@@ -9,6 +9,10 @@
 // Without gruntas on the PATH it shows the install hint as a session starts and
 // does nothing else. On Windows, where gruntas's hooks and daemon do not run,
 // and under `gruntas run pi`, which loads the extension itself, it does nothing.
+// `gruntas run pi` becomes pi (exec), so it marks the run with its own pid
+// (GRUNTAS_PI_LAUNCHED=<pid>): a pi started from inside that session (an
+// agent's bash call) inherits the mark but runs under another pid, and loads
+// gruntas as usual.
 //
 // This file is all the package ships: it imports nothing of the extension's.
 
@@ -27,6 +31,8 @@ export type Carried = { extension: string; skill: string }
 export type LoaderHost = {
   platform: string
   env: Record<string, string | undefined>
+  /** This pi's process id: `gruntas run pi`'s mark names it. */
+  pid: number
   /** The carried files, written; undefined when gruntas is not on the PATH. Throws when gruntas cannot give them. */
   carried(): Promise<Carried | undefined>
   import(path: string): Promise<{ default: (pi: ExtensionAPI) => unknown }>
@@ -38,7 +44,7 @@ type On = (event: string, handler: (event: any, ctx: any) => unknown) => void
 
 /** The loader, on `host`. */
 export async function load(pi: ExtensionAPI, host: LoaderHost): Promise<void> {
-  if (host.platform === 'win32' || host.env.GRUNTAS_PI_LAUNCHED) return
+  if (host.platform === 'win32' || host.env.GRUNTAS_PI_LAUNCHED === String(host.pid)) return
   const on = pi.on.bind(pi) as On
   let carried: Carried | undefined
   try {
@@ -93,6 +99,7 @@ export function systemHost(): LoaderHost {
   return {
     platform: process.platform,
     env: process.env,
+    pid: process.pid,
     carried,
     import: path => import(path),
     installerSkill: () => existsSync(join(homedir(), '.agents', 'skills', 'gruntas', 'SKILL.md')),

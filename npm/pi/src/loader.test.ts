@@ -27,6 +27,7 @@ function standIn(opts: { env?: Record<string, string>; carried?: typeof CARRIED;
   const host = {
     platform: opts.platform ?? 'linux',
     env: opts.env ?? {},
+    pid: 4242,
     carried: async () => (asked++, opts.carried),
     import: async (path: string) => (imported.push(path), { default: async (p: unknown) => void ran.push(p) }),
     ...(opts.installerSkill === undefined ? {} : { installerSkill: () => opts.installerSkill }),
@@ -61,12 +62,21 @@ test('without gruntas on the PATH, it shows the install hint as a session starts
   assert.deepEqual(Object.keys(s.handlers), ['session_start'])
 })
 
-test('under gruntas run pi (GRUNTAS_PI_LAUNCHED), and on Windows, it stands aside entirely', async () => {
+test('under gruntas run pi (GRUNTAS_PI_LAUNCHED names this pi), and on Windows, it stands aside entirely', async () => {
   const { load } = await import('./loader.ts' as string)
-  for (const s of [standIn({ env: { GRUNTAS_PI_LAUNCHED: '1' }, carried: CARRIED }), standIn({ platform: 'win32', carried: CARRIED })]) {
+  for (const s of [standIn({ env: { GRUNTAS_PI_LAUNCHED: '4242' }, carried: CARRIED }), standIn({ platform: 'win32', carried: CARRIED })]) {
     await load(s.pi, s.host)
     assert.equal(s.asked(), 0, 'gruntas not even asked')
     assert.deepEqual([s.imported, Object.keys(s.handlers)], [[], []])
+  }
+})
+
+test('a pi started inside a gruntas run pi session inherits the mark of another pid, and loads gruntas', async () => {
+  const { load } = await import('./loader.ts' as string)
+  for (const mark of ['1', '99']) {
+    const s = standIn({ env: { GRUNTAS_PI_LAUNCHED: mark }, carried: CARRIED })
+    await load(s.pi, s.host)
+    assert.deepEqual(s.imported, [CARRIED.extension], mark)
   }
 })
 
