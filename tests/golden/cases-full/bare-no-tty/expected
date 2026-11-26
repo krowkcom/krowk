@@ -1372,6 +1372,19 @@ stdout:
       "hidden": true
     },
     {
+      "name": "pi",
+      "summary": "The gruntas extension for pi, as this gruntas carries it",
+      "subcommands": [
+        {
+          "name": "extension",
+          "usage": "gruntas pi extension [--json]",
+          "summary": "Write out the pi extension this gruntas carries",
+          "hidden": false
+        }
+      ],
+      "hidden": true
+    },
+    {
       "name": "machines",
       "summary": "Your machines, and what each can take",
       "subcommands": [
@@ -3548,6 +3561,19 @@ tty:
               "usage": "The directory each channel's fence is kept in across restarts; required off loopback"
             }
           ],
+          "hidden": false
+        }
+      ],
+      "hidden": true
+    },
+    {
+      "name": "pi",
+      "summary": "The gruntas extension for pi, as this gruntas carries it",
+      "subcommands": [
+        {
+          "name": "extension",
+          "usage": "gruntas pi extension [--json]",
+          "summary": "Write out the pi extension this gruntas carries",
           "hidden": false
         }
       ],

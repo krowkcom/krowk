@@ -736,7 +736,7 @@ fn sync_command() -> Command {
 #[cfg(all(feature = "harness", unix))]
 fn pi_command() -> Command {
     Command {
-        subcommands: vec![cmd("extension", "gruntas pi extension [--json]", "Write the pi extension and skill this gruntas carries, and print where")],
+        subcommands: vec![cmd("extension", "gruntas pi extension [--json]", "Write out the pi extension this gruntas carries")],
         ..cmd("pi", "", "The gruntas extension for pi, as this gruntas carries it")
     }
 }

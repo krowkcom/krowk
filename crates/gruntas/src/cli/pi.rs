@@ -40,15 +40,19 @@ pub(crate) fn install(dir: &Path) -> std::io::Result<Carried> {
     let extension = dir.join("gruntas.js");
     let skill = dir.join("skills").join("gruntas");
     let mut written = Vec::new();
-    for (file, content) in [(extension.clone(), EXTENSION.replace(VERSION_TOKEN, super::VERSION)), (skill.join("SKILL.md"), SKILL.to_string())] {
+    // The token as the JS string literal it is, replaced by another literal.
+    let stamped = EXTENSION.replace(&format!("\"{VERSION_TOKEN}\""), &serde_json::Value::from(super::VERSION).to_string());
+    for (file, content) in [(extension.clone(), stamped), (skill.join("SKILL.md"), SKILL.to_string())] {
         if std::fs::read(&file).is_ok_and(|had| had == content.as_bytes()) {
             continue;
         }
         let parent = file.parent().unwrap_or(dir);
         std::fs::create_dir_all(parent)?;
         let tmp = parent.join(format!(".{}.{}", file.file_name().and_then(|n| n.to_str()).unwrap_or("carried"), std::process::id()));
-        std::fs::write(&tmp, content)?;
-        std::fs::rename(&tmp, &file)?;
+        if let Err(e) = std::fs::write(&tmp, content).and_then(|()| std::fs::rename(&tmp, &file)) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
         written.push(file);
     }
     Ok(Carried { extension, skill, written })

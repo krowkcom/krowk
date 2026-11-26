@@ -5,7 +5,10 @@
 //   load(pi, host): Promise<void>
 //   host = { platform, env, carried(): Promise<{ extension, skill } | undefined>, import(path) }
 //
-// where carried() is undefined when gruntas is not on the PATH.
+// where carried() is undefined when gruntas is not on the PATH. The real host.import is a dynamic
+// import() in the loader's own module, so pi's loader resolves it: only pi's loader gives the
+// bundle the running pi's @earendil-works/* packages. The skill is added unless pi finds the
+// installer's identical copy anyway (D8); the stand-in has none.
 
 import assert from 'node:assert/strict'
 import { test } from 'node:test'

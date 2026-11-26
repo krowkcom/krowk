@@ -36,18 +36,18 @@ const HEADER = /^\/\/ @gruntas\/pi carried extension: sources sha256:([0-9a-f]{6
 
 const sha256 = data => createHash('sha256').update(data).digest('hex')
 
-/** Everything the bundle is built from: the extension's source (not its tests), the lockfile and this script. */
+/** Everything the bundle is built from: the extension's source (not its tests), its package.json, the lockfile and this script. */
 function sourcesHash() {
   const files = []
   const walk = dir => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, e.name)
       if (e.isDirectory()) walk(p)
-      else if (e.name.endsWith('.ts') && !e.name.endsWith('.test.ts')) files.push(p)
+      else if (!e.name.endsWith('.test.ts')) files.push(p)
     }
   }
   walk(path.join(here, 'src'))
-  files.push(path.join(here, 'package-lock.json'), fileURLToPath(import.meta.url))
+  files.push(path.join(here, 'package.json'), path.join(here, 'package-lock.json'), fileURLToPath(import.meta.url))
   const h = createHash('sha256')
   for (const f of files.map(f => path.relative(here, f).split(path.sep).join('/')).sort()) {
     h.update(f + '\0').update(fs.readFileSync(path.join(here, f))).update('\0')
@@ -69,7 +69,28 @@ function check() {
   return undefined
 }
 
+/**
+ * The header vouches for package-lock.json, so the bundle must be built from what it pins:
+ * node_modules as `npm ci` left it, no package at another version.
+ */
+function installedAsLocked() {
+  const read = f => JSON.parse(fs.readFileSync(path.join(here, f), 'utf8')).packages ?? {}
+  let installed
+  try {
+    installed = read('node_modules/.package-lock.json')
+  } catch {
+    return 'node_modules is missing'
+  }
+  const locked = read('package-lock.json')
+  for (const [name, p] of Object.entries(installed)) {
+    if (locked[name]?.version !== p.version || locked[name]?.integrity !== p.integrity) return `${name} is not the version package-lock.json pins`
+  }
+  return undefined
+}
+
 async function build() {
+  const off = installedAsLocked()
+  if (off) throw new Error(`${off}: run \`make pi-bundle\`, which runs \`npm ci\` first`)
   let esbuild
   try {
     esbuild = await import('esbuild')
