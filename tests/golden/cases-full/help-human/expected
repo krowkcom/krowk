@@ -150,8 +150,9 @@ More
   host enable         Run the daemon as a systemd or launchd user service
   host disable        Stop the service and remove it
   hosts               The same as gruntas machines
-  run                 Start Claude Code or Codex on one of your accounts
+  run                 Start Claude Code, Codex or pi on one of your accounts
   relay serve         Carry sealed sessions between their host and viewers
+  pi extension        Write out the pi extension this gruntas carries
   ping                Ask a machine, or a session's machine, whether it is alive
   pricing refresh     Refresh the models.dev price cache
   help                This, a command's help, or a topic

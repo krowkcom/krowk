@@ -8,7 +8,7 @@
 // before it: that ticket un-skips them.
 
 import assert from 'node:assert/strict'
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
@@ -104,22 +104,21 @@ test('pi\'s bash is Claude Code\'s Bash, so the paste guard reads it; other tool
   assert.deepEqual(argv('SessionStart'), ['gruntas', 'hook', 'pi', 'SessionStart'])
 })
 
-test('the manifest loads the extension, pins pi, and ships what it loads', () => {
+test('the manifest loads the loader, pins pi, and ships the loader alone', () => {
   const manifest = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8'))
   assert.equal(manifest.name, '@gruntas/pi')
   assert.ok(manifest.keywords.includes('pi-package'))
-  assert.deepEqual(manifest.pi.extensions, ['./src/gruntas.ts'])
+  // The package runs the extension gruntas carries (./loader.ts), so it ships
+  // that one file, no skill (gruntas carries that too) and no dependencies:
+  // the SDKs the extension uses are in the bundle, built from devDependencies.
+  assert.deepEqual(manifest.pi, { extensions: ['./src/loader.ts'] })
+  assert.deepEqual(manifest.files, ['src/loader.ts'])
+  assert.equal(manifest.dependencies, undefined)
   // The pi it is tested against. pi's own packages are peers at "*", as pi
   // asks, and never dependencies, which would shadow pi's copies.
   assert.equal(manifest.engines.pi, '>=1.6.0 <2')
   assert.deepEqual(manifest.peerDependencies, { '@earendil-works/pi-ai': '*', '@earendil-works/pi-coding-agent': '*' })
-  // The Agent SDK the gruntas provider runs Claude Code through (PI06) is one.
-  assert.ok(Object.keys(manifest.dependencies ?? {}).every(d => !d.startsWith('@earendil-works/')), JSON.stringify(manifest.dependencies))
-  for (const e of manifest.pi.extensions) assert.ok(manifest.files.includes(e.replace(/^\.\//, '')), e)
   for (const f of manifest.files) assert.ok(existsSync(join(pkg, f)), f)
-  // The MIT notice of the code the gruntas provider is copied from ships with it.
-  assert.ok(manifest.files.includes('THIRD-PARTY-NOTICES'))
-  assert.match(readFileSync(join(pkg, 'THIRD-PARTY-NOTICES'), 'utf8'), /pi-claude-subscription[\s\S]*Copyright \(c\) 2026 Jarno Keskikangas[\s\S]*Permission is hereby granted/)
 })
 
 test('the factory loads on pi\'s API and, on Windows, does nothing', async () => {
@@ -340,18 +339,4 @@ test('PI04: with gruntas but no gruntas-mcp on the PATH (npm installs them apart
   const { host } = fakeHost()
   install(pi.api, { ...host, onPath: (name?: string) => name !== 'gruntas-mcp' })
   assert.deepEqual(pi.mcp, [])
-})
-
-/** Every SKILL.md at or under `at`. */
-function skills(at: string): string[] {
-  if (!existsSync(at)) return []
-  if (!statSync(at).isDirectory()) return at.endsWith('SKILL.md') ? [at] : []
-  return readdirSync(at).flatMap(n => skills(join(at, n)))
-}
-
-test('PI04: the package ships the gruntas skill', () => {
-  const manifest = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8'))
-  assert.ok(manifest.pi.skills?.length > 0, 'no skills in the manifest')
-  const found = manifest.pi.skills.flatMap((s: string) => skills(join(pkg, s)))
-  assert.ok(found.some((f: string) => /^---\nname: gruntas\n/.test(readFileSync(f, 'utf8'))), JSON.stringify(found))
 })

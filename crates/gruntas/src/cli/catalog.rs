@@ -592,6 +592,8 @@ pub fn catalog(version: &str) -> Catalog {
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(relay_command());
     #[cfg(all(feature = "harness", unix))]
+    c.commands.push(pi_command());
+    #[cfg(all(feature = "harness", unix))]
     c.commands.push(Command { subcommands: machines_subcommands(), ..cmd("machines", "", "Your machines, and what each can take") });
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(cmd("hosts", "gruntas hosts", "The same as gruntas machines"));
@@ -729,6 +731,16 @@ fn sync_command() -> Command {
     }
 }
 
+/// `gruntas pi`: plumbing for pi's `@gruntas/pi` loader, which runs the
+/// extension this gruntas carries.
+#[cfg(all(feature = "harness", unix))]
+fn pi_command() -> Command {
+    Command {
+        subcommands: vec![cmd("extension", "gruntas pi extension [--json]", "Write out the pi extension this gruntas carries")],
+        ..cmd("pi", "", "The gruntas extension for pi, as this gruntas carries it")
+    }
+}
+
 /// `gruntas relay`: the reference relay (R-RELAY-1), the contract of Canon's
 /// engineering/relay.md in Rust — the hermetic stand-in and a self-hosting
 /// path.
@@ -748,20 +760,20 @@ fn relay_command() -> Command {
     }
 }
 
-/// `gruntas run`: the stock Claude Code or Codex on one of your accounts
+/// `gruntas run`: the stock Claude Code, Codex or pi on one of your accounts
 /// (Launcher). Its other words are the harness's, read by `launcher.rs`
 /// rather than the flag parser.
 #[cfg(all(feature = "harness", unix))]
 fn run_command() -> Command {
     Command {
-        args: vec![arg("harness", "claude or codex", true), Arg { repeated: true, ..arg("args", "The harness's own arguments, passed through as typed; any after a -- too", false) }],
+        args: vec![arg("harness", "claude, codex or pi", true), Arg { repeated: true, ..arg("args", "The harness's own arguments, passed through as typed; any after a -- too", false) }],
         flags: vec![
-            flag("account", STRING, "The account: its name (work for claude:work), or auto for the one with the most headroom (default: the one plain claude or codex in your shell uses)"),
-            flag("unattended", STRING, "Start a background session on this task instead of taking the terminal"),
-            flag("no-sandbox", BOOL, "Run without the sandbox that keeps the session out of the gruntas home, this once; attended only"),
+            flag("account", STRING, "The account: its name (work for claude:work), or auto for the one with the most headroom (default: the one plain claude or codex in your shell uses). For pi, the Claude Code account its turns start on (default: the one pi used last)"),
+            flag("unattended", STRING, "Start a background session on this task instead of taking the terminal; claude and codex only"),
+            flag("no-sandbox", BOOL, "Run without the sandbox that keeps the session out of the gruntas home, this once; attended only. pi has no sandbox and gruntas adds none, so for pi this changes nothing: isolate pi with a container or one of pi's sandbox extensions"),
             flag("no-plugin", BOOL, "Start Claude Code without the gruntas plugin and hooks, so it never registers as a session; its arguments, stdin and stdout pass through, so a program can run it as its Claude Code (the Agent SDK's executable). Attended claude only"),
         ],
-        ..cmd("run", "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [--no-plugin] [args...]", "Start Claude Code or Codex on one of your accounts")
+        ..cmd("run", "gruntas run <claude|codex|pi> [--account NAME] [--unattended TASK] [--no-plugin] [args...]", "Start Claude Code, Codex or pi on one of your accounts")
     }
 }
 
@@ -1269,7 +1281,17 @@ shell uses.
 With --no-plugin, Claude Code starts without the gruntas plugin or hooks, so it
 never registers as a session, and runs once, its arguments, stdin, stdout and
 exit code passed through: a program that drives Claude Code (the Agent SDK) can
-run `gruntas run claude --account work --no-plugin` as its Claude Code.",
+run `gruntas run claude --account work --no-plugin` as its Claude Code.
+
+`gruntas run pi` starts pi with the gruntas extension this gruntas carries
+(-e), and its gruntas skill unless pi finds the installer's copy; nothing is
+installed in pi, and pi's config home stays its own. --account work is the
+Claude Code account claude:work its gruntas turns start on (auto: rollover's
+pick); without it, the one pi used last. Without --model or --models, pi starts
+on gruntas/<the account's default model>. pi has no sandbox and gruntas adds
+none: --no-sandbox changes nothing, and to isolate pi, run it in a container or
+use one of pi's sandbox extensions. --unattended and --no-plugin are for
+claude.",
         #[cfg(feature = "harness")]
         "worktrees add" => "\
 The worktree is of the repository you are in, on a new branch gruntas/<hex>,
@@ -1376,6 +1398,8 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             #[cfg(all(feature = "harness", unix))]
             "relay",
             #[cfg(all(feature = "harness", unix))]
+            "pi",
+            #[cfg(all(feature = "harness", unix))]
             "ping",
             #[cfg(feature = "sessions")]
             "pricing",
@@ -1412,6 +1436,8 @@ pub const ALL_ONLY: &[&str] = &[
     "run",
     #[cfg(all(feature = "harness", unix))]
     "relay",
+    #[cfg(all(feature = "harness", unix))]
+    "pi",
     #[cfg(all(feature = "harness", unix))]
     "ping",
     #[cfg(feature = "sessions")]

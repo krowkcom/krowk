@@ -1,0 +1,8 @@
+{
+  "name": "gruntas-pi-claude-agent-sdk",
+  "private": true,
+  "description": "The Claude Agent SDK, pinned: gruntas does not distribute it, and installs exactly this version from npm beside the carried pi extension (`npm ci`, scripts off, optional packages left out).",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.332"
+  }
+}
