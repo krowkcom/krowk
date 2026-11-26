@@ -115,9 +115,10 @@ fn ensure_sdk(dir: &Path, npm: &[&OsStr]) -> Option<PathBuf> {
     }
 }
 
-/// How long the fetch may take before it counts as failed: offline, pi's
-/// start (the loader writes the extension) must not wait on npm for long.
-const SDK_FETCH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+/// How long the fetch may take before it counts as failed (5 MB; seconds
+/// normally): under the 30 s the `@gruntas/pi` loader gives `gruntas pi
+/// extension` (npm/pi/src/loader.ts), so pi's start never waits on npm long.
+const SDK_FETCH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25);
 
 /// `npm ci` of the embedded pin in a staging directory inside `dir`, with
 /// its own npm cache there, scripts off and the SDK's optional packages (its
@@ -151,7 +152,7 @@ fn fetch_sdk(dir: &Path, npm: &[&OsStr], version: &str) -> Result<(), String> {
                 "--fund=false",
                 "--update-notifier=false",
                 "--fetch-retries=0",
-                "--fetch-timeout=30000",
+                "--fetch-timeout=20000",
                 "--loglevel=error",
             ])
             .current_dir(&stage)
