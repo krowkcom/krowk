@@ -1,4 +1,4 @@
-// @gruntas/pi carried extension: sources sha256:cb68e3ffbf763e609a0f6002912ff366b36e62a810928f2e6569c6f24ae4ce5c body sha256:94b4377a1bb4708e7e62258db86e2c09044065b57f6378b2793ad3dae8d12038. Built by `make pi-bundle`; do not edit.
+// @gruntas/pi carried extension: sources sha256:461f000ef30fd6777867cf7e194dca9483996362f6a7f892ce42ae01ffd8dfbf body sha256:322657489cb67719162d32f4af0793338750e3837ea6206df7ec1d9ac5758f1f. Built by `make pi-bundle`; do not edit.
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -24718,9 +24718,12 @@ var Accounts = class {
   gruntas;
   /** The file the last account is kept in. */
   file;
-  constructor(gruntas3, file) {
+  /** The account `gruntas run pi --account` asked for: the session starts on it, ahead of the last one. */
+  asked;
+  constructor(gruntas3, file, asked) {
     this.gruntas = gruntas3;
     this.file = file;
+    this.asked = asked || void 0;
   }
   /** The account the next request runs on; the first call settles where the session starts. */
   current() {
@@ -24761,7 +24764,7 @@ var Accounts = class {
   async start() {
     const rows = await this.gruntas.list();
     const find = (name) => rows.find((r) => r.instance === name && usable(r) && r.ready);
-    const row = find(this.last()) ?? find(await this.gruntas.auto());
+    const row = find(this.asked) ?? find(this.last()) ?? find(await this.gruntas.auto());
     if (this.now) return this.now;
     if (!row) throw new Error("gruntas: no Claude Code account is ready. `gruntas providers list --check` says why");
     const to = account(row);
@@ -25920,7 +25923,7 @@ var systemGruntas = {
   }
 };
 function systemAccounts(env) {
-  return new Accounts(systemGruntas, join4(agentDir(env), "gruntas", "account.json"));
+  return new Accounts(systemGruntas, join4(agentDir(env), "gruntas", "account.json"), env.GRUNTAS_PI_ACCOUNT);
 }
 
 // src/hook.ts
