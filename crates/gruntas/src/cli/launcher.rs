@@ -189,11 +189,14 @@ fn version_only(args: &[String]) -> bool {
 /// R-T3-1: gruntas becomes the harness (exec), so the app that started it
 /// has the harness's own stdin, stdout, stderr, signals and exit status,
 /// and nothing restarts it: an app's session moves account by the app's
-/// own choice of instance, not inside one (T3 Code D3).
+/// own choice of instance, not inside one (T3 Code D3). The harness keeps
+/// gruntas's pid, which marks it attended to the plugin's SessionStart hook
+/// (D6): the app has a person at it, but gives the harness no terminal.
 fn passthrough(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan) -> Result<i32, Error> {
     if plan.harness == Harness::Claude && !version_only(&req.args) {
         claude_ready(ctx, &mut plan, req.plugin)?;
     }
+    plan.env_set.push((gruntas_harness::hook::ATTENDED_PID.into(), std::process::id().to_string()));
     let _ = ctx.io.stdout.flush();
     let _ = ctx.io.stderr.flush();
     let e = std::os::unix::process::CommandExt::exec(&mut child::command(&plan));

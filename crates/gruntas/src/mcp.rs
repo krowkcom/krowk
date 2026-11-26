@@ -878,12 +878,19 @@ mod session {
     /// What may sit between a harness and the server it starts.
     const LAUNCHERS: [&str; 8] = ["node", "npx", "npm", "sh", "bash", "dash", "zsh", "env"];
 
+    /// Whether a process of `name` is a launcher: one of `LAUNCHERS`, `npm
+    /// exec …` as npx names itself, or `node-MainThread`, as Node names the
+    /// process npx starts the server's shim in.
+    fn launcher(name: &str) -> bool {
+        LAUNCHERS.contains(&name) || name.starts_with("npm ") || name == "node-MainThread"
+    }
+
     /// The registrations naming the harness process that started this
     /// server (more than one for a Codex app-server running several
     /// threads, or a session that ended without its SessionEnd hook), and
     /// the processes looked at.
     fn mine(registry: &Registry) -> (Vec<&gruntas_harness::protocol::Registration>, Vec<u32>) {
-        let line = starters(std::process::id(), parent, |pid| name(pid).is_some_and(|n| LAUNCHERS.contains(&n.as_str()) || n.starts_with("npm ")));
+        let line = starters(std::process::id(), parent, |pid| name(pid).is_some_and(|n| launcher(&n)));
         let found = line.iter().map(|pid| registry.sessions().filter(|r| r.harness_pid == Some(*pid)).collect::<Vec<_>>()).find(|m| !m.is_empty()).unwrap_or_default();
         (found, line)
     }
@@ -1088,6 +1095,20 @@ mod session {
             assert_eq!(starters(10, table, |_| true), [20, 30, 40, 50, 60], "never pid 1");
             assert_eq!(starters(10, |p| Some(p + 1), |_| true).len(), super::DEPTH);
             assert_eq!(starters(std::process::id(), super::parent, |_| false), [std::os::unix::process::parent_id()]);
+        }
+
+        /// R-T3-3: the Codex plugin's server runs under `codex app-server`
+        /// as `npm exec @gruntas/mcp` → `node-MainThread` → gruntas-mcp
+        /// (seen live, Codex 0.171), so both are launchers and the walk
+        /// reaches Codex; a process merely named like one is not.
+        #[test]
+        fn r_t3_3_npxs_node_main_thread_is_a_launcher() {
+            for n in ["node-MainThread", "npm exec @grunt", "node", "sh"] {
+                assert!(super::launcher(n), "{n}");
+            }
+            for n in ["codex", "claude", "node-other", "gruntas-mcp"] {
+                assert!(!super::launcher(n), "{n}");
+            }
         }
     }
 }

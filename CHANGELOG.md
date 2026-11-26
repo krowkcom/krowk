@@ -41,6 +41,17 @@ breaking changes may affect it without notice.
   script) and its home path (the account's config home). `--json` gives the
   same as data. Rerunning it rewrites only what changed and removes the
   launchers of accounts that are gone.
+- **A session an app runs through `--passthrough` is an ordinary gruntas
+  session.** It registers with the daemon as attended under its account,
+  though the app gives it no terminal, shows in `gruntas status`, and has
+  the gruntas MCP tools and skill. Claude Code loads the plugin from
+  `--plugin-dir` in the Agent SDK's mode too. Codex's `app-server` loads
+  the plugin installed in the account, and runs its hooks once they are
+  approved: install it and approve its hooks once, in a terminal, with
+  `gruntas run codex --account <name>` and `/hooks`. Permission prompts
+  still go to the app unchanged.
+- **`gruntas_session_info` finds a Codex session whose gruntas MCP server
+  runs through `npx`**, which current Node starts as `node-MainThread`.
 - **`gruntas hook pi <event>` takes pi's sessions.** pi joins Claude Code
   and Codex as a harness gruntas's hook reads: a pi session registers as
   harness `pi`, and its account is pi's config home, `PI_CODING_AGENT_DIR`,
