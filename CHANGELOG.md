@@ -19,6 +19,15 @@ breaking changes may affect it without notice.
 
 ## [Unreleased]
 
+## [2026.11.7] - 2026-11-26
+
+**pi joins gruntas.** `gruntas run pi --account work` starts pi on your work
+account with gruntas in it: registered, guarded, the gruntas tools and skill,
+and its Claude turns run through Claude Code on any of your accounts, with no
+login inside pi. `/account` switches account, and a spent account rolls over
+as your rollover setting says. Restart the gruntas daemon after upgrading
+(`gruntas host stop`): an older daemon doesn't know pi sessions.
+
 ### Added
 
 - **`gruntas run pi` starts pi with gruntas in it.** pi joins Claude Code
