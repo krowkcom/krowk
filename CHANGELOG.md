@@ -19,6 +19,15 @@ breaking changes may affect it without notice.
 
 ## [Unreleased]
 
+### Changed
+
+- **The MCP server's listings say what it does now.** The MCP Registry,
+  npm and the Gemini CLI gallery described `@gruntas/mcp` as publishing
+  only. They now say what it is: orchestration for autonomous agents, from
+  any MCP client — see and steer your agents across machines, hand them work
+  and collect the result — with publishing evidence of their work one part
+  of it. Its README lists every tool and which platforms have it.
+
 ## [2026.11.7] - 2026-11-26
 
 **pi joins gruntas.** `gruntas run pi --account work` starts pi on your work

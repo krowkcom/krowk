@@ -1,9 +1,27 @@
 # @gruntas/mcp
 
-The gruntas MCP server. It gives an agent `gruntas_push`, `gruntas_list_artifacts`,
-`gruntas_get_artifact`, `gruntas_claim_artifact`, `gruntas_get_run` and
-`gruntas_verify_key` over stdio, so output from a task becomes a permalink without
-anybody shelling out.
+`@gruntas/mcp` is the MCP server for Gruntas, orchestration for autonomous
+agents. It lets an agent in any MCP client (Claude Code, Codex, Cursor, Gemini
+CLI, Claude Desktop) see what your agent sessions are doing on all your machines,
+steer them, hand a task to whichever machine has room, and get the changes applied
+back to its working tree. Agents can also publish evidence of their work
+(screenshots, recordings, diffs, logs, build output) as permalinks that render
+inline in GitHub, Linear and Notion and unfurl in Slack and Basecamp, so you can
+review what an unattended agent did without pulling the branch. Orchestration needs `gruntas` running with sync set up on
+macOS or Linux; publishing works on any platform, with no account.
+
+The tools, over stdio:
+
+- **Your agents**, on macOS and Linux with gruntas running: `gruntas_status`,
+  `gruntas_changes`, `gruntas_read` and `gruntas_ping` to see them;
+  `gruntas_message` and `gruntas_interrupt` to steer one, as each machine's
+  `steer` setting allows; `gruntas_delegate`, `gruntas_collect` and
+  `gruntas_machines` to hand work to a machine with room; `gruntas_report` and
+  `gruntas_session_info` for the agent's own session.
+- **Publishing**, everywhere: `gruntas_push`, `gruntas_list_artifacts`,
+  `gruntas_get_artifact`, `gruntas_claim_artifact`, `gruntas_get_run` and
+  `gruntas_verify_key`. Anonymous uploads expire in 24 hours; an API key
+  (`GRUNTAS_TOKEN`) makes them permanent and adds runs and listings.
 
 ```json
 {
