@@ -102,7 +102,7 @@ fn run_refuses_what_it_cannot_launch_and_names_the_fix() {
     failed(&b.gruntas(&["push", "a.png", "--account", "work"]), 1, "only a flag of `gruntas run`");
     assert!(!b.root.join("claude.args").exists(), "nothing started");
     let help = b.gruntas(&["help", "run"]);
-    assert!(help.status.success() && String::from_utf8_lossy(&help.stdout).contains("gruntas run <claude|codex>"));
+    assert!(help.status.success() && String::from_utf8_lossy(&help.stdout).contains("gruntas run <claude|codex|pi>"));
 }
 
 /// Each account form and --no-sandbox: `started("claude")` has the
