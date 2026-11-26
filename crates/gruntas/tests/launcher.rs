@@ -1060,7 +1060,7 @@ fn r_t3_1_passthrough_passes_argv_stdio_and_the_exit_code_through() {
     std::fs::create_dir_all(b.root.join("accounts/claude-work/plugins")).unwrap();
     std::fs::write(b.root.join("accounts/claude-work/settings.json"), "{}").unwrap();
     std::fs::write(b.root.join("accounts/claude-work/.credentials.json"), "{}").unwrap();
-    std::fs::write(b.root.join("accounts/codex-team/auth.json"), "{}").unwrap();
+    std::fs::write(b.root.join("accounts/codex-team/config.toml"), "{}").unwrap();
     std::fs::create_dir_all(b.root.join("home/.codex")).unwrap();
     std::fs::write(b.root.join("home/.codex/config.toml"), "model = \"x\"\n").unwrap();
     let before = listing(&b.root.join("accounts"));
