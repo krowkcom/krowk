@@ -27,6 +27,11 @@ breaking changes may affect it without notice.
   any MCP client — see and steer your agents across machines, hand them work
   and collect the result — with publishing evidence of their work one part
   of it. Its README lists every tool and which platforms have it.
+- **`gruntas` says what it is now: "Run your coding agents across every
+  machine and account".** The help greeting, the installer, the npm
+  package, and the Claude Code and Codex plugins called gruntas a coding
+  agent harness. They now describe orchestration for autonomous agents,
+  with publishing evidence of the work one of its features.
 
 ## [2026.11.7] - 2026-11-26
 
