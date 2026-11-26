@@ -546,6 +546,12 @@ jobs:
       # finish what is half done, publishes it then. A prerelease keeps the
       # entry where it was.
       #
+      # npm takes a minute or two to serve a version it has just accepted, and
+      # the registry's check 404s until it does: publishing straight after npm
+      # failed every release's first attempt. So it waits for npm to serve
+      # @gruntas/mcp at this version, then retries a refused publish a few
+      # times, as the registry may read npm through a cache that lags behind.
+      #
       # mcp-publisher is pinned and checked against its Sigstore signature, as
       # the registry's GitHub Actions guide does. `login github-oidc` trades
       # this job's OIDC token (id-token: write, above) for a registry token
@@ -587,6 +593,19 @@ jobs:
             echo "::notice::$name $version is already on the MCP registry"
             exit 0
           fi
+          package=$(jq -r '.packages[] | select(.registryType == "npm") | .identifier' server.json)
+          for _ in $(seq 1 30); do
+            served=$(curl -s -o /dev/null -w '%{http_code}' \
+              "https://registry.npmjs.org/${package/\//%2F}/$version" || true)
+            [[ "$served" == 200 ]] && break
+            echo "npm doesn't serve $package@$version yet ($served); waiting"
+            sleep 10
+          done
           "$RUNNER_TEMP/mcp-publisher" login github-oidc
-          "$RUNNER_TEMP/mcp-publisher" publish
+          for attempt in 1 2 3 4 5; do
+            "$RUNNER_TEMP/mcp-publisher" publish && break
+            if [[ $attempt == 5 ]]; then exit 1; fi
+            echo "::warning::the MCP registry refused $name $version (attempt $attempt); retrying in 30s"
+            sleep 30
+          done
           echo "\`$name\` $version is on the MCP registry." >> "$GITHUB_STEP_SUMMARY"
