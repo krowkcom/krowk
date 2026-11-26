@@ -85,7 +85,8 @@ pub(super) fn run(io: &mut Io, words: &[String]) -> i32 {
     let format = output::resolve_format("", false, io.tty).unwrap_or(Format::Human);
     let colour = output::colour_for(io.tty, io.env);
     let err_colour = output::colour_for(io.err_tty, io.env);
-    let passthrough = parse(words).is_ok_and(|a| a.passthrough);
+    // Asked for before any `--`, its own words wrong or not.
+    let passthrough = words.iter().take_while(|w| *w != "--").any(|w| w.split('=').next() == Some("--passthrough"));
     let mut ctx = Ctx { io, f: Flags::default(), format, colour, filter: None };
     match launch_from(&mut ctx, words) {
         Ok(code) => code,
@@ -111,7 +112,7 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<i32, Error> {
         None => pick_auto(ctx, &registry, harness)?,
     };
     let instance = launch::account(&registry, harness, &name).map_err(|e| fail("no_account", e))?;
-    if asked.passthrough {
+    if asked.passthrough && !version_only(&asked.rest) {
         signed_in(ctx, instance)?;
     }
     // Checked as every command's is, and named by its resolved path (D4).
@@ -178,12 +179,19 @@ fn signed_in(ctx: &mut Ctx, instance: &Resolved) -> Result<(), Error> {
     }
 }
 
+/// R-T3-2: an app asking only the harness's version (`--version`, or its
+/// short `-v`, `-V`), which the harness answers itself whatever its login
+/// or sandbox, so neither is checked first.
+fn version_only(args: &[String]) -> bool {
+    matches!(args, [a] if a == "--version" || a == "-v" || a == "-V")
+}
+
 /// R-T3-1: gruntas becomes the harness (exec), so the app that started it
 /// has the harness's own stdin, stdout, stderr, signals and exit status,
 /// and nothing restarts it: an app's session moves account by the app's
 /// own choice of instance, not inside one (T3 Code D3).
 fn passthrough(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan) -> Result<i32, Error> {
-    if plan.harness == Harness::Claude {
+    if plan.harness == Harness::Claude && !version_only(&req.args) {
         claude_ready(ctx, &mut plan, req.plugin)?;
     }
     let _ = ctx.io.stdout.flush();

@@ -1106,7 +1106,7 @@ fn r_t3_1_passthrough_passes_argv_stdio_and_the_exit_code_through() {
 
 /// R-T3-4: an account that isn't signed in fails before its harness
 /// starts, with one line on stderr naming `gruntas connect`, and nothing
-/// on stdout.
+/// on stdout; asked only its version, the harness still answers.
 #[test]
 fn r_t3_4_an_account_not_signed_in_names_gruntas_connect() {
     let b = Sandbox::new("t3-signed-out");
@@ -1116,13 +1116,20 @@ fn r_t3_4_an_account_not_signed_in_names_gruntas_connect() {
     passthrough_fake(&b, "claude", r#"{"loggedIn":false}"#);
     passthrough_fake(&b, "codex", "Not logged in");
     for (harness, account, connect) in [("claude", "work", "gruntas connect anthropic --method subscription --name work"), ("codex", "team", "--name team")] {
-        let o = fed(&b, &["run", harness, "--account", account, "--passthrough", "--", "--version"], b"");
+        let first = if harness == "claude" { "-p" } else { "app-server" };
+        let o = fed(&b, &["run", harness, "--account", account, "--passthrough", "--", first], b"");
         let err = String::from_utf8_lossy(&o.stderr);
         assert!(!o.status.success() && o.stdout.is_empty(), "{harness}: {err}");
         assert_eq!(err.lines().count(), 1, "{harness}: one line: {err}");
         assert!(err.starts_with("gruntas: ") && err.contains("gruntas connect") && err.contains(connect), "{harness}: {err}");
         assert!(!b.root.join(format!("{harness}.args")).exists(), "{harness}: not started");
+        // Its version, which the harness answers whatever its login.
+        let o = fed(&b, &["run", harness, "--account", account, "--passthrough", "--version"], b"");
+        assert_eq!((o.status.code(), o.stdout, o.stderr), (Some(0), format!("9.9.9 ({harness})\n").into_bytes(), Vec::new()), "{harness} --version");
     }
+    // A call it cannot read is one line too.
+    let o = fed(&b, &["run", "claude", "--passthrough", "--unattended", "x"], b"");
+    assert!(o.stdout.is_empty() && String::from_utf8_lossy(&o.stderr).lines().count() == 1, "{}", String::from_utf8_lossy(&o.stderr));
 }
 
 /// Every file under `dir` and its content, for R-RUN-5.
