@@ -148,14 +148,7 @@ fn bind(addr: &str) -> io::Result<TcpListener> {
 fn serve(w: &mut dyn Write, ln: TcpListener, asked: &str, site: &str, limit_bytes: i64) -> RunError {
     let bound = ln.local_addr().map(|a| a.to_string()).unwrap_or_default();
     let _ = w.write_all(banner(&bound, asked).as_bytes()).and_then(|_| w.flush());
-    let env = |name: &str| std::env::var(name).unwrap_or_default();
-    let config = Config {
-        limit_bytes,
-        site: site.to_owned(),
-        v1_until: env("GRUNTAS_DEVREGISTRY_V1_UNTIL"),
-        v2_release: env("GRUNTAS_DEVREGISTRY_V2_RELEASE"),
-        ..Config::default()
-    };
+    let config = Config { limit_bytes, site: site.to_owned(), ..Config::default() };
     RunError::Stopped(asked.to_owned(), gruntas_devregistry::serve(ln, config))
 }
 

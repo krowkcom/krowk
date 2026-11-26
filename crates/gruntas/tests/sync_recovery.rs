@@ -39,11 +39,6 @@ fn registry() -> (gruntas_devregistry::Running, String) {
 /// build's stand-in for the person at the terminal answering `answers` in
 /// turn, and `input` on stdin.
 fn gruntas(home: &Path, api: &str, token: &str, args: &[&str], answers: &str, input: &str) -> Output {
-    gruntas_with(home, api, token, args, answers, input, &[])
-}
-
-/// `gruntas`, with `env` set as well.
-fn gruntas_with(home: &Path, api: &str, token: &str, args: &[&str], answers: &str, input: &str, env: &[(&str, &str)]) -> Output {
     let mut c = Command::new(env!("CARGO_BIN_EXE_gruntas"));
     c.args(args)
         .env_clear()
@@ -58,8 +53,7 @@ fn gruntas_with(home: &Path, api: &str, token: &str, args: &[&str], answers: &st
         .current_dir(home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .envs(env.iter().copied());
+        .stderr(Stdio::piped());
     let mut child = c.spawn().unwrap();
     child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
     child.wait_with_output().unwrap()
@@ -251,39 +245,5 @@ fn d6_a_skipped_kit_is_warned_about_once() {
     let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert_eq!(said.matches("no recovery kit").count(), 1, "{said}");
     assert!(said.contains("sync is set up"), "{said}");
-    let _ = std::fs::remove_dir_all(&r);
-}
-
-/// Ticket 168: past the registry's v1_until date, a gruntas that signs v1's
-/// lines (forced, in a test build) is refused. It says the registry's words
-/// whole and once, exits non-zero, and names the code to search for.
-#[test]
-fn a_gruntas_signing_retired_v1_lines_is_told_to_upgrade() {
-    let config = gruntas_devregistry::Config { v1_until: "2000-01-01".into(), v2_release: "0.42.0".into(), ..Default::default() };
-    let registry = gruntas_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), config).unwrap();
-    let api = format!("{}/v1", registry.url());
-    let r = root("retired");
-    let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
-    let kit = r.join("kit.txt");
-    let init = ["sync", "init", "--save", kit.to_str().unwrap()];
-    let v1 = [("GRUNTAS_TEST_SIGN_V1", "1")];
-
-    let out = gruntas_with(&laptop, &api, LAPTOP, &[&init[..], &["--json"]].concat(), "", "", &v1);
-    // The envelope follows what init said of the kit before it was refused.
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let err: Value = stderr.find("{\n").and_then(|at| serde_json::from_str(&stderr[at..]).ok()).unwrap_or_else(|| panic!("{stderr}"));
-    assert!(!out.status.success());
-    let said = "this gruntas is older than 0.42.0 and signs registry requests with the retired v1 lines — run `gruntas upgrade`";
-    assert_eq!((err["error"]["error"].as_str(), err["error"]["fix"].as_str()), (Some("signature_version_retired"), Some(said)), "{err}");
-
-    let out = gruntas_with(&desktop, &api, DESKTOP, &[&init[..], &["--format", "human"]].concat(), "", "", &v1);
-    let human = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success() && human.contains("This gruntas is older than 0.42.0 and signs registry requests with the retired v1 lines.") && human.contains("Try: gruntas upgrade"), "{human}");
-    assert_eq!((human.matches("0.42.0").count(), human.matches("gruntas upgrade").count()), (1, 1), "{human}");
-    assert!(human.contains("Code: signature_version_retired"), "{human}");
-
-    // Unforced, the same machine signs v2 and is served.
-    let _ = std::fs::remove_file(&kit);
-    ok(&gruntas(&laptop, &api, LAPTOP, &[&init[..], &["--json"]].concat(), "", ""));
     let _ = std::fs::remove_dir_all(&r);
 }

@@ -396,6 +396,7 @@ fn signed_calls_refuse_the_api_key_alone_a_replay_a_stale_signature_and_a_revoke
     let v2 = |at: &str, device: &str| gruntas_api::client::signing_input("GET", &ticket, at, b"", device, &origin);
     let send = |at: &str, lines: &[u8]| {
         let signature = e2e::hex(&signer.sign(lines));
+        // v1 was sent without the version header.
         let version = if lines.starts_with(b"krowk/registry/v2\n") { "X-Krowk-Signature-Version: 2\r\n" } else { "" };
         let mut conn = TcpStream::connect(addr).unwrap();
         write!(conn, "GET {ticket} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\nX-Krowk-Device: {}\r\nX-Krowk-Timestamp: {at}\r\nX-Krowk-Signature: {signature}\r\n{version}Content-Length: 0\r\nConnection: close\r\n\r\n", ma.token, a.id()).unwrap();
@@ -412,12 +413,14 @@ fn signed_calls_refuse_the_api_key_alone_a_replay_a_stale_signature_and_a_revoke
 
     // Ticket 163: a v2 signature names its device, so the laptop's key over
     // lines naming the desktop is refused under the laptop's own header.
-    // v1's lines, without the version header, are still taken.
+    // v1's lines, correctly signed and sent without the version header as v1
+    // was, are refused: v1 is retired.
     let at = now();
     assert!(send(&at, &v2(&at, &mb.device.id().to_string())).contains("signature_invalid"));
     let at = now();
     let v1 = format!("krowk/registry/v1\nGET\n{ticket}\n{at}\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-    assert!(send(&at, v1.as_bytes()).starts_with("HTTP/1.1 200"));
+    let refused = send(&at, v1.as_bytes());
+    assert!(refused.starts_with("HTTP/1.1 401") && refused.contains("signature_invalid") && refused.contains("run `gruntas upgrade`"), "{refused}");
 
     // Revoked by the dashboard's Revoke: its own signed calls are refused,
     // the key it holds revoked with it.

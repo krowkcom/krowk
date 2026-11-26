@@ -67,14 +67,6 @@ pub struct Config {
     /// The most synced sessions a workspace holds; 0 is the registry's
     /// 10,000.
     pub max_sessions: usize,
-    /// The registry's `signed_requests.v1_until`, an ISO date: after it, in
-    /// UTC, a request signed with v1's lines is refused as
-    /// `signature_version_retired`. Empty, v1 is accepted. `devregistry`
-    /// reads it from GRUNTAS_DEVREGISTRY_V1_UNTIL.
-    pub v1_until: String,
-    /// The registry's `signed_requests.v2_release`, the gruntas release that
-    /// refusal names; GRUNTAS_DEVREGISTRY_V2_RELEASE for `devregistry`.
-    pub v2_release: String,
 }
 
 /// A clock that runs `shift_ms` milliseconds ahead of the real one, for a
@@ -123,18 +115,6 @@ fn app(config: Config) -> Arc<App> {
     {
         let mut s = app.lock();
         s.sync.max_sessions = config.max_sessions;
-        // As the registry does, a value that is not a date keeps v1
-        // accepted, loudly, rather than failing every client.
-        let until = config.v1_until.trim();
-        s.sync.v1_until = match until.parse() {
-            _ if until.is_empty() => None,
-            Ok(date) => Some(date),
-            Err(_) => {
-                eprintln!("v1_until is not an ISO date ({until:?}); v1 is still accepted");
-                None
-            }
-        };
-        s.sync.v2_release = config.v2_release.trim().to_owned();
     }
     Arc::new(app)
 }
