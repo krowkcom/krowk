@@ -59,10 +59,13 @@ export class Accounts {
   private readonly gruntas: Gruntas
   /** The file the last account is kept in. */
   readonly file: string
+  /** The account `gruntas run pi --account` asked for: the session starts on it, ahead of the last one. */
+  private readonly asked?: string
 
-  constructor(gruntas: Gruntas, file: string) {
+  constructor(gruntas: Gruntas, file: string, asked?: string) {
     this.gruntas = gruntas
     this.file = file
+    this.asked = asked || undefined
   }
 
   /** The account the next request runs on; the first call settles where the session starts. */
@@ -110,7 +113,7 @@ export class Accounts {
   private async start(): Promise<Account> {
     const rows = await this.gruntas.list()
     const find = (name: string | undefined) => rows.find(r => r.instance === name && usable(r) && r.ready)
-    const row = find(this.last()) ?? find(await this.gruntas.auto())
+    const row = find(this.asked) ?? find(this.last()) ?? find(await this.gruntas.auto())
     // A move while this was asking gruntas wins.
     if (this.now) return this.now
     if (!row) throw new Error('gruntas: no Claude Code account is ready. `gruntas providers list --check` says why')

@@ -29,7 +29,7 @@ impl Harness {
         match word {
             "claude" => Ok(Harness::Claude),
             "codex" => Ok(Harness::Codex),
-            other => Err(format!("gruntas runs claude or codex, not {other:?} — `gruntas run claude` or `gruntas run codex`")),
+            other => Err(format!("gruntas runs claude or codex, and pi, not {other:?} — `gruntas run claude`, `gruntas run codex` or `gruntas run pi`")),
         }
     }
 
@@ -446,6 +446,52 @@ fn toml_string(s: &str) -> String {
     out
 }
 
+/// pi's environment variable naming the Claude Code account `gruntas run pi
+/// --account` asked for: the extension starts the session on it.
+pub const PI_ACCOUNT: &str = "GRUNTAS_PI_ACCOUNT";
+/// pi's environment variable marking a `gruntas run pi` session, so an
+/// installed `@gruntas/pi` loader stands aside and the extension never loads
+/// twice.
+pub const PI_LAUNCHED: &str = "GRUNTAS_PI_LAUNCHED";
+
+/// `gruntas run pi`'s launch: pi attended with no sandbox (pi has none by
+/// design), the carried extension loaded with `-e`, the carried skill with
+/// `--skill` where pi would not find the installer's identical copy, on
+/// `model` (`gruntas/<model>`, none when the person picked one), the
+/// person's arguments last. Its arguments and environment: the account to
+/// start on (`PI_ACCOUNT`; an inherited one taken away when none) and the
+/// launched mark. pi's config home is left as it is.
+pub fn pi(account: Option<&str>, model: Option<&str>, extension: &Path, skill: Option<&Path>, args: &[String]) -> PiLaunch {
+    let mut out = vec!["-e".to_string(), extension.display().to_string()];
+    if let Some(s) = skill {
+        out.extend(["--skill".into(), s.display().to_string()]);
+    }
+    if let Some(m) = model {
+        out.extend(["--model".into(), format!("gruntas/{m}")]);
+    }
+    out.extend(args.iter().cloned());
+    let mut set = vec![(PI_LAUNCHED.to_string(), "1".to_string())];
+    let mut remove = Vec::new();
+    match account {
+        Some(a) => set.push((PI_ACCOUNT.to_string(), a.to_string())),
+        None => remove.push(PI_ACCOUNT),
+    }
+    PiLaunch { args: out, env_set: set, env_remove: remove }
+}
+
+/// `pi`'s launch, as data: what follows `pi`, and its environment's changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PiLaunch {
+    pub args: Vec<String>,
+    pub env_set: Vec<(String, String)>,
+    pub env_remove: Vec<&'static str>,
+}
+
+/// Whether the person picked pi's model themselves (`--model`, `--models`).
+pub fn pi_model_picked(args: &[String]) -> bool {
+    args.iter().take_while(|a| *a != "--").any(|a| ["--model", "--models"].iter().any(|f| a == f || a.strip_prefix(f).is_some_and(|v| v.starts_with('='))))
+}
+
 /// The gruntas plugin as Claude Code names it once installed from the
 /// gruntas marketplace (`enabledPlugins`).
 pub const PLUGIN_ID: &str = "gruntas@gruntas";
@@ -727,6 +773,28 @@ mod tests {
         let codex = account(&r, Harness::Codex, "codex:team").unwrap();
         assert!(plan(&Request { plugin: false, ..request(Harness::Codex, Mode::Attended, codex, &[]) }, &no_file).unwrap_err().contains("--no-plugin"));
         assert!(plan(&Request { plugin: false, ..request(Harness::Claude, Mode::Unattended { task: "t".into() }, inst, &[]) }, &no_file).unwrap_err().contains("--no-plugin"));
+    }
+
+    /// `gruntas run pi`: the carried extension first, the skill where asked,
+    /// the model unless the person picked one, their arguments last; the
+    /// account and the launched mark in pi's environment.
+    #[test]
+    fn pi_loads_the_carried_extension_on_the_account_and_model() {
+        let (ext, skill) = (Path::new("/d/pi/gruntas.js"), Path::new("/d/pi/skills/gruntas"));
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let l = pi(Some("claude:work"), Some("claude-opus-5-5"), ext, Some(skill), &args(&["-c"]));
+        assert_eq!(l.args, args(&["-e", "/d/pi/gruntas.js", "--skill", "/d/pi/skills/gruntas", "--model", "gruntas/claude-opus-5-5", "-c"]));
+        assert_eq!(l.env_set, vec![(PI_LAUNCHED.to_string(), "1".to_string()), (PI_ACCOUNT.to_string(), "claude:work".to_string())]);
+        assert!(l.env_remove.is_empty());
+        let l = pi(None, None, ext, None, &args(&["-p", "hi"]));
+        assert_eq!(l.args, args(&["-e", "/d/pi/gruntas.js", "-p", "hi"]));
+        assert_eq!((l.env_set.len(), l.env_remove.as_slice()), (1, &[PI_ACCOUNT][..]), "no account asked: an inherited one is not passed on");
+        for picked in [&["--model", "x"][..], &["--model=x"], &["-c", "--models", "a,b"], &["--models=a"]] {
+            assert!(pi_model_picked(&args(picked)), "{picked:?}");
+        }
+        for not in [&["--modelx"][..], &["-p", "--", "--model"], &[]] {
+            assert!(!pi_model_picked(&args(not)), "{not:?}");
+        }
     }
 
     /// R-RUN-5: making a plan touches no file, so an account's settings,

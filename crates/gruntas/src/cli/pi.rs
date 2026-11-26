@@ -19,7 +19,7 @@ use std::process::{Command, Stdio};
 /// The bundled extension, as npm/pi/bundle.mjs last built it.
 const EXTENSION: &str = include_str!("../../../../npm/pi/carried/gruntas.js");
 /// The gruntas skill, the installer's `~/.agents/skills/gruntas` at this version.
-const SKILL: &str = include_str!("../../../../skills/gruntas/SKILL.md");
+pub(crate) const SKILL: &str = include_str!("../../../../skills/gruntas/SKILL.md");
 /// What the bundle reports as its version until it is written (bundle.mjs's VERSION_TOKEN).
 const VERSION_TOKEN: &str = "0.0.0-gruntas-version";
 /// The Claude Agent SDK's pin, a package.json and its lockfile with the

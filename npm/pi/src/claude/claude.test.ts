@@ -404,9 +404,9 @@ test('a move made while the session is still settling its start wins', async () 
   }
 })
 
-// Pending: `gruntas run pi --account <name>` (ticket 02) puts the account in GRUNTAS_PI_ACCOUNT;
-// systemAccounts(env) hands it to Accounts as the account to start on, ahead of the one used last.
-test('the account the launcher asks for (GRUNTAS_PI_ACCOUNT) starts the session, ahead of the last one', { skip: 'pending: gruntas run pi (ticket 02)' }, async () => {
+// `gruntas run pi --account <name>` puts the account in GRUNTAS_PI_ACCOUNT; systemAccounts(env)
+// hands it to Accounts as the account to start on, ahead of the one used last.
+test('the account the launcher asks for (GRUNTAS_PI_ACCOUNT) starts the session, ahead of the last one', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'gruntas-pi-asked-'))
   try {
     const rows: Listed[] = [

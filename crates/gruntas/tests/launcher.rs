@@ -392,7 +392,6 @@ fn codex_attended_execs_codex_with_the_account_and_profile() {
 /// `gruntas/<the account's default model>` unless the person named one, and
 /// with no sandbox: `--no-sandbox` changes nothing.
 #[test]
-#[ignore = "pending: gruntas run pi (ticket 02)"]
 fn pi_attended_execs_pi_with_the_carried_extension_account_and_model() {
     let b = Sandbox::new("runpi");
     b.fake("pi");
@@ -422,7 +421,6 @@ fn pi_attended_execs_pi_with_the_carried_extension_account_and_model() {
 /// R-RUNPI-2 and 4: what `gruntas run pi` refuses, each with what to do,
 /// before pi starts.
 #[test]
-#[ignore = "pending: gruntas run pi (ticket 02)"]
 fn pi_refuses_unattended_no_plugin_a_codex_and_an_unknown_account() {
     let b = Sandbox::new("runpi-refuse");
     b.fake("pi");

@@ -1,7 +1,8 @@
 //! `gruntas run <harness> [--account <name|auto>] [--unattended "<task>"]
 //! [--no-sandbox] [--no-plugin] [args…]` (Launcher): the stock `claude` or `codex` on one
 //! of the person's accounts, with the gruntas plugin and the sandbox that
-//! keeps it out of the gruntas home. The plan is `gruntas_harness::launch`'s;
+//! keeps it out of the gruntas home; or `pi` with the gruntas extension, its
+//! Claude turns on one of the person's Claude Code accounts. The plan is `gruntas_harness::launch`'s;
 //! this reads the command line, resolves the account and hands the plan to
 //! the slice that runs it.
 //!
@@ -89,6 +90,9 @@ pub(super) fn run(io: &mut Io, words: &[String]) -> i32 {
 fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<i32, Error> {
     let bad = |why: String| fail("bad_flag", format!("{why}; run `gruntas help run`"));
     let asked = parse(words).map_err(bad)?;
+    if asked.harness == "pi" {
+        return pi(ctx, asked);
+    }
     let harness = Harness::parse(&asked.harness).map_err(bad)?;
     let account = Account::parse(harness, asked.account.as_deref().unwrap_or_default()).map_err(bad)?;
     let registry = Registry::resolve(&super::prompt::load_instances()?, ctx.io.env);
@@ -139,6 +143,83 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<i32, Error> {
             attended(ctx, &req, plan, model)
         }
     }
+}
+
+/// `gruntas run pi`: pi attended, as gruntas's exec, with the extension and
+/// skill this binary carries (`super::pi`), on the Claude Code account
+/// `--account` names, else where the extension starts on its own (the
+/// account it used last). pi has no sandbox and gruntas adds none, so
+/// `--no-sandbox` changes nothing; pi rolls a session over inside the
+/// extension, so gruntas has nothing to do after it starts.
+fn pi(ctx: &mut Ctx, asked: Asked) -> Result<i32, Error> {
+    let bad = |why: String| fail("bad_flag", format!("{why}; run `gruntas help run`"));
+    if let Some(why) = pi_refused(&asked) {
+        return Err(bad(why.into()));
+    }
+    let registry = Registry::resolve(&super::prompt::load_instances()?, ctx.io.env);
+    let instance = match asked.account.as_deref() {
+        Some(v) => Some(pi_account(ctx, &registry, v)?),
+        None => None,
+    };
+    let model = match launch::pi_model_picked(&asked.rest) {
+        true => None,
+        false => {
+            let on = instance.or_else(|| launch::account(&registry, Harness::Claude, Harness::Claude.name()).ok());
+            Some(on.and_then(|i| registry.model_on(i, None, &|_| Vec::new()).ok()).unwrap_or_else(|| gruntas_harness::instances::DEFAULT_MODEL.into()))
+        }
+    };
+    let dir = super::pi::dir(ctx.io.env).ok_or_else(|| fail("no_home", "there is no home directory to keep the pi extension in — set HOME"))?;
+    let carried = super::pi::install(&dir).map_err(|e| fail("write_failed", format!("the pi extension could not be written to {}: {e}", dir.display())))?;
+    let skill = (!installer_skill(ctx.io.env)).then_some(carried.skill.as_path());
+    let l = launch::pi(instance.map(|i| i.name.as_str()), model.as_deref(), &carried.extension, skill, &asked.rest);
+    let mut cmd = std::process::Command::new("pi");
+    cmd.args(&l.args);
+    for k in &l.env_remove {
+        cmd.env_remove(k);
+    }
+    cmd.envs(l.env_set.iter().map(|(k, v)| (k, v)));
+    let _ = ctx.io.stdout.flush();
+    let _ = ctx.io.stderr.flush();
+    let e = std::os::unix::process::CommandExt::exec(&mut cmd);
+    Err(fail("no_binary", format!("pi could not be started: {e}. Is pi installed and on your PATH?")))
+}
+
+/// Why `gruntas run pi` refuses what it was asked, if it does.
+fn pi_refused(asked: &Asked) -> Option<&'static str> {
+    if asked.unattended.is_some() {
+        return Some("pi runs attended only: --unattended starts a background worker, which gruntas runs in Claude Code or Codex — `gruntas run claude --unattended \"<task>\"`");
+    }
+    if asked.no_plugin {
+        return Some("--no-plugin is for claude: `gruntas run pi` is pi with the gruntas extension; for pi without it, run `pi`");
+    }
+    None
+}
+
+/// The Claude Code account `--account` names for pi (`work`, `claude:work`,
+/// or `auto` for rollover's pick, as `run claude` takes them), refused for a
+/// Codex account, which pi's turns cannot run on, and for one gruntas does
+/// not have.
+fn pi_account<'r>(ctx: &mut Ctx, registry: &'r Registry, value: &str) -> Result<&'r Resolved, Error> {
+    let codex = Account::parse(Harness::Codex, value).ok().and_then(|a| a.instance(Harness::Codex)).is_some_and(|n| launch::account(registry, Harness::Codex, &n).is_ok());
+    let not_claude = || fail("bad_flag", format!("{:?} is a Codex account, and pi's turns run on a Claude Code account — pick one `gruntas providers list` shows as Claude Code; run `gruntas help run`", value.trim()));
+    let account = match Account::parse(Harness::Claude, value) {
+        Ok(a) => a,
+        Err(_) if codex => return Err(not_claude()),
+        Err(e) => return Err(fail("bad_flag", format!("{e}; run `gruntas help run`"))),
+    };
+    let name = match account.instance(Harness::Claude) {
+        Some(name) => name,
+        None => pick_auto(ctx, registry, Harness::Claude)?,
+    };
+    launch::account(registry, Harness::Claude, &name).map_err(|e| if codex { not_claude() } else { fail("no_account", e) })
+}
+
+/// Whether pi finds the installer's gruntas skill on its own
+/// (`~/.agents/skills/gruntas`, which pi reads) and it is the one this
+/// binary carries: then `--skill` would only load it twice.
+fn installer_skill(env: &dyn Fn(&str) -> String) -> bool {
+    let home = env("HOME");
+    !home.trim().is_empty() && std::fs::read_to_string(std::path::Path::new(&home).join(".agents/skills/gruntas/SKILL.md")).is_ok_and(|s| s == super::pi::SKILL)
 }
 
 /// Continues session `from` on the other harness (Rollover for launched

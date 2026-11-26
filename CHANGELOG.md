@@ -21,6 +21,16 @@ breaking changes may affect it without notice.
 
 ### Added
 
+- **`gruntas run pi` starts pi with gruntas in it.** pi joins Claude Code
+  and Codex under `gruntas run`, with the same flags: `gruntas run pi
+  --account work` starts pi with the gruntas extension this gruntas carries,
+  nothing installed in pi, and its Claude turns start on your Claude Code
+  account `claude:work` (`auto` takes rollover's pick; without `--account`,
+  the account pi used last). Unless you pass `--model` or `--models`, pi
+  starts on `gruntas/<the account's default model>`. pi has no sandbox and
+  gruntas adds none: `--no-sandbox` changes nothing, and `gruntas help run`
+  points at containers and pi's sandbox extensions. A Codex account,
+  `--unattended` and `--no-plugin` are refused, each saying why.
 - **`gruntas hook pi <event>` takes pi's sessions.** pi joins Claude Code
   and Codex as a harness gruntas's hook reads: a pi session registers as
   harness `pi`, and its account is pi's config home, `PI_CODING_AGENT_DIR`,

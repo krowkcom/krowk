@@ -1,0 +1,3 @@
+# `gruntas help run`: the launcher for claude, codex and pi, with how pi runs
+# (no sandbox, the carried extension, the account its turns start on).
+gruntas help run --format human

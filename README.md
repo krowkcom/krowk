@@ -46,6 +46,7 @@ gruntas                              # set up this machine: sign in, connect an 
 gruntas -p "fix the build"           # one prompt, headless
 gruntas run claude --account auto    # Claude Code on the account with the most room
 gruntas run claude --unattended "fix the flaky test"   # a background worker
+gruntas run pi --account work        # pi with gruntas in it, nothing to install; Claude turns on work
 gruntas status                       # every agent on every machine
 gruntas push screenshot.png          # a link to paste where people will read it
 ```
