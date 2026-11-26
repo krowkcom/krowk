@@ -115,12 +115,17 @@ fn ensure_sdk(dir: &Path, npm: &[&OsStr]) -> Option<PathBuf> {
     }
 }
 
+/// How long the fetch may take before it counts as failed: offline, pi's
+/// start (the loader writes the extension) must not wait on npm for long.
+const SDK_FETCH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// `npm ci` of the embedded pin in a staging directory inside `dir`, with
 /// its own npm cache there, scripts off and the SDK's optional packages (its
 /// own Claude Code, which gruntas starts instead) left out; then its
-/// `node_modules` takes the place of `dir`'s in one rename. npm checks every
-/// tarball against the lockfile's integrity, and writes nowhere outside the
-/// staging directory, which goes when this returns.
+/// `node_modules` takes the place of `dir`'s by renames, the old one moved
+/// aside first. npm checks every tarball against the lockfile's integrity,
+/// and writes nowhere outside the staging directory, which goes when this
+/// returns.
 fn fetch_sdk(dir: &Path, npm: &[&OsStr], version: &str) -> Result<(), String> {
     let stage = dir.join(format!(".sdk.{}", std::process::id()));
     let result = (|| {
@@ -130,14 +135,25 @@ fn fetch_sdk(dir: &Path, npm: &[&OsStr], version: &str) -> Result<(), String> {
             .and_then(|()| std::fs::write(stage.join("package-lock.json"), SDK_LOCK))
             .map_err(|e| format!("{} could not be written: {e}", stage.display()))?;
         let (program, before) = npm.split_first().ok_or("no npm to run")?;
-        let child = Command::new(program)
+        let mut child = Command::new(program)
             .args(before)
             .arg("ci")
             .arg("--prefix")
             .arg(&stage)
             .arg("--cache")
             .arg(stage.join(".npm-cache"))
-            .args(["--ignore-scripts", "--omit=optional", "--legacy-peer-deps", "--global=false", "--audit=false", "--fund=false", "--update-notifier=false", "--fetch-retries=1", "--loglevel=error"])
+            .args([
+                "--ignore-scripts",
+                "--omit=optional",
+                "--legacy-peer-deps",
+                "--global=false",
+                "--audit=false",
+                "--fund=false",
+                "--update-notifier=false",
+                "--fetch-retries=0",
+                "--fetch-timeout=30000",
+                "--loglevel=error",
+            ])
             .current_dir(&stage)
             .stdin(Stdio::null())
             // npm's progress would land in `gruntas pi extension --json`'s output.
@@ -146,22 +162,50 @@ fn fetch_sdk(dir: &Path, npm: &[&OsStr], version: &str) -> Result<(), String> {
             .spawn()
             .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { "npm is not on the PATH".to_string() } else { format!("npm could not start: {e}") })?;
         eprintln!("gruntas: fetching the Claude Agent SDK {version} from npm, once");
-        let out = child.wait_with_output().map_err(|e| format!("npm: {e}"))?;
-        if !out.status.success() {
-            let said = String::from_utf8_lossy(&out.stderr);
+        let mut stderr = child.stderr.take();
+        let said = std::thread::spawn(move || {
+            let mut said = String::new();
+            if let Some(e) = stderr.as_mut() {
+                let _ = std::io::Read::read_to_string(e, &mut said);
+            }
+            said
+        });
+        let started = std::time::Instant::now();
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if started.elapsed() < SDK_FETCH_DEADLINE => std::thread::sleep(std::time::Duration::from_millis(50)),
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("npm took longer than {} s", SDK_FETCH_DEADLINE.as_secs()));
+                }
+                Err(e) => return Err(format!("npm: {e}")),
+            }
+        };
+        if !status.success() {
+            let said = said.join().unwrap_or_default();
             let said: Vec<&str> = said.lines().map(str::trim).filter(|l| !l.is_empty()).take(2).collect();
-            return Err(format!("`npm ci` failed ({})", if said.is_empty() { out.status.to_string() } else { said.join("; ") }));
+            return Err(format!("`npm ci` failed ({})", if said.is_empty() { status.to_string() } else { said.join("; ") }));
         }
         let fetched = stage.join("node_modules");
         if !sdk_is(&fetched.join(SDK), version) {
             return Err(format!("`npm ci` did not install {SDK} {version}"));
         }
         let target = dir.join("node_modules");
-        let _ = std::fs::remove_dir_all(&target);
+        // Another version, or a broken install: aside into the stage, which goes with it.
+        let old = stage.join("old");
+        let moved = std::fs::rename(&target, &old).is_ok();
         match std::fs::rename(&fetched, &target) {
+            Ok(()) => Ok(()),
             // Another gruntas writing the extension at the same time got there first.
             Err(_) if sdk_is(&target.join(SDK), version) => Ok(()),
-            r => r.map_err(|e| format!("{} could not be moved into place: {e}", fetched.display())),
+            Err(e) => {
+                if moved && !target.exists() {
+                    let _ = std::fs::rename(&old, &target);
+                }
+                Err(format!("{} could not be moved into place: {e}", fetched.display()))
+            }
         }
     })();
     let _ = std::fs::remove_dir_all(&stage);

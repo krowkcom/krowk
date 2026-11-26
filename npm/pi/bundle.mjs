@@ -133,7 +133,7 @@ async function build() {
   const body = result.outputFiles[0].text
   if (!body.includes(VERSION_TOKEN)) throw new Error('the bundle lost the version token gruntas stamps')
   // A static import of the SDK would stop the whole extension loading where it isn't installed.
-  if (new RegExp(`\\bfrom\\s*["']${SDK}["']`).test(body)) throw new Error(`the bundle imports ${SDK} statically: import it in src/claude/runtime.ts only, dynamically`)
+  if (new RegExp(`(\\bfrom|\\bimport)\\s*["']${SDK}(/[^"']*)?["']`).test(body)) throw new Error(`the bundle imports ${SDK} statically: import it in src/claude/runtime.ts only, dynamically`)
   const header = `// @gruntas/pi carried extension: sources sha256:${sourcesHash()} body sha256:${sha256(body)}. Built by \`make pi-bundle\`; do not edit.\n`
   fs.mkdirSync(path.dirname(OUT), { recursive: true })
   fs.writeFileSync(OUT, header + body)

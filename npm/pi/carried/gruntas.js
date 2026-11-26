@@ -1,4 +1,4 @@
-// @gruntas/pi carried extension: sources sha256:57fa1a4c305211bdfeb6bfd2042bcb30db8ec1b0495b37df9e84f461b49b0d30 body sha256:a2ea4db13a94d845a3798c993f46aa136185a637f8c416fce33ded05f608adf5. Built by `make pi-bundle`; do not edit.
+// @gruntas/pi carried extension: sources sha256:cc4f7baaa0f84f833389d243cb7a7680ef66168878e466058b368c5f9ac7804c body sha256:78a934c022ff2f62f04d6e3c0b1d0766a7db6db68f147b248a12347943e31143. Built by `make pi-bundle`; do not edit.
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -24678,10 +24678,12 @@ async function load() {
   let sdk;
   try {
     sdk = await import("@anthropic-ai/claude-agent-sdk");
-  } catch {
+  } catch (e) {
+    const code = e?.code;
+    const why = code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND" || /cannot find/i.test(String(e)) ? SDK_MISSING : `the Claude Agent SDK beside this extension could not load: ${e instanceof Error ? e.message : String(e)}`;
     return { runtime: { ai, createSession: () => {
-      throw new Error(`gruntas: ${SDK_MISSING}`);
-    } }, missing: SDK_MISSING };
+      throw new Error(`gruntas: ${why}`);
+    } }, missing: why };
   }
   return { runtime: { ai, createSession: (spec, chain, count) => new LiveSession(spec, chain, count, sdk.query) } };
 }
