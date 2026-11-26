@@ -31,8 +31,18 @@ breaking changes may affect it without notice.
   session the gruntas MCP server (`gruntas_report`, `gruntas_session_info`,
   `gruntas_delegate`, `gruntas_collect`, `gruntas_machines`, publishing and
   the rest), its tools declared to the model as `mcp__gruntas__<tool>`, and
-  ships the gruntas skill. pi starts `gruntas-mcp` itself, so
+  the gruntas skill. pi starts `gruntas-mcp` itself, so
   `gruntas_session_info` finds the pi session it runs in.
+- **`@gruntas/pi` runs the pi extension the installed gruntas carries.**
+  The package is a small loader with no dependencies of its own: as pi
+  loads it, it asks the `gruntas` on the PATH for the extension gruntas
+  carries and runs that, so pi always runs the extension of the installed
+  gruntas, at its version, and upgrading gruntas upgrades it with nothing
+  to do in pi. The gruntas skill comes from gruntas's copy, the same file
+  the installer puts in `~/.agents/skills/gruntas`, and only where pi does
+  not already find that one, so pi no longer warns of a `gruntas` skill
+  collision. Without `gruntas` on the PATH it only shows the install hint;
+  on Windows, and under `gruntas run pi`, it does nothing.
 - **`gruntas run claude --account <name> --no-plugin` runs Claude Code on
   an account for another program.** It starts Claude Code on that account,
   its login or key kept in gruntas, without the gruntas plugin or hooks, so
