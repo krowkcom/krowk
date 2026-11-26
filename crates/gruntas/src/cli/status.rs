@@ -22,6 +22,9 @@
 //! (each window's percent `left` and `resetsAtMs`, from the usage records
 //! rollover keeps; empty when none) and `sharedWith` (the other accounts
 //! signed in as the same login, between which a move gains nothing).
+//! `config_dir` is the account's config home, as `providers list` says it
+//! (null for an account with none): where the pi extension records the
+//! usage a turn on it reports.
 //!
 //! `state` is one of `ready`, `key_not_set`, `not_signed_in`, `expired`,
 //! `not_installed`, `unknown`; `var` is set for `key_not_set`, `reason` for
@@ -155,6 +158,8 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
         if let (Some(row), Value::Object(more)) = (row.as_object_mut(), s.json()) {
             row.extend(more);
         }
+        let home = registry.instances.get(&r.instance).and_then(|i| i.backend.as_ref()).and_then(|b| b.home.as_ref());
+        row["config_dir"] = json!(home.map(|p| p.display().to_string()));
         row
     });
     let data = json!({ "ready": ready, "instances": rows.collect::<Vec<Value>>() });

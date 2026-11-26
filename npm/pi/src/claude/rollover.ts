@@ -131,6 +131,14 @@ export class Rollover {
     return this.busy
   }
 
+  /**
+   * Once the limit being handled, if any, is settled: a request waits on it, so one sent right
+   * after a hit (a queued prompt) goes where rollover moves the session, not to the spent account.
+   */
+  settled(): Promise<void> {
+    return this.busy?.catch(() => {}) ?? Promise.resolve()
+  }
+
   private async handle(account: string, resetsAt?: number): Promise<void> {
     // The session already moved on: an old request's reading.
     if (this.accounts.name !== undefined && this.accounts.name !== account) return
