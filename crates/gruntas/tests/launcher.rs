@@ -1020,3 +1020,130 @@ fn rl07_a_picked_account_continues_the_session_after_exit() {
     let o = b.command(&["hook", "claude", "account", "--dangerously-skip-permissions", "claude:spare"]).env("XDG_RUNTIME_DIR", b.root.join("run")).output().unwrap();
     assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).into_owned()), (Some(1), "\"--dangerously-skip-permissions\" is not a session id\n".to_string()));
 }
+
+/// A fake `name` for passthrough: it answers the sign-in check (`login`,
+/// Claude Code's JSON or Codex's words), writes down its arguments and
+/// environment, says
+/// its version to `--version`, and otherwise writes a line to stderr,
+/// copies stdin to stdout and exits 7. The sign-in check is told apart by
+/// its arguments: it carries none of gruntas's (`--settings`, the profile).
+fn passthrough_fake(b: &Sandbox, name: &str, login: &str) {
+    let out = b.root.join(name);
+    let check = match name {
+        "claude" => format!("[ \"$1\" = auth ] && {{ echo '{login}'; exit 0; }}\n"),
+        _ => format!("case \"$*\" in *default_permissions*) ;; *) [ \"$1\" = login ] && echo '{login}'; exit 0;; esac\n"),
+    };
+    script(b, name, &format!("{check}for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{0}.args'\nenv > '{0}.env'\nfor a in \"$@\"; do [ \"$a\" = --version ] && {{ printf '9.9.9 ({name})\\n'; exit 0; }}; done\nprintf '{name} \\001 says\\n' >&2\ncat\nexit 7\n", out.display()));
+}
+
+/// `gruntas <args>` fed `stdin`, its stdout and stderr caught.
+fn fed(b: &Sandbox, args: &[&str], stdin: &[u8]) -> Output {
+    let mut c = b.command(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    use std::io::Write;
+    c.stdin.take().unwrap().write_all(stdin).unwrap();
+    c.wait_with_output().unwrap()
+}
+
+/// R-T3-1, R-T3-2, R-RUN-5: `--passthrough` runs the account's plan with
+/// the app's arguments after gruntas's own, and the harness's stdin,
+/// stdout, stderr and exit code pass through byte for byte, `--version`
+/// too; nothing in either account changes, and nothing of the person's
+/// own Codex home is linked into one.
+#[test]
+fn r_t3_1_passthrough_passes_argv_stdio_and_the_exit_code_through() {
+    let b = Sandbox::new("t3-passthrough");
+    for bin in ["bwrap", "socat"] {
+        b.fake(bin);
+    }
+    passthrough_fake(&b, "claude", r#"{"loggedIn":true,"authMethod":"claude.ai"}"#);
+    passthrough_fake(&b, "codex", "Logged in using ChatGPT");
+    std::fs::create_dir_all(b.root.join("accounts/claude-work/plugins")).unwrap();
+    std::fs::write(b.root.join("accounts/claude-work/settings.json"), "{}").unwrap();
+    std::fs::write(b.root.join("accounts/claude-work/.credentials.json"), "{}").unwrap();
+    std::fs::write(b.root.join("accounts/codex-team/config.toml"), "{}").unwrap();
+    std::fs::create_dir_all(b.root.join("home/.codex")).unwrap();
+    std::fs::write(b.root.join("home/.codex/config.toml"), "model = \"x\"\n").unwrap();
+    let before = listing(&b.root.join("accounts"));
+    let stdin = b"{\"type\":\"user\"}\n\x00\xff\xfe not utf-8\n";
+    let cases: [(&str, &[&str]); 2] = [
+        ("claude", &["--output-format", "stream-json", "--verbose", "a b", "", "--account", "x", "--passthrough"]),
+        ("codex", &["app-server", "-c", "model=\"gpt-5.5\"", "--listen", "stdio://"]),
+    ];
+    for (harness, theirs) in cases {
+        let account = if harness == "claude" { "work" } else { "team" };
+        let o = fed(&b, &[&["run", harness, "--account", account, "--passthrough", "--"][..], theirs].concat(), stdin);
+        assert_eq!(o.status.code(), Some(7), "{harness}: {}", String::from_utf8_lossy(&o.stderr));
+        assert_eq!(o.stdout, stdin, "{harness}: stdin to stdout, nothing of gruntas's");
+        assert_eq!(o.stderr, format!("{harness} \x01 says\n").as_bytes(), "{harness}: only the harness's stderr");
+        let (args, env) = b.started(harness);
+        // Codex's `app-server` first, the profile after it, the rest last.
+        let last = if harness == "codex" { &theirs[1..] } else { theirs };
+        assert!(args.ends_with(&last.iter().map(|s| s.to_string()).collect::<Vec<_>>()), "{harness}: the app's arguments last, as given: {args:?}");
+        match harness {
+            "claude" => {
+                assert_eq!(args[0], "--plugin-dir");
+                let s: serde_json::Value = serde_json::from_str(&args[args.iter().position(|a| a == "--settings").unwrap() + 1]).unwrap();
+                assert_eq!(s["sandbox"]["enabled"], true);
+                assert!(env.contains(&format!("CLAUDE_CONFIG_DIR={}", b.root.join("accounts/claude-work").display())));
+            }
+            _ => {
+                assert_eq!(args[..3], ["app-server", "-c", r#"default_permissions="gruntas""#], "the profile after app-server");
+                assert!(env.contains(&format!("CODEX_HOME={}", b.root.join("accounts/codex-team").display())));
+            }
+        }
+        let o = fed(&b, &["run", harness, "--account", account, "--passthrough", "--version"], b"");
+        assert_eq!((o.status.code(), o.stdout, o.stderr), (Some(0), format!("9.9.9 ({harness})\n").into_bytes(), Vec::new()), "{harness} --version");
+    }
+    // --no-sandbox, as attended: no sandbox parts.
+    let o = fed(&b, &["run", "claude", "--account", "work", "--passthrough", "--no-sandbox", "-p"], b"");
+    assert_eq!(o.status.code(), Some(7));
+    let args = b.started("claude").0;
+    let s: serde_json::Value = serde_json::from_str(&args[args.iter().position(|a| a == "--settings").unwrap() + 1]).unwrap();
+    assert!(s.get("sandbox").is_none(), "{s}");
+    assert_eq!(listing(&b.root.join("accounts")), before, "R-RUN-5: the accounts as they were");
+    failed(&b.gruntas(&["run", "claude", "--account", "auto", "--passthrough"]), 1, "not auto");
+}
+
+/// R-T3-4: an account that isn't signed in fails before its harness
+/// starts, with one line on stderr naming `gruntas connect`, and nothing
+/// on stdout; asked only its version, the harness still answers.
+#[test]
+fn r_t3_4_an_account_not_signed_in_names_gruntas_connect() {
+    let b = Sandbox::new("t3-signed-out");
+    for bin in ["bwrap", "socat"] {
+        b.fake(bin);
+    }
+    passthrough_fake(&b, "claude", r#"{"loggedIn":false}"#);
+    passthrough_fake(&b, "codex", "Not logged in");
+    for (harness, account, connect) in [("claude", "work", "gruntas connect anthropic --method subscription --name work"), ("codex", "team", "--name team")] {
+        let first = if harness == "claude" { "-p" } else { "app-server" };
+        let o = fed(&b, &["run", harness, "--account", account, "--passthrough", "--", first], b"");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(!o.status.success() && o.stdout.is_empty(), "{harness}: {err}");
+        assert_eq!(err.lines().count(), 1, "{harness}: one line: {err}");
+        assert!(err.starts_with("gruntas: ") && err.contains("gruntas connect") && err.contains(connect), "{harness}: {err}");
+        assert!(!b.root.join(format!("{harness}.args")).exists(), "{harness}: not started");
+        // Its version, which the harness answers whatever its login.
+        let o = fed(&b, &["run", harness, "--account", account, "--passthrough", "--version"], b"");
+        assert_eq!((o.status.code(), o.stdout, o.stderr), (Some(0), format!("9.9.9 ({harness})\n").into_bytes(), Vec::new()), "{harness} --version");
+    }
+    // A call it cannot read is one line too.
+    let o = fed(&b, &["run", "claude", "--passthrough", "--unattended", "x"], b"");
+    assert!(o.stdout.is_empty() && String::from_utf8_lossy(&o.stderr).lines().count() == 1, "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+/// Every file under `dir` and its content, for R-RUN-5.
+fn listing(dir: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).unwrap().flatten() {
+        let p = e.path();
+        if p.is_dir() && !p.is_symlink() {
+            out.push((p.clone(), Vec::new()));
+            out.extend(listing(&p));
+        } else {
+            out.push((p.clone(), std::fs::read(&p).unwrap_or_default()));
+        }
+    }
+    out.sort();
+    out
+}

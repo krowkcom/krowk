@@ -760,8 +760,9 @@ fn run_command() -> Command {
             flag("unattended", STRING, "Start a background session on this task instead of taking the terminal"),
             flag("no-sandbox", BOOL, "Run without the sandbox that keeps the session out of the gruntas home, this once; attended only"),
             flag("no-plugin", BOOL, "Start Claude Code without the gruntas plugin and hooks, so it never registers as a session; its arguments, stdin and stdout pass through, so a program can run it as its Claude Code (the Agent SDK's executable). Attended claude only"),
+            flag("passthrough", BOOL, "For an app that drives the harness itself (T3 Code): its arguments, stdin, stdout, stderr and exit code pass through, nothing of gruntas's on stdout, no rollover; an account not signed in fails with one line"),
         ],
-        ..cmd("run", "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [--no-plugin] [args...]", "Start Claude Code or Codex on one of your accounts")
+        ..cmd("run", "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [--no-plugin] [--passthrough] [args...]", "Start Claude Code or Codex on one of your accounts")
     }
 }
 

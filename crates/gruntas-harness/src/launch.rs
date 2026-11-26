@@ -1,7 +1,7 @@
 //! The launcher's plans (Launcher D1–D5): how `gruntas run <harness>` starts
 //! the stock `claude` or `codex` on one account, attended (the harness a
-//! child of gruntas at the terminal, `crate::attended`) or unattended (a
-//! background session).
+//! child of gruntas at the terminal, `crate::attended`), unattended (a
+//! background session) or passthrough (an app such as T3 Code driving it).
 //! A plan is the whole launch as data: the program, the environment (the
 //! account's config home), the arguments with the gruntas plugin and, for
 //! Claude Code, one `--settings` JSON carrying the sandbox parts that keep
@@ -109,11 +109,15 @@ pub fn account<'r>(registry: &'r Registry, harness: Harness, name: &str) -> Resu
 }
 
 /// Attended: the harness takes the terminal. Unattended: a background
-/// session started on a task.
+/// session started on a task. Passthrough: an app drives the harness
+/// itself over stdio (the Agent SDK's stream-json, `codex app-server`),
+/// its arguments after gruntas's own, as attended but for where Codex's
+/// profile goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     Attended,
     Unattended { task: String },
+    Passthrough,
 }
 
 /// Everything a plan is made from, resolved by the caller.
@@ -222,7 +226,7 @@ pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> R
             let settings = theirs.into_iter().fold(Value::Object(Map::new()), merge);
             if req.sandbox {
                 ours = merge(ours, claude_sandbox(&req.hidden));
-                if req.mode == Mode::Attended {
+                if matches!(req.mode, Mode::Attended | Mode::Passthrough) {
                     // A proxy or denied domains the person gave in a
                     // `--settings` stay theirs: no open proxy over them.
                     let n = &settings["sandbox"]["network"];
@@ -249,8 +253,14 @@ pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> R
             // After the instance's own `-c`s, so none of them picks another
             // profile; before the person's, which may name a subcommand.
             // Unattended, the engine puts the instance's own after
-            // `app-server` itself, and the profile after them.
-            let attended = req.mode == Mode::Attended;
+            // `app-server` itself, and the profile after them; passthrough
+            // places them so after an app's own `app-server`.
+            let attended = !matches!(req.mode, Mode::Unattended { .. });
+            let (sub, theirs) = match req.args.split_first() {
+                Some((s, rest)) if req.mode == Mode::Passthrough && s == "app-server" => (Some(s.clone()), rest),
+                _ => (None, &req.args[..]),
+            };
+            plan.args.extend(sub);
             if attended {
                 plan.args.extend(b.args.iter().cloned());
             }
@@ -258,7 +268,7 @@ pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> R
                 plan.args.extend(codex_profile(&req.hidden, true));
             }
             if attended {
-                plan.args.extend(req.args.iter().cloned());
+                plan.args.extend(theirs.iter().cloned());
             }
         }
     }
@@ -729,6 +739,53 @@ mod tests {
         assert!(plan(&Request { plugin: false, ..request(Harness::Claude, Mode::Unattended { task: "t".into() }, inst, &[]) }, &no_file).unwrap_err().contains("--no-plugin"));
     }
 
+    /// R-T3-1, R-T3-2: Claude passthrough is the attended plan, the app's
+    /// arguments after gruntas's own and its `--settings` (the Agent SDK's)
+    /// merged into the one.
+    #[test]
+    fn r_t3_1_claude_passthrough_merges_the_sdks_settings_after_gruntas_arguments() {
+        let r = registry();
+        let inst = account(&r, Harness::Claude, "claude:work").unwrap();
+        let sdk = ["--output-format", "stream-json", "--verbose", "--input-format", "stream-json", "--settings", r#"{"model":"opus","hooks":{"Stop":[{"hooks":[]}]}}"#, "--permission-mode", "default"];
+        let p = plan(&request(Harness::Claude, Mode::Passthrough, inst, &sdk), &no_file).unwrap();
+        assert_eq!(p.mode, Mode::Passthrough);
+        assert_eq!(set(&p, "CLAUDE_CONFIG_DIR"), Some("/h/.gruntas/accounts/claude-work"));
+        assert_eq!(set(&p, "ANTHROPIC_BASE_URL"), Some("https://router"));
+        assert!(p.env_remove.contains(&"ANTHROPIC_API_KEY"));
+        let s = p.settings.clone().unwrap();
+        assert_eq!((&s["model"], s["hooks"]["Stop"].is_array(), s["hooks"]["WorktreeCreate"].is_array()), (&json!("opus"), true, true), "{s}");
+        assert_eq!((&s["sandbox"]["enabled"], &s["permissions"]["deny"]), (&json!(true), &json!(["Read(//h/.gruntas/**)"])));
+        assert_eq!(s["sandbox"]["filesystem"]["allowWrite"], json!(["~"]), "the attended sandbox");
+        let mut want = vec!["--plugin-dir".to_string(), "/h/.local/share/gruntas/plugin".into(), "--settings".into(), s.to_string(), "--verbose".into()];
+        want.extend(["--output-format", "stream-json", "--verbose", "--input-format", "stream-json", "--permission-mode", "default"].map(String::from));
+        assert_eq!(p.args, want, "gruntas's, the instance's, then the app's, one --settings");
+        let p = plan(&request(Harness::Claude, Mode::Passthrough, inst, &["--version"]), &no_file).unwrap();
+        assert_eq!(p.args.last().map(String::as_str), Some("--version"));
+        let p = plan(&Request { sandbox: false, ..request(Harness::Claude, Mode::Passthrough, inst, &[]) }, &no_file).unwrap();
+        assert!(p.settings.unwrap().get("sandbox").is_none() && !p.sandboxed, "--no-sandbox as attended");
+    }
+
+    /// R-T3-2: Codex passthrough carries an app's `app-server` with the
+    /// profile after it, behind the instance's own, as the engine places
+    /// them; anything else (`--version`) as attended.
+    #[test]
+    fn r_t3_2_codex_passthrough_puts_the_profile_after_app_server() {
+        let r = registry();
+        let inst = account(&r, Harness::Codex, "codex:team").unwrap();
+        let p = plan(&request(Harness::Codex, Mode::Passthrough, inst, &["app-server", "-c", "model=\"gpt-5.5\""]), &no_file).unwrap();
+        assert_eq!(set(&p, "CODEX_HOME"), Some("/h/.gruntas/accounts/codex-team"));
+        assert!(p.env_remove.contains(&"OPENAI_API_KEY"));
+        let profile = codex_profile(&["/h/.gruntas".into()], true);
+        let mut want = vec!["app-server".to_string(), "-c".into(), "model_provider=\"x\"".into()];
+        want.extend(profile.iter().cloned());
+        want.extend(["-c".into(), "model=\"gpt-5.5\"".into()]);
+        assert_eq!(p.args, want);
+        let p = plan(&request(Harness::Codex, Mode::Passthrough, inst, &["--version"]), &no_file).unwrap();
+        assert_eq!((p.args.first().map(String::as_str), p.args.last().map(String::as_str)), (Some("-c"), Some("--version")));
+        let p = plan(&Request { sandbox: false, ..request(Harness::Codex, Mode::Passthrough, inst, &["app-server"]) }, &no_file).unwrap();
+        assert_eq!(p.args, ["app-server", "-c", "model_provider=\"x\""], "--no-sandbox: no profile");
+    }
+
     /// R-RUN-5: making a plan touches no file, so an account's settings,
     /// credentials and plugins are as they were.
     #[test]
@@ -743,7 +800,7 @@ mod tests {
         cfg.instances.insert("codex:team".into(), InstanceKind::CodexAppServer { binary: None, codex_home: Some(home.display().to_string()), env: BTreeMap::new(), args: vec![], api_key_env: None, effort: None });
         let r = Registry::resolve(&cfg, &env);
         for (h, name) in [(Harness::Claude, "claude:work"), (Harness::Codex, "codex:team")] {
-            for mode in [Mode::Attended, Mode::Unattended { task: "t".into() }] {
+            for mode in [Mode::Attended, Mode::Unattended { task: "t".into() }, Mode::Passthrough] {
                 let req = Request { hidden: vec![dir.clone()], ..request(h, mode, account(&r, h, name).unwrap(), &[]) };
                 plan(&req, &|p| std::fs::read_to_string(p)).unwrap();
             }
