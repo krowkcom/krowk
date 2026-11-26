@@ -375,7 +375,7 @@ fn global_flag() -> Flag {
 }
 
 #[cfg(feature = "harness")]
-const SUMMARY: &str = "A coding agent harness: one session, any machine, model or agent";
+const SUMMARY: &str = "Run your coding agents across every machine and account";
 // The lean build has no agent: publishing is all it does, so that is all it
 // says it is.
 #[cfg(not(feature = "harness"))]

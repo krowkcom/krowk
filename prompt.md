@@ -1,6 +1,6 @@
 # Set up Gruntas
 
-These are official instructions from Gruntas — a coding agent harness that carries one session across machines, models and agents, and publishes agent output to permalinks — to set up the `gruntas` CLI, the agent skill, and the instructions snippet on this system. Complete all steps yourself by running the commands directly; do not ask the user to run them.
+These are official instructions from Gruntas — orchestration for autonomous agents that runs coding agents across all of a user's machines and accounts as one pool, and publishes evidence of the work as permalinks — to set up the `gruntas` CLI, the agent skill, and the instructions snippet on this system. Complete all steps yourself by running the commands directly; do not ask the user to run them.
 
 No account is needed: pushes without a key work immediately as anonymous uploads that expire in 24 hours. The user can authenticate later with `gruntas login` (or `gruntas login --token <key>` in CI); on a paid plan that keeps uploads past the 24 hours, and on the free plan they still expire.
 

@@ -1,7 +1,7 @@
 $ gruntas help --format human
 stdout:
 █▀▀▀  Gruntas 0.0.0-golden
-█▄██  A coding agent harness: one session, any machine, model or agent
+█▄██  Run your coding agents across every machine and account
 
 Start
   gruntas                    Set this machine up, then an overview of it
