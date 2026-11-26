@@ -10,6 +10,6 @@
   "skills": "./skills/",
   "hooks": "./hooks/codex.json",
   "mcpServers": {
-    "gruntas": { "command": "npx", "args": ["-y", "@gruntas/mcp"] }
+    "gruntas": { "command": "npx", "args": ["-y", "@gruntas/mcp"], "env_vars": ["XDG_RUNTIME_DIR", "GRUNTAS_HOME"] }
   }
 }
