@@ -96,6 +96,17 @@ breaking changes may affect it without notice.
   the next request, and pi's footer shows `gruntas: <account>`. Codex
   accounts are listed as not usable from pi yet. `/account <name>` moves
   directly, which is how it works where pi has no UI.
+- **gruntas fetches the Claude Agent SDK for pi once, from npm, rather
+  than shipping it.** The pi extension gruntas carries runs its Claude
+  turns through the Claude Agent SDK, which is Anthropic's, not MIT, so
+  gruntas doesn't distribute it. The first time gruntas writes the
+  extension (`gruntas pi extension`, `gruntas run pi`) it says so and
+  installs the exact SDK version it pins from npm, checked against the
+  pinned integrity hash, with install scripts off, into its own pi
+  directory and nowhere else; after that it fetches nothing. Without npm or
+  a network, pi's gruntas hooks, tools and skill still work, and pi says
+  how to get the `gruntas/` models working: install npm, then run
+  `gruntas pi extension`.
 
 ## [2026.11.6] - 2026-11-25
 

@@ -2,7 +2,8 @@
 // changed to run Claude Code on a gruntas account with Claude Code's own system prompt.
 
 import { randomUUID } from "node:crypto";
-import { type Query, query, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+// Types only: the SDK itself is handed in (runtime.ts imports it when the provider loads).
+import type { Query, query, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { Tool, ToolResultMessage } from "@earendil-works/pi-ai";
@@ -93,7 +94,7 @@ export class LiveSession implements ClaudeSession {
 	private readonly entryWaiters = new Map<string, Set<(uuid: string | undefined) => void>>();
 	private stderrTail = "";
 
-	constructor(spec: SessionSpec, chain: string, count: number) {
+	constructor(spec: SessionSpec, chain: string, count: number, sdkQuery: typeof query) {
 		this.spec = spec;
 		this.model = spec.model;
 		this.systemPrompt = spec.systemPrompt;
@@ -106,7 +107,7 @@ export class LiveSession implements ClaudeSession {
 
 		const persist = spec.tools.length > 0;
 
-		this.q = query({
+		this.q = sdkQuery({
 			prompt: this.input,
 			options: {
 				cwd: spec.cwd,
