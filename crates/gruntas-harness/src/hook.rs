@@ -371,18 +371,24 @@ pub fn attendance(harness: Option<u32>, env: &dyn Fn(&str) -> String) -> Attenda
     if own || harness.is_some_and(on_terminal) { Attendance::Attended } else { Attendance::Unattended }
 }
 
-/// Whether `harness` is the process `gruntas run --passthrough` became, or
-/// that process's child: a harness installed through npm is a Node wrapper
-/// that starts the real one (`@openai/codex`). A harness started inside the
-/// session has the session's shell or tool for its parent.
+/// Whether `harness` is the process `gruntas run --passthrough` became, or,
+/// where that process is a Node or Bun wrapper (a harness installed through
+/// npm, `@openai/codex`), the real harness it started. A harness the session
+/// itself runs (`codex exec` from its shell) is a child of the native
+/// harness or its shell, never of a wrapper, so it is told apart.
 fn passed_through(harness: Option<u32>, env: &dyn Fn(&str) -> String) -> bool {
-    passed_through_by(harness, env, &|pid| process(pid).map(|(ppid, _)| ppid))
+    passed_through_by(harness, env, &process)
 }
 
-fn passed_through_by(harness: Option<u32>, env: &dyn Fn(&str) -> String, parent: &dyn Fn(u32) -> Option<u32>) -> bool {
-    let marked = env(ATTENDED_PID);
-    let Ok(marked) = marked.trim().parse::<u32>() else { return false };
-    harness.is_some_and(|pid| pid == marked || parent(pid) == Some(marked))
+/// `passed_through`, with each process's parent and name from `process`.
+fn passed_through_by(harness: Option<u32>, env: &dyn Fn(&str) -> String, process: &dyn Fn(u32) -> Option<(u32, String)>) -> bool {
+    let Ok(marked) = env(ATTENDED_PID).trim().parse::<u32>() else { return false };
+    let Some(pid) = harness else { return false };
+    if pid == marked {
+        return true;
+    }
+    let wrapper = |p: u32| process(p).is_some_and(|(_, name)| matches!(name.as_str(), "node" | "node-MainThread" | "bun"));
+    process(pid).is_some_and(|(ppid, _)| ppid == marked) && wrapper(marked)
 }
 
 /// Whether process `pid` has a controlling terminal: its stat line's
@@ -819,9 +825,21 @@ mod tests {
         assert!(!passed_through(None, &env));
         assert!(!passed_through(Some(4242), &|_| String::new()));
         // npm's Node wrapper: the real harness is the marked process's child.
-        let parent = |pid: u32| Some(if pid == 5000 { 4242 } else { 1 });
-        assert!(passed_through_by(Some(5000), &env, &parent));
-        assert!(!passed_through_by(Some(5001), &env, &parent));
+        let table = |marked: &'static str| {
+            move |pid: u32| match pid {
+                4242 => Some((1, marked.to_string())),
+                5000 => Some((4242, "codex".to_string())),
+                _ => Some((1, "sh".to_string())),
+            }
+        };
+        for wrapper in ["node", "node-MainThread", "bun"] {
+            assert!(passed_through_by(Some(5000), &env, &table(wrapper)), "{wrapper}");
+            assert!(!passed_through_by(Some(5001), &env, &table(wrapper)), "{wrapper}: not its child");
+        }
+        // A native harness's own child (`codex exec` the model runs, its
+        // shell having exec'd it) is a session of its own.
+        assert!(!passed_through_by(Some(5000), &env, &table("codex")), "marked codex with a child: not attended");
+        assert!(!passed_through_by(Some(5000), &env, &table("claude")));
         // Every launch's plan clears the mark; only passthrough sets it again.
         assert!(crate::claude::NOT_INHERITED.contains(&ATTENDED_PID) && crate::codex::NOT_INHERITED.contains(&ATTENDED_PID));
     }
