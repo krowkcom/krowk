@@ -4,9 +4,10 @@
 agents. It lets an agent in any MCP client (Claude Code, Codex, Cursor, Gemini
 CLI, Claude Desktop) see what your agent sessions are doing on all your machines,
 steer them, hand a task to whichever machine has room, and get the changes applied
-back to its working tree. Agents can also publish what they produce (screenshots,
-diffs, logs) as links that render inline in GitHub, Linear and Notion and unfurl
-in Slack and Basecamp. Orchestration needs `gruntas` running with sync set up on
+back to its working tree. Agents can also publish evidence of their work
+(screenshots, recordings, diffs, logs, build output) as permalinks that render
+inline in GitHub, Linear and Notion and unfurl in Slack and Basecamp, so you can
+review what an unattended agent did without pulling the branch. Orchestration needs `gruntas` running with sync set up on
 macOS or Linux; publishing works on any platform, with no account.
 
 The tools, over stdio:

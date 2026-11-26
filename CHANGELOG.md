@@ -25,8 +25,8 @@ breaking changes may affect it without notice.
   npm and the Gemini CLI gallery described `@gruntas/mcp` as publishing
   only. They now say what it is: orchestration for autonomous agents, from
   any MCP client — see and steer your agents across machines, hand them work
-  and collect the result — with publishing their work as links one part of
-  it. Its README lists every tool and which platforms have it.
+  and collect the result — with publishing evidence of their work one part
+  of it. Its README lists every tool and which platforms have it.
 
 ## [2026.11.7] - 2026-11-26
 
