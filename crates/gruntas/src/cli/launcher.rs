@@ -939,4 +939,14 @@ mod tests {
         assert_eq!(server()["command"], "npx");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// R-T3-3: Codex starts an MCP server with only a few of its own
+    /// variables, so the Codex plugin's server is given what names the
+    /// daemon's directory; without them it looks in another, and
+    /// `gruntas_session_info` finds no session (seen live, Codex 0.171).
+    #[test]
+    fn r_t3_3_the_codex_plugins_server_is_given_the_daemons_directory() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!("../../../../.codex-plugin/plugin.json")).unwrap();
+        assert_eq!(manifest["mcpServers"]["gruntas"]["env_vars"], serde_json::json!(["XDG_RUNTIME_DIR", "GRUNTAS_HOME"]));
+    }
 }
