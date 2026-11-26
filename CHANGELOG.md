@@ -48,8 +48,10 @@ breaking changes may affect it without notice.
   `--plugin-dir` in the Agent SDK's mode too. Codex's `app-server` loads
   the plugin installed in the account, and runs its hooks once they are
   approved: install it and approve its hooks once, in a terminal, with
-  `gruntas run codex --account <name>` and `/hooks`. Permission prompts
-  still go to the app unchanged.
+  `gruntas run codex --account <name>` and `/hooks`; until the plugin is
+  installed, passthrough says how on stderr, once per account. The hooks
+  run the gruntas that started the harness, first on its PATH, whatever
+  the app's PATH holds. Permission prompts still go to the app unchanged.
 - **The gruntas MCP tools find a Codex session's daemon on Linux.** Codex
   starts the plugin's MCP server without `XDG_RUNTIME_DIR`, so the server
   looked for the daemon elsewhere and `gruntas_session_info` said the

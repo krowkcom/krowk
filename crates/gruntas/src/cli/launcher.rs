@@ -191,16 +191,30 @@ fn version_only(args: &[String]) -> bool {
 /// and nothing restarts it: an app's session moves account by the app's
 /// own choice of instance, not inside one (T3 Code D3). The harness keeps
 /// gruntas's pid, which marks it attended to the plugin's SessionStart hook
-/// (D6): the app has a person at it, but gives the harness no terminal.
+/// (D6): the app has a person at it, but gives the harness no terminal. Its
+/// hooks run the `gruntas` on the PATH, so this one comes first there: an
+/// app's PATH may name none, or an older one. A Codex account without the
+/// plugin installed is told how to install it, on stderr, as attended.
 fn passthrough(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan) -> Result<i32, Error> {
-    if plan.harness == Harness::Claude && !version_only(&req.args) {
-        claude_ready(ctx, &mut plan, req.plugin)?;
+    if !version_only(&req.args) {
+        match plan.harness {
+            Harness::Claude => claude_ready(ctx, &mut plan, req.plugin)?,
+            Harness::Codex => plugin_hint(ctx, req.instance)?,
+        }
     }
     plan.env_set.push((gruntas_harness::hook::ATTENDED_PID.into(), std::process::id().to_string()));
+    plan.env_set.push(("PATH".into(), gruntas_first(&req.gruntas, &(ctx.io.env)("PATH"))));
     let _ = ctx.io.stdout.flush();
     let _ = ctx.io.stderr.flush();
     let e = std::os::unix::process::CommandExt::exec(&mut child::command(&plan));
     Err(fail("no_binary", format!("{} could not be started: {e}. Is it installed? `gruntas providers list --check` checks", plan.program.display())))
+}
+
+/// `path` with `gruntas`'s directory first, and not again later.
+fn gruntas_first(gruntas: &std::path::Path, path: &str) -> String {
+    let Some(dir) = gruntas.parent().map(|d| d.display().to_string()).filter(|d| !d.is_empty()) else { return path.into() };
+    let rest = path.split(':').filter(|p| !p.is_empty() && *p != dir);
+    std::iter::once(dir.as_str()).chain(rest).collect::<Vec<_>>().join(":")
 }
 
 /// Continues session `from` on the other harness (Rollover for launched
@@ -938,6 +952,17 @@ mod tests {
         std::fs::remove_file(&mcp).unwrap();
         assert_eq!(server()["command"], "npx");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// R-T3-3: an app's harness runs its hooks with the launching gruntas
+    /// first on the PATH, whatever the app's PATH named.
+    #[test]
+    fn r_t3_3_the_launching_gruntas_comes_first_on_the_path() {
+        let g = std::path::Path::new("/opt/g/bin/gruntas");
+        assert_eq!(gruntas_first(g, "/usr/bin:/bin"), "/opt/g/bin:/usr/bin:/bin");
+        assert_eq!(gruntas_first(g, "/usr/bin:/opt/g/bin::/bin"), "/opt/g/bin:/usr/bin:/bin", "once, and no empty entry");
+        assert_eq!(gruntas_first(g, ""), "/opt/g/bin");
+        assert_eq!(gruntas_first(std::path::Path::new("gruntas"), "/bin"), "/bin");
     }
 
     /// R-T3-3: Codex starts an MCP server with only a few of its own

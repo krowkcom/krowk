@@ -1061,6 +1061,8 @@ fn r_t3_1_passthrough_passes_argv_stdio_and_the_exit_code_through() {
     std::fs::write(b.root.join("accounts/claude-work/settings.json"), "{}").unwrap();
     std::fs::write(b.root.join("accounts/claude-work/.credentials.json"), "{}").unwrap();
     std::fs::write(b.root.join("accounts/codex-team/config.toml"), "{}").unwrap();
+    // The plugin installed, so no hint of how to install it.
+    std::fs::create_dir_all(b.root.join("accounts/codex-team/plugins/cache/gruntas/gruntas")).unwrap();
     std::fs::create_dir_all(b.root.join("home/.codex")).unwrap();
     std::fs::write(b.root.join("home/.codex/config.toml"), "model = \"x\"\n").unwrap();
     let before = listing(&b.root.join("accounts"));
@@ -1131,6 +1133,8 @@ fn r_t3_3_a_passthrough_session_carries_the_plugin_and_is_attended() {
         let (args, env) = b.started(harness);
         let pid = std::fs::read_to_string(b.root.join(format!("{harness}.pid"))).unwrap();
         assert!(env.contains(&format!("GRUNTAS_ATTENDED_PID={}", pid.trim())), "{harness}: the harness, by gruntas's pid, is attended: {env:?}");
+        let first = PathBuf::from(env!("CARGO_BIN_EXE_gruntas")).parent().unwrap().display().to_string();
+        assert!(env.iter().any(|v| v.starts_with(&format!("PATH={first}:"))), "{harness}: the hooks run this gruntas: {env:?}");
         if harness == "codex" {
             assert!(env.contains(&format!("CODEX_HOME={}", b.root.join("accounts/codex-team").display())), "the account's home, its installed plugin with it");
             continue;
@@ -1147,6 +1151,15 @@ fn r_t3_3_a_passthrough_session_carries_the_plugin_and_is_attended() {
         assert!(s["hooks"]["WorktreeCreate"].is_array(), "the worktree hooks: {s}");
     }
     assert_eq!(listing(&b.root.join("accounts")), before, "R-RUN-5: the accounts as they were");
+    // A Codex account without the plugin is told how to install it, on
+    // stderr and once, as attended is; stdout stays the harness's.
+    std::fs::remove_dir_all(b.root.join("accounts/codex-team/plugins")).unwrap();
+    for once in [true, false] {
+        let o = fed(&b, &["run", "codex", "--account", "team", "--passthrough", "--", "app-server"], b"in");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!((o.status.code(), o.stdout), (Some(7), b"in".to_vec()));
+        assert_eq!(err.contains("codex plugin add gruntas@gruntas"), once, "{err}");
+    }
 }
 
 /// R-T3-4: an account that isn't signed in fails before its harness
