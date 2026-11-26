@@ -45,7 +45,7 @@ export async function load(pi: ExtensionAPI, host: LoaderHost): Promise<void> {
     carried = await host.carried()
   } catch (e) {
     const why = e instanceof Error ? e.message : String(e)
-    on('session_start', (_e, ctx) => ctx.ui.notify(`gruntas could not give pi its extension (${why}). Upgrade it: curl -fsSL https://gruntas.com/install | bash`, 'warning'))
+    on('session_start', (_e, ctx) => ctx.ui.notify(`gruntas could not give pi its extension: ${why}`, 'warning'))
     return
   }
   if (!carried) {
@@ -62,8 +62,20 @@ export async function load(pi: ExtensionAPI, host: LoaderHost): Promise<void> {
   await extension.default(pi)
 }
 
+/** Why `gruntas pi extension --json` gave nothing, from the JSON error gruntas writes to stderr. */
+function failure(err: (Error & { killed?: boolean }) | null, stderr: string): string {
+  let e: any
+  try {
+    e = JSON.parse(stderr)?.error
+  } catch {}
+  if (e?.error === 'unknown_command') return 'this gruntas is too old to carry it. Upgrade it: curl -fsSL https://gruntas.com/install | bash'
+  if (typeof e?.fix === 'string' && e.fix) return e.fix
+  if (err?.killed) return '`gruntas pi extension` did not answer in time'
+  return stderr.trim().split('\n')[0] || '`gruntas pi extension --json` said nothing usable'
+}
+
 /** Runs `gruntas pi extension --json`: undefined when there is no gruntas to run. */
-function carried(): Promise<Carried | undefined> {
+export function carried(): Promise<Carried | undefined> {
   return new Promise((resolve, reject) => {
     execFile('gruntas', ['pi', 'extension', '--json'], { timeout: 30_000 }, (err, stdout, stderr) => {
       if ((err as NodeJS.ErrnoException | null)?.code === 'ENOENT') return resolve(undefined)
@@ -71,8 +83,8 @@ function carried(): Promise<Carried | undefined> {
       try {
         data = JSON.parse(stdout)?.data
       } catch {}
-      if (typeof data?.extension === 'string' && typeof data?.skill === 'string') return resolve({ extension: data.extension, skill: data.skill })
-      reject(new Error(String(stderr).trim().split('\n')[0] || err?.message || '`gruntas pi extension --json` said nothing usable'))
+      if (!err && typeof data?.extension === 'string' && typeof data?.skill === 'string') return resolve({ extension: data.extension, skill: data.skill })
+      reject(new Error(failure(err, String(stderr))))
     })
   })
 }

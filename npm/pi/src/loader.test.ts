@@ -11,6 +11,9 @@
 // installer's identical copy anyway (D8); the stand-in has none.
 
 import assert from 'node:assert/strict'
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { delimiter, join } from 'node:path'
 import { test } from 'node:test'
 
 const CARRIED = { extension: '/data/gruntas/pi/gruntas.js', skill: '/data/gruntas/pi/skills/gruntas' }
@@ -84,4 +87,31 @@ test('a gruntas that cannot give the extension says so as a session starts, and 
   await s.emit('session_start', { reason: 'startup' })
   assert.equal(s.notes.length, 1)
   assert.match(s.notes[0], /unknown command: pi/)
+})
+
+/** carried() against a stand-in `gruntas` on the PATH that prints `stdout` and `stderr` and exits `status`. */
+async function carriedFrom(stdout: string, stderr: string, status: number) {
+  const { carried } = await import('./loader.ts' as string)
+  const dir = mkdtempSync(join(tmpdir(), 'gruntas-loader-'))
+  writeFileSync(join(dir, 'out'), stdout)
+  writeFileSync(join(dir, 'err'), stderr)
+  writeFileSync(join(dir, 'gruntas'), `#!/bin/sh\ncat "${dir}/out"\ncat "${dir}/err" >&2\nexit ${status}\n`)
+  chmodSync(join(dir, 'gruntas'), 0o755)
+  const path = process.env.PATH
+  process.env.PATH = dir + delimiter + path
+  try {
+    return await carried().then((c: unknown) => ({ c }), (e: Error) => ({ e: e.message }))
+  } finally {
+    process.env.PATH = path
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+test('carried() reads where gruntas wrote the extension, and says why when it could not', { skip: process.platform === 'win32' }, async () => {
+  const ok = JSON.stringify({ ok: true, data: { extension: CARRIED.extension, skill: CARRIED.skill, version: '2026.11.7', written: [] } }, null, 2)
+  assert.deepEqual(await carriedFrom(ok, '', 0), { c: CARRIED })
+  const error = (code: string, fix: string) => JSON.stringify({ ok: false, error: { error: code, fix, retryable: false } }, null, 2)
+  const old = await carriedFrom('', error('unknown_command', '`pi` is not a gruntas command'), 1)
+  assert.match(old.e, /^this gruntas is too old to carry it\. Upgrade it: /)
+  assert.deepEqual(await carriedFrom('', error('no_home', 'set HOME'), 1), { e: 'set HOME' })
 })
