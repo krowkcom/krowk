@@ -468,6 +468,11 @@ agent), and `gruntas status` is the agent tree, as announced in 2026.11.1
 
 ### Fixed
 
+- **A turn that ends just as gruntas reconnects to the host daemon answers
+  its result.** When the connection dropped mid-turn and the turn finished
+  while gruntas was still catching up on the next connection, the turn
+  failed with `host_gone` even though it had completed. It now ends with
+  its result.
 - **An interactive Claude Code session counts as attended.** Claude Code
   runs its hooks without a terminal, so every Claude Code session with the
   plugin was registered as unattended, and under the default `steer`
