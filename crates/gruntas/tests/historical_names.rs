@@ -26,7 +26,6 @@ fn d9_the_domain_separation_labels_are_unchanged() {
         (pairing::MAC_A_REPLY, b"krowk/pair/v1 a-reply"),
         (pairing::MAC_B_ACK, b"krowk/pair/v1 b-ack"),
         (pairing::REPLY_AD, b"krowk/pair/v1 reply"),
-        (registry::REGISTRY_V1_LABEL.as_bytes(), b"krowk/registry/v1"),
         (registry::REGISTRY_V2_LABEL.as_bytes(), b"krowk/registry/v2"),
         (user_key::WRAP_INFO, b"krowk/user-key/v1"),
         (user_key::ID_LABEL, b"krowk/user-key-id/v1"),

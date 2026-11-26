@@ -19,6 +19,17 @@ breaking changes may affect it without notice.
 
 ## [Unreleased]
 
+### Removed
+
+- **v1 signing of registry calls, which the registry has retired.** gruntas
+  has signed v2 since 0.15.0, so nothing changes for you. The
+  `gruntas-devregistry` stand-in now refuses a signed request without
+  `X-Krowk-Signature-Version: 2` as `signature_invalid`, with a message
+  that says to run `gruntas upgrade`, as the registry does; its
+  `GRUNTAS_DEVREGISTRY_V1_UNTIL` and `GRUNTAS_DEVREGISTRY_V2_RELEASE`
+  settings are gone, and so is the client's handling of the
+  `signature_version_retired` code, which no registry sends any more.
+
 ## [2026.11.8] - 2026-11-26
 
 **T3 Code runs on your gruntas accounts.** `gruntas t3` writes a launcher per
