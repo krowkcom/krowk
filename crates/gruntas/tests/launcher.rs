@@ -1133,8 +1133,13 @@ fn r_t3_3_a_passthrough_session_carries_the_plugin_and_is_attended() {
         let (args, env) = b.started(harness);
         let pid = std::fs::read_to_string(b.root.join(format!("{harness}.pid"))).unwrap();
         assert!(env.contains(&format!("GRUNTAS_ATTENDED_PID={}", pid.trim())), "{harness}: the harness, by gruntas's pid, is attended: {env:?}");
-        let first = PathBuf::from(env!("CARGO_BIN_EXE_gruntas")).parent().unwrap().display().to_string();
-        assert!(env.iter().any(|v| v.starts_with(&format!("PATH={first}:"))), "{harness}: the hooks run this gruntas: {env:?}");
+        // The hooks run this gruntas, through a link of its own first on
+        // the PATH, not the directory it runs from.
+        let path = env.iter().find_map(|v| v.strip_prefix("PATH=")).unwrap();
+        let first = PathBuf::from(path.split(':').next().unwrap());
+        let exe = PathBuf::from(env!("CARGO_BIN_EXE_gruntas"));
+        assert_eq!(std::fs::read_link(first.join("gruntas")).ok(), Some(exe.clone()), "{harness}: {path}");
+        assert_ne!(Some(first.as_path()), exe.parent());
         if harness == "codex" {
             assert!(env.contains(&format!("CODEX_HOME={}", b.root.join("accounts/codex-team").display())), "the account's home, its installed plugin with it");
             continue;

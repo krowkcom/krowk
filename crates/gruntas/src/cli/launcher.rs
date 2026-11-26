@@ -203,18 +203,63 @@ fn passthrough(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan) -> Result<i
         }
     }
     plan.env_set.push((gruntas_harness::hook::ATTENDED_PID.into(), std::process::id().to_string()));
-    plan.env_set.push(("PATH".into(), gruntas_first(&req.gruntas, &(ctx.io.env)("PATH"))));
+    // On the account's own PATH, where its instance sets one.
+    let path = plan.env_set.iter().rev().find(|(k, _)| k == "PATH").map_or_else(|| (ctx.io.env)("PATH"), |(_, v)| v.clone());
+    let path = match gruntas_harness::daemon::dir(ctx.io.env).map_err(std::io::Error::other).and_then(|d| gruntas_bin(&d, &req.gruntas)) {
+        Ok(dir) => path_with(&dir, &path),
+        Err(e) => {
+            let _ = writeln!(ctx.io.stderr, "gruntas: the session's hooks run the gruntas on the PATH, as this one could not be put first on it: {e}");
+            path
+        }
+    };
+    if !path.is_empty() {
+        plan.env_set.retain(|(k, _)| k != "PATH");
+        plan.env_set.push(("PATH".into(), path));
+    }
     let _ = ctx.io.stdout.flush();
     let _ = ctx.io.stderr.flush();
     let e = std::os::unix::process::CommandExt::exec(&mut child::command(&plan));
     Err(fail("no_binary", format!("{} could not be started: {e}. Is it installed? `gruntas providers list --check` checks", plan.program.display())))
 }
 
-/// `path` with `gruntas`'s directory first, and not again later.
-fn gruntas_first(gruntas: &std::path::Path, path: &str) -> String {
-    let Some(dir) = gruntas.parent().map(|d| d.display().to_string()).filter(|d| !d.is_empty()) else { return path.into() };
-    let rest = path.split(':').filter(|p| !p.is_empty() && *p != dir);
+/// The PATH a passthrough harness runs with: `dir` first, then `path`, else
+/// the system's when `path` names nothing.
+fn path_with(dir: &std::path::Path, path: &str) -> String {
+    let dir = dir.display().to_string();
+    let mut rest: Vec<&str> = path.split(':').filter(|p| !p.is_empty() && *p != dir).collect();
+    if rest.is_empty() {
+        rest = vec!["/usr/local/bin", "/usr/bin", "/bin"];
+    }
     std::iter::once(dir.as_str()).chain(rest).collect::<Vec<_>>().join(":")
+}
+
+/// A directory holding only a `gruntas` that links to `gruntas`, the one
+/// a passthrough harness's hooks run: `bin/<hash of its path>` in the
+/// daemon's directory, which every launch's sandbox hides (`launch::hidden`),
+/// so no command in the session can put a `gruntas` of its own there, nor
+/// shadow another command through it, as it could through the directory
+/// gruntas runs from (a build's `target/debug`).
+fn gruntas_bin(daemon: &std::path::Path, gruntas: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    gruntas.hash(&mut h);
+    let bin = daemon.join("bin");
+    let dir = bin.join(format!("{:016x}", h.finish()));
+    if dir.to_string_lossy().contains(':') {
+        return Err(std::io::Error::other(format!("{} has a `:`, which a PATH cannot hold", dir.display())));
+    }
+    for d in [&bin, &dir] {
+        gruntas_api::home::make(d).map_err(std::io::Error::other)?;
+    }
+    let link = dir.join("gruntas");
+    if std::fs::read_link(&link).is_ok_and(|t| t == gruntas) {
+        return Ok(dir);
+    }
+    let fresh = dir.join(format!(".gruntas.{}", std::process::id()));
+    let _ = std::fs::remove_file(&fresh);
+    std::os::unix::fs::symlink(gruntas, &fresh)?;
+    std::fs::rename(&fresh, &link)?;
+    Ok(dir)
 }
 
 /// Continues session `from` on the other harness (Rollover for launched
@@ -955,14 +1000,42 @@ mod tests {
     }
 
     /// R-T3-3: an app's harness runs its hooks with the launching gruntas
-    /// first on the PATH, whatever the app's PATH named.
+    /// first on the PATH, whatever the app's PATH named: through a
+    /// directory holding only a link to it, which the sandbox hides, never
+    /// the directory gruntas runs from.
     #[test]
     fn r_t3_3_the_launching_gruntas_comes_first_on_the_path() {
-        let g = std::path::Path::new("/opt/g/bin/gruntas");
-        assert_eq!(gruntas_first(g, "/usr/bin:/bin"), "/opt/g/bin:/usr/bin:/bin");
-        assert_eq!(gruntas_first(g, "/usr/bin:/opt/g/bin::/bin"), "/opt/g/bin:/usr/bin:/bin", "once, and no empty entry");
-        assert_eq!(gruntas_first(g, ""), "/opt/g/bin");
-        assert_eq!(gruntas_first(std::path::Path::new("gruntas"), "/bin"), "/bin");
+        let d = std::path::Path::new("/run/g/bin/1");
+        assert_eq!(path_with(d, "/usr/bin:/bin"), "/run/g/bin/1:/usr/bin:/bin");
+        assert_eq!(path_with(d, "/usr/bin:/run/g/bin/1::/bin"), "/run/g/bin/1:/usr/bin:/bin", "once, and no empty entry");
+        assert_eq!(path_with(d, ""), "/run/g/bin/1:/usr/local/bin:/usr/bin:/bin", "unset or empty: the system's");
+        assert_eq!(path_with(d, "::"), "/run/g/bin/1:/usr/local/bin:/usr/bin:/bin");
+
+        let root = std::env::temp_dir().join(format!("gruntas-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("home")).unwrap();
+        std::fs::create_dir_all(root.join("run")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let (run, home) = (root.join("run").display().to_string(), root.join("home").display().to_string());
+        let env = |k: &str| match k {
+            "XDG_RUNTIME_DIR" => run.clone(),
+            "HOME" => home.clone(),
+            "GRUNTAS_HOME" => format!("{home}/.gruntas"),
+            _ => String::new(),
+        };
+        let daemon = gruntas_harness::daemon::dir(&env).unwrap();
+        let (a, b) = (root.join("build/target/debug/gruntas"), root.join("other/gruntas"));
+        let dir = gruntas_bin(&daemon, &a).unwrap();
+        let listed: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(listed, ["gruntas"], "only gruntas: nothing else is shadowed");
+        assert_eq!(std::fs::read_link(dir.join("gruntas")).unwrap(), a);
+        let hidden = launch::hidden(&gruntas_api::home::dir(&env).unwrap(), &env);
+        assert!(hidden.iter().any(|h| dir.starts_with(h)), "{} is hidden from the session: {hidden:?}", dir.display());
+        assert_eq!(gruntas_bin(&daemon, &a).unwrap(), dir, "the same again");
+        let other = gruntas_bin(&daemon, &b).unwrap();
+        assert_ne!(other, dir, "another gruntas, its own directory");
+        assert_eq!(std::fs::read_link(other.join("gruntas")).unwrap(), b);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// R-T3-3: Codex starts an MCP server with only a few of its own
