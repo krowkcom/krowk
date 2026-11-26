@@ -1159,7 +1159,7 @@ stdout:
     },
     {
       "name": "providers",
-      "summary": "Low-level instance config (add, list, rename, remove)",
+      "summary": "Low-level instance config (add, list, next, rename, remove)",
       "subcommands": [
         {
           "name": "add",
@@ -1222,6 +1222,26 @@ stdout:
               "type": "bool",
               "default": "false",
               "usage": "Only the readiness check (what gruntas status showed before it became the agent tree): exits 3 when no instance is ready"
+            }
+          ],
+          "hidden": false
+        },
+        {
+          "name": "next",
+          "usage": "gruntas providers next [--from ACCOUNT] [--tried A,B] [--json]",
+          "summary": "Where a session goes when its account runs out",
+          "flags": [
+            {
+              "name": "from",
+              "type": "string",
+              "default": "",
+              "usage": "The Claude Code account the session is on; absent, the account a session starts on"
+            },
+            {
+              "name": "tried",
+              "type": "string",
+              "default": "",
+              "usage": "Accounts the session already tried, comma-separated: never answered"
             }
           ],
           "hidden": false
@@ -1451,7 +1471,7 @@ stdout:
     },
     {
       "name": "run",
-      "usage": "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [args...]",
+      "usage": "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [--no-plugin] [args...]",
       "summary": "Start Claude Code or Codex on one of your accounts",
       "args": [
         {
@@ -1484,6 +1504,12 @@ stdout:
           "type": "bool",
           "default": "false",
           "usage": "Run without the sandbox that keeps the session out of the gruntas home, this once; attended only"
+        },
+        {
+          "name": "no-plugin",
+          "type": "bool",
+          "default": "false",
+          "usage": "Start Claude Code without the gruntas plugin and hooks, so it never registers as a session; its arguments, stdin and stdout pass through, so a program can run it as its Claude Code (the Agent SDK's executable). Attended claude only"
         }
       ],
       "hidden": true
@@ -3315,7 +3341,7 @@ tty:
     },
     {
       "name": "providers",
-      "summary": "Low-level instance config (add, list, rename, remove)",
+      "summary": "Low-level instance config (add, list, next, rename, remove)",
       "subcommands": [
         {
           "name": "add",
@@ -3378,6 +3404,26 @@ tty:
               "type": "bool",
               "default": "false",
               "usage": "Only the readiness check (what gruntas status showed before it became the agent tree): exits 3 when no instance is ready"
+            }
+          ],
+          "hidden": false
+        },
+        {
+          "name": "next",
+          "usage": "gruntas providers next [--from ACCOUNT] [--tried A,B] [--json]",
+          "summary": "Where a session goes when its account runs out",
+          "flags": [
+            {
+              "name": "from",
+              "type": "string",
+              "default": "",
+              "usage": "The Claude Code account the session is on; absent, the account a session starts on"
+            },
+            {
+              "name": "tried",
+              "type": "string",
+              "default": "",
+              "usage": "Accounts the session already tried, comma-separated: never answered"
             }
           ],
           "hidden": false
@@ -3607,7 +3653,7 @@ tty:
     },
     {
       "name": "run",
-      "usage": "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [args...]",
+      "usage": "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [--no-plugin] [args...]",
       "summary": "Start Claude Code or Codex on one of your accounts",
       "args": [
         {
@@ -3640,6 +3686,12 @@ tty:
           "type": "bool",
           "default": "false",
           "usage": "Run without the sandbox that keeps the session out of the gruntas home, this once; attended only"
+        },
+        {
+          "name": "no-plugin",
+          "type": "bool",
+          "default": "false",
+          "usage": "Start Claude Code without the gruntas plugin and hooks, so it never registers as a session; its arguments, stdin and stdout pass through, so a program can run it as its Claude Code (the Agent SDK's executable). Attended claude only"
         }
       ],
       "hidden": true

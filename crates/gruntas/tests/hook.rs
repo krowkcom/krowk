@@ -72,10 +72,16 @@ impl Scratch {
     /// Runs the hook with `payload` on stdin; its output and how long until
     /// it exited and its pipes closed, as a harness waits for both.
     fn hook(&self, harness: &str, event: &str, payload: &[u8]) -> (Output, Duration) {
+        self.hook_with(harness, event, payload, &[])
+    }
+
+    /// `hook`, with `vars` set too, as the harness's own would be.
+    fn hook_with(&self, harness: &str, event: &str, payload: &[u8], vars: &[(&str, &str)]) -> (Output, Duration) {
         let (mut child, at) = spawn_at(
             Command::new(env!("CARGO_BIN_EXE_gruntas"))
                 .args(["hook", harness, event])
                 .env_clear()
+                .envs(vars.iter().copied())
                 .env("HOME", self.0.join("home"))
                 .env("XDG_RUNTIME_DIR", self.0.join("run"))
                 .env("PATH", std::env::var("PATH").unwrap_or_default())
@@ -126,7 +132,7 @@ fn log_says(s: &Scratch, what: &str, times: usize) -> String {
 #[test]
 fn kt01_with_no_daemon_every_hook_exits_0_at_once_and_notes_why() {
     let s = Scratch::new("none");
-    for harness in ["claude", "codex"] {
+    for harness in ["claude", "codex", "pi"] {
         for event in EVENTS.into_iter().filter(|e| *e != "SessionStart") {
             let (out, took) = s.hook(harness, event, &fixture(harness, event));
             assert!(out.status.success(), "{harness} {event}: {out:?}");
@@ -134,9 +140,9 @@ fn kt01_with_no_daemon_every_hook_exits_0_at_once_and_notes_why() {
             assert!(took < LIMIT, "{harness} {event} took {took:?}");
         }
     }
-    // Both harnesses' backgrounded copies, so neither outlives the scratch.
-    let log = log_says(&s, "SessionEnd: no daemon on", 2);
-    assert_eq!(log.matches("SessionEnd: no daemon on").count(), 2, "{log}");
+    // Every harness's backgrounded copy, so none outlives the scratch.
+    let log = log_says(&s, "SessionEnd: no daemon on", 3);
+    assert_eq!(log.matches("SessionEnd: no daemon on").count(), 3, "{log}");
     assert!(!s.socket().exists(), "a SessionEnd started a daemon");
 }
 
@@ -209,6 +215,42 @@ fn kt02_session_start_registers_with_d4s_fields_and_session_end_deregisters() {
     }
 }
 
+/// PI01: `gruntas hook pi SessionStart` registers the session as harness
+/// pi, its account pi's config home: `PI_CODING_AGENT_DIR`, else
+/// `~/.pi/agent`.
+#[test]
+fn pi01_session_start_registers_a_pi_session_under_pis_config_home() {
+    use gruntas_harness::daemon::registry::Registry;
+    use gruntas_harness::protocol::PluginHarness;
+    let s = Scratch::new("pi01");
+    const ID: &str = "0198b2f4-3c6e-7a10-8d2e-5f4a9c1b7e63";
+    let registered = |vars: &[(&str, &str)]| {
+        let (out, took) = s.hook_with("pi", "SessionStart", &fixture("pi", "SessionStart"), vars);
+        assert!(out.status.success() && out.stdout.is_empty() && took < LIMIT, "{out:?} in {took:?}");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(r) = Registry::load(&s.daemon_dir()).get(ID).cloned() {
+                break r;
+            }
+            assert!(Instant::now() < deadline, "never registered: {}", std::fs::read_to_string(s.daemon_dir().join("hook.log")).unwrap_or_default());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let r = registered(&[]);
+    assert_eq!(r.harness, PluginHarness::Pi);
+    assert_eq!(r.config_home, Some(s.0.join("home/.pi/agent").display().to_string()));
+    assert_eq!(r.harness_pid, Some(std::process::id()), "the hook's parent is pi");
+    let (out, _) = s.hook("pi", "SessionEnd", &fixture("pi", "SessionEnd"));
+    assert!(out.status.success());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Registry::load(&s.daemon_dir()).get(ID).is_some() {
+        assert!(Instant::now() < deadline, "never deregistered");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let r = registered(&[("PI_CODING_AGENT_DIR", "/work/pi-b/")]);
+    assert_eq!((r.harness, r.config_home.as_deref()), (PluginHarness::Pi, Some("/work/pi-b")));
+}
+
 /// KT03: a heavy command's `PreToolUse` and `PostToolUse` raise and lower
 /// the busy build slots in the capacity announcement, an entry with no end
 /// clears at the turn's end or the time limit, the count never passes the
@@ -277,9 +319,20 @@ fn kt03_heavy_commands_move_the_announced_busy_slots_and_decide_nothing() {
     hook("claude", "Stop", &serde_json::from_slice(&fixture("claude", "Stop")).unwrap());
     assert_eq!(busy().in_use, 0);
 
+    // pi's `cargo test` counts from its start to its end, or to its run's end.
+    let pi = |event: &str| serde_json::from_slice::<serde_json::Value>(&fixture("pi", event)).unwrap();
+    hook("pi", "PreToolUse", &pi("PreToolUse"));
+    assert_eq!(busy().in_use, 1);
+    hook("pi", "PostToolUse", &pi("PostToolUse"));
+    assert_eq!(busy().in_use, 0);
+    hook("pi", "PreToolUse", &pi("PreToolUse"));
+    assert_eq!(busy().in_use, 1);
+    hook("pi", "Stop", &pi("Stop"));
+    assert_eq!(busy().in_use, 0);
+
     // Every event, heavy or not, decides nothing about a tool call: a turn's
     // end after work may only remind the agent to report it (SL03).
-    for harness in ["claude", "codex"] {
+    for harness in ["claude", "codex", "pi"] {
         for event in EVENTS {
             let (out, took) = s.hook(harness, event, &fixture(harness, event));
             assert!(out.status.success() && took < LIMIT, "{harness} {event}: {out:?} in {took:?}");
@@ -388,7 +441,7 @@ fn kt05_pre_tool_use_runs_the_card_link_and_paste_site_guards() {
         assert!(v["hookSpecificOutput"].get("updatedInput").is_none(), "{v}");
         v["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().to_string()
     };
-    for harness in ["claude", "codex"] {
+    for harness in ["claude", "codex", "pi"] {
         let bare = with(harness, "Bash", serde_json::json!({ "command": format!("gh pr create --title Fix --body 'Screenshot: {card}'") }));
         assert!(reason(&bare).contains(&format!("bare gruntas card link ({card})")), "{harness}");
         let paste = with(harness, "Bash", serde_json::json!({ "command": "curl -F 'f=@out.txt' https://0x0.st" }));

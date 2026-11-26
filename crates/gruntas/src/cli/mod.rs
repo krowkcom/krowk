@@ -400,6 +400,8 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         #[cfg(feature = "harness")]
         ["providers"] | ["providers", "list", ..] => providers::list(ctx),
         #[cfg(feature = "harness")]
+        ["providers", "next", ..] => providers::next(ctx),
+        #[cfg(feature = "harness")]
         ["providers", "remove", ..] => providers::remove(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["providers", "rename", ..] => providers::rename(ctx, rest(2)),
@@ -719,7 +721,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
     );
     let owners = [
         ("dry-run", "`gruntas sessions import`", import),
-        ("from", "`gruntas sessions import`, `gruntas sessions restore` and `gruntas worktrees add`", import || words.starts_with(&["sessions", "restore"]) || words.starts_with(&["worktrees", "add"])),
+        ("from", "`gruntas sessions import`, `gruntas sessions restore`, `gruntas worktrees add` and `gruntas providers next`", import || words.starts_with(&["sessions", "restore"]) || words.starts_with(&["worktrees", "add"]) || words.starts_with(&["providers", "next"])),
         ("harness", "`gruntas sessions`", list),
         ("worktree", WORKTREE_OWNERS, list),
         ("all", ALL_OWNERS, list),
@@ -795,7 +797,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `gruntas mcp add`")));
             }
         }
-        for name in ["account", "unattended", "no-sandbox"] {
+        for name in ["account", "unattended", "no-sandbox", "no-plugin"] {
             if f.given.contains(name) && words.first() != Some(&"run") {
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `gruntas run`, after the harness: `gruntas run claude --{name} …`")));
             }
@@ -806,7 +808,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `gruntas trust`")));
             }
         }
-        let owners = [("device", "`gruntas providers add` (`gruntas connect` takes --method device)", add), ("method", "`gruntas connect`", connect), ("default", "`gruntas connect`", connect), ("key-stdin", "`gruntas connect`", connect), ("key-ref", "`gruntas connect`", connect), ("remove", "`gruntas disconnect`", words.first() == Some(&"disconnect")), ("sign-out-vendor", "`gruntas disconnect`", words.first() == Some(&"disconnect")), ("check", "`gruntas providers list`", matches!(words.as_slice(), ["providers"] | ["providers", "list", ..]))];
+        let owners = [("device", "`gruntas providers add` (`gruntas connect` takes --method device)", add), ("method", "`gruntas connect`", connect), ("default", "`gruntas connect`", connect), ("key-stdin", "`gruntas connect`", connect), ("key-ref", "`gruntas connect`", connect), ("remove", "`gruntas disconnect`", words.first() == Some(&"disconnect")), ("sign-out-vendor", "`gruntas disconnect`", words.first() == Some(&"disconnect")), ("check", "`gruntas providers list`", matches!(words.as_slice(), ["providers"] | ["providers", "list", ..])), ("tried", "`gruntas providers next`", words.starts_with(&["providers", "next"]))];
         for (name, owner, allowed) in owners {
             if f.given.contains(name) && !allowed {
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of {owner}")));

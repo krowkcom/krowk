@@ -19,6 +19,74 @@ breaking changes may affect it without notice.
 
 ## [Unreleased]
 
+### Added
+
+- **`gruntas hook pi <event>` takes pi's sessions.** pi joins Claude Code
+  and Codex as a harness gruntas's hook reads: a pi session registers as
+  harness `pi`, and its account is pi's config home, `PI_CODING_AGENT_DIR`,
+  else `~/.pi/agent`. The `@gruntas/pi` extension that sends pi's events
+  there is built with each release; it is not on npm yet.
+- **pi sessions get the gruntas MCP tools and skill.** With `gruntas` and
+  `gruntas-mcp` on the PATH, the `@gruntas/pi` extension gives each pi
+  session the gruntas MCP server (`gruntas_report`, `gruntas_session_info`,
+  `gruntas_delegate`, `gruntas_collect`, `gruntas_machines`, publishing and
+  the rest), its tools declared to the model as `mcp__gruntas__<tool>`, and
+  ships the gruntas skill. pi starts `gruntas-mcp` itself, so
+  `gruntas_session_info` finds the pi session it runs in.
+- **`gruntas run claude --account <name> --no-plugin` runs Claude Code on
+  an account for another program.** It starts Claude Code on that account,
+  its login or key kept in gruntas, without the gruntas plugin or hooks, so
+  the session never registers as an agent of its own, and passes its
+  arguments, stdin, stdout and exit code through untouched. A program that
+  drives Claude Code, such as one built on the Claude Agent SDK, can run it
+  as its Claude Code. Nothing in the account's settings or plugins changes.
+- **pi's Claude turns run on your gruntas accounts.** The `@gruntas/pi`
+  extension gives pi a `gruntas` provider, whose models are
+  `gruntas/<model>`: each turn runs through Claude Code on the session's
+  gruntas account, started by `gruntas run claude --account <name>
+  --no-plugin`, with Claude Code's own system prompt and pi's tools run by
+  pi. No account needs a login inside pi, and no login or API key ever
+  reaches pi. A session starts on the account it used last, else on the
+  ready account rollover ranks first. The provider is adapted from the
+  MIT-licensed `pi-claude-subscription` (see THIRD-PARTY-NOTICES).
+- **pi sessions register with gruntas.** With `@gruntas/pi` installed
+  (`pi install npm:@gruntas/pi`), a pi session shows in `gruntas agents` as
+  harness `pi` from its start until it ends, its tool calls count as its
+  activity, and a run that did work without a `gruntas_report` is reminded
+  once to report. Without `gruntas` on the PATH the extension only says how
+  to install it; a missing or stopped daemon never holds pi up.
+- **A pi session rolls over when its account runs out.** The usage Claude
+  Code reports during pi's turns now lands in gruntas's usage record under
+  that account, as a Claude Code session's does. When an account hits its
+  limit, pi follows your `rollover` setting: `offer` asks whether to
+  continue on the next account (the question times out, so nothing hangs;
+  with no UI, as in `pi -p`, it only names the next account and when the
+  limit resets), `auto` moves and says so, `off` leaves it to you. A
+  prompt already queued behind the limit waits for that choice, so it runs
+  where the session moved. For now pi moves only between subscription
+  accounts, never onto an API key. `gruntas providers list --check --json`
+  rows now carry each account's `config_dir`, as `providers list` does,
+  which is where the usage is recorded.
+- **`gruntas providers next [--from <account>] [--tried <a,b>] --json`**
+  answers the signed-in Claude Code subscription a session moves to, by
+  rollover's ranking, with your `rollover` setting and when `--from`'s limit
+  resets. The pi extension asks it, also for the account a new session
+  starts on.
+- **pi's bash calls get the paste guard, and its heavy builds take a build
+  slot.** A bash command in pi that the paste guards refuse (an upload to
+  a paste site, a bare gruntas card link in a `gh` body) is blocked with
+  the guard's message, as in Claude Code and Codex, and, never having run,
+  is no work the session is reminded to report; any other runs as it was,
+  waiting at most two seconds on gruntas. A command on the
+  `builds.heavy` list, such as `cargo build`, counts toward the machine's
+  build slots while it runs.
+- **`/account` in pi picks the gruntas account Claude turns run on.** It
+  lists every gruntas account with its kind, readiness and usage left per
+  window, the current one marked; choosing one moves the session to it from
+  the next request, and pi's footer shows `gruntas: <account>`. Codex
+  accounts are listed as not usable from pi yet. `/account <name>` moves
+  directly, which is how it works where pi has no UI.
+
 ## [2026.11.6] - 2026-11-25
 
 **`gruntas run claude` works with your logins.** The sandbox an attended

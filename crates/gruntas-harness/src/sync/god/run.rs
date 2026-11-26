@@ -22,6 +22,8 @@ use std::path::Path;
 
 /// Why a Codex session is not steered (the launcher build makes it so).
 pub const CODEX: &str = "it is a Codex session, and gruntas delivers nothing to Codex until it starts Codex itself";
+/// Why a pi session is not: its extension reads no steer inbox.
+pub const PI: &str = "it is a pi session, and gruntas delivers nothing to pi yet";
 /// Why a subagent is not: it runs inside its parent's turn.
 pub const SUBAGENT: &str = "it is a subagent, which runs inside its parent's turn; message the session that started it";
 /// Why a Claude Code session with no terminal is not.
@@ -47,6 +49,7 @@ pub(crate) fn target(c: &Config, session: &str) -> Result<Target, HostAnswer> {
 pub fn target_in(daemon: &Path, sessions: &Path, session: &str) -> Result<Target, HostAnswer> {
     match crate::daemon::registry::Registry::read(daemon).get(session) {
         Some(r) if r.harness == PluginHarness::Codex => Err(cant_steer(CODEX)),
+        Some(r) if r.harness == PluginHarness::Pi => Err(cant_steer(PI)),
         Some(r) if r.attendance == Some(Attendance::Unattended) => Err(cant_steer(HEADLESS)),
         Some(_) => Ok(Target::ClaudeCode),
         None => match crate::steer::start_of(sessions, session) {
@@ -190,7 +193,7 @@ mod tests {
         assert_eq!(target_in(&daemon, &sessions, SESSION), Ok(Target::GruntasRun));
         registered(&daemon, PluginHarness::Claude, None);
         assert_eq!(target_in(&daemon, &sessions, SESSION), Ok(Target::ClaudeCode));
-        for (harness, attendance, why) in [(PluginHarness::Codex, None, CODEX), (PluginHarness::Claude, Some(Attendance::Unattended), HEADLESS)] {
+        for (harness, attendance, why) in [(PluginHarness::Codex, None, CODEX), (PluginHarness::Pi, None, PI), (PluginHarness::Claude, Some(Attendance::Unattended), HEADLESS)] {
             registered(&daemon, harness, attendance);
             assert_eq!(refusal_of(target_in(&daemon, &sessions, SESSION)), (refusal::CANT_STEER.to_string(), format!("can't steer this session yet: {why}")));
         }

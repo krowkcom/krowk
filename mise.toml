@@ -8,7 +8,8 @@
 # zig and node are one step further out: they are what turns a tag into
 # downloadable bytes (zig is the cross C toolchain cargo-zigbuild drives, and
 # node assembles the npm packages), so `make release-check` and `make dist`
-# work on a clean checkout too. Neither is needed for `make check`.
+# work on a clean checkout too. zig is not needed for `make check`; node is,
+# for the pi extension's tests (`make pi-test`).
 #
 # mr-boxington (mbx) wraps cargo so compiled dependencies land in one shared
 # store and every worktree reuses them instead of compiling its own copy. It

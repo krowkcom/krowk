@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // Assemble the npm packages from the binaries scripts/dist.sh just built.
 //
-// Seven packages come out of one release: five that carry nothing but the two
+// Eight packages come out of one release: five that carry nothing but the two
 // binaries for one platform, and the two launchers people actually name —
 // `@gruntas/cli` and `@gruntas/mcp` — which depend on all five as optionalDependencies
-// and use whichever npm decided applies. That is the esbuild pattern.
+// and use whichever npm decided applies. That is the esbuild pattern. The
+// eighth is `@gruntas/pi`, the pi extension, which carries no binary: it runs
+// the `gruntas` already on the PATH.
 //
 // The bytes are the release's bytes, read out of dist/, not a second `cargo build`
 // that could differ from what the checksums cover.
@@ -219,13 +221,40 @@ for (const launcher of LAUNCHERS) {
   published.push({ name: launcher.name, dir });
 }
 
+// --- Write the pi extension ---------------------------------------------------
+
+// Versioned with the CLI it runs. Held back from publishing (manifest.json's
+// `held`, which npm/publish.mjs skips) until @gruntas/pi has a trusted
+// publisher on npmjs.com naming this repository and release.yml (release.yml
+// says how): then delete PI_HELD and the next release publishes it.
+const PI_HELD = "no trusted publisher is set up for @gruntas/pi on npmjs.com yet";
+{
+  const from = path.join(repo, "npm/pi");
+  const dir = stage("@gruntas/pi");
+  const manifest = readJSON(path.join(from, "package.json"));
+  if (manifest.name !== "@gruntas/pi") die("npm/pi is named " + manifest.name + ", not @gruntas/pi");
+  for (const file of ["package.json", "README.md", ...manifest.files]) {
+    if (!fs.existsSync(path.join(from, file))) die("npm/pi ships " + file + ", which is not there");
+    fs.cpSync(path.join(from, file), path.join(dir, file), { recursive: true });
+  }
+  // stage() made a bin/ the extension has no use for.
+  fs.rmSync(path.join(dir, "bin"), { recursive: true, force: true });
+  manifest.version = version;
+  fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify(manifest, null, 2) + "\n");
+  published.push({ name: manifest.name, dir, held: PI_HELD });
+}
+
 // Order is the publish order: a launcher whose optionalDependencies do not
 // exist yet installs "successfully" with no binary, which is the one failure
 // mode this whole arrangement is meant to avoid.
 fs.writeFileSync(
   path.join(outDir, "manifest.json"),
   JSON.stringify(
-    { version, prerelease, packages: published.map((p) => ({ name: p.name, dir: path.relative(outDir, p.dir) })) },
+    {
+      version,
+      prerelease,
+      packages: published.map((p) => ({ name: p.name, dir: path.relative(outDir, p.dir), ...(p.held ? { held: p.held } : {}) })),
+    },
     null,
     2,
   ) + "\n",
@@ -236,5 +265,5 @@ process.stdout.write(
     (prerelease ? " (prerelease)" : "") + "\n",
 );
 for (const p of published) {
-  process.stdout.write("  " + p.name + " → " + path.relative(repo, p.dir) + "\n");
+  process.stdout.write("  " + p.name + " → " + path.relative(repo, p.dir) + (p.held ? " (held: " + p.held + ")" : "") + "\n");
 }

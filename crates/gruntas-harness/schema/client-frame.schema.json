@@ -1233,7 +1233,8 @@
       "type": "string",
       "enum": [
         "claude",
-        "codex"
+        "codex",
+        "pi"
       ]
     },
     "Registration": {

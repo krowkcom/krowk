@@ -20,12 +20,17 @@ fn fixture(harness: &str, event: &str) -> Value {
 }
 
 fn normalised(h: PluginHarness, event: &str) -> HookEvent {
-    let word = if h == PluginHarness::Claude { "claude" } else { "codex" };
+    let word = match h {
+        PluginHarness::Claude => "claude",
+        PluginHarness::Codex => "codex",
+        PluginHarness::Pi => "pi",
+    };
     hook::normalise(h, event, &fixture(word, event)).unwrap().unwrap_or_else(|| panic!("{word} {event} normalised to nothing"))
 }
 
 const CLAUDE: &str = "2965e294-a0d4-4f50-9a48-0c9b4d0aca11";
 const CODEX: &str = "019a8f3e-6c1d-7b42-9e0a-3f5d2c7b8a91";
+const PI: &str = "0198b2f4-3c6e-7a10-8d2e-5f4a9c1b7e63";
 
 fn claude_session() -> Session {
     Session { id: CLAUDE.into(), cwd: Some("/home/user/repo".into()), transcript_path: Some(format!("/home/user/.claude/projects/-home-user-repo/{CLAUDE}.jsonl")) }
@@ -59,6 +64,37 @@ fn kt01_codexs_payloads_normalise_to_the_same_events() {
     assert_eq!(normalised(x, "PreToolUse"), HookEvent::ToolStart { session: codex_session(true), tool_call_id: "call_Xq3mB7rT2kLp9vNw".into(), tool_name: "Bash".into(), input: serde_json::json!({"command": "cargo test"}) });
     assert_eq!(normalised(x, "PostToolUse"), HookEvent::ToolEnd { session: codex_session(true), tool_call_id: "call_Xq3mB7rT2kLp9vNw".into(), tool_name: "Bash".into(), input: serde_json::json!({"command": "cargo test"}) });
     assert_eq!(normalised(x, "Stop"), HookEvent::Stop { session: codex_session(true), active: false });
+}
+
+fn pi_session() -> Session {
+    Session { id: PI.into(), cwd: Some("/home/user/repo".into()), transcript_path: Some(format!("/home/user/.pi/agent/sessions/--home-user-repo--/2026-11-25T14-00-00-000Z_{PI}.jsonl")) }
+}
+
+/// PI01: the pi extension's payloads (Claude-shaped, `fixtures/hooks/pi/`)
+/// normalise to the events Claude Code's do, and register as harness pi.
+#[test]
+fn pi01_the_pi_extensions_payloads_normalise_to_the_same_events() {
+    let p = PluginHarness::Pi;
+    assert_eq!(hook::harness("pi"), Some(p));
+    assert_eq!(normalised(p, "SessionStart"), HookEvent::SessionStart { session: pi_session(), source: Some("startup".into()) });
+    assert_eq!(normalised(p, "SessionEnd"), HookEvent::SessionEnd { session: pi_session() });
+    let (call, input) = ("toolu_01PiBashCall7Hq2".to_string(), serde_json::json!({"command": "cargo test"}));
+    assert_eq!(normalised(p, "PreToolUse"), HookEvent::ToolStart { session: pi_session(), tool_call_id: call.clone(), tool_name: "Bash".into(), input: input.clone() });
+    for end in ["PostToolUse", "PostToolUseFailure"] {
+        assert_eq!(normalised(p, end), HookEvent::ToolEnd { session: pi_session(), tool_call_id: call.clone(), tool_name: "Bash".into(), input: input.clone() }, "{end}");
+    }
+    assert_eq!(normalised(p, "Stop"), HookEvent::Stop { session: pi_session(), active: false });
+    assert!(matches!(normalised(p, "usage"), HookEvent::Usage { ref config_home, ref windows } if config_home == "/home/user/.claude" && windows.len() == 2));
+    let ctx = Context { harness_pid: Some(7), config_home: Some("/home/user/.pi/agent".into()), heavy: gruntas_harness::builds::BuildsConfig::default().heavy_list(), ..Context::default() };
+    assert_eq!(
+        hook::to_activity(p, &normalised(p, "SessionStart"), &ctx),
+        Some(Activity::Register(Registration { session_id: PI.into(), harness: p, harness_pid: Some(7), config_home: Some("/home/user/.pi/agent".into()), cwd: Some("/home/user/repo".into()), repository: None, transcript_path: pi_session().transcript_path, attendance: None }))
+    );
+    assert_eq!(hook::to_activity(p, &normalised(p, "PreToolUse"), &ctx), Some(Activity::HeavyStart { session_id: PI.into(), tool_call_id: call.clone() }));
+    assert_eq!(hook::to_activity(p, &normalised(p, "PostToolUseFailure"), &ctx), Some(Activity::HeavyEnd { session_id: PI.into(), tool_call_id: call }));
+    // pi names an MCP server's tool `mcp__<server>__<tool>`: the report.
+    let report = HookEvent::ToolEnd { session: pi_session(), tool_call_id: "t".into(), tool_name: "mcp__gruntas__gruntas_report".into(), input: serde_json::json!({}) };
+    assert_eq!(hook::to_activity(p, &report, &ctx), None);
 }
 
 #[test]

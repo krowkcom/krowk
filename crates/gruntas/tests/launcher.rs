@@ -215,6 +215,42 @@ fn claude_writes_its_plugin_and_the_default_keeps_an_inherited_config_dir() {
     assert!(b.started("claude").1.contains(&work));
 }
 
+/// `--no-plugin`, as the Agent SDK runs it: Claude Code on the account with
+/// no plugin and no gruntas hook, the plugin not even written, its stdin,
+/// stdout and exit code passed through untouched, nothing of gruntas's on
+/// stdout.
+#[test]
+fn no_plugin_passes_claude_through_without_the_plugin() {
+    let b = Sandbox::new("noplugin");
+    for bin in ["bwrap", "socat"] {
+        b.fake(bin);
+    }
+    let out = b.root.join("claude");
+    let script = format!("#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{0}.args'\nenv > '{0}.env'\ncat\nexit 3\n", out.display());
+    std::fs::write(b.root.join("bin/claude"), script).unwrap();
+    let o = b.command(&["run", "claude", "--account", "work", "--no-plugin", "-p", "--output-format", "stream-json"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().and_then(|mut c| {
+        use std::io::Write;
+        c.stdin.take().unwrap().write_all(b"{\"type\":\"user\"}\n")?;
+        c.wait_with_output()
+    });
+    let o = o.unwrap();
+    assert_eq!(o.status.code(), Some(3), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "{\"type\":\"user\"}\n", "only claude's own stdout");
+    let (args, env) = b.started("claude");
+    assert!(!args.iter().any(|a| a == "--plugin-dir"), "{args:?}");
+    assert!(!b.root.join("data/gruntas/plugin").exists(), "no plugin written");
+    let settings: serde_json::Value = serde_json::from_str(&args[1]).unwrap();
+    assert_eq!(args[0], "--settings");
+    assert!(!settings.to_string().contains(" hook claude") && settings["enabledPlugins"]["gruntas@gruntas"] == false, "{settings}");
+    assert!(args.ends_with(&["-p".into(), "--output-format".into(), "stream-json".into()]), "{args:?}");
+    assert!(env.contains(&format!("CLAUDE_CONFIG_DIR={}", b.root.join("accounts/claude-work").display())));
+    // A --plugin-dir of the caller's is theirs, passed through even where it is not.
+    assert_eq!(b.gruntas(&["run", "claude", "--account", "work", "--no-plugin", "--plugin-dir", "/nowhere"]).status.code(), Some(3));
+    assert!(b.started("claude").0.ends_with(&["--plugin-dir".into(), "/nowhere".into()]));
+    failed(&b.gruntas(&["run", "codex", "--account", "team", "--no-plugin"]), 1, "--no-plugin is for claude");
+    failed(&b.gruntas(&["run", "claude", "--no-plugin", "--unattended", "fix it"]), 1, "drop --no-plugin");
+}
+
 /// R-RUN-3, against a daemon in this process: `--unattended` starts a
 /// `--bg` session in the sandbox and prints its id, or refuses where the
 /// sandbox cannot run; the daemon stops the session once its Task is
@@ -388,6 +424,51 @@ fn account_auto_picks_the_account_with_the_most_headroom() {
     std::fs::write(b.home().join("usage.json"), usage.to_string()).unwrap();
     let err = String::from_utf8_lossy(&b.gruntas(&["run", "claude", "--account", "auto"]).stderr).into_owned();
     assert!(err.contains("--account auto: claude, your own account"), "{err}");
+}
+
+/// pi plugin R-PI-8: `gruntas providers next` answers the signed-in
+/// subscription a session moves to, by rollover's ranking over the usage
+/// record, never an API-key account, never one it tried; the rollover
+/// setting; and until when the account it is on is limited.
+#[test]
+fn providers_next_ranks_subscriptions_over_the_usage_record() {
+    let b = Sandbox::new("pi08");
+    let mut config: serde_json::Value = serde_json::from_slice(&std::fs::read(b.home().join("config.json")).unwrap()).unwrap();
+    for name in ["claude:apart", "claude:spare", "claude:key"] {
+        let dir = b.root.join("accounts").join(name.replace(':', "-"));
+        std::fs::create_dir_all(&dir).unwrap();
+        config["instances"][name] = serde_json::json!({ "kind": "claude-code", "binary": b.root.join("bin/claude"), "configDir": dir });
+    }
+    config["instances"]["claude:key"]["apiKeyEnv"] = serde_json::json!("ANTHROPIC_API_KEY");
+    config["rollover"] = serde_json::json!("auto");
+    std::fs::write(b.home().join("config.json"), config.to_string()).unwrap();
+    let claude = b.root.join("bin/claude");
+    std::fs::write(&claude, "#!/bin/sh\nif [ \"$1\" = auth ]; then\n  if [ -e \"$CLAUDE_CONFIG_DIR/signed-out\" ]; then echo '{\"loggedIn\":false}'; else echo '{\"loggedIn\":true}'; fi\nfi\n").unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let reset = now + 3_600_000;
+    let window = |used: f64, status: &str| serde_json::json!({ "five_hour": { "status": status, "usedPercent": used, "resetsAtMs": reset, "seenAtMs": now } });
+    let login = |login: &str| serde_json::json!({ "login": login, "seenAtMs": now });
+    // claude:work is spent; claude:key has the most room but bills a key.
+    let usage = serde_json::json!({
+        "instances": { "claude:work": login("work"), "claude:apart": login("apart"), "claude:spare": login("spare"), "claude:key": login("key") },
+        "logins": { "work": window(100.0, "limited"), "apart": window(60.0, "allowed"), "spare": window(30.0, "allowed"), "key": window(0.0, "allowed") },
+    });
+    std::fs::write(b.home().join("usage.json"), usage.to_string()).unwrap();
+    let next = |args: &[&str]| -> serde_json::Value {
+        let o = b.gruntas(&[&["providers", "next", "--json"], args].concat());
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        serde_json::from_slice::<serde_json::Value>(&o.stdout).unwrap()["data"].clone()
+    };
+    assert_eq!(next(&["--from", "claude:work"]), serde_json::json!({ "next": "claude:spare", "mode": "auto", "resetsAt": reset }));
+    assert_eq!(next(&["--from", "claude:work", "--tried", "claude:spare"])["next"], "claude:apart", "a tried account is passed over");
+    // claude, the default, was never seen: it ranks last of those with room.
+    assert_eq!(next(&["--from", "claude:work", "--tried", "claude:spare,claude:apart"])["next"], "claude");
+    assert_eq!(next(&["--from", "claude:work", "--tried", "claude:spare, claude:apart,claude"]), serde_json::json!({ "next": null, "mode": "auto", "resetsAt": reset }), "none left: never the key");
+    // Signed out, it is passed over; with no --from, where a session starts.
+    std::fs::write(b.root.join("accounts/claude-spare/signed-out"), "").unwrap();
+    assert_eq!(next(&[]), serde_json::json!({ "next": "claude:apart", "mode": "auto", "resetsAt": null }));
+    failed(&b.gruntas(&["providers", "next", "--from", "codex:team"]), 2, "not a claude account");
+    failed(&b.gruntas(&["providers", "list", "--tried", "x"]), 1, "only a flag of `gruntas providers next`");
 }
 
 /// `script`, as `script` does, run by a copy of bash named `harness`: a

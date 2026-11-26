@@ -19,7 +19,8 @@ stderr:
           "login": null,
           "plan": null,
           "usage": [],
-          "sharedWith": []
+          "sharedWith": [],
+          "config_dir": "<scratch>/home/.claude"
         },
         {
           "instance": "codex",
@@ -34,7 +35,8 @@ stderr:
           "login": null,
           "plan": null,
           "usage": [],
-          "sharedWith": []
+          "sharedWith": [],
+          "config_dir": "<scratch>/home/.codex"
         }
       ]
     },
@@ -66,7 +68,8 @@ stderr:
           "login": null,
           "plan": null,
           "usage": [],
-          "sharedWith": []
+          "sharedWith": [],
+          "config_dir": "<scratch>/home/.claude"
         },
         {
           "instance": "codex",
@@ -81,7 +84,8 @@ stderr:
           "login": null,
           "plan": null,
           "usage": [],
-          "sharedWith": []
+          "sharedWith": [],
+          "config_dir": "<scratch>/home/.codex"
         }
       ]
     },
@@ -113,7 +117,8 @@ stderr:
           "login": null,
           "plan": null,
           "usage": [],
-          "sharedWith": []
+          "sharedWith": [],
+          "config_dir": "<scratch>/home/.claude"
         },
         {
           "instance": "codex",
@@ -128,7 +133,8 @@ stderr:
           "login": null,
           "plan": null,
           "usage": [],
-          "sharedWith": []
+          "sharedWith": [],
+          "config_dir": "<scratch>/home/.codex"
         }
       ]
     },

@@ -1,5 +1,6 @@
 //! `gruntas hook <harness> <event>`: the one entry point every hook of
-//! gruntas's plugin runs, in Claude Code and in Codex (D3). It reads the
+//! gruntas's plugin runs, in Claude Code and in Codex (D3), and the
+//! `@gruntas/pi` extension runs in pi, with Claude-shaped payloads. It reads the
 //! harness's payload on stdin, turns it into one internal event
 //! (`normalise`), and sends what the daemon keeps of it as an `activity`
 //! frame over the daemon's socket (`to_activity`, `send`).
@@ -82,6 +83,7 @@ const HARNESS_ENV: &[&str] = &[
     "CODEX_SANDBOX_NETWORK_DISABLED",
     "CODEX_SESSION_ID",
     "CODEX_THREAD_ID",
+    "PI_CODING_AGENT_DIR",
 ];
 
 /// How long a hook that started the daemon waits for its socket: inside
@@ -163,14 +165,16 @@ pub fn harness(word: &str) -> Option<PluginHarness> {
     match word {
         "claude" => Some(PluginHarness::Claude),
         "codex" => Some(PluginHarness::Codex),
+        "pi" => Some(PluginHarness::Pi),
         _ => None,
     }
 }
 
 /// `payload` as event `event` of `harness`'s hooks; none for an event this
 /// hook does nothing with. Claude Code and Codex send the same shape (Codex
-/// adds `model` and `turn_id`, and may send a null `transcript_path`), so
-/// the harness changes nothing yet: it is here for where they part.
+/// adds `model` and `turn_id`, and may send a null `transcript_path`), and
+/// the pi extension builds that shape from pi's events, so the harness
+/// changes nothing yet: it is here for where they part.
 pub fn normalise(_harness: PluginHarness, event: &str, payload: &Value) -> Result<Option<HookEvent>, String> {
     let session = || -> Result<Session, String> {
         let c = Common::deserialize(payload).map_err(|e| format!("a {event} payload without its session: {e}"))?;
@@ -285,6 +289,7 @@ pub fn config_home(harness: PluginHarness, env: &dyn Fn(&str) -> String) -> Opti
     let (var, default) = match harness {
         PluginHarness::Claude => ("CLAUDE_CONFIG_DIR", ".claude"),
         PluginHarness::Codex => ("CODEX_HOME", ".codex"),
+        PluginHarness::Pi => ("PI_CODING_AGENT_DIR", ".pi/agent"),
     };
     // One account, one key: `/h/.claude/` and `/h/.claude` are the same.
     let home = match env(var) {
@@ -459,7 +464,7 @@ fn talk(mut stream: std::os::unix::net::UnixStream, cwd: &str, version: &str, ac
 /// and why it gave up, if it did.
 pub fn run(args: &[String], stdin: impl Read, env: &dyn Fn(&str) -> String, version: &str) -> (Option<String>, Option<String>) {
     let (Some(h), Some(event)) = (args.first().and_then(|w| harness(w)), args.get(1)) else {
-        return (None, Some(format!("`gruntas hook {}`: say a harness (claude, codex) and an event", args.join(" "))));
+        return (None, Some(format!("`gruntas hook {}`: say a harness (claude, codex, pi) and an event", args.join(" "))));
     };
     // The mod asks once where its steer inbox is (god agent D5), then reads
     // it with no process spawned.
@@ -741,6 +746,9 @@ mod tests {
         };
         assert_eq!(config_home(PluginHarness::Claude, &env).as_deref(), Some("/h/.claude"));
         assert_eq!(config_home(PluginHarness::Codex, &env).as_deref(), Some("/x/codex"));
+        assert_eq!(config_home(PluginHarness::Pi, &env).as_deref(), Some("/h/.pi/agent"));
+        let pi = |k: &str| if k == "PI_CODING_AGENT_DIR" { "/w/pi-b/".to_string() } else { env(k) };
+        assert_eq!(config_home(PluginHarness::Pi, &pi).as_deref(), Some("/w/pi-b"));
     }
 
     #[test]

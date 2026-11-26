@@ -591,6 +591,7 @@ fn registered(t: &mut Task, r: &Registration) {
         match r.harness {
             PluginHarness::Claude => "claude",
             PluginHarness::Codex => "codex",
+            PluginHarness::Pi => "pi",
         }
         .to_string(),
     ));

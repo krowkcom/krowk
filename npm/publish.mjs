@@ -120,6 +120,12 @@ function alreadyPublished(name, version) {
 for (const pkg of manifest.packages) {
   const dir = path.join(stagedIn, pkg.dir);
 
+  // A package npm/build.mjs holds back is not published, and says why.
+  if (pkg.held) {
+    notice(pkg.name + "@" + manifest.version + " is held back: " + pkg.held);
+    continue;
+  }
+
   if (alreadyPublished(pkg.name, manifest.version)) {
     process.stdout.write(pkg.name + "@" + manifest.version + " is already published, skipping\n");
     continue;
@@ -142,4 +148,4 @@ for (const pkg of manifest.packages) {
   }
 }
 
-notice("published " + manifest.packages.length + " npm packages at " + manifest.version + " (" + tag + ")");
+notice("published " + manifest.packages.filter((p) => !p.held).length + " npm packages at " + manifest.version + " (" + tag + ")");

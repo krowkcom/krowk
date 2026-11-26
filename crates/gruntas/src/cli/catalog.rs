@@ -759,8 +759,9 @@ fn run_command() -> Command {
             flag("account", STRING, "The account: its name (work for claude:work), or auto for the one with the most headroom (default: the one plain claude or codex in your shell uses)"),
             flag("unattended", STRING, "Start a background session on this task instead of taking the terminal"),
             flag("no-sandbox", BOOL, "Run without the sandbox that keeps the session out of the gruntas home, this once; attended only"),
+            flag("no-plugin", BOOL, "Start Claude Code without the gruntas plugin and hooks, so it never registers as a session; its arguments, stdin and stdout pass through, so a program can run it as its Claude Code (the Agent SDK's executable). Attended claude only"),
         ],
-        ..cmd("run", "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [args...]", "Start Claude Code or Codex on one of your accounts")
+        ..cmd("run", "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [--no-plugin] [args...]", "Start Claude Code or Codex on one of your accounts")
     }
 }
 
@@ -1002,6 +1003,13 @@ fn providers_command() -> Command {
                 ..cmd("list", "gruntas providers list [--check]", "List every instance, and whether it is ready")
             },
             Command {
+                flags: vec![
+                    flag("from", STRING, "The Claude Code account the session is on; absent, the account a session starts on"),
+                    flag("tried", STRING, "Accounts the session already tried, comma-separated: never answered"),
+                ],
+                ..cmd("next", "gruntas providers next [--from ACCOUNT] [--tried A,B] [--json]", "Where a session goes when its account runs out")
+            },
+            Command {
                 args: vec![arg("instance", "The instance to remove, e.g. openai:work", true)],
                 ..cmd("remove", "gruntas providers remove <instance>", "Remove an instance's definition, and forget its login")
             },
@@ -1013,7 +1021,7 @@ fn providers_command() -> Command {
                 ..cmd("rename", "gruntas providers rename [instance] [new-name]", "Rename an instance; its login and sessions follow")
             },
         ],
-        ..cmd("providers", "", "Low-level instance config (add, list, rename, remove)")
+        ..cmd("providers", "", "Low-level instance config (add, list, next, rename, remove)")
     }
 }
 
@@ -1197,6 +1205,14 @@ default permission mode, so there is no --permission-mode here.",
 Adds a Claude Code or Codex account: on a subscription (signed in with
 `claude auth login` or `codex login`), or on an API key or a gateway.",
         #[cfg(feature = "harness")]
+        "providers next" => "\
+Ranks the signed-in Claude Code subscription accounts by rollover's headroom
+ranking, leaving out --from and --tried, and answers the first (null when
+none has room), the rollover setting (offer, auto or off) and, with --from,
+when its limit resets. API-key and gateway accounts are never answered: a
+session asking here keeps no spend cap. The pi extension asks it when an
+account runs out.",
+        #[cfg(feature = "harness")]
         "providers list" => "\
 Where each runs, too. With --check, the readiness table and JSON alone:
 whether each account can run a turn here, and exit 3 when none is ready.",
@@ -1248,7 +1264,12 @@ home: for Claude Code one --settings, merged with any --settings you pass, that
 also carries gruntas's worktree hooks; for Codex a permissions profile. Nothing
 is written into the account. --account work is claude:work (or codex:work);
 none, or the harness's own name, is the account plain claude or codex in your
-shell uses.",
+shell uses.
+
+With --no-plugin, Claude Code starts without the gruntas plugin or hooks, so it
+never registers as a session, and runs once, its arguments, stdin, stdout and
+exit code passed through: a program that drives Claude Code (the Agent SDK) can
+run `gruntas run claude --account work --no-plugin` as its Claude Code.",
         #[cfg(feature = "harness")]
         "worktrees add" => "\
 The worktree is of the repository you are in, on a new branch gruntas/<hex>,

@@ -1,13 +1,13 @@
 //! `gruntas run <harness> [--account <name|auto>] [--unattended "<task>"]
-//! [--no-sandbox] [args…]` (Launcher): the stock `claude` or `codex` on one
+//! [--no-sandbox] [--no-plugin] [args…]` (Launcher): the stock `claude` or `codex` on one
 //! of the person's accounts, with the gruntas plugin and the sandbox that
 //! keeps it out of the gruntas home. The plan is `gruntas_harness::launch`'s;
 //! this reads the command line, resolves the account and hands the plan to
 //! the slice that runs it.
 //!
 //! Its words after the harness are the harness's, so they never reach
-//! gruntas's flag parser: only `--account`, `--unattended` and
-//! `--no-sandbox` are gruntas's, anywhere before a `--`, and everything else
+//! gruntas's flag parser: only `--account`, `--unattended`, `--no-sandbox`
+//! and `--no-plugin` are gruntas's, anywhere before a `--`, and everything else
 //! (everything after a `--`, too) passes through as typed.
 
 use super::{flags::Flags, report, Ctx, Io};
@@ -33,6 +33,7 @@ struct Asked {
     account: Option<String>,
     unattended: Option<String>,
     no_sandbox: bool,
+    no_plugin: bool,
     rest: Vec<String>,
 }
 
@@ -60,6 +61,8 @@ fn parse(words: &[String]) -> Result<Asked, String> {
             "--unattended" => a.unattended = Some(value("--unattended \"<task>\"")?),
             "--no-sandbox" if inline.is_none() => a.no_sandbox = true,
             "--no-sandbox" => return Err("--no-sandbox takes no value".into()),
+            "--no-plugin" if inline.is_none() => a.no_plugin = true,
+            "--no-plugin" => return Err("--no-plugin takes no value".into()),
             _ => a.rest.push(w.clone()),
         }
     }
@@ -103,6 +106,7 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<i32, Error> {
         None => Mode::Attended,
     };
     if harness == Harness::Claude
+        && !asked.no_plugin
         && let Err(e) = install_plugin(&plugin_dir, &gruntas)
     {
         let _ = writeln!(ctx.io.stderr, "gruntas: the gruntas plugin could not be written to {}: {e}", plugin_dir.display());
@@ -119,7 +123,7 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<i32, Error> {
             .ok(),
         _ => None,
     };
-    let req = launch::Request { harness, mode, instance, hidden: launch::hidden(&home, ctx.io.env), plugin_dir, gruntas, sandbox: !asked.no_sandbox, egress, args: asked.rest };
+    let req = launch::Request { harness, mode, instance, hidden: launch::hidden(&home, ctx.io.env), plugin_dir, gruntas, sandbox: !asked.no_sandbox, plugin: !asked.no_plugin, egress, args: asked.rest };
     let plan = launch::plan(&req, &|p| std::fs::read_to_string(p)).map_err(bad)?;
     let ok = |()| super::exit::OK;
     match (plan.harness, &plan.mode) {
@@ -194,7 +198,7 @@ pub(super) fn continue_in(ctx: &mut Ctx, step: &gruntas_harness::ladder::Step, f
         Harness::Claude => vec!["--model".to_string(), step.to.model.clone()],
         Harness::Codex => Vec::new(),
     };
-    let req = launch::Request { harness, mode: Mode::Unattended { task: prompt.clone() }, instance, hidden: launch::hidden(&home, ctx.io.env), plugin_dir, gruntas, sandbox: true, egress: None, args };
+    let req = launch::Request { harness, mode: Mode::Unattended { task: prompt.clone() }, instance, hidden: launch::hidden(&home, ctx.io.env), plugin_dir, gruntas, sandbox: true, plugin: true, egress: None, args };
     let plan = launch::plan(&req, &|p| std::fs::read_to_string(p)).map_err(|e| fail("launch_failed", e))?;
     let id = match harness {
         Harness::Claude => claude_unattended(ctx, plan, Some(&cwd))?,
@@ -231,9 +235,19 @@ fn model_of(args: &[String]) -> Option<String> {
 /// queued ends the run with the harness's own code; so does Ctrl-C in the
 /// moment gruntas says where it goes on (`STOP`), and the daemon's pick of
 /// an account the run left when it ran low that has not reset since,
-/// which would only go round the same spent accounts.
+/// which would only go round the same spent accounts. Without the plugin
+/// (`--no-plugin`), gruntas becomes the harness (exec), so the program that
+/// started it has Claude Code's own stdio, signals and exit status: a
+/// session that never registers is not one the daemon moves.
 fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: String) -> Result<i32, Error> {
     use gruntas_harness::attended;
+    if !req.plugin {
+        claude_ready(ctx, &mut plan, false)?;
+        let _ = ctx.io.stdout.flush();
+        let _ = ctx.io.stderr.flush();
+        let e = std::os::unix::process::CommandExt::exec(&mut child::command(&plan));
+        return Err(fail("no_binary", format!("{} could not be started: {e}. Is it installed? `gruntas providers list --check` checks", plan.program.display())));
+    }
     let daemon = gruntas_harness::daemon::dir(ctx.io.env).ok();
     if let Some(d) = &daemon {
         attended::sweep(d);
@@ -245,13 +259,13 @@ fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: Str
     let mut last = 0;
     loop {
         if plan.harness == Harness::Claude {
-            claude_ready(ctx, &mut plan)?;
+            claude_ready(ctx, &mut plan, true)?;
         }
         let _ = ctx.io.stdout.flush();
         let _ = ctx.io.stderr.flush();
         let launched = attended::Launched { account: account.clone(), model: model.clone() };
         let mark = |pid: u32| {
-            if let Some(d) = &daemon {
+            if let Some(d) = daemon.as_ref().filter(|_| req.plugin) {
                 let _ = attended::mark(d, pid, &launched);
             }
         };
@@ -260,6 +274,9 @@ fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: Str
             return Ok(last);
         };
         last = code.code;
+        if !req.plugin {
+            return Ok(code.code);
+        }
         let next = daemon.as_ref().and_then(|d| attended::take(d, code.pid));
         // Told to end (a closed terminal, a kill): no harness starts again.
         let Some(next) = next.filter(|_| !code.ending) else { return Ok(code.code) };
@@ -305,7 +322,7 @@ fn attended(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, mut model: Str
         if !next.model.is_empty() {
             args.extend(["--model".to_string(), next.model.clone()]);
         }
-        let r = launch::Request { harness: req.harness, mode: Mode::Attended, instance: to, hidden: req.hidden.clone(), plugin_dir: req.plugin_dir.clone(), gruntas: req.gruntas.clone(), sandbox: req.sandbox, egress: req.egress, args };
+        let r = launch::Request { harness: req.harness, mode: Mode::Attended, instance: to, hidden: req.hidden.clone(), plugin_dir: req.plugin_dir.clone(), gruntas: req.gruntas.clone(), sandbox: req.sandbox, plugin: req.plugin, egress: req.egress, args };
         let next_plan = launch::plan(&r, &|p| std::fs::read_to_string(p)).map_err(|e| fail("bad_flag", e))?;
         // Into the home the next run runs in, worked out the same way.
         if let Some(t) = &found
@@ -457,19 +474,21 @@ fn pick_auto(ctx: &mut Ctx, registry: &Registry, harness: Harness) -> Result<Str
 /// LN02: `claude` per the plan, but where the sandbox cannot run, say so,
 /// and start only with `--no-sandbox`. A plugin directory that could not be
 /// written is left out with a note, where Claude Code would pass over it
-/// without a word.
-fn claude_ready(ctx: &mut Ctx, plan: &mut Plan) -> Result<(), Error> {
+/// without a word; without the `plugin`, a `--plugin-dir` is the caller's,
+/// passed through as given.
+fn claude_ready(ctx: &mut Ctx, plan: &mut Plan, plugin: bool) -> Result<(), Error> {
     if plan.sandboxed
         && let Err(why) = claude_sandbox_runs(ctx.io.env)
     {
         return Err(fail("sandbox_unavailable", format!("Claude Code's sandbox cannot run here: {why}. Or start this run with --no-sandbox, which leaves the gruntas home readable to it")));
     }
-    if let Some(i) = plan.args.iter().position(|a| a == "--plugin-dir") {
-        let dir = std::path::PathBuf::from(&plan.args[i + 1]);
-        if !dir.is_dir() {
-            let _ = writeln!(ctx.io.stderr, "gruntas: no gruntas plugin at {} yet, so claude starts without it", dir.display());
-            plan.args.drain(i..i + 2);
-        }
+    if plugin
+        && let Some(i) = plan.args.iter().position(|a| a == "--plugin-dir")
+        && let Some(dir) = plan.args.get(i + 1).map(std::path::PathBuf::from)
+        && !dir.is_dir()
+    {
+        let _ = writeln!(ctx.io.stderr, "gruntas: no gruntas plugin at {} yet, so claude starts without it", dir.display());
+        plan.args.drain(i..i + 2);
     }
     Ok(())
 }
@@ -542,7 +561,7 @@ mod child {
         Ok(Some(Ended { pid: child.id(), code: status.code().or_else(|| status.signal().map(|s| 128 + s)).unwrap_or(1), ending: relay::TOLD.load(SeqCst) != 0 }))
     }
 
-    fn command(plan: &Plan) -> std::process::Command {
+    pub(super) fn command(plan: &Plan) -> std::process::Command {
         let mut cmd = std::process::Command::new(&plan.program);
         cmd.args(&plan.args);
         for k in &plan.env_remove {
@@ -813,10 +832,12 @@ mod tests {
     #[test]
     fn gruntas_reads_its_own_flags_and_passes_the_rest() {
         let a = parse(&words("claude --model opus --account=work -c --no-sandbox --unattended fix")).unwrap();
-        assert_eq!(a, Asked { harness: "claude".into(), account: Some("work".into()), unattended: Some("fix".into()), no_sandbox: true, rest: words("--model opus -c") });
-        let a = parse(&words("codex resume -- --account x --no-sandbox")).unwrap();
-        assert_eq!((a.account, a.no_sandbox, a.rest), (None, false, words("resume --account x --no-sandbox")));
-        for bad in ["claude --account", "claude --account=", "claude --no-sandbox=false"] {
+        assert_eq!(a, Asked { harness: "claude".into(), account: Some("work".into()), unattended: Some("fix".into()), no_sandbox: true, no_plugin: false, rest: words("--model opus -c") });
+        let a = parse(&words("codex resume -- --account x --no-sandbox --no-plugin")).unwrap();
+        assert_eq!((a.account, a.no_sandbox, a.no_plugin, a.rest), (None, false, false, words("resume --account x --no-sandbox --no-plugin")));
+        let a = parse(&words("claude --account work --no-plugin -p --output-format stream-json")).unwrap();
+        assert_eq!((a.no_plugin, a.rest), (true, words("-p --output-format stream-json")));
+        for bad in ["claude --account", "claude --account=", "claude --no-sandbox=false", "claude --no-plugin=1"] {
             assert!(parse(&words(bad)).is_err(), "{bad}");
         }
         assert!(parse(&["claude".into(), "--unattended".into(), " ".into()]).is_err());

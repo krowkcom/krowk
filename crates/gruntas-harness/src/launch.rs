@@ -131,6 +131,10 @@ pub struct Request<'a> {
     pub gruntas: PathBuf,
     /// False for `--no-sandbox`: the sandbox parts are left out.
     pub sandbox: bool,
+    /// False for `--no-plugin`: Claude Code starts without the gruntas
+    /// plugin or gruntas's hooks, so it never registers as an agent of its
+    /// own (the Claude Code behind a pi turn). Attended Claude Code only.
+    pub plugin: bool,
     /// The open proxy an attended Claude session's sandboxed commands
     /// reach the network through (`crate::egress`); none leaves Claude
     /// Code's own, which asks before each new domain.
@@ -170,6 +174,12 @@ pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> R
     if !req.sandbox && matches!(req.mode, Mode::Unattended { .. }) {
         return Err("an unattended session always runs in the sandbox that keeps it out of the gruntas home — drop --no-sandbox".into());
     }
+    if !req.plugin && req.harness == Harness::Codex {
+        return Err("--no-plugin is for claude: a Codex account loads the gruntas plugin only where it is installed, which gruntas leaves as it is".into());
+    }
+    if !req.plugin && matches!(req.mode, Mode::Unattended { .. }) {
+        return Err("an unattended session is followed and stopped through the gruntas plugin — drop --no-plugin".into());
+    }
     let b: &Backend = req.instance.backend.as_ref().ok_or_else(|| format!("{} is not a {} account", req.instance.name, req.harness.name()))?;
     let (env_remove, env_set) = match req.harness {
         Harness::Claude => crate::claude::environment(b),
@@ -202,7 +212,13 @@ pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> R
             let (mut theirs, configured) = take_settings(&b.args, read)?;
             let (typed, rest) = take_settings(&req.args, read)?;
             theirs.extend(typed);
-            let mut ours = worktree_hooks(&req.gruntas);
+            // Without the plugin, none of gruntas's hooks either, and the
+            // gruntas plugin a person installed in the account turned off
+            // for this run, the account's own settings untouched.
+            let mut ours = match req.plugin {
+                true => worktree_hooks(&req.gruntas),
+                false => json!({ "enabledPlugins": { PLUGIN_ID: false } }),
+            };
             let settings = theirs.into_iter().fold(Value::Object(Map::new()), merge);
             if req.sandbox {
                 ours = merge(ours, claude_sandbox(&req.hidden));
@@ -218,7 +234,10 @@ pub fn plan(req: &Request, read: &dyn Fn(&Path) -> std::io::Result<String>) -> R
             if let Mode::Unattended { .. } = req.mode {
                 plan.args.push("--bg".into());
             }
-            plan.args.extend(["--plugin-dir".into(), req.plugin_dir.display().to_string(), "--settings".into(), settings.to_string()]);
+            if req.plugin {
+                plan.args.extend(["--plugin-dir".into(), req.plugin_dir.display().to_string()]);
+            }
+            plan.args.extend(["--settings".into(), settings.to_string()]);
             plan.args.extend(configured);
             plan.args.extend(rest);
             if let Mode::Unattended { task } = &req.mode {
@@ -427,6 +446,10 @@ fn toml_string(s: &str) -> String {
     out
 }
 
+/// The gruntas plugin as Claude Code names it once installed from the
+/// gruntas marketplace (`enabledPlugins`).
+pub const PLUGIN_ID: &str = "gruntas@gruntas";
+
 /// Where the gruntas plugin a launch loads is kept: `plugin` beside the
 /// worktrees gruntas makes (`$XDG_DATA_HOME/gruntas/plugin`), outside the
 /// gruntas home the sandbox hides and outside every account. None without
@@ -465,6 +488,7 @@ mod tests {
             plugin_dir: "/h/.local/share/gruntas/plugin".into(),
             gruntas: "/usr/bin/gruntas".into(),
             sandbox: true,
+            plugin: true,
             egress: Some(crate::egress::Egress { http: 3128, socks: 1080 }),
             args: args.iter().map(|s| s.to_string()).collect(),
         }
@@ -679,6 +703,32 @@ mod tests {
         assert_eq!(plugin_dir(&xdg), Some(PathBuf::from("/d/gruntas/plugin")));
     }
 
+    /// `--no-plugin`: no plugin directory and no gruntas hook, an installed
+    /// gruntas plugin turned off, the account, sandbox and arguments as ever.
+    #[test]
+    fn no_plugin_leaves_out_the_plugin_and_its_hooks() {
+        let r = registry();
+        let inst = account(&r, Harness::Claude, "claude:work").unwrap();
+        let theirs = r#"{"hooks":{"Stop":[{"hooks":[]}]},"enabledPlugins":{"x@y":true}}"#;
+        let p = plan(&Request { plugin: false, ..request(Harness::Claude, Mode::Attended, inst, &["--settings", theirs, "--output-format", "stream-json", "--verbose"]) }, &no_file).unwrap();
+        assert!(!p.args.iter().any(|a| a == "--plugin-dir" || a.contains("gruntas/plugin")), "{:?}", p.args);
+        let s = p.settings.clone().unwrap();
+        assert!(!s.to_string().contains("hook claude"), "no gruntas hook: {s}");
+        assert!(s["hooks"].get("WorktreeCreate").is_none() && s["hooks"]["Stop"].is_array(), "the person's own hooks kept: {s}");
+        assert_eq!(s["enabledPlugins"], json!({ "x@y": true, "gruntas@gruntas": false }));
+        assert_eq!(s["sandbox"]["enabled"], true);
+        assert_eq!(p.args, ["--settings".to_string(), s.to_string(), "--verbose".into(), "--output-format".into(), "stream-json".into(), "--verbose".into()]);
+        assert_eq!(set(&p, "CLAUDE_CONFIG_DIR"), Some("/h/.gruntas/accounts/claude-work"));
+        assert_eq!(set(&p, "ANTHROPIC_BASE_URL"), Some("https://router"));
+        // Without the sandbox too: then no settings of gruntas's but the plugin off.
+        let p = plan(&Request { plugin: false, sandbox: false, ..request(Harness::Claude, Mode::Attended, inst, &[]) }, &no_file).unwrap();
+        assert_eq!(p.settings.unwrap(), json!({ "enabledPlugins": { "gruntas@gruntas": false } }));
+        // Attended Claude Code only.
+        let codex = account(&r, Harness::Codex, "codex:team").unwrap();
+        assert!(plan(&Request { plugin: false, ..request(Harness::Codex, Mode::Attended, codex, &[]) }, &no_file).unwrap_err().contains("--no-plugin"));
+        assert!(plan(&Request { plugin: false, ..request(Harness::Claude, Mode::Unattended { task: "t".into() }, inst, &[]) }, &no_file).unwrap_err().contains("--no-plugin"));
+    }
+
     /// R-RUN-5: making a plan touches no file, so an account's settings,
     /// credentials and plugins are as they were.
     #[test]
@@ -695,6 +745,10 @@ mod tests {
         for (h, name) in [(Harness::Claude, "claude:work"), (Harness::Codex, "codex:team")] {
             for mode in [Mode::Attended, Mode::Unattended { task: "t".into() }] {
                 let req = Request { hidden: vec![dir.clone()], ..request(h, mode, account(&r, h, name).unwrap(), &[]) };
+                plan(&req, &|p| std::fs::read_to_string(p)).unwrap();
+            }
+            if h == Harness::Claude {
+                let req = Request { hidden: vec![dir.clone()], plugin: false, ..request(h, Mode::Attended, account(&r, h, name).unwrap(), &[]) };
                 plan(&req, &|p| std::fs::read_to_string(p)).unwrap();
             }
         }

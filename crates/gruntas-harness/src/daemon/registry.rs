@@ -223,6 +223,7 @@ impl Registry {
                 g.harness = Some(Field::harness(match r.harness {
                     PluginHarness::Claude => "claude".into(),
                     PluginHarness::Codex => "codex".into(),
+                    PluginHarness::Pi => "pi".into(),
                 }));
                 g.project = r.repository.as_deref().and_then(normalise_origin).map(Field::harness);
                 t
