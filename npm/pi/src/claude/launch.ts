@@ -67,7 +67,11 @@ export function spawnOnAccount(account: string, o: SpawnRequest, onStderr: (d: s
   return child
 }
 
-const VERSION = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version
+/** Set by npm/pi/bundle.mjs in the carried extension, which has no package.json beside it. */
+declare const GRUNTAS_PI_VERSION: string | undefined
+const VERSION: string = typeof GRUNTAS_PI_VERSION === 'string'
+  ? GRUNTAS_PI_VERSION
+  : JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version
 
 /**
  * The environment the SDK gives Claude Code, before `launcherEnv`. Copied from
