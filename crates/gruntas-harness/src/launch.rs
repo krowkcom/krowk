@@ -29,7 +29,7 @@ impl Harness {
         match word {
             "claude" => Ok(Harness::Claude),
             "codex" => Ok(Harness::Codex),
-            other => Err(format!("gruntas runs claude or codex, and pi, not {other:?} — `gruntas run claude`, `gruntas run codex` or `gruntas run pi`")),
+            other => Err(format!("gruntas runs claude, codex or pi, not {other:?} — `gruntas run claude`, `gruntas run codex` or `gruntas run pi`")),
         }
     }
 
@@ -487,9 +487,10 @@ pub struct PiLaunch {
     pub env_remove: Vec<&'static str>,
 }
 
-/// Whether the person picked pi's model themselves (`--model`, `--models`).
+/// Whether the person picked pi's model themselves (`--model`, `--models`,
+/// or `--provider`, which pi reads with a `--model` of its own).
 pub fn pi_model_picked(args: &[String]) -> bool {
-    args.iter().take_while(|a| *a != "--").any(|a| ["--model", "--models"].iter().any(|f| a == f || a.strip_prefix(f).is_some_and(|v| v.starts_with('='))))
+    args.iter().take_while(|a| *a != "--").any(|a| ["--model", "--models", "--provider"].iter().any(|f| a == f || a.strip_prefix(f).is_some_and(|v| v.starts_with('='))))
 }
 
 /// The gruntas plugin as Claude Code names it once installed from the
@@ -789,7 +790,7 @@ mod tests {
         let l = pi(None, None, ext, None, &args(&["-p", "hi"]));
         assert_eq!(l.args, args(&["-e", "/d/pi/gruntas.js", "-p", "hi"]));
         assert_eq!((l.env_set.len(), l.env_remove.as_slice()), (1, &[PI_ACCOUNT][..]), "no account asked: an inherited one is not passed on");
-        for picked in [&["--model", "x"][..], &["--model=x"], &["-c", "--models", "a,b"], &["--models=a"]] {
+        for picked in [&["--model", "x"][..], &["--model=x"], &["-c", "--models", "a,b"], &["--models=a"], &["--provider", "openai"]] {
             assert!(pi_model_picked(&args(picked)), "{picked:?}");
         }
         for not in [&["--modelx"][..], &["-p", "--", "--model"], &[]] {

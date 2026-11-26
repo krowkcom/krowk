@@ -190,7 +190,7 @@ fn pi_refused(asked: &Asked) -> Option<&'static str> {
         return Some("pi runs attended only: --unattended starts a background worker, which gruntas runs in Claude Code or Codex — `gruntas run claude --unattended \"<task>\"`");
     }
     if asked.no_plugin {
-        return Some("--no-plugin is for claude: `gruntas run pi` is pi with the gruntas extension; for pi without it, run `pi`");
+        return Some("--no-plugin is for claude: `gruntas run pi` is pi with the gruntas extension; for pi without it, run `pi` itself");
     }
     None
 }

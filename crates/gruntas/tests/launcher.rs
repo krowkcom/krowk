@@ -92,7 +92,7 @@ fn failed(o: &Output, code: i32, says: &str) {
 #[test]
 fn run_refuses_what_it_cannot_launch_and_names_the_fix() {
     let b = Sandbox::new("refuse");
-    failed(&b.gruntas(&["run", "gemini"]), 1, "claude or codex");
+    failed(&b.gruntas(&["run", "gemini"]), 1, "claude, codex or pi");
     failed(&b.gruntas(&["run", "claude", "--account", "nope"]), 2, "gruntas connect anthropic --method subscription --name nope");
     failed(&b.gruntas(&["run", "codex", "--account", "claude:work"]), 1, "not a codex account");
     failed(&b.gruntas(&["run", "claude", "--account", "work", "--unattended", "fix it", "--no-sandbox"]), 1, "drop --no-sandbox");
@@ -416,6 +416,30 @@ fn pi_attended_execs_pi_with_the_carried_extension_account_and_model() {
     assert!(!b.started("pi").0.iter().any(|a| a == "--model"), "--models is the person's choice too");
     let help = b.gruntas(&["help", "run"]);
     assert!(String::from_utf8_lossy(&help.stdout).contains("gruntas run <claude|codex|pi>"));
+}
+
+/// R-RUNPI-7: pi gets the carried skill with `--skill`, unless the
+/// installer's identical copy is where pi finds it anyway; `--account=` reads
+/// as `--account`.
+#[test]
+fn pi_passes_the_carried_skill_unless_the_installers_copy_is_there() {
+    let b = Sandbox::new("runpi-skill");
+    b.fake("pi");
+    let skill = b.root.join("data/gruntas/pi/skills/gruntas").display().to_string();
+    assert!(b.gruntas(&["run", "pi", "--account=claude:work"]).status.success());
+    let (args, env) = b.started("pi");
+    assert!(args.windows(2).any(|w| w == ["--skill".to_string(), skill.clone()]), "{args:?}");
+    assert!(env.contains(&"GRUNTAS_PI_ACCOUNT=claude:work".to_string()), "{env:?}");
+    let installed = b.root.join("home/.agents/skills/gruntas");
+    std::fs::create_dir_all(&installed).unwrap();
+    std::fs::write(installed.join("SKILL.md"), "an older skill").unwrap();
+    assert!(b.gruntas(&["run", "pi"]).status.success());
+    let (args, env) = b.started("pi");
+    assert!(args.contains(&"--skill".to_string()), "a different copy: the carried one still passed: {args:?}");
+    assert!(!env.iter().any(|e| e.starts_with("GRUNTAS_PI_ACCOUNT=")), "none asked: {env:?}");
+    std::fs::write(installed.join("SKILL.md"), include_str!("../../../skills/gruntas/SKILL.md")).unwrap();
+    assert!(b.gruntas(&["run", "pi"]).status.success());
+    assert!(!b.started("pi").0.contains(&"--skill".to_string()), "the installer's identical copy: pi finds it, so no second one");
 }
 
 /// R-RUNPI-2 and 4: what `gruntas run pi` refuses, each with what to do,
