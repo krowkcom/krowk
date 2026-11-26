@@ -2,7 +2,7 @@
 # A checkout and a release should not disagree about what version this is.
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo dev)
 
-.PHONY: build test test-build test-run test-doc lint lint-lean lint-sessions lint-harness check check-build check-run quick-check signoff install dev mock clean dist release-check golden golden-build golden-device golden-full golden-run golden-update bin/devregistry schema codex-schema codex-schema-update lean-deps name-sweep bench pi-test
+.PHONY: build test test-build test-run test-doc lint lint-lean lint-sessions lint-harness check check-build check-run quick-check signoff install dev mock clean dist release-check golden golden-build golden-device golden-full golden-run golden-update bin/devregistry schema codex-schema codex-schema-update lean-deps name-sweep bench pi-test pi-bundle
 
 build: ## Build target/release/gruntas (the full build) and gruntas-mcp
 	GRUNTAS_VERSION=$(VERSION) cargo build --release -p gruntas --features harness
@@ -89,8 +89,17 @@ signoff: ## Run `make check` here and sign off on the commit
 
 # The pi extension's tests (npm/pi), on node's own runner, which strips the
 # types: node 22.18 or later, as mise.toml pins.
-pi-test: ## The @gruntas/pi extension's tests
-	node --test npm/pi/src/gruntas.test.ts npm/pi/src/claude/claude.test.ts npm/pi/src/claude/rollover.test.ts npm/pi/src/claude/picker.test.ts
+# The bundle check fails when npm/pi/carried/gruntas.js, which the full build
+# embeds, is stale against the source; `make pi-bundle` rebuilds it.
+pi-test: ## The @gruntas/pi extension's tests, and its carried bundle current
+	node --test npm/pi/src/gruntas.test.ts npm/pi/src/loader.test.ts npm/pi/src/claude/claude.test.ts npm/pi/src/claude/rollover.test.ts npm/pi/src/claude/picker.test.ts
+	node npm/pi/bundle.mjs --check
+
+# The carried pi extension: npm/pi bundled into one file (npm/pi/bundle.mjs),
+# from the exact dependencies npm/pi/package-lock.json pins. Commit the result.
+pi-bundle: ## Rebuild npm/pi/carried/gruntas.js
+	cd npm/pi && npm ci --no-audit --no-fund
+	node npm/pi/bundle.mjs
 
 # R-PKG-2: the agent build links exactly the crates crates/gruntas/lean-deps.txt lists, on every target.
 lean-deps: ## Hold the agent build to its dependency list

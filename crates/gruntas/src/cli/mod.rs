@@ -41,6 +41,8 @@ mod launcher;
 pub mod account;
 #[cfg(feature = "harness")]
 mod pairing;
+#[cfg(all(feature = "harness", unix))]
+mod pi;
 #[cfg(feature = "harness")]
 mod prompt;
 #[cfg(all(feature = "harness", unix))]
@@ -464,6 +466,10 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         ["machines", "recovery", "check", ..] => recovery::check(ctx),
         #[cfg(all(feature = "harness", unix))]
         ["machines", "recovery", "discard-old", ..] => recovery::discard_old(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["pi"] => show_help(ctx, p),
+        #[cfg(all(feature = "harness", unix))]
+        ["pi", "extension", ..] => pi::extension(ctx),
         #[cfg(all(feature = "harness", unix))]
         ["relay"] => show_help(ctx, p),
         #[cfg(all(feature = "harness", unix))]

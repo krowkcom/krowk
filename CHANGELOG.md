@@ -52,6 +52,38 @@ breaking changes may affect it without notice.
   installed, passthrough says how on stderr, once per account. The hooks
   run the gruntas that started the harness, first on its PATH, whatever
   the app's PATH holds. Permission prompts still go to the app unchanged.
+
+### Fixed
+
+- **The gruntas MCP tools find a Codex session's daemon on Linux.** Codex
+  starts the plugin's MCP server without `XDG_RUNTIME_DIR`, so the server
+  looked for the daemon elsewhere and `gruntas_session_info` said the
+  session was not registered. The Codex plugin now passes it, and
+  `GRUNTAS_HOME`, to its server, and `gruntas_session_info` looks past the
+  `node-MainThread` process `npx` starts the server in. Codex asks to
+  approve the updated plugin's hooks again, in `/hooks`.
+
+## [2026.11.7] - 2026-11-26
+
+**pi joins gruntas.** `gruntas run pi --account work` starts pi on your work
+account with gruntas in it: registered, guarded, the gruntas tools and skill,
+and its Claude turns run through Claude Code on any of your accounts, with no
+login inside pi. `/account` switches account, and a spent account rolls over
+as your rollover setting says. Restart the gruntas daemon after upgrading
+(`gruntas host stop`): an older daemon doesn't know pi sessions.
+
+### Added
+
+- **`gruntas run pi` starts pi with gruntas in it.** pi joins Claude Code
+  and Codex under `gruntas run`, with the same flags: `gruntas run pi
+  --account work` starts pi with the gruntas extension this gruntas carries,
+  nothing installed in pi, and its Claude turns start on your Claude Code
+  account `claude:work` (`auto` takes rollover's pick; without `--account`,
+  the account pi used last). Unless you pass `--model` or `--models`, pi
+  starts on `gruntas/<the account's default model>`. pi has no sandbox and
+  gruntas adds none: `--no-sandbox` changes nothing, and `gruntas help run`
+  points at containers and pi's sandbox extensions. A Codex account,
+  `--unattended` and `--no-plugin` are refused, each saying why.
 - **`gruntas hook pi <event>` takes pi's sessions.** pi joins Claude Code
   and Codex as a harness gruntas's hook reads: a pi session registers as
   harness `pi`, and its account is pi's config home, `PI_CODING_AGENT_DIR`,
@@ -62,8 +94,18 @@ breaking changes may affect it without notice.
   session the gruntas MCP server (`gruntas_report`, `gruntas_session_info`,
   `gruntas_delegate`, `gruntas_collect`, `gruntas_machines`, publishing and
   the rest), its tools declared to the model as `mcp__gruntas__<tool>`, and
-  ships the gruntas skill. pi starts `gruntas-mcp` itself, so
+  the gruntas skill. pi starts `gruntas-mcp` itself, so
   `gruntas_session_info` finds the pi session it runs in.
+- **`@gruntas/pi` runs the pi extension the installed gruntas carries.**
+  The package is a small loader with no dependencies of its own: as pi
+  loads it, it asks the `gruntas` on the PATH for the extension gruntas
+  carries and runs that, so pi always runs the extension of the installed
+  gruntas, at its version, and upgrading gruntas upgrades it with nothing
+  to do in pi. The gruntas skill comes from gruntas's copy, the same file
+  the installer puts in `~/.agents/skills/gruntas`, and only where pi does
+  not already find that one, so pi no longer warns of a `gruntas` skill
+  collision. Without `gruntas` on the PATH it only shows the install hint;
+  on Windows, and under `gruntas run pi`, it does nothing.
 - **`gruntas run claude --account <name> --no-plugin` runs Claude Code on
   an account for another program.** It starts Claude Code on that account,
   its login or key kept in gruntas, without the gruntas plugin or hooks, so
@@ -117,16 +159,17 @@ breaking changes may affect it without notice.
   the next request, and pi's footer shows `gruntas: <account>`. Codex
   accounts are listed as not usable from pi yet. `/account <name>` moves
   directly, which is how it works where pi has no UI.
-
-### Fixed
-
-- **The gruntas MCP tools find a Codex session's daemon on Linux.** Codex
-  starts the plugin's MCP server without `XDG_RUNTIME_DIR`, so the server
-  looked for the daemon elsewhere and `gruntas_session_info` said the
-  session was not registered. The Codex plugin now passes it, and
-  `GRUNTAS_HOME`, to its server, and `gruntas_session_info` looks past the
-  `node-MainThread` process `npx` starts the server in. Codex asks to
-  approve the updated plugin's hooks again, in `/hooks`.
+- **gruntas fetches the Claude Agent SDK for pi once, from npm, rather
+  than shipping it.** The pi extension gruntas carries runs its Claude
+  turns through the Claude Agent SDK, which is Anthropic's, not MIT, so
+  gruntas doesn't distribute it. The first time gruntas writes the
+  extension (`gruntas pi extension`, `gruntas run pi`) it says so and
+  installs the exact SDK version it pins from npm, checked against the
+  pinned integrity hash, with install scripts off, into its own pi
+  directory and nowhere else; after that it fetches nothing. Without npm or
+  a network, pi's gruntas hooks, tools and skill still work, and pi says
+  how to get the `gruntas/` models working: install npm, then run
+  `gruntas pi extension`.
 
 ## [2026.11.6] - 2026-11-25
 

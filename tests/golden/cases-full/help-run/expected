@@ -1,0 +1,62 @@
+$ gruntas help run --format human
+stdout:
+gruntas run — Start Claude Code, Codex or pi on one of your accounts
+
+Usage
+  gruntas run <claude|codex|pi> [--account NAME] [--unattended TASK]
+      [--no-plugin] [--passthrough] [args...]
+
+The harness starts with the account's config home (CLAUDE_CONFIG_DIR,
+CODEX_HOME), the gruntas plugin, and a sandbox that keeps it out of the gruntas
+home: for Claude Code one --settings, merged with any --settings you pass, that
+also carries gruntas's worktree hooks; for Codex a permissions profile. Nothing
+is written into the account. --account work is claude:work (or codex:work);
+none, or the harness's own name, is the account plain claude or codex in your
+shell uses.
+
+With --no-plugin, Claude Code starts without the gruntas plugin or hooks, so it
+never registers as a session, and runs once, its arguments, stdin, stdout and
+exit code passed through: a program that drives Claude Code (the Agent SDK) can
+run `gruntas run claude --account work --no-plugin` as its Claude Code.
+
+`gruntas run pi` starts pi with the gruntas extension this gruntas carries
+(-e), and its gruntas skill unless pi finds the installer's copy; nothing is
+installed in pi, and pi's config home stays its own. --account work is the
+Claude Code account claude:work its gruntas turns start on (auto: rollover's
+pick); without it, the one pi used last. Without --model or --models, pi starts
+on gruntas/<the account's default model>. pi has no sandbox and gruntas adds
+none: --no-sandbox changes nothing, and to isolate pi, run it in a container or
+use one of pi's sandbox extensions. --unattended and --no-plugin are for
+claude.
+
+Arguments
+  <harness>              claude, codex or pi
+  [args...]              The harness's own arguments, passed through as typed;
+                         any after a -- too
+
+Flags
+  --account <string>     The account: its name (work for claude:work), or auto
+                         for the one with the most headroom (default: the one
+                         plain claude or codex in your shell uses). For pi, the
+                         Claude Code account its turns start on (default: the
+                         one pi used last)
+  --unattended <string>  Start a background session on this task instead of
+                         taking the terminal; claude and codex only
+  --no-sandbox           Run without the sandbox that keeps the session out of
+                         the gruntas home, this once; attended only. pi has no
+                         sandbox and gruntas adds none, so for pi this changes
+                         nothing: isolate pi with a container or one of pi's
+                         sandbox extensions
+  --no-plugin            Start Claude Code without the gruntas plugin and hooks,
+                         so it never registers as a session; its arguments,
+                         stdin and stdout pass through, so a program can run it
+                         as its Claude Code (the Agent SDK's executable).
+                         Attended claude only
+  --passthrough          For an app that drives the harness itself (T3 Code):
+                         its arguments, stdin, stdout, stderr and exit code pass
+                         through, nothing of gruntas's on stdout, no rollover;
+                         an account not signed in fails with one line
+
+Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
+exit: 0
+

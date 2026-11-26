@@ -45,7 +45,8 @@ jobs:
         run: cargo deny check
 
   # The pi extension's tests (`make pi-test`): seconds, and they hold its
-  # payloads to the hook fixtures the Rust tests read.
+  # payloads to the hook fixtures the Rust tests read, and its carried bundle
+  # (npm/pi/carried/gruntas.js, which the full build embeds) to its source.
   pi:
     runs-on: ubuntu-24.04
     steps:

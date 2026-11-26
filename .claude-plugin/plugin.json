@@ -2,7 +2,7 @@
   "name": "gruntas",
   "displayName": "Gruntas",
   "description": "Gruntas, the coding agent harness, for Claude Code: every session registers with the gruntas daemon, reports its status, and gets the gruntas MCP server (status, publishing, delegation) and skill. Hooks run the gruntas on your PATH, else nothing.",
-  "version": "2026.11.6",
+  "version": "2026.11.7",
   "author": {
     "name": "Gruntas",
     "url": "https://gruntas.com"
