@@ -1,11 +1,12 @@
 # @gruntas/cli
 
-A coding agent harness: one session, on any machine, model or agent. It runs
-Claude, GPT, Grok or any OpenAI-compatible model on your existing subscription
-or an API key, or drives Claude Code and Codex; syncs sessions between your
-machines end-to-end encrypted; follows Claude Code's permissions, skills and
-hooks; and publishes screenshots, diffs and logs as links that unfurl in
-GitHub, Slack, Linear and Basecamp.
+Gruntas is orchestration for autonomous agents. It runs your coding agents
+(Claude Code, Codex, pi and its own) across all your machines and accounts as
+one pool, on the plans you already pay for. It sits underneath the agents you
+already run: your harness, subscription, permissions, skills and hooks stay as
+they are, and Gruntas adds the machines, the accounts and the oversight. Agents
+publish evidence of the work (screenshots, diffs and logs) as permalinks that
+render in GitHub and Linear and unfurl in Slack and Basecamp.
 
 ```bash
 npx @gruntas/cli connect     # sign in to a provider

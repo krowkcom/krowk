@@ -9,12 +9,12 @@ Run Claude Code and Codex across every machine and account you have, and keep th
 
 ---
 
-Gruntas sits underneath the agents you already run. Keep your harness, subscription, permissions, skills and hooks; gruntas adds machines, accounts and links to the work.
+Gruntas sits underneath the agents you already run. Keep your harness, subscription, permissions, skills and hooks; gruntas adds machines, accounts and evidence of the work.
 
 - **Every machine.** Pair your machines and they share the work. Sessions follow you between them, end-to-end encrypted.
 - **Every account.** When an account hits its limit, a session started with `gruntas run` moves to the next one, on Claude Code or Codex, and carries on.
 - **Every agent, in view.** One tree of every agent on every machine. Agents can read, message or interrupt each other, as far as each machine's `steer` setting allows.
-- **Links to the work.** Agents publish screenshots, diffs and logs as links to paste into GitHub, Slack, Linear or Basecamp.
+- **Evidence of the work.** Agents publish screenshots, diffs and logs as permalinks that render in GitHub and Linear and unfurl in Slack and Basecamp.
 
 ## Install
 

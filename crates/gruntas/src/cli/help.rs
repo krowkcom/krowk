@@ -13,7 +13,7 @@ const COLUMNS: usize = 80;
 
 /// The greeting's line under the name: the catalog's summary, as a sentence.
 #[cfg(feature = "harness")]
-const TAGLINE: &str = "A coding agent harness: one session, any machine, model or agent";
+const TAGLINE: &str = "Run your coding agents across every machine and account";
 #[cfg(not(feature = "harness"))]
 const TAGLINE: &str = "Permalinks for agent output";
 

@@ -5,13 +5,13 @@
     "url": "https://gruntas.com"
   },
   "metadata": {
-    "description": "Gruntas, the coding agent harness, for Claude Code and Codex."
+    "description": "Gruntas for Claude Code and Codex: orchestration for autonomous agents. See every session on every machine, hand work to a machine with room, and publish evidence of the work as permalinks."
   },
   "plugins": [
     {
       "name": "gruntas",
       "displayName": "Gruntas",
-      "description": "Gruntas, the coding agent harness, for Claude Code: every session registers with the gruntas daemon, reports its status, and gets the gruntas MCP server (status, publishing, delegation) and skill. Hooks run the gruntas on your PATH, else nothing.",
+      "description": "Gruntas agent orchestration for Claude Code: every session registers with the gruntas daemon, reports its status, and gets the gruntas MCP server (status, publishing, delegation) and skill. Hooks run the gruntas on your PATH, else nothing.",
       "author": { "name": "Gruntas" },
       "category": "development",
       "source": "./",

@@ -1023,7 +1023,7 @@ main() {
   done
 
   echo ""
-  echo "  $(bold "gruntas") — a coding agent harness: one session, any machine, model or agent"
+  echo "  $(bold "gruntas") — run your coding agents across every machine and account"
   echo ""
 
   command -v curl >/dev/null 2>&1 || error "curl is needed and is not installed"

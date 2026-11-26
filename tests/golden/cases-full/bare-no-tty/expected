@@ -1,7 +1,7 @@
 $ gruntas
 stdout:
 █▀▀▀  Gruntas 0.0.0-golden
-█▄██  A coding agent harness: one session, any machine, model or agent
+█▄██  Run your coding agents across every machine and account
 
 Start
   gruntas                    Set this machine up, then an overview of it
@@ -54,7 +54,7 @@ stdout:
 {
   "name": "gruntas",
   "version": "0.0.0-golden",
-  "summary": "A coding agent harness: one session, any machine, model or agent",
+  "summary": "Run your coding agents across every machine and account",
   "commands": [
     {
       "name": "push",
@@ -2135,7 +2135,7 @@ stdout:
 █▄██
 
 Gruntas 0.0.0-golden
-A coding agent harness: one session, any machine, model or agent
+Run your coding agents across every machine and account
 
   gruntas push screenshot.png  Upload a file, get a link — no key, lasts a day
   gruntas login --token …    Add a key: uploads keep, group under runs
@@ -2145,7 +2145,7 @@ exit: 0
 $ gruntas
 stdout:
 █▀▀▀  Gruntas 0.0.0-golden
-█▄██  A coding agent harness: one session, any machine, model or agent
+█▄██  Run your coding agents across every machine and account
 
 Start
   gruntas                    Set this machine up, then an overview of it
@@ -2196,7 +2196,7 @@ exit: 0
 $ @tty gruntas
 tty:
 █▀▀▀  \e[1mGruntas\e[0m 0.0.0-golden
-█▄██  A coding agent harness: one session, any machine, model or agent
+█▄██  Run your coding agents across every machine and account
 
 \e[1mStart\e[0m
   gruntas                    Set this machine up, then an overview of it
@@ -2249,7 +2249,7 @@ tty:
 {
   "name": "gruntas",
   "version": "0.0.0-golden",
-  "summary": "A coding agent harness: one session, any machine, model or agent",
+  "summary": "Run your coding agents across every machine and account",
   "commands": [
     {
       "name": "push",

@@ -1,7 +1,7 @@
 {
   "name": "@gruntas/cli",
   "version": "0.0.0-unpublished",
-  "description": "A coding agent harness: one session on any machine, model or agent — Claude, GPT, Grok, any OpenAI-compatible model, Claude Code or Codex — synced end-to-end encrypted, with a permalink for everything it produces.",
+  "description": "Orchestration for autonomous agents. Runs Claude Code, Codex, pi and its own agent across all your machines and accounts as one pool, on the plans you already pay for, and publishes evidence of the work as permalinks.",
   "keywords": [
     "gruntas",
     "coding-agent",
