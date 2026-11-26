@@ -23,7 +23,9 @@ impl Sandbox {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
         let b = Sandbox { root: root.canonicalize().unwrap() };
-        for bin in ["claude", "codex"] {
+        // npm too: `gruntas run pi` fetches the Agent SDK with the npm on the
+        // PATH, which here must never reach the network.
+        for bin in ["claude", "codex", "npm"] {
             b.fake(bin);
         }
         let config = serde_json::json!({ "instances": {
@@ -92,7 +94,7 @@ fn failed(o: &Output, code: i32, says: &str) {
 #[test]
 fn run_refuses_what_it_cannot_launch_and_names_the_fix() {
     let b = Sandbox::new("refuse");
-    failed(&b.gruntas(&["run", "gemini"]), 1, "claude or codex");
+    failed(&b.gruntas(&["run", "gemini"]), 1, "claude, codex or pi");
     failed(&b.gruntas(&["run", "claude", "--account", "nope"]), 2, "gruntas connect anthropic --method subscription --name nope");
     failed(&b.gruntas(&["run", "codex", "--account", "claude:work"]), 1, "not a codex account");
     failed(&b.gruntas(&["run", "claude", "--account", "work", "--unattended", "fix it", "--no-sandbox"]), 1, "drop --no-sandbox");
@@ -102,7 +104,7 @@ fn run_refuses_what_it_cannot_launch_and_names_the_fix() {
     failed(&b.gruntas(&["push", "a.png", "--account", "work"]), 1, "only a flag of `gruntas run`");
     assert!(!b.root.join("claude.args").exists(), "nothing started");
     let help = b.gruntas(&["help", "run"]);
-    assert!(help.status.success() && String::from_utf8_lossy(&help.stdout).contains("gruntas run <claude|codex>"));
+    assert!(help.status.success() && String::from_utf8_lossy(&help.stdout).contains("gruntas run <claude|codex|pi>"));
 }
 
 /// Each account form and --no-sandbox: `started("claude")` has the
@@ -387,19 +389,20 @@ fn codex_attended_execs_codex_with_the_account_and_profile() {
 /// `gruntas run pi` (R-RUNPI-1..4): pi started attended with the extension
 /// and skill this binary carries (`-e`, `--skill`), on the Claude Code
 /// account `--account` names (`GRUNTAS_PI_ACCOUNT`, which the extension
-/// starts the session on), marked as launched (`GRUNTAS_PI_LAUNCHED=1`, so
-/// an installed `@gruntas/pi` loader stands aside), on
+/// starts the session on), marked as launched (`GRUNTAS_PI_LAUNCHED=<pi's
+/// pid>`, so an installed `@gruntas/pi` loader stands aside), on
 /// `gruntas/<the account's default model>` unless the person named one, and
 /// with no sandbox: `--no-sandbox` changes nothing.
 #[test]
-#[ignore = "pending: gruntas run pi (ticket 02)"]
 fn pi_attended_execs_pi_with_the_carried_extension_account_and_model() {
     let b = Sandbox::new("runpi");
     b.fake("pi");
     let carried = b.root.join("data/gruntas/pi");
     let ext = carried.join("gruntas.js").display().to_string();
     let model = format!("gruntas/{}", gruntas_harness::instances::DEFAULT_MODEL);
-    let o = b.gruntas(&["run", "pi", "--account", "work", "-c"]);
+    let child = b.command(&["run", "pi", "--account", "work", "-c"]).stderr(Stdio::piped()).spawn().unwrap();
+    let pid = child.id();
+    let o = child.wait_with_output().unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let (args, env) = b.started("pi");
     assert_eq!(args[..2], ["-e".to_string(), ext.clone()], "{args:?}");
@@ -407,7 +410,7 @@ fn pi_attended_execs_pi_with_the_carried_extension_account_and_model() {
     assert!(args.windows(2).any(|w| w == ["--model".to_string(), model.clone()]), "{args:?}");
     assert_eq!(args.last().map(String::as_str), Some("-c"), "the person's arguments last");
     assert!(env.contains(&"GRUNTAS_PI_ACCOUNT=claude:work".to_string()), "{env:?}");
-    assert!(env.contains(&"GRUNTAS_PI_LAUNCHED=1".to_string()), "{env:?}");
+    assert!(env.contains(&format!("GRUNTAS_PI_LAUNCHED={pid}")), "the mark names pi, which is gruntas exec'd: {env:?}");
     // The person's model stands, and --no-sandbox changes nothing else.
     assert!(b.gruntas(&["run", "pi", "--account", "claude:work", "--no-sandbox", "--model", "gruntas/claude-haiku-4-5"]).status.success());
     let (args, _) = b.started("pi");
@@ -419,10 +422,33 @@ fn pi_attended_execs_pi_with_the_carried_extension_account_and_model() {
     assert!(String::from_utf8_lossy(&help.stdout).contains("gruntas run <claude|codex|pi>"));
 }
 
+/// R-RUNPI-7: pi gets the carried skill with `--skill`, unless the
+/// installer's identical copy is where pi finds it anyway; `--account=` reads
+/// as `--account`.
+#[test]
+fn pi_passes_the_carried_skill_unless_the_installers_copy_is_there() {
+    let b = Sandbox::new("runpi-skill");
+    b.fake("pi");
+    let skill = b.root.join("data/gruntas/pi/skills/gruntas").display().to_string();
+    assert!(b.gruntas(&["run", "pi", "--account=claude:work"]).status.success());
+    let (args, env) = b.started("pi");
+    assert!(args.windows(2).any(|w| w == ["--skill".to_string(), skill.clone()]), "{args:?}");
+    assert!(env.contains(&"GRUNTAS_PI_ACCOUNT=claude:work".to_string()), "{env:?}");
+    let installed = b.root.join("home/.agents/skills/gruntas");
+    std::fs::create_dir_all(&installed).unwrap();
+    std::fs::write(installed.join("SKILL.md"), "an older skill").unwrap();
+    assert!(b.command(&["run", "pi"]).env("GRUNTAS_PI_ACCOUNT", "claude:stale").status().unwrap().success());
+    let (args, env) = b.started("pi");
+    assert!(args.contains(&"--skill".to_string()), "a different copy: the carried one still passed: {args:?}");
+    assert!(!env.iter().any(|e| e.starts_with("GRUNTAS_PI_ACCOUNT=")), "none asked: an inherited one is not passed on: {env:?}");
+    std::fs::write(installed.join("SKILL.md"), include_str!("../../../skills/gruntas/SKILL.md")).unwrap();
+    assert!(b.gruntas(&["run", "pi"]).status.success());
+    assert!(!b.started("pi").0.contains(&"--skill".to_string()), "the installer's identical copy: pi finds it, so no second one");
+}
+
 /// R-RUNPI-2 and 4: what `gruntas run pi` refuses, each with what to do,
 /// before pi starts.
 #[test]
-#[ignore = "pending: gruntas run pi (ticket 02)"]
 fn pi_refuses_unattended_no_plugin_a_codex_and_an_unknown_account() {
     let b = Sandbox::new("runpi-refuse");
     b.fake("pi");
@@ -467,6 +493,11 @@ fn account_auto_picks_the_account_with_the_most_headroom() {
     std::fs::write(b.root.join("accounts/claude-spare/signed-out"), "").unwrap();
     let err = String::from_utf8_lossy(&b.gruntas(&["run", "claude", "--account", "auto"]).stderr).into_owned();
     assert!(err.contains("--account auto: claude:apart, first by rollover's ranking: 40% left"), "{err}");
+    // pi takes the same pick, and starts its session there.
+    b.fake("pi");
+    let err = String::from_utf8_lossy(&b.gruntas(&["run", "pi", "--account", "auto"]).stderr).into_owned();
+    assert!(err.contains("--account auto: claude:apart, first by rollover's ranking"), "{err}");
+    assert!(b.started("pi").1.contains(&"GRUNTAS_PI_ACCOUNT=claude:apart".to_string()));
 
     // Nothing else with room: the default account, saying so.
     let usage = serde_json::json!({ "instances": { "claude": login("me"), "claude:apart": login("apart"), "claude:spare": login("spare"), "claude:work": login("me") }, "logins": { "apart": window(92.0), "spare": window(95.0) } });

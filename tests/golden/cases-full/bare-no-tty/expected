@@ -1484,12 +1484,12 @@ stdout:
     },
     {
       "name": "run",
-      "usage": "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [--no-plugin] [args...]",
-      "summary": "Start Claude Code or Codex on one of your accounts",
+      "usage": "gruntas run <claude|codex|pi> [--account NAME] [--unattended TASK] [--no-plugin] [args...]",
+      "summary": "Start Claude Code, Codex or pi on one of your accounts",
       "args": [
         {
           "name": "harness",
-          "summary": "claude or codex",
+          "summary": "claude, codex or pi",
           "required": true
         },
         {
@@ -1504,19 +1504,19 @@ stdout:
           "name": "account",
           "type": "string",
           "default": "",
-          "usage": "The account: its name (work for claude:work), or auto for the one with the most headroom (default: the one plain claude or codex in your shell uses)"
+          "usage": "The account: its name (work for claude:work), or auto for the one with the most headroom (default: the one plain claude or codex in your shell uses). For pi, the Claude Code account its turns start on (default: the one pi used last)"
         },
         {
           "name": "unattended",
           "type": "string",
           "default": "",
-          "usage": "Start a background session on this task instead of taking the terminal"
+          "usage": "Start a background session on this task instead of taking the terminal; claude and codex only"
         },
         {
           "name": "no-sandbox",
           "type": "bool",
           "default": "false",
-          "usage": "Run without the sandbox that keeps the session out of the gruntas home, this once; attended only"
+          "usage": "Run without the sandbox that keeps the session out of the gruntas home, this once; attended only. pi has no sandbox and gruntas adds none, so for pi this changes nothing: isolate pi with a container or one of pi's sandbox extensions"
         },
         {
           "name": "no-plugin",
@@ -3679,12 +3679,12 @@ tty:
     },
     {
       "name": "run",
-      "usage": "gruntas run <claude|codex> [--account NAME] [--unattended TASK] [--no-plugin] [args...]",
-      "summary": "Start Claude Code or Codex on one of your accounts",
+      "usage": "gruntas run <claude|codex|pi> [--account NAME] [--unattended TASK] [--no-plugin] [args...]",
+      "summary": "Start Claude Code, Codex or pi on one of your accounts",
       "args": [
         {
           "name": "harness",
-          "summary": "claude or codex",
+          "summary": "claude, codex or pi",
           "required": true
         },
         {
@@ -3699,19 +3699,19 @@ tty:
           "name": "account",
           "type": "string",
           "default": "",
-          "usage": "The account: its name (work for claude:work), or auto for the one with the most headroom (default: the one plain claude or codex in your shell uses)"
+          "usage": "The account: its name (work for claude:work), or auto for the one with the most headroom (default: the one plain claude or codex in your shell uses). For pi, the Claude Code account its turns start on (default: the one pi used last)"
         },
         {
           "name": "unattended",
           "type": "string",
           "default": "",
-          "usage": "Start a background session on this task instead of taking the terminal"
+          "usage": "Start a background session on this task instead of taking the terminal; claude and codex only"
         },
         {
           "name": "no-sandbox",
           "type": "bool",
           "default": "false",
-          "usage": "Run without the sandbox that keeps the session out of the gruntas home, this once; attended only"
+          "usage": "Run without the sandbox that keeps the session out of the gruntas home, this once; attended only. pi has no sandbox and gruntas adds none, so for pi this changes nothing: isolate pi with a container or one of pi's sandbox extensions"
         },
         {
           "name": "no-plugin",

@@ -155,7 +155,10 @@ export const systemGruntas: Gruntas = {
   },
 }
 
-/** The accounts of the pi session in `env`'s pi config home. */
+/**
+ * The accounts of the pi session in `env`'s pi config home, starting on the one `gruntas run pi
+ * --account` put in GRUNTAS_PI_ACCOUNT, when it names one pi can run on.
+ */
 export function systemAccounts(env: Record<string, string | undefined>): Accounts {
-  return new Accounts(systemGruntas, join(agentDir(env), 'gruntas', 'account.json'))
+  return new Accounts(systemGruntas, join(agentDir(env), 'gruntas', 'account.json'), env.GRUNTAS_PI_ACCOUNT)
 }
