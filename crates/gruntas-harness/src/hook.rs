@@ -83,8 +83,15 @@ const HARNESS_ENV: &[&str] = &[
     "CODEX_SANDBOX_NETWORK_DISABLED",
     "CODEX_SESSION_ID",
     "CODEX_THREAD_ID",
+    ATTENDED_PID,
     "PI_CODING_AGENT_DIR",
 ];
+
+/// Set by `gruntas run --passthrough` to its own pid, which the harness it
+/// becomes keeps (T3 Code D6): the harness of that pid is attended though
+/// it has no terminal, as an app a person uses drives it. A harness started
+/// inside that session has a pid of its own, so it is told apart as ever.
+pub const ATTENDED_PID: &str = "GRUNTAS_ATTENDED_PID";
 
 /// How long a hook that started the daemon waits for its socket: inside
 /// `GIVE_UP`, which bounds it anyway.
@@ -353,11 +360,35 @@ pub fn repository(cwd: &str) -> Option<String> {
 /// hooks in a session of their own as Claude Code does, the harness's
 /// process (`harness`) has it. A session started with no terminal (a
 /// script, a service, `claude -p` from cron) is unattended, as `gruntas -p`
-/// without one is.
-pub fn attendance(harness: Option<u32>) -> Attendance {
+/// without one is. The harness an app drives through passthrough
+/// (`ATTENDED_PID`) is attended too.
+pub fn attendance(harness: Option<u32>, env: &dyn Fn(&str) -> String) -> Attendance {
     use std::os::unix::fs::OpenOptionsExt;
+    if passed_through(harness, env) {
+        return Attendance::Attended;
+    }
     let own = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOCTTY).open("/dev/tty").is_ok();
     if own || harness.is_some_and(on_terminal) { Attendance::Attended } else { Attendance::Unattended }
+}
+
+/// Whether `harness` is the process `gruntas run --passthrough` became, or,
+/// where that process is a Node or Bun wrapper (a harness installed through
+/// npm, `@openai/codex`), the real harness it started. A harness the session
+/// itself runs (`codex exec` from its shell) is a child of the native
+/// harness or its shell, never of a wrapper, so it is told apart.
+fn passed_through(harness: Option<u32>, env: &dyn Fn(&str) -> String) -> bool {
+    passed_through_by(harness, env, &process)
+}
+
+/// `passed_through`, with each process's parent and name from `process`.
+fn passed_through_by(harness: Option<u32>, env: &dyn Fn(&str) -> String, process: &dyn Fn(u32) -> Option<(u32, String)>) -> bool {
+    let Ok(marked) = env(ATTENDED_PID).trim().parse::<u32>() else { return false };
+    let Some(pid) = harness else { return false };
+    if pid == marked {
+        return true;
+    }
+    let wrapper = |p: u32| process(p).is_some_and(|(_, name)| matches!(name.as_str(), "node" | "node-MainThread" | "bun"));
+    process(pid).is_some_and(|(ppid, _)| ppid == marked) && wrapper(marked)
 }
 
 /// Whether process `pid` has a controlling terminal: its stat line's
@@ -495,7 +526,7 @@ pub fn run(args: &[String], stdin: impl Read, env: &dyn Fn(&str) -> String, vers
     let ctx = match &ev {
         HookEvent::SessionStart { session, .. } => {
             let pid = harness_pid();
-            Context { harness_pid: pid, config_home: config_home(h, env), repository: session.cwd.as_deref().and_then(repository), attendance: Some(attendance(pid)), heavy: Vec::new() }
+            Context { harness_pid: pid, config_home: config_home(h, env), repository: session.cwd.as_deref().and_then(repository), attendance: Some(attendance(pid, env)), heavy: Vec::new() }
         }
         HookEvent::ToolStart { .. } | HookEvent::ToolEnd { .. } => Context { config_home: config_home(h, env), heavy: heavy_list(env), ..Context::default() },
         _ => Context { config_home: config_home(h, env), ..Context::default() },
@@ -780,6 +811,37 @@ mod tests {
             assert_eq!(stat_tty("905968 (cl a) e) S 1 905968 905968 34832 905968 4194560"), Some(34832));
             assert_eq!(stat_tty("913719 (sh) S 913639 913719 913719 0 -1 4194560"), Some(0));
         }
+    }
+
+    /// R-T3-3: the harness `gruntas run --passthrough` became is attended
+    /// with no terminal (T3 Code drives it); any other pid, or none, is
+    /// left to the terminal.
+    #[test]
+    fn r_t3_3_the_passthrough_harness_is_attended_without_a_terminal() {
+        let env = |k: &str| if k == ATTENDED_PID { "4242".to_string() } else { String::new() };
+        assert!(passed_through(Some(4242), &env));
+        assert_eq!(attendance(Some(4242), &env), Attendance::Attended);
+        assert!(!passed_through(Some(4243), &env), "a harness started inside the session");
+        assert!(!passed_through(None, &env));
+        assert!(!passed_through(Some(4242), &|_| String::new()));
+        // npm's Node wrapper: the real harness is the marked process's child.
+        let table = |marked: &'static str| {
+            move |pid: u32| match pid {
+                4242 => Some((1, marked.to_string())),
+                5000 => Some((4242, "codex".to_string())),
+                _ => Some((1, "sh".to_string())),
+            }
+        };
+        for wrapper in ["node", "node-MainThread", "bun"] {
+            assert!(passed_through_by(Some(5000), &env, &table(wrapper)), "{wrapper}");
+            assert!(!passed_through_by(Some(5001), &env, &table(wrapper)), "{wrapper}: not its child");
+        }
+        // A native harness's own child (`codex exec` the model runs, its
+        // shell having exec'd it) is a session of its own.
+        assert!(!passed_through_by(Some(5000), &env, &table("codex")), "marked codex with a child: not attended");
+        assert!(!passed_through_by(Some(5000), &env, &table("claude")));
+        // Every launch's plan clears the mark; only passthrough sets it again.
+        assert!(crate::claude::NOT_INHERITED.contains(&ATTENDED_PID) && crate::codex::NOT_INHERITED.contains(&ATTENDED_PID));
     }
 
     #[test]

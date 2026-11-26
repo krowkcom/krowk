@@ -400,7 +400,9 @@ fn looser_than(claude: &str, gruntas: PermissionMode) -> bool {
 /// API key or another server without anyone asking for it. An instance
 /// sets a base URL in its `env` and a key through `apiKeyEnv`, which gruntas
 /// reads and hands the process itself.
-pub const NOT_INHERITED: &[&str] = &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"];
+/// And passthrough's attended mark (`hook::ATTENDED_PID`), which only
+/// passthrough sets again: no other session is taken for an app's.
+pub const NOT_INHERITED: &[&str] = &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "GRUNTAS_ATTENDED_PID"];
 
 /// What of `NOT_INHERITED` to remove for this instance.
 pub fn cleared(b: &Backend) -> impl Iterator<Item = &'static str> + '_ {

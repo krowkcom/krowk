@@ -1022,8 +1022,8 @@ fn rl07_a_picked_account_continues_the_session_after_exit() {
 }
 
 /// A fake `name` for passthrough: it answers the sign-in check (`login`,
-/// Claude Code's JSON or Codex's words), writes down its arguments and
-/// environment, says
+/// Claude Code's JSON or Codex's words), writes down its arguments,
+/// environment and pid, says
 /// its version to `--version`, and otherwise writes a line to stderr,
 /// copies stdin to stdout and exits 7. The sign-in check is told apart by
 /// its arguments: it carries none of gruntas's (`--settings`, the profile).
@@ -1033,7 +1033,7 @@ fn passthrough_fake(b: &Sandbox, name: &str, login: &str) {
         "claude" => format!("[ \"$1\" = auth ] && {{ echo '{login}'; exit 0; }}\n"),
         _ => format!("case \"$*\" in *default_permissions*) ;; *) [ \"$1\" = login ] && echo '{login}'; exit 0;; esac\n"),
     };
-    script(b, name, &format!("{check}for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{0}.args'\nenv > '{0}.env'\nfor a in \"$@\"; do [ \"$a\" = --version ] && {{ printf '9.9.9 ({name})\\n'; exit 0; }}; done\nprintf '{name} \\001 says\\n' >&2\ncat\nexit 7\n", out.display()));
+    script(b, name, &format!("{check}for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{0}.args'\nenv > '{0}.env'\necho $$ > '{0}.pid'\nfor a in \"$@\"; do [ \"$a\" = --version ] && {{ printf '9.9.9 ({name})\\n'; exit 0; }}; done\nprintf '{name} \\001 says\\n' >&2\ncat\nexit 7\n", out.display()));
 }
 
 /// `gruntas <args>` fed `stdin`, its stdout and stderr caught.
@@ -1061,6 +1061,8 @@ fn r_t3_1_passthrough_passes_argv_stdio_and_the_exit_code_through() {
     std::fs::write(b.root.join("accounts/claude-work/settings.json"), "{}").unwrap();
     std::fs::write(b.root.join("accounts/claude-work/.credentials.json"), "{}").unwrap();
     std::fs::write(b.root.join("accounts/codex-team/config.toml"), "{}").unwrap();
+    // The plugin installed, so no hint of how to install it.
+    std::fs::create_dir_all(b.root.join("accounts/codex-team/plugins/cache/gruntas/gruntas")).unwrap();
     std::fs::create_dir_all(b.root.join("home/.codex")).unwrap();
     std::fs::write(b.root.join("home/.codex/config.toml"), "model = \"x\"\n").unwrap();
     let before = listing(&b.root.join("accounts"));
@@ -1102,6 +1104,67 @@ fn r_t3_1_passthrough_passes_argv_stdio_and_the_exit_code_through() {
     assert!(s.get("sandbox").is_none(), "{s}");
     assert_eq!(listing(&b.root.join("accounts")), before, "R-RUN-5: the accounts as they were");
     failed(&b.gruntas(&["run", "claude", "--account", "auto", "--passthrough"]), 1, "not auto");
+}
+
+/// R-T3-3 (T3 Code D6): a passthrough session carries the gruntas plugin
+/// in the form the harness's app mode loads, and is marked attended. Claude
+/// Code's Agent SDK mode (stream-json) takes `--plugin-dir`, whose plugin
+/// has the hooks that register the session, the MCP server and the skill,
+/// and the worktree hooks in `--settings`. Codex's app-server loads the
+/// plugin installed in the account's home, which it runs on and which
+/// gruntas leaves as it is. Either way the harness, which keeps gruntas's
+/// pid, is told it is the attended one.
+#[test]
+fn r_t3_3_a_passthrough_session_carries_the_plugin_and_is_attended() {
+    let b = Sandbox::new("t3-plugin");
+    for bin in ["bwrap", "socat"] {
+        b.fake(bin);
+    }
+    passthrough_fake(&b, "claude", r#"{"loggedIn":true,"authMethod":"claude.ai"}"#);
+    passthrough_fake(&b, "codex", "Logged in using ChatGPT");
+    let installed = b.root.join("accounts/codex-team/plugins/cache/gruntas/gruntas/1/.codex-plugin");
+    std::fs::create_dir_all(&installed).unwrap();
+    std::fs::write(installed.join("plugin.json"), "{}").unwrap();
+    let before = listing(&b.root.join("accounts"));
+    let sdk = ["--output-format", "stream-json", "--verbose", "--input-format", "stream-json", "--permission-prompt-tool=stdio"];
+    for (harness, account, theirs) in [("claude", "work", &sdk[..]), ("codex", "team", &["app-server"][..])] {
+        let o = fed(&b, &[&["run", harness, "--account", account, "--passthrough", "--"][..], theirs].concat(), b"");
+        assert_eq!(o.status.code(), Some(7), "{harness}: {}", String::from_utf8_lossy(&o.stderr));
+        let (args, env) = b.started(harness);
+        let pid = std::fs::read_to_string(b.root.join(format!("{harness}.pid"))).unwrap();
+        assert!(env.contains(&format!("GRUNTAS_ATTENDED_PID={}", pid.trim())), "{harness}: the harness, by gruntas's pid, is attended: {env:?}");
+        // The hooks run this gruntas, through a link of its own first on
+        // the PATH, not the directory it runs from.
+        let path = env.iter().find_map(|v| v.strip_prefix("PATH=")).unwrap();
+        let first = PathBuf::from(path.split(':').next().unwrap());
+        let exe = PathBuf::from(env!("CARGO_BIN_EXE_gruntas"));
+        assert_eq!(std::fs::read_link(first.join("gruntas")).ok(), Some(exe.clone()), "{harness}: {path}");
+        assert_ne!(Some(first.as_path()), exe.parent());
+        if harness == "codex" {
+            assert!(env.contains(&format!("CODEX_HOME={}", b.root.join("accounts/codex-team").display())), "the account's home, its installed plugin with it");
+            continue;
+        }
+        let dir = PathBuf::from(&args[args.iter().position(|a| a == "--plugin-dir").unwrap() + 1]);
+        let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join(".claude-plugin/plugin.json")).unwrap()).unwrap();
+        assert!(manifest["mcpServers"]["gruntas"].is_object(), "the gruntas MCP server: {manifest}");
+        let hooks: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("hooks/hooks.json")).unwrap()).unwrap();
+        for event in ["SessionStart", "SessionEnd", "PostToolUse", "PermissionRequest"] {
+            assert!(hooks["hooks"][event].to_string().contains(&format!("gruntas hook claude {event}")), "{event} registers with the daemon");
+        }
+        assert!(dir.join("skills/gruntas/SKILL.md").is_file(), "the skill");
+        let s: serde_json::Value = serde_json::from_str(&args[args.iter().position(|a| a == "--settings").unwrap() + 1]).unwrap();
+        assert!(s["hooks"]["WorktreeCreate"].is_array(), "the worktree hooks: {s}");
+    }
+    assert_eq!(listing(&b.root.join("accounts")), before, "R-RUN-5: the accounts as they were");
+    // A Codex account without the plugin is told how to install it, on
+    // stderr and once, as attended is; stdout stays the harness's.
+    std::fs::remove_dir_all(b.root.join("accounts/codex-team/plugins")).unwrap();
+    for once in [true, false] {
+        let o = fed(&b, &["run", "codex", "--account", "team", "--passthrough", "--", "app-server"], b"in");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!((o.status.code(), o.stdout), (Some(7), b"in".to_vec()));
+        assert_eq!(err.contains("codex plugin add gruntas@gruntas"), once, "{err}");
+    }
 }
 
 /// R-T3-4: an account that isn't signed in fails before its harness

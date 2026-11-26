@@ -41,6 +41,17 @@ breaking changes may affect it without notice.
   script) and its home path (the account's config home). `--json` gives the
   same as data. Rerunning it rewrites only what changed and removes the
   launchers of accounts that are gone.
+- **A session an app runs through `--passthrough` is an ordinary gruntas
+  session.** It registers with the daemon as attended under its account,
+  though the app gives it no terminal, shows in `gruntas status`, and has
+  the gruntas MCP tools and skill. Claude Code loads the plugin from
+  `--plugin-dir` in the Agent SDK's mode too. Codex's `app-server` loads
+  the plugin installed in the account, and runs its hooks once they are
+  approved: install it and approve its hooks once, in a terminal, with
+  `gruntas run codex --account <name>` and `/hooks`; until the plugin is
+  installed, passthrough says how on stderr, once per account. The hooks
+  run the gruntas that started the harness, first on its PATH, whatever
+  the app's PATH holds. Permission prompts still go to the app unchanged.
 - **`gruntas hook pi <event>` takes pi's sessions.** pi joins Claude Code
   and Codex as a harness gruntas's hook reads: a pi session registers as
   harness `pi`, and its account is pi's config home, `PI_CODING_AGENT_DIR`,
@@ -106,6 +117,16 @@ breaking changes may affect it without notice.
   the next request, and pi's footer shows `gruntas: <account>`. Codex
   accounts are listed as not usable from pi yet. `/account <name>` moves
   directly, which is how it works where pi has no UI.
+
+### Fixed
+
+- **The gruntas MCP tools find a Codex session's daemon on Linux.** Codex
+  starts the plugin's MCP server without `XDG_RUNTIME_DIR`, so the server
+  looked for the daemon elsewhere and `gruntas_session_info` said the
+  session was not registered. The Codex plugin now passes it, and
+  `GRUNTAS_HOME`, to its server, and `gruntas_session_info` looks past the
+  `node-MainThread` process `npx` starts the server in. Codex asks to
+  approve the updated plugin's hooks again, in `/hooks`.
 
 ## [2026.11.6] - 2026-11-25
 
