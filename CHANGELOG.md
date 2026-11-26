@@ -33,6 +33,14 @@ breaking changes may affect it without notice.
   restarts the harness. An account that isn't signed in fails with one
   line on stderr naming `gruntas connect`. `--no-sandbox` works as it does
   in a terminal.
+- **`gruntas t3` sets up T3 Code's instances on your accounts.** It writes
+  one launcher script per connected Claude Code and Codex account into
+  `~/.gruntas/t3/` (`claude-work`, `codex-personal`), each running `gruntas
+  run <harness> --account <name> --passthrough`, and prints the T3 Code
+  instance to add for each: its name (`Claude · work`), its binary path (the
+  script) and its home path (the account's config home). `--json` gives the
+  same as data. Rerunning it rewrites only what changed and removes the
+  launchers of accounts that are gone.
 - **`gruntas hook pi <event>` takes pi's sessions.** pi joins Claude Code
   and Codex as a harness gruntas's hook reads: a pi session registers as
   harness `pi`, and its account is pi's config home, `PI_CODING_AGENT_DIR`,
