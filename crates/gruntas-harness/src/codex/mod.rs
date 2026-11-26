@@ -151,6 +151,9 @@ pub const NOT_INHERITED: &[&str] = &[
     "CODEX_ROLLOUT_TRACE_ROOT",
     "CODEX_THREAD_ID",
     "CODEX_SESSION_ID",
+    // Passthrough's attended mark (`hook::ATTENDED_PID`), set again only by
+    // passthrough.
+    "GRUNTAS_ATTENDED_PID",
 ];
 
 /// What of `NOT_INHERITED` to remove for this instance.

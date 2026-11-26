@@ -167,6 +167,8 @@ pub struct Flags {
     pub no_sandbox: bool,
     #[cfg(feature = "harness")]
     pub no_plugin: bool,
+    #[cfg(feature = "harness")]
+    pub passthrough: bool,
     /// `providers next`: the accounts a session already tried, comma-separated.
     #[cfg(feature = "harness")]
     pub tried: String,
@@ -433,6 +435,8 @@ impl Flags {
                     "no-sandbox" => &mut self.no_sandbox,
                     #[cfg(feature = "harness")]
                     "no-plugin" => &mut self.no_plugin,
+                    #[cfg(feature = "harness")]
+                    "passthrough" => &mut self.passthrough,
                     other => unreachable!("catalog flag {other} has no field"),
                 } = b;
             }

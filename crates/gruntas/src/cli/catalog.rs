@@ -600,6 +600,8 @@ pub fn catalog(version: &str) -> Catalog {
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(run_command());
     #[cfg(all(feature = "harness", unix))]
+    c.commands.push(cmd("t3", "gruntas t3", "Write T3 Code a launcher per Claude Code and Codex account"));
+    #[cfg(all(feature = "harness", unix))]
     c.commands.push(Command {
         args: vec![arg("project", "Only this project, e.g. github.com/acme/app", false)],
         ..cmd("status", "gruntas status [project]", "Every agent on your machines, by project and machine")
@@ -772,8 +774,9 @@ fn run_command() -> Command {
             flag("unattended", STRING, "Start a background session on this task instead of taking the terminal; claude and codex only"),
             flag("no-sandbox", BOOL, "Run without the sandbox that keeps the session out of the gruntas home, this once; attended only. pi has no sandbox and gruntas adds none, so for pi this changes nothing: isolate pi with a container or one of pi's sandbox extensions"),
             flag("no-plugin", BOOL, "Start Claude Code without the gruntas plugin and hooks, so it never registers as a session; its arguments, stdin and stdout pass through, so a program can run it as its Claude Code (the Agent SDK's executable). Attended claude only"),
+            flag("passthrough", BOOL, "For an app that drives the harness itself (T3 Code): its arguments, stdin, stdout, stderr and exit code pass through, nothing of gruntas's on stdout, no rollover; an account not signed in fails with one line"),
         ],
-        ..cmd("run", "gruntas run <claude|codex|pi> [--account NAME] [--unattended TASK] [--no-plugin] [args...]", "Start Claude Code, Codex or pi on one of your accounts")
+        ..cmd("run", "gruntas run <claude|codex|pi> [--account NAME] [--unattended TASK] [--no-plugin] [--passthrough] [args...]", "Start Claude Code, Codex or pi on one of your accounts")
     }
 }
 
@@ -1292,6 +1295,17 @@ on gruntas/<the account's default model>. pi has no sandbox and gruntas adds
 none: --no-sandbox changes nothing, and to isolate pi, run it in a container or
 use one of pi's sandbox extensions. --unattended and --no-plugin are for
 claude.",
+        #[cfg(all(feature = "harness", unix))]
+        "t3" => "\
+T3 Code runs each of its instances' binary path as one executable, so this
+writes a script per connected Claude Code and Codex account into the gruntas
+home's t3 directory, which runs `gruntas run <harness> --account <name>
+--passthrough` with T3 Code's arguments, and says, per account, the instance to
+add in T3 Code: its name, binary path and home path (the account's config
+home, which T3 Code reads for skills, usage and resume). Rerun it after
+connecting, renaming or removing an account: it rewrites only what changed and
+removes the scripts of accounts that are gone. --account auto is not offered:
+an instance's home path names one account.",
         #[cfg(feature = "harness")]
         "worktrees add" => "\
 The worktree is of the repository you are in, on a new branch gruntas/<hex>,
@@ -1396,6 +1410,8 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             #[cfg(all(feature = "harness", unix))]
             "run",
             #[cfg(all(feature = "harness", unix))]
+            "t3",
+            #[cfg(all(feature = "harness", unix))]
             "relay",
             #[cfg(all(feature = "harness", unix))]
             "pi",
@@ -1434,6 +1450,8 @@ pub const ALL_ONLY: &[&str] = &[
     "hosts",
     #[cfg(all(feature = "harness", unix))]
     "run",
+    #[cfg(all(feature = "harness", unix))]
+    "t3",
     #[cfg(all(feature = "harness", unix))]
     "relay",
     #[cfg(all(feature = "harness", unix))]

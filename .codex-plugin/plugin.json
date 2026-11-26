@@ -1,6 +1,6 @@
 {
   "name": "gruntas",
-  "version": "2026.11.7",
+  "version": "2026.11.8",
   "description": "Gruntas agent orchestration for Codex: every session registers with the gruntas daemon and gets the gruntas MCP server (publishing, session info, delegation) and skill. Codex asks you to approve the plugin's hooks once, in /hooks.",
   "author": { "name": "Gruntas", "url": "https://gruntas.com" },
   "homepage": "https://gruntas.com",
@@ -10,6 +10,6 @@
   "skills": "./skills/",
   "hooks": "./hooks/codex.json",
   "mcpServers": {
-    "gruntas": { "command": "npx", "args": ["-y", "@gruntas/mcp"] }
+    "gruntas": { "command": "npx", "args": ["-y", "@gruntas/mcp"], "env_vars": ["XDG_RUNTIME_DIR", "GRUNTAS_HOME"] }
   }
 }

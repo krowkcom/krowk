@@ -19,6 +19,50 @@ breaking changes may affect it without notice.
 
 ## [Unreleased]
 
+## [2026.11.8] - 2026-11-26
+
+**T3 Code runs on your gruntas accounts.** `gruntas t3` writes a launcher per
+Claude Code and Codex account and says what to add in T3 Code's Providers:
+each instance then runs through `gruntas run --passthrough`, registered,
+guarded and with the gruntas tools, while T3 Code keeps its own approvals,
+access modes, models and threads. Codex sessions in T3 Code need their
+hooks approved once in a terminal, and aren't fenced off the gruntas home
+yet: T3 Code's own sandbox setting overrides gruntas's.
+
+### Added
+
+- **`gruntas run <claude|codex> --account <name> --passthrough -- <args…>`
+  runs a harness for an app that drives it.** For an app such as T3 Code,
+  which runs Claude Code through the Claude Agent SDK and Codex as `codex
+  app-server`: the account's launch, with the gruntas plugin and the
+  sandbox that keeps the session out of the gruntas home (for Codex, its
+  permissions profile after `app-server`), and the app's arguments after
+  gruntas's own, a `--settings` of the app's merged into gruntas's. The
+  harness's stdin, stdout, stderr and exit code pass through unchanged,
+  `--version` included; gruntas writes nothing to stdout and never
+  restarts the harness. An account that isn't signed in fails with one
+  line on stderr naming `gruntas connect`. `--no-sandbox` works as it does
+  in a terminal.
+- **`gruntas t3` sets up T3 Code's instances on your accounts.** It writes
+  one launcher script per connected Claude Code and Codex account into
+  `~/.gruntas/t3/` (`claude-work`, `codex-personal`), each running `gruntas
+  run <harness> --account <name> --passthrough`, and prints the T3 Code
+  instance to add for each: its name (`Claude · work`), its binary path (the
+  script) and its home path (the account's config home). `--json` gives the
+  same as data. Rerunning it rewrites only what changed and removes the
+  launchers of accounts that are gone.
+- **A session an app runs through `--passthrough` is an ordinary gruntas
+  session.** It registers with the daemon as attended under its account,
+  though the app gives it no terminal, shows in `gruntas status`, and has
+  the gruntas MCP tools and skill. Claude Code loads the plugin from
+  `--plugin-dir` in the Agent SDK's mode too. Codex's `app-server` loads
+  the plugin installed in the account, and runs its hooks once they are
+  approved: install it and approve its hooks once, in a terminal, with
+  `gruntas run codex --account <name>` and `/hooks`; until the plugin is
+  installed, passthrough says how on stderr, once per account. The hooks
+  run the gruntas that started the harness, first on its PATH, whatever
+  the app's PATH holds. Permission prompts still go to the app unchanged.
+
 ### Changed
 
 - **The MCP server's listings say what it does now.** The MCP Registry,
@@ -32,6 +76,16 @@ breaking changes may affect it without notice.
   package, and the Claude Code and Codex plugins called gruntas a coding
   agent harness. They now describe orchestration for autonomous agents,
   with publishing evidence of the work one of its features.
+
+### Fixed
+
+- **The gruntas MCP tools find a Codex session's daemon on Linux.** Codex
+  starts the plugin's MCP server without `XDG_RUNTIME_DIR`, so the server
+  looked for the daemon elsewhere and `gruntas_session_info` said the
+  session was not registered. The Codex plugin now passes it, and
+  `GRUNTAS_HOME`, to its server, and `gruntas_session_info` looks past the
+  `node-MainThread` process `npx` starts the server in. Codex asks to
+  approve the updated plugin's hooks again, in `/hooks`.
 
 ## [2026.11.7] - 2026-11-26
 

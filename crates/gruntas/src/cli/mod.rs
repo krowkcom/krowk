@@ -62,6 +62,8 @@ mod reseal;
 mod sync;
 #[cfg(all(feature = "harness", unix))]
 mod synced;
+#[cfg(all(feature = "harness", unix))]
+mod t3;
 #[cfg(feature = "harness")]
 mod trust;
 mod upgrade;
@@ -407,6 +409,10 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         ["providers", "remove", ..] => providers::remove(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["providers", "rename", ..] => providers::rename(ctx, rest(2)),
+        #[cfg(all(feature = "harness", unix))]
+        ["t3"] => t3::t3(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["t3", ..] => Err(fail("unexpected_argument", format!("`gruntas t3` takes no arguments, and got `{}`", rest(1).join(" ")))),
         #[cfg(feature = "harness")]
         ["trust", ..] => trust::run(ctx, rest(1)),
         #[cfg(feature = "harness")]
@@ -803,7 +809,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `gruntas mcp add`")));
             }
         }
-        for name in ["account", "unattended", "no-sandbox", "no-plugin"] {
+        for name in ["account", "unattended", "no-sandbox", "no-plugin", "passthrough"] {
             if f.given.contains(name) && words.first() != Some(&"run") {
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `gruntas run`, after the harness: `gruntas run claude --{name} …`")));
             }

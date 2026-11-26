@@ -1,5 +1,5 @@
 //! `gruntas run <harness> [--account <name|auto>] [--unattended "<task>"]
-//! [--no-sandbox] [--no-plugin] [args…]` (Launcher): the stock `claude` or `codex` on one
+//! [--no-sandbox] [--no-plugin] [--passthrough] [args…]` (Launcher): the stock `claude` or `codex` on one
 //! of the person's accounts, with the gruntas plugin and the sandbox that
 //! keeps it out of the gruntas home; or `pi` with the gruntas extension, its
 //! Claude turns on one of the person's Claude Code accounts. The plan is `gruntas_harness::launch`'s;
@@ -7,8 +7,8 @@
 //! the slice that runs it.
 //!
 //! Its words after the harness are the harness's, so they never reach
-//! gruntas's flag parser: only `--account`, `--unattended`, `--no-sandbox`
-//! and `--no-plugin` are gruntas's, anywhere before a `--`, and everything else
+//! gruntas's flag parser: only `--account`, `--unattended`, `--no-sandbox`,
+//! `--no-plugin` and `--passthrough` are gruntas's, anywhere before a `--`, and everything else
 //! (everything after a `--`, too) passes through as typed.
 
 use super::{flags::Flags, report, Ctx, Io};
@@ -35,6 +35,7 @@ struct Asked {
     unattended: Option<String>,
     no_sandbox: bool,
     no_plugin: bool,
+    passthrough: bool,
     rest: Vec<String>,
 }
 
@@ -64,24 +65,36 @@ fn parse(words: &[String]) -> Result<Asked, String> {
             "--no-sandbox" => return Err("--no-sandbox takes no value".into()),
             "--no-plugin" if inline.is_none() => a.no_plugin = true,
             "--no-plugin" => return Err("--no-plugin takes no value".into()),
+            "--passthrough" if inline.is_none() => a.passthrough = true,
+            "--passthrough" => return Err("--passthrough takes no value".into()),
             _ => a.rest.push(w.clone()),
         }
     }
     if a.unattended.as_deref().is_some_and(|t| t.trim().is_empty()) {
         return Err("--unattended needs the task the session starts on".into());
     }
+    if a.passthrough && a.unattended.is_some() {
+        return Err("--passthrough is for an app that drives the harness itself, not a background session — drop --unattended".into());
+    }
     Ok(a)
 }
 
 /// Runs `gruntas run`, given the words after `run`, and returns the exit
-/// code. Failures are reported as every command's are.
+/// code. Failures are reported as every command's are; with
+/// `--passthrough`, as one line on stderr, the app's to show (R-T3-4).
 pub(super) fn run(io: &mut Io, words: &[String]) -> i32 {
     let format = output::resolve_format("", false, io.tty).unwrap_or(Format::Human);
     let colour = output::colour_for(io.tty, io.env);
     let err_colour = output::colour_for(io.err_tty, io.env);
+    // Asked for before any `--`, its own words wrong or not.
+    let passthrough = words.iter().take_while(|w| *w != "--").any(|w| w.split('=').next() == Some("--passthrough"));
     let mut ctx = Ctx { io, f: Flags::default(), format, colour, filter: None };
     match launch_from(&mut ctx, words) {
         Ok(code) => code,
+        Err(e) if passthrough => {
+            let _ = writeln!(ctx.io.stderr, "gruntas: {}", e.fix().split_whitespace().collect::<Vec<_>>().join(" "));
+            super::exit::code_for(&e)
+        }
         Err(e) => report(ctx.io, &e, format, false, err_colour, None),
     }
 }
@@ -98,15 +111,21 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<i32, Error> {
     let registry = Registry::resolve(&super::prompt::load_instances()?, ctx.io.env);
     let name = match account.instance(harness) {
         Some(name) => name,
+        // An app's instance is one account, its home fixed (T3 Code D9).
+        None if asked.passthrough => return Err(bad("--passthrough runs one account: name it, not auto".into())),
         None => pick_auto(ctx, &registry, harness)?,
     };
     let instance = launch::account(&registry, harness, &name).map_err(|e| fail("no_account", e))?;
+    if asked.passthrough && !version_only(&asked.rest) {
+        signed_in(ctx, instance)?;
+    }
     // Checked as every command's is, and named by its resolved path (D4).
     let home = gruntas_api::home::dir(ctx.io.env)?;
     let plugin_dir = launch::plugin_dir(ctx.io.env).ok_or_else(|| fail("no_home", "there is no home directory to keep the gruntas plugin in — set HOME"))?;
     let gruntas = std::env::current_exe().map_err(|e| fail("no_binary", format!("this gruntas's own path cannot be read, which the worktree hooks run: {e}")))?;
     let mode = match asked.unattended {
         Some(task) => Mode::Unattended { task },
+        None if asked.passthrough => Mode::Passthrough,
         None => Mode::Attended,
     };
     if harness == Harness::Claude
@@ -127,6 +146,13 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<i32, Error> {
             .ok(),
         _ => None,
     };
+    // Passthrough's link to this gruntas, made before the sandbox's hidden
+    // paths are read: the daemon's directory hidden by its resolved path
+    // too, which exists only once made (macOS's /var → /private/var).
+    let bin = match mode {
+        Mode::Passthrough => Some(gruntas_harness::daemon::dir(ctx.io.env).map_err(std::io::Error::other).and_then(|d| gruntas_bin(&d, &gruntas))),
+        _ => None,
+    };
     let req = launch::Request { harness, mode, instance, hidden: launch::hidden(&home, ctx.io.env), plugin_dir, gruntas, sandbox: !asked.no_sandbox, plugin: !asked.no_plugin, egress, args: asked.rest };
     let plan = launch::plan(&req, &|p| std::fs::read_to_string(p)).map_err(bad)?;
     let ok = |()| super::exit::OK;
@@ -136,6 +162,7 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<i32, Error> {
             plugin_hint(ctx, instance)?;
             codex_unattended(ctx, task, &plan, instance, &registry).map(ok)
         }
+        (_, Mode::Passthrough) => passthrough(ctx, &req, plan, bin.unwrap_or_else(|| Err(std::io::Error::other("no link was made")))),
         (_, Mode::Attended) => {
             if harness == Harness::Codex {
                 plugin_hint(ctx, instance)?;
@@ -143,6 +170,101 @@ fn launch_from(ctx: &mut Ctx, words: &[String]) -> Result<i32, Error> {
             attended(ctx, &req, plan, model)
         }
     }
+}
+
+/// R-T3-4: an account an app's harness would start on signed out, or
+/// without its key, is refused with the command that signs it in; a check
+/// that cannot answer is no reason not to start. Asked without the links
+/// Codex's check makes from the person's own home into the account's
+/// (`codex::share`): a launch writes nothing into an account (R-RUN-5).
+fn signed_in(ctx: &mut Ctx, instance: &Resolved) -> Result<(), Error> {
+    use gruntas_harness::readiness;
+    let (credentials, probe) = (super::providers::credentials_path()?, super::status::neutral_probe(ctx)?);
+    let mut asked = instance.clone();
+    if let Some(b) = asked.backend.as_mut() {
+        b.shared_home = None;
+    }
+    match readiness::check(&asked, &credentials, &probe).refusal(instance) {
+        Some(e) => Err(fail(&e.code, e.message)),
+        None => Ok(()),
+    }
+}
+
+/// R-T3-2: an app asking only the harness's version (`--version`, or its
+/// short `-v`, `-V`), which the harness answers itself whatever its login
+/// or sandbox, so neither is checked first.
+fn version_only(args: &[String]) -> bool {
+    matches!(args, [a] if a == "--version" || a == "-v" || a == "-V")
+}
+
+/// R-T3-1: gruntas becomes the harness (exec), so the app that started it
+/// has the harness's own stdin, stdout, stderr, signals and exit status,
+/// and nothing restarts it: an app's session moves account by the app's
+/// own choice of instance, not inside one (T3 Code D3). The harness keeps
+/// gruntas's pid, which marks it attended to the plugin's SessionStart hook
+/// (D6): the app has a person at it, but gives the harness no terminal. Its
+/// hooks run the `gruntas` on the PATH, so this one comes first there: an
+/// app's PATH may name none, or an older one. A Codex account without the
+/// plugin installed is told how to install it, on stderr, as attended.
+fn passthrough(ctx: &mut Ctx, req: &launch::Request, mut plan: Plan, bin: std::io::Result<std::path::PathBuf>) -> Result<i32, Error> {
+    if !version_only(&req.args) {
+        match plan.harness {
+            Harness::Claude => claude_ready(ctx, &mut plan, req.plugin)?,
+            Harness::Codex => plugin_hint(ctx, req.instance)?,
+        }
+    }
+    plan.env_set.push((gruntas_harness::hook::ATTENDED_PID.into(), std::process::id().to_string()));
+    // On the account's own PATH, where its instance sets one.
+    let path = plan.env_set.iter().rev().find(|(k, _)| k == "PATH").map_or_else(|| (ctx.io.env)("PATH"), |(_, v)| v.clone());
+    let dir = bin
+        .inspect_err(|e| {
+            let _ = writeln!(ctx.io.stderr, "gruntas: the session's hooks run the gruntas on the PATH, as this one could not be put first on it: {e}");
+        })
+        .ok();
+    plan.env_set.retain(|(k, _)| k != "PATH");
+    plan.env_set.push(("PATH".into(), path_with(dir.as_deref(), &path)));
+    let _ = ctx.io.stdout.flush();
+    let _ = ctx.io.stderr.flush();
+    let e = std::os::unix::process::CommandExt::exec(&mut child::command(&plan));
+    Err(fail("no_binary", format!("{} could not be started: {e}. Is it installed? `gruntas providers list --check` checks", plan.program.display())))
+}
+
+/// The PATH a passthrough harness runs with: `dir`, if any, first, then
+/// `path`, else the system's when `path` names nothing.
+fn path_with(dir: Option<&std::path::Path>, path: &str) -> String {
+    let dir = dir.map(|d| d.display().to_string());
+    let mut rest: Vec<&str> = path.split(':').filter(|p| !p.is_empty() && Some(*p) != dir.as_deref()).collect();
+    if rest.is_empty() {
+        rest = vec!["/usr/local/bin", "/usr/bin", "/bin"];
+    }
+    dir.as_deref().into_iter().chain(rest).collect::<Vec<_>>().join(":")
+}
+
+/// A directory holding only a `gruntas` that links to `gruntas`, the one
+/// a passthrough harness's hooks run: `bin/<key of its path>` in the
+/// daemon's directory, which every launch's sandbox hides (`launch::hidden`).
+/// Put first on the PATH, it adds no other command there, as the directory
+/// gruntas runs from would (a build's `target/debug`, which the session may
+/// write); the binary it links to is as writable as it ever was, as for
+/// any hook that runs `gruntas`.
+fn gruntas_bin(daemon: &std::path::Path, gruntas: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    let bin = daemon.join("bin");
+    let dir = bin.join(gruntas_harness::daemon::home_key(gruntas));
+    if dir.to_string_lossy().contains(':') {
+        return Err(std::io::Error::other(format!("{} has a `:`, which a PATH cannot hold", dir.display())));
+    }
+    for d in [&bin, &dir] {
+        gruntas_api::home::make(d).map_err(std::io::Error::other)?;
+    }
+    let link = dir.join("gruntas");
+    if std::fs::read_link(&link).is_ok_and(|t| t == gruntas) {
+        return Ok(dir);
+    }
+    let fresh = dir.join(format!(".gruntas.{}", std::process::id()));
+    let _ = std::fs::remove_file(&fresh);
+    std::os::unix::fs::symlink(gruntas, &fresh)?;
+    std::fs::rename(&fresh, &link)?;
+    Ok(dir)
 }
 
 /// `gruntas run pi`: pi attended, as gruntas's exec, with the extension and
@@ -189,6 +311,9 @@ fn pi(ctx: &mut Ctx, asked: Asked) -> Result<i32, Error> {
 fn pi_refused(asked: &Asked) -> Option<&'static str> {
     if asked.unattended.is_some() {
         return Some("pi runs attended only: --unattended starts a background worker, which gruntas runs in Claude Code or Codex — `gruntas run claude --unattended \"<task>\"`");
+    }
+    if asked.passthrough {
+        return Some("--passthrough is for claude and codex, which an app such as T3 Code drives; pi is run with `gruntas run pi`");
     }
     if asked.no_plugin {
         return Some("--no-plugin is for claude: `gruntas run pi` is pi with the gruntas extension; for pi without it, run `pi` itself");
@@ -914,7 +1039,7 @@ mod tests {
     #[test]
     fn gruntas_reads_its_own_flags_and_passes_the_rest() {
         let a = parse(&words("claude --model opus --account=work -c --no-sandbox --unattended fix")).unwrap();
-        assert_eq!(a, Asked { harness: "claude".into(), account: Some("work".into()), unattended: Some("fix".into()), no_sandbox: true, no_plugin: false, rest: words("--model opus -c") });
+        assert_eq!(a, Asked { harness: "claude".into(), account: Some("work".into()), unattended: Some("fix".into()), no_sandbox: true, no_plugin: false, passthrough: false, rest: words("--model opus -c") });
         let a = parse(&words("codex resume -- --account x --no-sandbox --no-plugin")).unwrap();
         assert_eq!((a.account, a.no_sandbox, a.no_plugin, a.rest), (None, false, false, words("resume --account x --no-sandbox --no-plugin")));
         let a = parse(&words("claude --account work --no-plugin -p --output-format stream-json")).unwrap();
@@ -923,6 +1048,11 @@ mod tests {
             assert!(parse(&words(bad)).is_err(), "{bad}");
         }
         assert!(parse(&["claude".into(), "--unattended".into(), " ".into()]).is_err());
+        let a = parse(&words("codex --account team --passthrough -- app-server --passthrough")).unwrap();
+        assert_eq!((a.passthrough, a.rest), (true, words("app-server --passthrough")));
+        for bad in ["claude --passthrough=1", "claude --passthrough --unattended fix"] {
+            assert!(parse(&words(bad)).is_err(), "{bad}");
+        }
         assert_eq!(super::words(&words("run claude -c")), Some(&words("run claude -c")[1..]));
         assert_eq!(super::words(&words("run --help")), None);
     }
@@ -953,5 +1083,56 @@ mod tests {
         std::fs::remove_file(&mcp).unwrap();
         assert_eq!(server()["command"], "npx");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// R-T3-3: an app's harness runs its hooks with the launching gruntas
+    /// first on the PATH, whatever the app's PATH named: through a
+    /// directory holding only a link to it, which the sandbox hides, never
+    /// the directory gruntas runs from.
+    #[test]
+    fn r_t3_3_the_launching_gruntas_comes_first_on_the_path() {
+        let d = Some(std::path::Path::new("/run/g/bin/1"));
+        assert_eq!(path_with(d, "/usr/bin:/bin"), "/run/g/bin/1:/usr/bin:/bin");
+        assert_eq!(path_with(d, "/usr/bin:/run/g/bin/1::/bin"), "/run/g/bin/1:/usr/bin:/bin", "once, and no empty entry");
+        assert_eq!(path_with(d, ""), "/run/g/bin/1:/usr/local/bin:/usr/bin:/bin", "unset or empty: the system's");
+        assert_eq!(path_with(d, "::"), "/run/g/bin/1:/usr/local/bin:/usr/bin:/bin");
+        assert_eq!(path_with(None, ""), "/usr/local/bin:/usr/bin:/bin", "no link: still the system's");
+        assert_eq!(path_with(None, "/a:/b"), "/a:/b");
+
+        let root = std::env::temp_dir().join(format!("gruntas-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("home")).unwrap();
+        std::fs::create_dir_all(root.join("run")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let (run, home) = (root.join("run").display().to_string(), root.join("home").display().to_string());
+        let env = |k: &str| match k {
+            "XDG_RUNTIME_DIR" => run.clone(),
+            "HOME" => home.clone(),
+            "GRUNTAS_HOME" => format!("{home}/.gruntas"),
+            _ => String::new(),
+        };
+        let daemon = gruntas_harness::daemon::dir(&env).unwrap();
+        let (a, b) = (root.join("build/target/debug/gruntas"), root.join("other/gruntas"));
+        let dir = gruntas_bin(&daemon, &a).unwrap();
+        let listed: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(listed, ["gruntas"], "only gruntas: nothing else is shadowed");
+        assert_eq!(std::fs::read_link(dir.join("gruntas")).unwrap(), a);
+        let hidden = launch::hidden(&gruntas_api::home::dir(&env).unwrap(), &env);
+        assert!(hidden.iter().any(|h| dir.starts_with(h)), "{} is hidden from the session: {hidden:?}", dir.display());
+        assert_eq!(gruntas_bin(&daemon, &a).unwrap(), dir, "the same again");
+        let other = gruntas_bin(&daemon, &b).unwrap();
+        assert_ne!(other, dir, "another gruntas, its own directory");
+        assert_eq!(std::fs::read_link(other.join("gruntas")).unwrap(), b);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// R-T3-3: Codex starts an MCP server with only a few of its own
+    /// variables, so the Codex plugin's server is given what names the
+    /// daemon's directory; without them it looks in another, and
+    /// `gruntas_session_info` finds no session (seen live, Codex 0.171).
+    #[test]
+    fn r_t3_3_the_codex_plugins_server_is_given_the_daemons_directory() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!("../../../../.codex-plugin/plugin.json")).unwrap();
+        assert_eq!(manifest["mcpServers"]["gruntas"]["env_vars"], serde_json::json!(["XDG_RUNTIME_DIR", "GRUNTAS_HOME"]));
     }
 }

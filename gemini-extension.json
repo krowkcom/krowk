@@ -1,6 +1,6 @@
 {
   "name": "gruntas",
-  "version": "2026.11.7",
+  "version": "2026.11.8",
   "description": "Adds Gruntas to Gemini CLI: see what your autonomous agents are doing across machines, steer them, hand work to a machine with room and collect the result. Publishes evidence of their work. Orchestration needs gruntas running on macOS or Linux.",
   "contextFileName": "GEMINI.md",
   "mcpServers": {

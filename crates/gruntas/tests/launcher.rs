@@ -1100,3 +1100,299 @@ fn rl07_a_picked_account_continues_the_session_after_exit() {
     let o = b.command(&["hook", "claude", "account", "--dangerously-skip-permissions", "claude:spare"]).env("XDG_RUNTIME_DIR", b.root.join("run")).output().unwrap();
     assert_eq!((o.status.code(), String::from_utf8_lossy(&o.stdout).into_owned()), (Some(1), "\"--dangerously-skip-permissions\" is not a session id\n".to_string()));
 }
+
+/// A fake `name` for passthrough: it answers the sign-in check (`login`,
+/// Claude Code's JSON or Codex's words), writes down its arguments,
+/// environment and pid, says
+/// its version to `--version`, and otherwise writes a line to stderr,
+/// copies stdin to stdout and exits 7. The sign-in check is told apart by
+/// its arguments: it carries none of gruntas's (`--settings`, the profile).
+fn passthrough_fake(b: &Sandbox, name: &str, login: &str) {
+    let out = b.root.join(name);
+    let check = match name {
+        "claude" => format!("[ \"$1\" = auth ] && {{ echo '{login}'; exit 0; }}\n"),
+        _ => format!("case \"$*\" in *default_permissions*) ;; *) [ \"$1\" = login ] && echo '{login}'; exit 0;; esac\n"),
+    };
+    script(b, name, &format!("{check}for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{0}.args'\nenv > '{0}.env'\necho $$ > '{0}.pid'\nfor a in \"$@\"; do [ \"$a\" = --version ] && {{ printf '9.9.9 ({name})\\n'; exit 0; }}; done\nprintf '{name} \\001 says\\n' >&2\ncat\nexit 7\n", out.display()));
+}
+
+/// `gruntas <args>` fed `stdin`, its stdout and stderr caught.
+fn fed(b: &Sandbox, args: &[&str], stdin: &[u8]) -> Output {
+    let mut c = b.command(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    use std::io::Write;
+    c.stdin.take().unwrap().write_all(stdin).unwrap();
+    c.wait_with_output().unwrap()
+}
+
+/// R-T3-1, R-T3-2, R-RUN-5: `--passthrough` runs the account's plan with
+/// the app's arguments after gruntas's own, and the harness's stdin,
+/// stdout, stderr and exit code pass through byte for byte, `--version`
+/// too; nothing in either account changes, and nothing of the person's
+/// own Codex home is linked into one.
+#[test]
+fn r_t3_1_passthrough_passes_argv_stdio_and_the_exit_code_through() {
+    let b = Sandbox::new("t3-passthrough");
+    for bin in ["bwrap", "socat"] {
+        b.fake(bin);
+    }
+    passthrough_fake(&b, "claude", r#"{"loggedIn":true,"authMethod":"claude.ai"}"#);
+    passthrough_fake(&b, "codex", "Logged in using ChatGPT");
+    std::fs::create_dir_all(b.root.join("accounts/claude-work/plugins")).unwrap();
+    std::fs::write(b.root.join("accounts/claude-work/settings.json"), "{}").unwrap();
+    std::fs::write(b.root.join("accounts/claude-work/.credentials.json"), "{}").unwrap();
+    std::fs::write(b.root.join("accounts/codex-team/config.toml"), "{}").unwrap();
+    // The plugin installed, so no hint of how to install it.
+    std::fs::create_dir_all(b.root.join("accounts/codex-team/plugins/cache/gruntas/gruntas")).unwrap();
+    std::fs::create_dir_all(b.root.join("home/.codex")).unwrap();
+    std::fs::write(b.root.join("home/.codex/config.toml"), "model = \"x\"\n").unwrap();
+    let before = listing(&b.root.join("accounts"));
+    let stdin = b"{\"type\":\"user\"}\n\x00\xff\xfe not utf-8\n";
+    let cases: [(&str, &[&str]); 2] = [
+        ("claude", &["--output-format", "stream-json", "--verbose", "a b", "", "--account", "x", "--passthrough"]),
+        ("codex", &["app-server", "-c", "model=\"gpt-5.5\"", "--listen", "stdio://"]),
+    ];
+    for (harness, theirs) in cases {
+        let account = if harness == "claude" { "work" } else { "team" };
+        let o = fed(&b, &[&["run", harness, "--account", account, "--passthrough", "--"][..], theirs].concat(), stdin);
+        assert_eq!(o.status.code(), Some(7), "{harness}: {}", String::from_utf8_lossy(&o.stderr));
+        assert_eq!(o.stdout, stdin, "{harness}: stdin to stdout, nothing of gruntas's");
+        assert_eq!(o.stderr, format!("{harness} \x01 says\n").as_bytes(), "{harness}: only the harness's stderr");
+        let (args, env) = b.started(harness);
+        // Codex's `app-server` first, the profile after it, the rest last.
+        let last = if harness == "codex" { &theirs[1..] } else { theirs };
+        assert!(args.ends_with(&last.iter().map(|s| s.to_string()).collect::<Vec<_>>()), "{harness}: the app's arguments last, as given: {args:?}");
+        match harness {
+            "claude" => {
+                assert_eq!(args[0], "--plugin-dir");
+                let s: serde_json::Value = serde_json::from_str(&args[args.iter().position(|a| a == "--settings").unwrap() + 1]).unwrap();
+                assert_eq!(s["sandbox"]["enabled"], true);
+                assert!(env.contains(&format!("CLAUDE_CONFIG_DIR={}", b.root.join("accounts/claude-work").display())));
+            }
+            _ => {
+                assert_eq!(args[..3], ["app-server", "-c", r#"default_permissions="gruntas""#], "the profile after app-server");
+                assert!(env.contains(&format!("CODEX_HOME={}", b.root.join("accounts/codex-team").display())));
+            }
+        }
+        let o = fed(&b, &["run", harness, "--account", account, "--passthrough", "--version"], b"");
+        assert_eq!((o.status.code(), o.stdout, o.stderr), (Some(0), format!("9.9.9 ({harness})\n").into_bytes(), Vec::new()), "{harness} --version");
+    }
+    // --no-sandbox, as attended: no sandbox parts.
+    let o = fed(&b, &["run", "claude", "--account", "work", "--passthrough", "--no-sandbox", "-p"], b"");
+    assert_eq!(o.status.code(), Some(7));
+    let args = b.started("claude").0;
+    let s: serde_json::Value = serde_json::from_str(&args[args.iter().position(|a| a == "--settings").unwrap() + 1]).unwrap();
+    assert!(s.get("sandbox").is_none(), "{s}");
+    assert_eq!(listing(&b.root.join("accounts")), before, "R-RUN-5: the accounts as they were");
+    failed(&b.gruntas(&["run", "claude", "--account", "auto", "--passthrough"]), 1, "not auto");
+}
+
+/// R-T3-3 (T3 Code D6): a passthrough session carries the gruntas plugin
+/// in the form the harness's app mode loads, and is marked attended. Claude
+/// Code's Agent SDK mode (stream-json) takes `--plugin-dir`, whose plugin
+/// has the hooks that register the session, the MCP server and the skill,
+/// and the worktree hooks in `--settings`. Codex's app-server loads the
+/// plugin installed in the account's home, which it runs on and which
+/// gruntas leaves as it is. Either way the harness, which keeps gruntas's
+/// pid, is told it is the attended one.
+#[test]
+fn r_t3_3_a_passthrough_session_carries_the_plugin_and_is_attended() {
+    let b = Sandbox::new("t3-plugin");
+    for bin in ["bwrap", "socat"] {
+        b.fake(bin);
+    }
+    passthrough_fake(&b, "claude", r#"{"loggedIn":true,"authMethod":"claude.ai"}"#);
+    passthrough_fake(&b, "codex", "Logged in using ChatGPT");
+    let installed = b.root.join("accounts/codex-team/plugins/cache/gruntas/gruntas/1/.codex-plugin");
+    std::fs::create_dir_all(&installed).unwrap();
+    std::fs::write(installed.join("plugin.json"), "{}").unwrap();
+    let before = listing(&b.root.join("accounts"));
+    let sdk = ["--output-format", "stream-json", "--verbose", "--input-format", "stream-json", "--permission-prompt-tool=stdio"];
+    for (harness, account, theirs) in [("claude", "work", &sdk[..]), ("codex", "team", &["app-server"][..])] {
+        let o = fed(&b, &[&["run", harness, "--account", account, "--passthrough", "--"][..], theirs].concat(), b"");
+        assert_eq!(o.status.code(), Some(7), "{harness}: {}", String::from_utf8_lossy(&o.stderr));
+        let (args, env) = b.started(harness);
+        let pid = std::fs::read_to_string(b.root.join(format!("{harness}.pid"))).unwrap();
+        assert!(env.contains(&format!("GRUNTAS_ATTENDED_PID={}", pid.trim())), "{harness}: the harness, by gruntas's pid, is attended: {env:?}");
+        // The hooks run this gruntas, through a link of its own first on
+        // the PATH, not the directory it runs from.
+        let path = env.iter().find_map(|v| v.strip_prefix("PATH=")).unwrap();
+        let first = PathBuf::from(path.split(':').next().unwrap());
+        let exe = PathBuf::from(env!("CARGO_BIN_EXE_gruntas"));
+        assert_eq!(std::fs::read_link(first.join("gruntas")).ok(), Some(exe.clone()), "{harness}: {path}");
+        assert_ne!(Some(first.as_path()), exe.parent());
+        if harness == "codex" {
+            assert!(env.contains(&format!("CODEX_HOME={}", b.root.join("accounts/codex-team").display())), "the account's home, its installed plugin with it");
+            continue;
+        }
+        let dir = PathBuf::from(&args[args.iter().position(|a| a == "--plugin-dir").unwrap() + 1]);
+        let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join(".claude-plugin/plugin.json")).unwrap()).unwrap();
+        assert!(manifest["mcpServers"]["gruntas"].is_object(), "the gruntas MCP server: {manifest}");
+        let hooks: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("hooks/hooks.json")).unwrap()).unwrap();
+        for event in ["SessionStart", "SessionEnd", "PostToolUse", "PermissionRequest"] {
+            assert!(hooks["hooks"][event].to_string().contains(&format!("gruntas hook claude {event}")), "{event} registers with the daemon");
+        }
+        assert!(dir.join("skills/gruntas/SKILL.md").is_file(), "the skill");
+        let s: serde_json::Value = serde_json::from_str(&args[args.iter().position(|a| a == "--settings").unwrap() + 1]).unwrap();
+        assert!(s["hooks"]["WorktreeCreate"].is_array(), "the worktree hooks: {s}");
+    }
+    assert_eq!(listing(&b.root.join("accounts")), before, "R-RUN-5: the accounts as they were");
+    // A Codex account without the plugin is told how to install it, on
+    // stderr and once, as attended is; stdout stays the harness's.
+    std::fs::remove_dir_all(b.root.join("accounts/codex-team/plugins")).unwrap();
+    for once in [true, false] {
+        let o = fed(&b, &["run", "codex", "--account", "team", "--passthrough", "--", "app-server"], b"in");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!((o.status.code(), o.stdout), (Some(7), b"in".to_vec()));
+        assert_eq!(err.contains("codex plugin add gruntas@gruntas"), once, "{err}");
+    }
+}
+
+/// R-T3-4: an account that isn't signed in fails before its harness
+/// starts, with one line on stderr naming `gruntas connect`, and nothing
+/// on stdout; asked only its version, the harness still answers.
+#[test]
+fn r_t3_4_an_account_not_signed_in_names_gruntas_connect() {
+    let b = Sandbox::new("t3-signed-out");
+    for bin in ["bwrap", "socat"] {
+        b.fake(bin);
+    }
+    passthrough_fake(&b, "claude", r#"{"loggedIn":false}"#);
+    passthrough_fake(&b, "codex", "Not logged in");
+    for (harness, account, connect) in [("claude", "work", "gruntas connect anthropic --method subscription --name work"), ("codex", "team", "--name team")] {
+        let first = if harness == "claude" { "-p" } else { "app-server" };
+        let o = fed(&b, &["run", harness, "--account", account, "--passthrough", "--", first], b"");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(!o.status.success() && o.stdout.is_empty(), "{harness}: {err}");
+        assert_eq!(err.lines().count(), 1, "{harness}: one line: {err}");
+        assert!(err.starts_with("gruntas: ") && err.contains("gruntas connect") && err.contains(connect), "{harness}: {err}");
+        assert!(!b.root.join(format!("{harness}.args")).exists(), "{harness}: not started");
+        // Its version, which the harness answers whatever its login.
+        let o = fed(&b, &["run", harness, "--account", account, "--passthrough", "--version"], b"");
+        assert_eq!((o.status.code(), o.stdout, o.stderr), (Some(0), format!("9.9.9 ({harness})\n").into_bytes(), Vec::new()), "{harness} --version");
+    }
+    // A call it cannot read is one line too.
+    let o = fed(&b, &["run", "claude", "--passthrough", "--unattended", "x"], b"");
+    assert!(o.stdout.is_empty() && String::from_utf8_lossy(&o.stderr).lines().count() == 1, "{}", String::from_utf8_lossy(&o.stderr));
+}
+
+/// Every file under `dir` and its content, for R-RUN-5.
+fn listing(dir: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).unwrap().flatten() {
+        let p = e.path();
+        if p.is_dir() && !p.is_symlink() {
+            out.push((p.clone(), Vec::new()));
+            out.extend(listing(&p));
+        } else {
+            out.push((p.clone(), std::fs::read(&p).unwrap_or_default()));
+        }
+    }
+    out.sort();
+    out
+}
+
+/// R-T3-5: `gruntas t3` writes one launcher per connected Claude Code and
+/// Codex account, once, executable and the person's alone; a rerun changes
+/// nothing; an account that is gone has its launcher removed, and nothing
+/// else in the directory is touched. Each instance is named with its binary
+/// path and the account's config home, as words and as JSON.
+#[test]
+fn r_t3_5_t3_writes_a_launcher_per_account_once_and_removes_gone_ones() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let b = Sandbox::new("t3-launchers");
+    let dir = b.home().join("t3");
+    let (claude, codex) = (dir.join("claude-work"), dir.join("codex-team"));
+    let o = b.gruntas(&["t3", "--format", "human"]);
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    for (name, script, home) in [("Claude · work", &claude, "accounts/claude-work"), ("Codex · team", &codex, "accounts/codex-team")] {
+        let said = format!("\n{name}\n  Binary path  {}\n  Home path    {}\n", script.display(), b.root.join(home).display());
+        assert!(out.contains(&said), "{said:?} in {out}");
+    }
+    assert!(!out.contains("default"), "the implicit accounts are not connected ones: {out}");
+    // gruntas by its absolute path: this sandbox's PATH has none on it.
+    let gruntas = std::fs::canonicalize(env!("CARGO_BIN_EXE_gruntas")).unwrap();
+    for (script, harness, account) in [(&claude, "claude", "work"), (&codex, "codex", "team")] {
+        let want = format!("#!/bin/sh\n# Written by `gruntas t3` for T3 Code; rerun it to update. Edits are overwritten.\nexec {} run {harness} --account {account} --passthrough -- \"$@\"\n", gruntas.display());
+        assert_eq!(std::fs::read_to_string(script).unwrap(), want);
+        assert_eq!(std::fs::metadata(script).unwrap().permissions().mode() & 0o7777, 0o700);
+    }
+    let stamp = |p: &PathBuf| std::fs::metadata(p).map(|m| (m.ino(), m.mtime_nsec(), m.mtime())).unwrap();
+    let before = (stamp(&claude), stamp(&codex));
+    let o = b.gruntas(&["t3", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["data"]["directory"], dir.display().to_string());
+    assert_eq!(
+        v["data"]["instances"],
+        serde_json::json!([
+            { "account": "claude:work", "harness": "claude", "name": "Claude · work", "binaryPath": claude, "homePath": b.root.join("accounts/claude-work"), "written": false },
+            { "account": "codex:team", "harness": "codex", "name": "Codex · team", "binaryPath": codex, "homePath": b.root.join("accounts/codex-team"), "written": false },
+        ])
+    );
+    assert_eq!(v["data"]["removed"], serde_json::json!([]));
+    assert_eq!((stamp(&claude), stamp(&codex)), before, "a rerun changes nothing");
+    // codex:team gone: its launcher goes; a file gruntas did not write
+    // stays, and so does another run's script on its way in.
+    std::fs::write(dir.join("mine"), "#!/bin/sh\necho hi\n").unwrap();
+    std::fs::write(dir.join(".claude-x.1.tmp"), std::fs::read(&claude).unwrap()).unwrap();
+    let config = serde_json::json!({ "instances": { "claude:work": { "kind": "claude-code", "binary": b.root.join("bin/claude"), "configDir": b.root.join("accounts/claude-work") } } });
+    std::fs::write(b.home().join("config.json"), config.to_string()).unwrap();
+    let o = b.gruntas(&["t3", "--format", "human"]);
+    assert!(String::from_utf8_lossy(&o.stdout).contains(&format!("Removed {}, whose account is gone", codex.display())), "{}", String::from_utf8_lossy(&o.stdout));
+    assert!(!codex.exists() && claude.exists() && dir.join("mine").exists() && dir.join(".claude-x.1.tmp").exists());
+    assert_eq!(stamp(&claude), before.0);
+    // None connected: said, with the command that connects one.
+    std::fs::write(b.home().join("config.json"), "{}").unwrap();
+    let o = b.gruntas(&["t3", "--format", "human"]);
+    assert!(o.status.success() && String::from_utf8_lossy(&o.stdout).contains("No Claude Code or Codex account is connected") && String::from_utf8_lossy(&o.stdout).contains("`gruntas connect`"), "{}", String::from_utf8_lossy(&o.stdout));
+    assert!(!claude.exists() && dir.join("mine").exists());
+    // A t3 that is a link is not written through.
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(b.root.join("elsewhere")).unwrap();
+    std::os::unix::fs::symlink(b.root.join("elsewhere"), &dir).unwrap();
+    failed(&b.gruntas(&["t3", "--format", "human"]), 1, "is not a directory");
+}
+
+/// R-T3-5, R-T3-1: a written launcher, run as T3 Code runs it (directly,
+/// with a PATH that has no gruntas on it), reaches `gruntas run
+/// --passthrough` on its account with the launcher's arguments.
+#[test]
+fn r_t3_5_a_written_launcher_reaches_passthrough_with_its_arguments() {
+    let b = Sandbox::new("t3-launch");
+    for bin in ["bwrap", "socat"] {
+        b.fake(bin);
+    }
+    passthrough_fake(&b, "claude", r#"{"loggedIn":true,"authMethod":"claude.ai"}"#);
+    passthrough_fake(&b, "codex", "Logged in using ChatGPT");
+    // A hand-written name the shell would read otherwise, and one
+    // `--account` would read as auto, which has no launcher.
+    std::fs::create_dir_all(b.root.join("accounts/codex-odd")).unwrap();
+    let config = serde_json::json!({ "instances": {
+        "claude:work": { "kind": "claude-code", "binary": b.root.join("bin/claude"), "configDir": b.root.join("accounts/claude-work") },
+        "codex:team": { "kind": "codex-app-server", "binary": b.root.join("bin/codex"), "codexHome": b.root.join("accounts/codex-team") },
+        "codex:o'k $(touch pwned) `x`": { "kind": "codex-app-server", "binary": b.root.join("bin/codex"), "codexHome": b.root.join("accounts/codex-odd") },
+        "claude:auto": { "kind": "claude-code", "binary": b.root.join("bin/claude") },
+    }});
+    std::fs::write(b.home().join("config.json"), config.to_string()).unwrap();
+    let o = b.gruntas(&["t3", "--format", "human"]);
+    assert!(o.status.success() && String::from_utf8_lossy(&o.stderr).contains(r#"No launcher for "claude:auto""#), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(!b.home().join("t3/claude-auto").exists());
+    let cases: [(&str, &str, &[&str], &str); 3] = [
+        ("claude", "claude-work", &["--output-format", "stream-json", "a b", ""], "CLAUDE_CONFIG_DIR=accounts/claude-work"),
+        ("codex", "codex-team", &["app-server", "--listen", "stdio://"], "CODEX_HOME=accounts/codex-team"),
+        ("codex", "codex-o'k $(touch pwned) `x`", &["app-server"], "CODEX_HOME=accounts/codex-odd"),
+    ];
+    for (harness, script, theirs, home) in cases {
+        // Claude's sandbox needs bwrap and socat on the PATH; Codex's nothing.
+        let path = if harness == "claude" { format!("{}:/usr/bin:/bin", b.root.join("bin").display()) } else { "/usr/bin:/bin".into() };
+        let mut c = Command::new(b.home().join("t3").join(script));
+        c.args(theirs).env_clear().env("PATH", path).env("HOME", b.root.join("home")).env("XDG_DATA_HOME", b.root.join("data")).env("GRUNTAS_NO_UPDATE_CHECK", "1").env("GRUNTAS_API_URL", "http://127.0.0.1:9/v1").current_dir(&b.root);
+        let o = c.stdin(Stdio::null()).output().unwrap();
+        assert_eq!(o.status.code(), Some(7), "{harness}: {}", String::from_utf8_lossy(&o.stderr));
+        let (args, env) = b.started(harness);
+        assert!(args.ends_with(&theirs.iter().map(|s| s.to_string()).collect::<Vec<_>>()[usize::from(harness == "codex")..]), "{harness}: {args:?}");
+        let (var, dir) = home.split_once('=').unwrap();
+        assert!(env.contains(&format!("{var}={}", b.root.join(dir).display())), "{harness}: {env:?}");
+    }
+    assert!(!b.root.join("pwned").exists(), "the name is quoted, never run");
+}

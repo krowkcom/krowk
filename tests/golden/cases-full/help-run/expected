@@ -4,7 +4,7 @@ gruntas run — Start Claude Code, Codex or pi on one of your accounts
 
 Usage
   gruntas run <claude|codex|pi> [--account NAME] [--unattended TASK]
-      [--no-plugin] [args...]
+      [--no-plugin] [--passthrough] [args...]
 
 The harness starts with the account's config home (CLAUDE_CONFIG_DIR,
 CODEX_HOME), the gruntas plugin, and a sandbox that keeps it out of the gruntas
@@ -52,6 +52,10 @@ Flags
                          stdin and stdout pass through, so a program can run it
                          as its Claude Code (the Agent SDK's executable).
                          Attended claude only
+  --passthrough          For an app that drives the harness itself (T3 Code):
+                         its arguments, stdin, stdout, stderr and exit code pass
+                         through, nothing of gruntas's on stdout, no rollover;
+                         an account not signed in fails with one line
 
 Global flags: --workspace --dev --format --json --quiet --jq — see `help flags`
 exit: 0
