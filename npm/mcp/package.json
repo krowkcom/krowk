@@ -2,7 +2,7 @@
   "name": "@gruntas/mcp",
   "version": "0.0.0-unpublished",
   "mcpName": "io.github.gruntas/gruntas",
-  "description": "Publishing from Gruntas, the coding agent harness, for any MCP client: an MCP server that turns an agent's screenshots, recordings, diffs and logs into links that unfurl in Slack and Basecamp; in GitHub and Linear, images show inline.",
+  "description": "MCP server for Gruntas, the coding agent harness. From any MCP client, your agent publishes screenshots, diffs and logs as paste-ready links (no account needed), and, where gruntas runs, sees, steers and delegates to agents on all your machines.",
   "keywords": [
     "gruntas",
     "mcp",
