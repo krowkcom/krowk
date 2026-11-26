@@ -1188,19 +1188,26 @@ fn r_t3_5_t3_writes_a_launcher_per_account_once_and_removes_gone_ones() {
     );
     assert_eq!(v["data"]["removed"], serde_json::json!([]));
     assert_eq!((stamp(&claude), stamp(&codex)), before, "a rerun changes nothing");
-    // codex:team gone: its launcher goes; a file gruntas did not write stays.
+    // codex:team gone: its launcher goes; a file gruntas did not write
+    // stays, and so does another run's script on its way in.
     std::fs::write(dir.join("mine"), "#!/bin/sh\necho hi\n").unwrap();
+    std::fs::write(dir.join(".claude-x.1.tmp"), std::fs::read(&claude).unwrap()).unwrap();
     let config = serde_json::json!({ "instances": { "claude:work": { "kind": "claude-code", "binary": b.root.join("bin/claude"), "configDir": b.root.join("accounts/claude-work") } } });
     std::fs::write(b.home().join("config.json"), config.to_string()).unwrap();
     let o = b.gruntas(&["t3", "--format", "human"]);
     assert!(String::from_utf8_lossy(&o.stdout).contains(&format!("Removed {}, whose account is gone", codex.display())), "{}", String::from_utf8_lossy(&o.stdout));
-    assert!(!codex.exists() && claude.exists() && dir.join("mine").exists());
+    assert!(!codex.exists() && claude.exists() && dir.join("mine").exists() && dir.join(".claude-x.1.tmp").exists());
     assert_eq!(stamp(&claude), before.0);
     // None connected: said, with the command that connects one.
     std::fs::write(b.home().join("config.json"), "{}").unwrap();
     let o = b.gruntas(&["t3", "--format", "human"]);
     assert!(o.status.success() && String::from_utf8_lossy(&o.stdout).contains("No Claude Code or Codex account is connected") && String::from_utf8_lossy(&o.stdout).contains("`gruntas connect`"), "{}", String::from_utf8_lossy(&o.stdout));
     assert!(!claude.exists() && dir.join("mine").exists());
+    // A t3 that is a link is not written through.
+    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(b.root.join("elsewhere")).unwrap();
+    std::os::unix::fs::symlink(b.root.join("elsewhere"), &dir).unwrap();
+    failed(&b.gruntas(&["t3", "--format", "human"]), 1, "is not a directory");
 }
 
 /// R-T3-5, R-T3-1: a written launcher, run as T3 Code runs it (directly,
@@ -1225,7 +1232,7 @@ fn r_t3_5_a_written_launcher_reaches_passthrough_with_its_arguments() {
     }});
     std::fs::write(b.home().join("config.json"), config.to_string()).unwrap();
     let o = b.gruntas(&["t3", "--format", "human"]);
-    assert!(o.status.success() && String::from_utf8_lossy(&o.stderr).contains("No launcher for claude:auto"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(o.status.success() && String::from_utf8_lossy(&o.stderr).contains(r#"No launcher for "claude:auto""#), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(!b.home().join("t3/claude-auto").exists());
     let cases: [(&str, &str, &[&str], &str); 3] = [
         ("claude", "claude-work", &["--output-format", "stream-json", "a b", ""], "CLAUDE_CONFIG_DIR=accounts/claude-work"),

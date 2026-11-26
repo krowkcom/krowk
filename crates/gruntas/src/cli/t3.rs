@@ -45,7 +45,7 @@ pub(super) fn t3(ctx: &mut Ctx) -> Result<(), Error> {
     let gruntas = gruntas_path(ctx.io.env)?;
     let (reached, unreached) = accounts(&registry);
     for name in &unreached {
-        ctx.warn(&format!("no launcher for {name}, which `gruntas run --account` cannot name — rename it with `gruntas providers rename`"));
+        ctx.warn(&format!("no launcher for {name:?}, which `gruntas run --account` cannot name — rename it with `gruntas providers rename`"));
     }
     let mut launchers = Vec::new();
     // Its launcher kept as it is: an account gruntas cannot give one now.
@@ -68,19 +68,24 @@ pub(super) fn t3(ctx: &mut Ctx) -> Result<(), Error> {
     }
     let keep: Vec<&Path> = launchers.iter().map(|l| l.script.as_path()).chain(kept.iter().map(PathBuf::as_path)).collect();
     let removed = remove_stale(&dir, &keep).map_err(|e| fail("write_failed", format!("the T3 Code launchers of accounts that are gone could not be removed from {}: {e}", dir.display())))?;
+    // Nothing connected, as against accounts with no launcher this time.
+    let none = kept.is_empty() && unreached.is_empty();
     if ctx.format != Format::Human {
         let instances: Vec<Value> = launchers
             .iter()
             .map(|l| json!({ "account": l.account, "harness": l.harness.name(), "name": l.name, "binaryPath": l.script, "homePath": l.home, "written": l.written }))
             .collect();
         let summary = match launchers.len() {
-            0 => "No Claude Code or Codex account is connected — connect one with `gruntas connect`".to_string(),
+            0 if none => "No Claude Code or Codex account is connected — connect one with `gruntas connect`".to_string(),
+            0 => "No T3 Code launcher could be written: the warnings say why".to_string(),
             n => format!("{n} T3 Code instance{} to add", if n == 1 { "" } else { "s" }),
         };
         return super::sessions::emit_data(ctx, json!({ "directory": dir, "instances": instances, "removed": removed }), summary);
     }
     let out = &mut *ctx.io.stdout;
-    if launchers.is_empty() {
+    if launchers.is_empty() && !none {
+        let _ = writeln!(out, "No T3 Code launcher could be written: the warnings above say why.");
+    } else if launchers.is_empty() {
         let _ = writeln!(out, "No Claude Code or Codex account is connected, so T3 Code has nothing to run through gruntas. Connect one with `gruntas connect`, then run `gruntas t3` again.");
     } else {
         let _ = writeln!(out, "In T3 Code, add one instance per account:");
